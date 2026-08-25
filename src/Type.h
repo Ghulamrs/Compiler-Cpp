@@ -5,6 +5,10 @@
 
 enum class Kind {
     Void,
+    // bool sits inside the integer range and at the bottom of it, which is
+    // what lets isInteger() stay a range check. Its position in this enum is
+    // load-bearing: TypeTable builds one Type per value from Void to Function.
+    Bool,
     Char, SChar, UChar,
     Short, UShort,
     Int, UInt,
@@ -53,7 +57,7 @@ public:
     bool isScalar() const { return isArithmetic() || isPointer(); }
 
     bool isInteger() const {
-        return kind_ >= Kind::Char && kind_ <= Kind::ULongLong;
+        return kind_ >= Kind::Bool && kind_ <= Kind::ULongLong;
     }
     bool isFloating() const {
         return kind_ >= Kind::Float && kind_ <= Kind::LongDouble;
@@ -62,6 +66,7 @@ public:
     bool isX87(const Target &t) const;
     bool isArithmetic() const { return isInteger() || isFloating(); }
     bool isVoid() const { return kind_ == Kind::Void; }
+    bool isBool() const { return kind_ == Kind::Bool; }
     bool isStructOrUnion() const { return kind_ == Kind::Struct || kind_ == Kind::Union; }
     bool isComplete() const {
         if (isVoid()) return false;

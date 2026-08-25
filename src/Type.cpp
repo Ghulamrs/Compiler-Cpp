@@ -119,6 +119,10 @@ bool Type::isSigned(const Target &t) const {
 
 int Type::rank() const {
     switch (kind_) {
+    // bool shares char's rank rather than sitting below it, as [conv.rank]
+    // would have it. Nothing can observe the difference: integer promotion
+    // turns both into int before rank is ever consulted.
+    case Kind::Bool:                                           return 1;
     case Kind::Char: case Kind::SChar: case Kind::UChar:       return 1;
     case Kind::Short: case Kind::UShort:                       return 2;
     case Kind::Int: case Kind::UInt:                           return 3;
@@ -179,6 +183,7 @@ bool containsX87(const Type *t, const Target &target) {
 const char *Type::name() const {
     switch (kind_) {
     case Kind::Void:      return "void";
+    case Kind::Bool:      return "bool";
     case Kind::Char:      return "char";
     case Kind::SChar:     return "signed char";
     case Kind::UChar:     return "unsigned char";

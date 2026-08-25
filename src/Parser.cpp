@@ -50,8 +50,9 @@ const Parser::EnumConst *Parser::findEnum(const std::string &name) const {
 }
 
 bool Parser::atTypeName() const {
-    static const char *const t[] = { "void", "char", "short", "int", "long",
-                                     "signed", "unsigned", "float", "double",
+    static const char *const t[] = { "void", "bool", "char", "short", "int",
+                                     "long", "signed", "unsigned",
+                                     "float", "double",
                                      "struct", "union", "enum",
                                      "const", "volatile" };
     for (const char *k : t)
@@ -239,7 +240,7 @@ const Type *Parser::specifiers(StorageClass *storage, Qualifiers *quals) {
         if (const Type *t = findTypedef(peek().text)) { at_++; return t; }
     }
 
-    int isVoid = 0, isChar = 0, isShort = 0, isInt = 0, isLong = 0;
+    int isVoid = 0, isBool = 0, isChar = 0, isShort = 0, isInt = 0, isLong = 0;
     int isSigned = 0, isUnsigned = 0, isFloat = 0, isDouble = 0;
 
     while (atTypeName()) {
@@ -248,6 +249,7 @@ const Type *Parser::specifiers(StorageClass *storage, Qualifiers *quals) {
         if (consume("float"))         isFloat++;
         else if (consume("double"))   isDouble++;
         else if (consume("void"))     isVoid++;
+        else if (consume("bool"))     isBool++;
         else if (consume("char"))     isChar++;
         else if (consume("short"))    isShort++;
         else if (consume("int"))      isInt++;
@@ -256,6 +258,9 @@ const Type *Parser::specifiers(StorageClass *storage, Qualifiers *quals) {
         else if (consume("unsigned")) isUnsigned++;
     }
 
+    if (isBool && (isVoid || isChar || isShort || isInt || isLong ||
+                   isSigned || isUnsigned || isFloat || isDouble))
+        src_.fail(start, "'bool' cannot be combined with another specifier");
     if (isSigned && isUnsigned)
         src_.fail(start, "'signed' and 'unsigned' together is not a type");
     if (isVoid && (isChar || isShort || isInt || isLong || isSigned || isUnsigned))
@@ -271,6 +276,7 @@ const Type *Parser::specifiers(StorageClass *storage, Qualifiers *quals) {
     if (isDouble && isLong > 1)
         src_.fail(start, "'long long double' is not a type");
 
+    if (isBool)   return types_.get(Kind::Bool);
     if (isFloat)  return types_.get(Kind::Float);
     if (isDouble) return types_.get(isLong ? Kind::LongDouble : Kind::Double);
     if (isVoid)  return types_.get(Kind::Void);
@@ -283,8 +289,8 @@ const Type *Parser::specifiers(StorageClass *storage, Qualifiers *quals) {
         return types_.get(isUnsigned ? Kind::UInt : Kind::Int);
 
     if (*storage != StorageNone || quals->isConst || quals->isVolatile)
-        src_.fail(start, "this declaration has no type - C90 would read it as "
-                         "'int', and this compiler does not guess; write the type");
+        src_.fail(start, "this declaration has no type; write one. 'auto' as a "
+                         "deduced type is not supported yet");
     src_.fail(start, "expected a type");
 }
 
@@ -414,6 +420,28 @@ const Type *Parser::usualArithmetic(const Type *a, const Type *b) const {
 
 ExprPtr Parser::convert(ExprPtr e, const Type *to) const {
     if (e->type() == to) return e;
+
+    // A conversion to bool is not a narrowing. [conv.bool] says every non-zero
+    // value becomes true, so (bool)256 is true where (char)256 is 0 - the two
+    // cannot share a code path. It is lowered here to a comparison against
+    // zero, an operation all three backends already have, rather than taught
+    // to each of them as a new kind of cast.
+    if (to->isBool() && !e->type()->isBool() && e->type()->isScalar()) {
+        const Type *from = e->type();
+        ExprPtr zero;
+        if (from->isFloating()) {
+            zero.reset(new Num(static_cast<long double>(0)));
+            zero->setType(from);
+        } else {
+            ExprPtr n(new Num(static_cast<long long>(0)));
+            n->setType(types_.intType());
+            zero = convert(std::move(n), from);
+        }
+        ExprPtr test(new Binary(BinOp::Ne, std::move(e), std::move(zero)));
+        test->setType(to);
+        return test;
+    }
+
     return ExprPtr(new Cast(to, std::move(e)));
 }
 
@@ -696,7 +724,42 @@ ExprPtr Parser::comparison(BinOp op, ExprPtr lhs, ExprPtr rhs) {
     return n;
 }
 
+// Recognised by the lexer, with no rule in this parser yet. Naming the
+// keyword is the whole point: without this the word reaches expression
+// parsing as an unknown identifier and the error lands on whatever follows
+// it, which is never where the reader is looking.
+static const char *notYetSupported(const std::string &word) {
+    static const char *const pending[] = {
+        "alignas", "alignof", "and", "and_eq", "asm",
+        "bitand", "bitor", "catch", "char16_t", "char32_t", "class", "compl",
+        "constexpr", "const_cast", "decltype", "delete", "dynamic_cast",
+        "explicit", "export", "friend", "inline", "mutable", "namespace",
+        "new", "noexcept", "not", "not_eq", "nullptr", "operator", "or",
+        "or_eq", "private", "protected", "public", "reinterpret_cast",
+        "static_assert", "static_cast", "template", "this", "thread_local",
+        "throw", "try", "typeid", "typename", "using", "virtual", "wchar_t",
+        "xor", "xor_eq"
+    };
+    for (const char *k : pending)
+        if (word == k) return k;
+    return nullptr;
+}
+
 ExprPtr Parser::primary(Program *program) {
+    if (peek().is("true") || peek().is("false")) {
+        bool value = peek().is("true");
+        at_++;
+        ExprPtr n(new Num(static_cast<long long>(value ? 1 : 0)));
+        n->setType(types_.get(Kind::Bool));
+        return n;
+    }
+
+    if (peek().kind == TokenKind::Keyword) {
+        if (const char *pending = notYetSupported(peek().text))
+            src_.fail(peek().pos, std::string("'") + pending +
+                                  "' is not supported yet");
+    }
+
     if (peek().is("__builtin_va_start")) {
         std::size_t pos = peek().pos;
         at_++;

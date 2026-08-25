@@ -102,45 +102,18 @@ $(OBJDIR)/%.o: src/%.cpp
 
 -include $(DEPS)
 
-# The differential suite compiles every case a second time with gcc and runs
-# both binaries, so it needs gcc and it needs to be able to run x86-64. On a Mac
-# it says so rather than failing halfway through with something puzzling.
-#
-# Two suites run here, because two of the three backends emit x86-64. The
-# second is x86_64-windows, which this machine can also execute: a
-# Windows-convention program that calls no library is a self-contained blob,
-# and tests/windows.sh explains at length why that is sound. The third backend
-# is arm64-darwin and its suite runs on the Mac - "make test" there says so.
+# Both suites run anywhere cxx1 builds. run.sh needs to assemble and link, so
+# it covers the host target only; emit.sh stops at assembly and therefore
+# checks all three backends on any machine. Neither is a differential suite
+# yet - comparing cxx1's objects against clang's needs mangling and
+# extern "C", which are rung 2.
 test: $(TARGET)
-ifeq ($(UNAME_S),Darwin)
-	@echo "This suite compares against gcc and runs x86-64 binaries, and this is"
-	@echo "$(shell uname -m)-darwin. Run 'make test' on the Linux box for it."
-	@echo ""
-	@echo "What does run here: './tests/arm64.sh' builds and executes the native"
-	@echo "backend's cases against clang, './tests/debug.sh' asks lldb where it"
-	@echo "stopped, './tests/windows-native.sh' relays"
-	@echo "the Windows corpus to a Windows machine over ssh, and"
-	@echo "'./tests/fingerprint.sh' checks every byte of every target's assembly"
-	@echo "against what is recorded - it needs no assembler, so it runs anywhere."
-	@echo "A bare 'cc1 f.c' targets this Mac now, so"
-	@echo "'cc1 f.c -o f.s && clang f.s -o f' works."
-	@false
-else
 	@./tests/run.sh
-	@./tests/windows.sh
-	@./tests/driver-modes.sh
-	@./tests/debug.sh
-# The same debug corpus against the Microsoft ABI, which this machine can both
-# build and run - see tests/windows.sh for why a Windows-convention program
-# that calls no library executes here. It is the GNU spelling that carries the
-# line table; ml64 wants CodeView, which is not written yet.
-	@./tests/debug.sh x86_64-windows
-	@./tests/fingerprint.sh
-endif
+	@./tests/emit.sh
 
 help:
 	@echo "make            build cc1 with $(CXX)"
-	@echo "make test       build and run the differential suite (Linux only)"
+	@echo "make test       build and run both suites"
 	@echo "make clean"
 	@echo ""
 	@echo "cc1 emits x86-64 System V assembly. It compiles anywhere this"
@@ -148,10 +121,7 @@ help:
 
 clean:
 	rm -rf $(OBJDIR) $(TARGET)
-	rm -rf tests/out tests/out-windows tests/out-arm64 \
-	       tests/out-c90 tests/out-not-c90 tests/out-fingerprint \
-	       tests/out-driver tests/out-debug tests/out-debug-x86_64-windows \
-	       tests/out-cross tests/out-masm-native tests/out-windows-native
+	rm -rf tests/out-run tests/out-emit
 # A suite added since this rule was written leaves its output behind, and the
 # list is the only place that says so. tests/out-cross survived a clean until
 # 2026-08-26 for exactly that reason - eight object files nobody was looking

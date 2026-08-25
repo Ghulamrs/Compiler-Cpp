@@ -52,6 +52,9 @@ std::vector<std::pair<std::string, std::string> > predefinedMacros(const Backend
     auto width = [&t](Kind k) { return std::to_string(t.sizeOf(k)); };
 
     add("__STDC__", "1");
+    // The language this compiler reads is C++11, and a program is entitled to
+    // ask. 201103L is the value the standard fixes for it.
+    add("__cplusplus", "201103L");
     add("__STDC_HOSTED__", "1");
     addTranslationTime(out);
     add("__CHAR_BIT__", "8");

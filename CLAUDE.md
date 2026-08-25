@@ -69,13 +69,26 @@ starts. No half-built pipelines waiting on a later phase.
 | | Rung | State |
 | --- | --- | --- |
 | 0 | The fork: C90 through three backends | **done**, 2026-08-26 |
-| 1 | C++ as a better C: keywords, `bool`, `//`, `::` | in progress |
+| 1 | C++ as a better C: keywords, `bool`, `//`, `::` | **partly done**, see below |
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
+
+Landed on rung 1 so far: the full C++11 keyword table, the `::`, `.*` and
+`->*` punctuators, `__cplusplus` as `201103L`, and `bool` with `true` and
+`false`. Still open on it: mixed declarations and statements, `for`-init
+scope, and `auto` as a deduced type — which is currently refused by the
+message about a declaration with no type, and should get one of its own.
+
+**Conversion to bool is lowered to a comparison, not taught to the backends.**
+`(bool)256` is `true` where `(char)256` is `0`, so the two cannot share a cast
+path. `Parser::convert` builds `x != 0` and gives it type `bool`, which every
+backend already knows how to emit. This is the pattern to reach for again:
+where C++ adds a *conversion*, look for an existing operation to lower it to
+before adding a case to three code generators.
 
 Rung 5 is roughly half of what remains after rung 4. Rung 6 is where the three
 targets stop being symmetric: Windows EH is SEH-based and needs unwind data,
@@ -111,8 +124,15 @@ clean before believing a number, and record the commit it was measured at.
 
 ```
 make                 build cxx1.exe with clang++ (Mac) or g++ (Linux)
+make test            run both suites
 make clean
 ```
+
+`tests/run.sh` compiles and runs each case in `tests/cases/` on this machine
+and diffs against its `.expected`; a case with a `.error` file instead must
+fail to compile with that text in the message. `tests/emit.sh` compiles every
+case for all three targets and stops at assembly, so it needs no assembler and
+runs anywhere.
 
 `-MMD -MP` writes header dependencies. Do not remove it: a stale object here
 links perfectly and corrupts the heap three passes away, which is exactly what

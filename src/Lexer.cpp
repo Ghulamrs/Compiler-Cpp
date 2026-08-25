@@ -50,14 +50,35 @@ static long long unescape(const std::string &s, std::size_t &i, std::size_t,
 }
 
 bool Lexer::isKeyword(const std::string &word) {
+    // Every C++11 keyword, including the ones nothing here can parse yet.
+    // Recognising a word is not the same as implementing it: a keyword the
+    // front end has no rule for is refused by name in the parser, which is a
+    // better error than the parse failure twenty tokens later that an
+    // unrecognised identifier produces.
+    //
+    // The alternative-token spellings (and, or, not, bitand, ...) are keywords
+    // in C++, not macros as they are in C's <iso646.h>.
     static const char *const kw[] = {
-        "int", "return", "void", "if", "else", "while",
-        "char", "short", "long", "signed", "unsigned", "sizeof",
-        "float", "double",
-        "static", "extern", "const", "register", "volatile",
-        "struct", "union", "enum", "typedef",
-        "for", "do", "break", "continue",
-        "switch", "case", "default", "goto"
+        "alignas", "alignof", "and", "and_eq", "asm", "auto",
+        "bitand", "bitor", "bool", "break",
+        "case", "catch", "char", "char16_t", "char32_t", "class", "compl",
+        "const", "constexpr", "const_cast", "continue",
+        "decltype", "default", "delete", "do", "double", "dynamic_cast",
+        "else", "enum", "explicit", "export", "extern",
+        "false", "float", "for", "friend", "goto",
+        "if", "inline", "int", "long",
+        "mutable", "namespace", "new", "noexcept", "not", "not_eq", "nullptr",
+        "operator", "or", "or_eq",
+        "private", "protected", "public",
+        "register", "reinterpret_cast", "return",
+        "short", "signed", "sizeof", "static", "static_assert", "static_cast",
+        "struct", "switch",
+        "template", "this", "thread_local", "throw", "true", "try",
+        "typedef", "typeid", "typename",
+        "union", "unsigned", "using",
+        "virtual", "void", "volatile",
+        "wchar_t", "while",
+        "xor", "xor_eq"
     };
     for (const char *k : kw)
         if (word == k) return true;
@@ -72,10 +93,11 @@ std::vector<Token> Lexer::tokenize() {
     auto identStart = [](char c) { return std::isalpha(static_cast<unsigned char>(c)) || c == '_'; };
     auto identCont  = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
 
-    static const char *const three[] = { "<<=", ">>=" };
+    static const char *const three[] = { "<<=", ">>=", "->*" };
     static const char *const two[] = { "==", "!=", "<=", ">=", "<<", ">>", "&&", "||",
                                        "->", "++", "--", "+=", "-=", "*=", "/=", "%=",
-                                       "&=", "|=", "^=" };
+                                       "&=", "|=", "^=",
+                                       "::", ".*" };
 
     while (i < s.size()) {
         char c = s[i];
