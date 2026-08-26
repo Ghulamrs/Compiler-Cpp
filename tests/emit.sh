@@ -7,6 +7,7 @@
 set -e
 cd "$(dirname "$0")/.."
 CXX1=./cxx1.exe
+cxx1() { ( ulimit -t 10; $CXX1 "$@" < /dev/null ); }
 OUT=tests/out-emit
 rm -rf "$OUT"; mkdir -p "$OUT"
 
@@ -15,7 +16,7 @@ for src in tests/cases/*.cpp; do
     base=$(basename "$src" .cpp)
     [ -f "tests/cases/$base.error" ] && continue
     for target in x86_64-linux x86_64-windows arm64-darwin; do
-        if $CXX1 -S -arch "$target" "$src" -o "$OUT/$base.$target.s" \
+        if cxx1 -S -arch "$target" "$src" -o "$OUT/$base.$target.s" \
                  2>"$OUT/$base.$target.err"; then
             pass=$((pass + 1))
         else

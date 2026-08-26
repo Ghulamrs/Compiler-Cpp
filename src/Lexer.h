@@ -19,6 +19,11 @@ struct Token {
     long double dvalue = 0;
 
     bool wide = false;
+    // A single-character literal. It is int in C and char in C++, which is
+    // the whole of why this flag exists: sizeof('a') is 4 in one language and
+    // 1 in the other. A multi-character literal ('ab') stays int in both, so
+    // this is not set for one.
+    bool isChar = false;
     std::string text;
     std::size_t pos = 0;
 

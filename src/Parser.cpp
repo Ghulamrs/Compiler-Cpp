@@ -44,6 +44,20 @@ const Type *Parser::findTypedef(const std::string &name) const {
     return it == typedefIndex_.end() ? nullptr : typedefs_[it->second].type;
 }
 
+// A class or enum name is a type name in C++, with no typedef written. The
+// standard puts it that the name is inserted into the scope the definition
+// appears in; here that is the one table this parser has for the purpose.
+//
+// What is not implemented is the C compatibility rule that lets an object of
+// the same name hide the class name - "struct stat stat;" is legal C++ and is
+// refused here. It costs a second lookup table to fix and no program in the
+// corpus wants it.
+void Parser::declareTypeName(const std::string &name, const Type *type) {
+    if (findTypedef(name) != nullptr) return;
+    typedefIndex_[name] = typedefs_.size();
+    typedefs_.push_back(TypedefName{ name, type });
+}
+
 const Parser::EnumConst *Parser::findEnum(const std::string &name) const {
     auto it = enumIndex_.find(name);
     return it == enumIndex_.end() ? nullptr : &enums_[it->second];
@@ -75,6 +89,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind) {
 
     Type *type = tag.empty() ? types_.anonymousStruct(kind)
                              : types_.structType(kind, tag);
+    if (!tag.empty()) declareTypeName(tag, type);
 
     if (!peek().is("{")) {
         if (tag.empty()) src_.fail(pos, std::string(what) + " needs a tag or a body");
@@ -194,7 +209,13 @@ const Type *Parser::structOrUnionSpecifier(Kind kind) {
 
 const Type *Parser::enumSpecifier() {
     std::size_t pos = peek().pos;
-    if (peek().kind == TokenKind::Ident) at_++;
+    std::string tag;
+    if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
+
+    // The tag names a type, as a class tag does. What it does not yet name is
+    // a *distinct* type: an enumeration is still int here, so the conversions
+    // C++ refuses in both directions are accepted. docs/CONFORMANCE.md has it.
+    if (!tag.empty()) declareTypeName(tag, types_.intType());
 
     if (!peek().is("{")) return types_.intType();
     at_++;
@@ -244,6 +265,17 @@ const Type *Parser::specifiers(StorageClass *storage, Qualifiers *quals) {
     int isSigned = 0, isUnsigned = 0, isFloat = 0, isDouble = 0;
 
     while (atTypeName()) {
+        // atTypeName() is also true for an identifier naming a typedef, and
+        // nothing below consumes one - so without this the loop spins forever
+        // on "typedef long T;" where T is already a typedef. A typedef name
+        // used *as* the type was taken above, before this loop; reaching one
+        // here means it is the declarator's name, or a mistake, and either way
+        // the specifiers are finished.
+        //
+        // Inherited from Compiler-C, where it hangs too: no case in 425
+        // refuses a redeclaration, so nothing ever reached it. A compiler that
+        // loops on bad input is worse than one that says no.
+        if (peek().kind == TokenKind::Ident) break;
         if (consume("const"))         { quals->isConst = true; continue; }
         if (consume("volatile"))      { quals->isVolatile = true; continue; }
         if (consume("float"))         isFloat++;
@@ -288,9 +320,14 @@ const Type *Parser::specifiers(StorageClass *storage, Qualifiers *quals) {
     if (isInt || isSigned || isUnsigned)
         return types_.get(isUnsigned ? Kind::UInt : Kind::Int);
 
+    // In C++11 'auto' is a type specifier, not the storage class C90 made it.
+    // This parser still reads it as one, so reaching here having consumed it
+    // is exactly the case where a type was meant to be deduced.
+    if (*storage == StorageAuto)
+        src_.fail(start, "'auto' as a deduced type is not supported yet - "
+                         "write the type");
     if (*storage != StorageNone || quals->isConst || quals->isVolatile)
-        src_.fail(start, "this declaration has no type; write one. 'auto' as a "
-                         "deduced type is not supported yet");
+        src_.fail(start, "this declaration has no type; write one");
     src_.fail(start, "expected a type");
 }
 
@@ -891,6 +928,10 @@ ExprPtr Parser::primary(Program *program) {
                                             : types_.get(Kind::LongLong);
 
         else if (t.wide)                 ty = types_.get(target_.wcharType());
+        // [lex.ccon]/2: an ordinary character literal has type char, where C
+        // gives it int. So sizeof('a') is 1 here, and a program that stores
+        // one in a char is not narrowing anything.
+        else if (t.isChar)               ty = types_.get(Kind::Char);
         else if (fits(Kind::Int))        ty = types_.intType();
         else if (fits(Kind::Long))       ty = types_.get(Kind::Long);
 
@@ -2126,7 +2167,16 @@ StmtPtr Parser::declarationBody() {
         do {
             Declared td = declarator(base);
             typedefFunctionSuffix(td);
-            if (findTypedef(td.name)) src_.fail(td.pos, "'" + td.name + "' is typedefed twice");
+            // [dcl.typedef]/2 lets a typedef-name be redeclared to the same
+            // type, which is what makes the C idiom "typedef struct S S;"
+            // legal now that the tag already names the type by itself. Only a
+            // redeclaration to a *different* type is an error.
+            if (const Type *had = findTypedef(td.name))
+                if (had != td.type)
+                    src_.fail(td.pos, "'" + td.name + "' is typedefed twice, "
+                                      "and not to the same type: it was '" +
+                                      had->describe() + "' and is now '" +
+                                      td.type->describe() + "'");
             typedefIndex_[td.name] = typedefs_.size();
             typedefs_.push_back(TypedefName{ td.name, td.type });
         } while (consume(","));
@@ -2586,7 +2636,16 @@ void Parser::topLevel(Program &program) {
         do {
             Declared td = declarator(base);
             typedefFunctionSuffix(td);
-            if (findTypedef(td.name)) src_.fail(td.pos, "'" + td.name + "' is typedefed twice");
+            // [dcl.typedef]/2 lets a typedef-name be redeclared to the same
+            // type, which is what makes the C idiom "typedef struct S S;"
+            // legal now that the tag already names the type by itself. Only a
+            // redeclaration to a *different* type is an error.
+            if (const Type *had = findTypedef(td.name))
+                if (had != td.type)
+                    src_.fail(td.pos, "'" + td.name + "' is typedefed twice, "
+                                      "and not to the same type: it was '" +
+                                      had->describe() + "' and is now '" +
+                                      td.type->describe() + "'");
             typedefIndex_[td.name] = typedefs_.size();
             typedefs_.push_back(TypedefName{ td.name, td.type });
         } while (consume(","));

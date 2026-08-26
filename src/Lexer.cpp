@@ -138,6 +138,7 @@ std::vector<Token> Lexer::tokenize() {
             if (chars == 0) src_.fail(start, "empty character constant");
 
             if (!wide && chars == 1) v = static_cast<signed char>(v);
+            bool isChar = (!wide && chars == 1);
             if (i >= s.size() || s[i] != '\'')
                 src_.fail(start, "unterminated character constant");
             i++;
@@ -145,6 +146,7 @@ std::vector<Token> Lexer::tokenize() {
             t.kind = TokenKind::Num;
             t.value = v;
             t.wide = wide;
+            t.isChar = isChar;
             t.pos = start;
             out.push_back(std::move(t));
             continue;

@@ -12,6 +12,12 @@
 set -e
 cd "$(dirname "$0")/.."
 CXX1=./cxx1.exe
+
+# Every invocation of the compiler runs under a CPU limit, in a subshell so
+# the limit does not outlive it. A parser that loops on bad input is a real
+# failure mode - one was inherited from Compiler-C and shipped there unnoticed
+# through 425 cases - and without this the suite hangs instead of reporting it.
+cxx1() { ( ulimit -t 10; $CXX1 "$@" < /dev/null ); }
 OUT=tests/out-run
 rm -rf "$OUT"; mkdir -p "$OUT"
 
@@ -21,7 +27,7 @@ for src in tests/cases/*.cpp; do
 
     if [ -f "tests/cases/$base.error" ]; then
         want=$(cat "tests/cases/$base.error")
-        if $CXX1 -S "$src" -o "$OUT/$base.s" 2>"$OUT/$base.err"; then
+        if cxx1 -S "$src" -o "$OUT/$base.s" 2>"$OUT/$base.err"; then
             echo "FAIL $base: compiled, and should not have"
             fail=$((fail + 1))
         elif grep -qF "$want" "$OUT/$base.err"; then
@@ -34,7 +40,7 @@ for src in tests/cases/*.cpp; do
         continue
     fi
 
-    if ! $CXX1 "$src" -o "$OUT/$base" 2>"$OUT/$base.err"; then
+    if ! cxx1 "$src" -o "$OUT/$base" 2>"$OUT/$base.err"; then
         echo "FAIL $base: did not compile"
         sed 's/^/      /' "$OUT/$base.err"
         fail=$((fail + 1))

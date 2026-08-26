@@ -69,7 +69,7 @@ starts. No half-built pipelines waiting on a later phase.
 | | Rung | State |
 | --- | --- | --- |
 | 0 | The fork: C90 through three backends | **done**, 2026-08-26 |
-| 1 | C++ as a better C: keywords, `bool`, `//`, `::` | **partly done**, see below |
+| 1 | C++ as a better C: keywords, `bool`, tag names, `::` | **done**, 2026-08-26 |
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | |
@@ -77,11 +77,28 @@ starts. No half-built pipelines waiting on a later phase.
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
-Landed on rung 1 so far: the full C++11 keyword table, the `::`, `.*` and
-`->*` punctuators, `__cplusplus` as `201103L`, and `bool` with `true` and
-`false`. Still open on it: mixed declarations and statements, `for`-init
-scope, and `auto` as a deduced type — which is currently refused by the
-message about a declaration with no type, and should get one of its own.
+Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
+punctuators, `__cplusplus`, `bool`/`true`/`false`, class and enum tags as type
+names, and character literals typed `char` rather than `int`. Mixed
+declarations and `for`-init scope came across from Compiler-C already working
+and now have cases holding them there. `auto` as a deduced type is refused by
+name and belongs to rung 7.
+
+**Not in rung 1, and deliberately**: a declaration in an `if` or `while`
+condition. It needs the condition's scope to wrap both branches, which is a
+change to how `If` is built rather than an addition to it.
+
+`docs/CONFORMANCE.md` records what compiles here and should not — currently
+that an enumeration is still `int`, and that a class name cannot be hidden by
+an object of the same name.
+
+**A parser that loops on bad input is worse than one that says no.** The
+specifier loop spun forever on `typedef long T;` where `T` was already a
+typedef: `atTypeName()` stayed true and nothing in the loop consumed an
+identifier. **Compiler-C has this too** and shipped it through 425 cases,
+because no case there redeclares a typedef. Both suites now run every compiler
+invocation under `ulimit -t`, so the next one fails rather than wedging the
+run.
 
 **Conversion to bool is lowered to a comparison, not taught to the backends.**
 `(bool)256` is `true` where `(char)256` is `0`, so the two cannot share a cast

@@ -154,6 +154,7 @@ private:
 
     bool atTypeName() const;
     const Type *findTypedef(const std::string &name) const;
+    void declareTypeName(const std::string &name, const Type *type);
     const EnumConst *findEnum(const std::string &name) const;
     const Type *structOrUnionSpecifier(Kind kind);
     const Type *enumSpecifier();
