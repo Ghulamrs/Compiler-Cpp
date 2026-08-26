@@ -196,7 +196,7 @@ void X86_64Linux::canonicalise(const Type *t) {
 void X86_64Linux::genAddr(const Expr &e) {
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
         if (v->isLocal()) a_->ins("lea", mem(-(v->offset()), "%rbp"), reg("%rax"));
-        else              a_->ins("lea", rip(v->name()), reg("%rax"));
+        else              a_->ins("lea", rip(v->symbol()), reg("%rax"));
         return;
     }
     if (const Unary *u = dynamic_cast<const Unary *>(&e)) {
@@ -959,7 +959,7 @@ void X86_64Linux::visit(const Call &n) {
     }
 
     if (n.callee() != nullptr) a_->ins("call", ind("%r11"));
-    else                       a_->ins("call", lbl(n.name()));
+    else                       a_->ins("call", lbl(n.symbol()));
 
     int unwind = stackSlots + padSlots + shadowSlots;
     if (unwind > 0) {
@@ -1187,16 +1187,18 @@ void X86_64Linux::finishChunk() {
 void X86_64Linux::emit(const Function &fn) {
     depth_ = 0;
     resetLabels();
-    labelPrefix_ = ".L." + fn.name() + ".";
-    returnLabel_ = ".L.return." + fn.name();
+    // Labels are built from the symbol rather than the name: two overloads
+    // share a name and must not share a label.
+    labelPrefix_ = ".L." + fn.symbol() + ".";
+    returnLabel_ = ".L.return." + fn.symbol();
 
-    a_->functionBegin(fn.name(), !fn.isStatic());
+    a_->functionBegin(fn.symbol(), !fn.isStatic());
     if (const Source *src = lineSource()) {
         Source::Place at = src->locate(fn.pos());
         DwarfFunction d;
         d.name = fn.name();
-        d.begin = ".Lfunc.begin." + fn.name();
-        d.end = ".Lfunc.end." + fn.name();
+        d.begin = ".Lfunc.begin." + fn.symbol();
+        d.end = ".Lfunc.end." + fn.symbol();
         d.file = at.file + 1;
         d.line = at.line;
         d.external = !fn.isStatic();
@@ -1222,7 +1224,7 @@ void X86_64Linux::emit(const Function &fn) {
     } else if (regSave_ != 0) {
         for (int i = 0; i < 6; i++)
             a_->ins("mov", reg(abi_.intRegs[i]), mem((i * 8 - regSave_), "%rbp"));
-        std::string done = ".L.novec." + fn.name();
+        std::string done = ".L.novec." + fn.symbol();
         a_->ins("testb", reg("%al"), reg("%al"));
         a_->ins("je", lbl(done));
         for (int i = 0; i < 8; i++)
@@ -1341,9 +1343,9 @@ void X86_64Linux::emit(const Function &fn) {
     a_->ins("mov", reg("%rbp"), reg("%rsp"));
     a_->ins("pop", reg("%rbp"));
     a_->ins("ret");
-    a_->functionEnd(fn.name());
+    a_->functionEnd(fn.symbol());
     if (lineSource()) {
-        a_->defLabel(".Lfunc.end." + fn.name());
+        a_->defLabel(".Lfunc.end." + fn.symbol());
 
         dwarfFns_.back().blocks = blocks();
     }
@@ -1358,14 +1360,14 @@ void X86_64Linux::emit(const Function &fn) {
 
 void X86_64Linux::emitGlobal(const Global &g, Segment seg) {
     int size = g.type->size(target_);
-    if (!g.isStatic) a_->globl(g.name);
+    if (!g.isStatic) a_->globl(g.symbol);
 
     if (abi_.elfSymbolAttributes) {
-        a_->objectType(g.name);
-        a_->objectSize(g.name, size);
+        a_->objectType(g.symbol);
+        a_->objectSize(g.symbol, size);
     }
     a_->align(objectAlign(g.type, target_));
-    a_->defLabel(g.name);
+    a_->defLabel(g.symbol);
 
     if (seg == Segment::Bss) { a_->zero(size); return; }
 
@@ -1429,8 +1431,8 @@ void X86_64Linux::emitData(const Program &program) {
 void X86_64Linux::run(const Program &program) {
 
     std::vector<std::string> defined;
-    for (const Function &fn : program.functions) defined.push_back(fn.name());
-    for (const Global &g : program.globals) defined.push_back(g.name);
+    for (const Function &fn : program.functions) defined.push_back(fn.symbol());
+    for (const Global &g : program.globals) defined.push_back(g.symbol);
     for (const StringLit &s : program.strings) defined.push_back(s.label);
     a_->predefine(defined);
 
@@ -1448,7 +1450,7 @@ void X86_64Linux::run(const Program &program) {
         for (const Global &g : program.globals) {
             DwarfGlobal dg;
             dg.name = g.name;
-            dg.symbol = g.name;
+            dg.symbol = g.symbol;
             dg.type = g.type;
             dg.external = !g.isStatic;
             dwarfGlobals_.push_back(dg);

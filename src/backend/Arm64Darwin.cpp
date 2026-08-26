@@ -150,13 +150,13 @@ void Arm64Darwin::genAddr(const Expr &e) {
 
             movImm("x9", v->offset());
             out_ << "  sub x0, x29, x9\n";
-        } else if (definedHere_.count(v->name()) != 0) {
-            out_ << "  adrp x0, _" << v->name() << "@PAGE\n";
-            out_ << "  add x0, x0, _" << v->name() << "@PAGEOFF\n";
+        } else if (definedHere_.count(v->symbol()) != 0) {
+            out_ << "  adrp x0, _" << v->symbol() << "@PAGE\n";
+            out_ << "  add x0, x0, _" << v->symbol() << "@PAGEOFF\n";
         } else {
 
-            out_ << "  adrp x0, _" << v->name() << "@GOTPAGE\n";
-            out_ << "  ldr x0, [x0, _" << v->name() << "@GOTPAGEOFF]\n";
+            out_ << "  adrp x0, _" << v->symbol() << "@GOTPAGE\n";
+            out_ << "  ldr x0, [x0, _" << v->symbol() << "@GOTPAGEOFF]\n";
         }
         return;
     }
@@ -720,7 +720,7 @@ void Arm64Darwin::visit(const Call &n) {
         pop("x16");
         out_ << "  blr x16\n";
     } else {
-        out_ << "  bl _" << n.name() << "\n";
+        out_ << "  bl _" << n.symbol() << "\n";
     }
     if (extraBytes > 0) {
         movImm("x9", extraBytes);
@@ -808,16 +808,16 @@ static int p2AlignOf(int bytes) {
 void Arm64Darwin::emitGlobal(const Global &g, Segment seg) {
     int size = g.type->size(target_);
     int p2 = p2AlignOf(objectAlign(g.type, target_));
-    if (!g.isStatic) out_ << "  .globl _" << g.name << "\n";
+    if (!g.isStatic) out_ << "  .globl _" << g.symbol << "\n";
 
     if (seg == Segment::Bss) {
-        out_ << "  .zerofill __DATA,__bss,_" << g.name << ","
+        out_ << "  .zerofill __DATA,__bss,_" << g.symbol << ","
              << size << "," << p2 << "\n";
         return;
     }
 
     out_ << "  .p2align " << p2 << "\n";
-    out_ << "_" << g.name << ":\n";
+    out_ << "_" << g.symbol << ":\n";
     int at = 0;
     for (const GlobalPiece &p : g.init) {
         if (p.offset > at) out_ << "  .space " << (p.offset - at) << "\n";
@@ -895,20 +895,22 @@ void Arm64Darwin::emitData(const Program &program) {
 
 void Arm64Darwin::emitFunction(const Function &fn) {
     resetLabels();
-    functionName_ = fn.name();
-    labelPrefix_ = "L." + fn.name() + ".";
-    returnLabel_ = "L.return." + fn.name();
+    // Labels are built from the symbol rather than the name: two overloads
+    // share a name and must not share a label.
+    functionName_ = fn.symbol();
+    labelPrefix_ = "L." + fn.symbol() + ".";
+    returnLabel_ = "L.return." + fn.symbol();
 
     out_ << "  .section __TEXT,__text,regular,pure_instructions\n";
-    if (!fn.isStatic()) out_ << "  .globl _" << fn.name() << "\n";
+    if (!fn.isStatic()) out_ << "  .globl _" << fn.symbol() << "\n";
     out_ << "  .p2align 2\n";
-    out_ << "_" << fn.name() << ":\n";
+    out_ << "_" << fn.symbol() << ":\n";
     if (const Source *src = lineSource()) {
         Source::Place at = src->locate(fn.pos());
         DwarfFunction d;
         d.name = fn.name();
-        d.begin = "Lfunc.begin." + fn.name();
-        d.end = "Lfunc.end." + fn.name();
+        d.begin = "Lfunc.begin." + fn.symbol();
+        d.end = "Lfunc.end." + fn.symbol();
         d.file = at.file + 1;
         d.line = at.line;
         d.external = !fn.isStatic();
@@ -1013,7 +1015,7 @@ void Arm64Darwin::emitFunction(const Function &fn) {
     out_ << "  ldp x29, x30, [sp], #16\n";
     out_ << "  ret\n";
     if (lineSource()) {
-        out_ << "Lfunc.end." << fn.name() << ":\n";
+        out_ << "Lfunc.end." << fn.symbol() << ":\n";
 
         dwarfFns_.back().blocks = blocks();
     }
@@ -1025,8 +1027,8 @@ void Arm64Darwin::emitLoc(int file, int line, int column) {
 
 void Arm64Darwin::run(const Program &program) {
     definedHere_.clear();
-    for (const Global &g : program.globals)   definedHere_.insert(g.name);
-    for (const Function &f : program.functions) definedHere_.insert(f.name());
+    for (const Global &g : program.globals)   definedHere_.insert(g.symbol);
+    for (const Function &f : program.functions) definedHere_.insert(f.symbol());
 
     if (const Source *src = lineSource()) {
         const std::vector<std::string> &names = src->files();
@@ -1040,7 +1042,7 @@ void Arm64Darwin::run(const Program &program) {
         for (const Global &g : program.globals) {
             DwarfGlobal dg;
             dg.name = g.name;
-            dg.symbol = g.name;
+            dg.symbol = g.symbol;
             dg.type = g.type;
             dg.external = !g.isStatic;
             dwarfGlobals_.push_back(dg);

@@ -186,5 +186,10 @@ public:
 
     virtual Kind wcharType() const = 0;
 
+    // Which ABI spells a C++ name, which is a property of the platform in
+    // the same way that the width of a long is. Itanium everywhere but
+    // Windows.
+    virtual bool microsoftNames() const = 0;
+
     virtual const char *name() const = 0;
 };

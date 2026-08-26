@@ -18,6 +18,12 @@
 #ifndef _CC1_SIGNAL_H
 #define _CC1_SIGNAL_H
 
+// Everything here is the C library, so it is named the way C names it.
+// Without this the compiler would give every declaration below a C++
+// linkage name and ask the linker for a symbol libc has never had.
+extern "C" {
+
+
 // An integer type that can be read and written atomically with respect to a
 // signal arriving. Four bytes on all three targets. A variable a handler
 // touches should be 'volatile sig_atomic_t' and nothing else.
@@ -44,4 +50,6 @@ typedef int sig_atomic_t;
 void (*signal(int sig, void (*handler)(int)))(int);
 int raise(int sig);
 
+
+}  // extern "C"
 #endif

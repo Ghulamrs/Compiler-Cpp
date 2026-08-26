@@ -21,6 +21,12 @@
 #ifndef _CC1_ERRNO_H
 #define _CC1_ERRNO_H
 
+// Everything here is the C library, so it is named the way C names it.
+// Without this the compiler would give every declaration below a C++
+// linkage name and ask the linker for a symbol libc has never had.
+extern "C" {
+
+
 #ifdef _WIN32
 int *_errno(void);
 #define errno (*_errno())
@@ -60,4 +66,6 @@ int *__errno_location(void);
 #define EINVAL  22
 #define ENOSPC  28
 
+
+}  // extern "C"
 #endif

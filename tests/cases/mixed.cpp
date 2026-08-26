@@ -1,4 +1,9 @@
+// The C library is named the way C names it, so its declarations go
+// inside a linkage specification. Without it these are C++ names and
+// the linker is asked for symbols libc has never had.
+extern "C" {
 int printf(const char *, ...);
+}
 
 int f() { return 3; }
 

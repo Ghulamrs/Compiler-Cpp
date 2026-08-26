@@ -35,6 +35,40 @@ conversions — so it is held until the type system needs to be opened anyway,
 rather than done twice. Inherited from Compiler-C, where C's own rules made it
 very nearly correct.
 
+## `wchar_t` is not a distinct type
+
+It names the target's underlying integer - `int` on Linux and Darwin,
+`unsigned short` on Windows - where the standard makes it a type of its own
+that merely has the same width and signedness. So an overload on `wchar_t`
+will not be distinguishable from one on `int` when overloading arrives, and
+`sizeof` and the arithmetic are right meanwhile. The same trade as the
+enumeration above, for the same reason: a distinct type needs a `Kind`, and
+opening the type system for one of these should open it for both.
+
+## A parameter's top-level const is dropped from a Microsoft name
+
+```cpp
+void f(char * const);      // cl writes ?f@@YAXQEAD@Z, cxx1 writes ?f@@YAXPEAD@Z
+```
+
+The standard says top-level const on a parameter is not part of the function's
+type - `void f(char *)` and `void f(char * const)` declare one function - and
+cxx1 strips it before the type is built, so the mangler cannot see it. The
+Microsoft ABI encodes it anyway, with `Q` where there would be a `P`. Itanium
+drops it and agrees with us.
+
+What it costs: a function declared that way, compiled by cl in one object and
+by cxx1 in another, will not link to itself. Nothing else. Keeping it would
+mean carrying the parameter type twice - once as declared and once as the
+function's type - and that is not worth doing for a name.
+
+## A static local keeps its own name in the object file
+
+A `static` variable inside a function becomes a global here, named
+`function.variable`. Itanium names it `_ZZ8functionvE8variable`. Both are
+internal to the object and nothing outside can reach either, so this shows up
+only in a symbol listing side by side with clang's.
+
 ## A `void *` converts to any object pointer on its own
 
 ```cpp

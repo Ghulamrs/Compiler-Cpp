@@ -19,6 +19,12 @@
 #ifndef _CC1_LIMITS_H
 #define _CC1_LIMITS_H
 
+// Everything here is the C library, so it is named the way C names it.
+// Without this the compiler would give every declaration below a C++
+// linkage name and ask the linker for a symbol libc has never had.
+extern "C" {
+
+
 #define CHAR_BIT    8
 
 // Plain char is signed on all three of these targets, which the compiler also
@@ -72,4 +78,6 @@
 #define MB_LEN_MAX  16
 #endif
 
+
+}  // extern "C"
 #endif

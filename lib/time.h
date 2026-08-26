@@ -22,6 +22,12 @@
 #ifndef _CC1_TIME_H
 #define _CC1_TIME_H
 
+// Everything here is the C library, so it is named the way C names it.
+// Without this the compiler would give every declaration below a C++
+// linkage name and ask the linker for a symbol libc has never had.
+extern "C" {
+
+
 #include <stddef.h>
 
 // Seconds since the epoch. Eight bytes on all three - the UCRT defaults
@@ -77,4 +83,6 @@ char *ctime(const time_t *t);
 
 size_t strftime(char *s, size_t max, const char *fmt, const struct tm *tm);
 
+
+}  // extern "C"
 #endif

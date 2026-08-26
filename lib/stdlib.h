@@ -10,6 +10,12 @@
 #ifndef _CC1_STDLIB_H
 #define _CC1_STDLIB_H
 
+// Everything here is the C library, so it is named the way C names it.
+// Without this the compiler would give every declaration below a C++
+// linkage name and ask the linker for a symbol libc has never had.
+extern "C" {
+
+
 #include <stddef.h>
 
 void *malloc(size_t);
@@ -49,4 +55,6 @@ void qsort(void *, size_t, size_t, int (*)(const void *, const void *));
 void *bsearch(const void *, const void *, size_t, size_t,
               int (*)(const void *, const void *));
 
+
+}  // extern "C"
 #endif

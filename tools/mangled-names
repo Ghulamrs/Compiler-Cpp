@@ -1,0 +1,82 @@
+#!/bin/sh
+# Put the linkage names cxx1 gives a file beside the ones clang gives it, for
+# all three targets.
+#
+# Conforming to the platform ABI is only worth anything if it is checked, and
+# this is what checks it: clang can be asked for either ABI on any machine -
+# '-target x86_64-pc-windows-msvc' spells Microsoft names on a Mac - so the
+# oracle for a name needs no Windows box and no linker.
+#
+#   tools/mangled-names case.cpp
+#
+# It compares the set of mangled names in the two assembly files. A name only
+# one of them mentions is printed with < for cxx1 and > for clang.
+set -u
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+SRC=$1
+OUT=$(mktemp -d)
+trap 'rm -rf "$OUT"' EXIT
+
+# Only the places a symbol is really named: what the file exports and
+# imports, what it defines, and what it calls. Reading every mangled-looking
+# token instead sweeps up each compiler's names for its own labels and calls
+# them disagreements.
+#
+# A name only one side has is not always a disagreement about spelling: a
+# const that clang folded away has no symbol at all there, and cxx1 still
+# gives it storage. Read the output rather than counting it.
+#
+# clang gives a string literal a mangled name of its own on Windows -
+# ??_C@... - and merges it across translation units. cxx1 gives it a local
+# label. That is a difference in how a literal is stored rather than in how a
+# name is spelled, so it is left out here.
+names() {
+    sed -n \
+        -e 's/^[[:space:]]*\.globl[[:space:]]*//p' \
+        -e 's/^[[:space:]]*PUBLIC[[:space:]]*//p' \
+        -e 's/^[[:space:]]*EXTERN[[:space:]]*//p' \
+        -e 's/^\([^[:space:]]*\)[[:space:]][[:space:]]*PROC.*/\1/p' \
+        -e 's/^\([^[:space:]:]*\):.*/\1/p' \
+        -e 's/^\([A-Za-z_$?][A-Za-z0-9_$?@]*\)[[:space:]][[:space:]]*D[BWDQ][[:space:]].*/\1/p' \
+        -e 's/^[[:space:]]*call[[:space:]][[:space:]]*//p' \
+        -e 's/^[[:space:]]*callq[[:space:]][[:space:]]*//p' \
+        -e 's/^[[:space:]]*bl[[:space:]][[:space:]]*//p' "$1" |
+    sed -e 's/"//g' -e 's/[:,].*//' -e 's/@PLT$//' -e 's/[[:space:]].*//' |
+    grep -vE '^$|^[.$]|^_*L|^l_|^@feat|^\?\?|_end_|_begin_|^_*main$' |
+    grep -vE '^_*stack_chk|^_*fltused$|^__real@|^__xmm@' |
+    sort -u
+}
+
+status=0
+for pair in "x86_64-linux:x86_64-linux-gnu" \
+            "x86_64-windows:x86_64-pc-windows-msvc" \
+            "arm64-darwin:arm64-apple-macos"; do
+    mine=${pair%%:*}
+    theirs=${pair#*:}
+
+    if ! "$ROOT/cxx1.exe" -S -arch "$mine" "$SRC" -o "$OUT/mine.s" 2>"$OUT/mine.err"; then
+        echo "$mine: cxx1 refused it"
+        sed 's/^/    /' "$OUT/mine.err" | head -3
+        status=1
+        continue
+    fi
+    if ! clang++ -x c++ -std=c++11 -w -target "$theirs" -S "$SRC" -o "$OUT/theirs.s" \
+                 2>"$OUT/theirs.err"; then
+        echo "$mine: clang refused it, so there is nothing to compare against"
+        sed 's/^/    /' "$OUT/theirs.err" | head -3
+        status=1
+        continue
+    fi
+
+    names "$OUT/mine.s"   > "$OUT/mine.names"
+    names "$OUT/theirs.s" > "$OUT/theirs.names"
+    if diff "$OUT/mine.names" "$OUT/theirs.names" > "$OUT/diff" ; then
+        echo "$mine: $(wc -l < "$OUT/mine.names" | tr -d ' ') names, all agreeing with clang"
+    else
+        echo "$mine: they differ - < cxx1, > clang"
+        grep -E '^[<>]' "$OUT/diff" | sed 's/^/    /'
+        status=1
+    fi
+done
+exit $status

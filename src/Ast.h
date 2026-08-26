@@ -115,6 +115,12 @@ public:
     static Var *global(std::string name) { return new Var(std::move(name), false, 0); }
 
     const std::string &name() const { return name_; }
+
+    // What the linker is told, which is the mangled name once a program has
+    // C++ linkage. name() stays what the programmer wrote, because that is
+    // what a diagnostic and a debugger should say.
+    const std::string &symbol() const { return symbol_.empty() ? name_ : symbol_; }
+    void setSymbol(std::string s) { symbol_ = std::move(s); }
     bool isLocal() const { return isLocal_; }
     int offset() const { return offset_; }
     bool readOnly() const { return readOnly_; }
@@ -127,6 +133,7 @@ private:
     Var(std::string name, bool isLocal, int offset)
         : name_(std::move(name)), isLocal_(isLocal), offset_(offset) {}
     std::string name_;
+    std::string symbol_;
     bool isLocal_;
     int offset_;
     bool readOnly_ = false;
@@ -207,6 +214,8 @@ public:
           namedArgs_(namedArgs < 0 ? static_cast<int>(args_.size()) : namedArgs),
           argSlots_(std::move(argSlots)) {}
     const std::string &name() const { return name_; }
+    const std::string &symbol() const { return symbol_.empty() ? name_ : symbol_; }
+    void setSymbol(std::string s) { symbol_ = std::move(s); }
     const std::vector<ExprPtr> &args() const { return args_; }
     const Expr *callee() const { return callee_.get(); }
     bool isVariadic() const { return variadic_; }
@@ -220,6 +229,7 @@ public:
     void accept(Visitor &v) const override { v.visit(*this); }
 private:
     std::string name_;
+    std::string symbol_;
     ExprPtr callee_;
     std::vector<ExprPtr> args_;
     bool variadic_;
@@ -477,6 +487,8 @@ public:
           sretSlot_(sretSlot), variadic_(variadic), regSaveSlot_(regSaveSlot),
           pos_(pos), locals_(std::move(locals)) {}
     const std::string &name() const { return name_; }
+    const std::string &symbol() const { return symbol_.empty() ? name_ : symbol_; }
+    void setSymbol(std::string s) { symbol_ = std::move(s); }
     const Type *returns() const { return returns_; }
     const std::vector<Param> &params() const { return params_; }
     const Stmt &body() const { return *body_; }
@@ -494,6 +506,7 @@ public:
     void setBlocks(std::vector<int> b) { blocks_ = std::move(b); }
 private:
     std::string name_;
+    std::string symbol_;
     const Type *returns_;
     std::vector<Param> params_;
     StmtPtr body_;
@@ -517,6 +530,10 @@ struct GlobalPiece {
 
 struct Global {
     std::string name;
+
+    // The linker's name for it, which differs from 'name' only where the
+    // platform ABI mangles a variable - Microsoft does, Itanium does not.
+    std::string symbol;
     const Type *type;
     std::vector<GlobalPiece> init;
     bool hasInit;

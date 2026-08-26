@@ -17,6 +17,12 @@
 #ifndef _CC1_FLOAT_H
 #define _CC1_FLOAT_H
 
+// Everything here is the C library, so it is named the way C names it.
+// Without this the compiler would give every declaration below a C++
+// linkage name and ask the linker for a symbol libc has never had.
+extern "C" {
+
+
 // The radix, and how rounding is done. FLT_ROUNDS is 1 for round-to-nearest,
 // which is what all three of these are set to when a program starts.
 #define FLT_RADIX       2
@@ -82,4 +88,6 @@
 
 #endif
 
+
+}  // extern "C"
 #endif

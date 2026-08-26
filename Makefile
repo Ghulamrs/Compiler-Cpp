@@ -110,10 +110,11 @@ $(OBJDIR)/%.o: src/%.cpp
 test: $(TARGET)
 	@./tests/run.sh
 	@./tests/emit.sh
+	@./tests/names.sh
 
 help:
 	@echo "make            build cc1 with $(CXX)"
-	@echo "make test       build and run both suites"
+	@echo "make test       build and run the three suites"
 	@echo "make clean"
 	@echo ""
 	@echo "cc1 emits x86-64 System V assembly. It compiles anywhere this"

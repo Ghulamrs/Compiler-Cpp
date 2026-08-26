@@ -23,6 +23,12 @@
 #ifndef _CC1_LOCALE_H
 #define _CC1_LOCALE_H
 
+// Everything here is the C library, so it is named the way C names it.
+// Without this the compiler would give every declaration below a C++
+// linkage name and ask the linker for a symbol libc has never had.
+extern "C" {
+
+
 #include <stddef.h>
 
 #ifdef __linux__
@@ -69,4 +75,6 @@ char *setlocale(int category, const char *locale);
 
 struct lconv *localeconv(void);
 
+
+}  // extern "C"
 #endif

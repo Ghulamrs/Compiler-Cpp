@@ -35,6 +35,7 @@ private:
 
     struct GlobalSym {
         std::string name;
+        std::string symbol;
         const Type *type;
         bool isConst = false;
         bool emitted = false;
@@ -43,6 +44,7 @@ private:
 
     struct Signature {
         std::string name;
+        std::string symbol;
         const Type *returns;
         std::vector<const Type *> params;
         bool variadic;
@@ -189,7 +191,8 @@ private:
     const Type *composite(const Type *a, const Type *b);
     void declareFunction(const std::string &name, const Type *returns,
                          const std::vector<const Type *> &params,
-                         bool variadic, bool defining, std::size_t pos);
+                         bool variadic, bool defining, std::size_t pos,
+                         bool internal = false);
     ExprPtr defaultPromote(ExprPtr e);
     const Signature &lookupFunction(const std::string &name, std::size_t pos) const;
     const Signature *findFunction(const std::string &name) const;
@@ -197,9 +200,20 @@ private:
     void parameterTypes(std::vector<const Type *> &params, bool &variadic);
     void blockFunctionDeclaration(const Declared &d);
 
-    ExprPtr finishCall(const std::string &name, ExprPtr callee, const Type *returns,
+    ExprPtr finishCall(const std::string &name, const std::string &symbol,
+                       ExprPtr callee, const Type *returns,
                        const std::vector<const Type *> &params, bool variadic,
                        std::size_t pos);
+
+    // How deep inside 'extern "C"' the parser currently is. Zero means C++
+    // linkage, which is what a name has unless someone says otherwise.
+    int cLinkage_ = 0;
+    bool linkageSpecification();
+    std::string functionSymbol(const std::string &name, const Type *returns,
+                               const std::vector<const Type *> &params,
+                               bool variadic, bool internal, std::size_t pos);
+    std::string dataSymbol(const std::string &name, const Type *type,
+                           bool isStatic, std::size_t pos);
 
     ExprPtr objectRef(const std::string &name);
     ExprPtr useReference(ExprPtr e);

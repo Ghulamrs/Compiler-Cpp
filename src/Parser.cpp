@@ -1,4 +1,5 @@
 #include "Parser.h"
+#include "Mangle.h"
 #include "Source.h"
 
 #include <climits>
@@ -65,7 +66,7 @@ const Parser::EnumConst *Parser::findEnum(const std::string &name) const {
 
 bool Parser::atTypeName() const {
     static const char *const t[] = { "void", "bool", "char", "short", "int",
-                                     "long", "signed", "unsigned",
+                                     "long", "signed", "unsigned", "wchar_t",
                                      "float", "double",
                                      "struct", "union", "enum",
                                      "const", "volatile" };
@@ -272,6 +273,10 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         break;
     }
 
+    // wchar_t is a type of its own in C++, not the typedef C makes it. It is
+    // spelled here rather than in <stddef.h>, which cannot declare it: the
+    // name is a keyword, and a keyword is not something a typedef can name.
+    if (consume("wchar_t")) return types_.get(target_.wcharType());
     if (peek().is("struct")) { at_++; return structOrUnionSpecifier(Kind::Struct); }
     if (peek().is("union"))  { at_++; return structOrUnionSpecifier(Kind::Union); }
     if (peek().is("enum"))   { at_++; return enumSpecifier(); }
@@ -715,9 +720,47 @@ ExprPtr Parser::defaultPromote(ExprPtr e) {
     return e;
 }
 
+// The name the linker is given. 'main' keeps its own, by the rule that makes
+// it findable at all; anything inside extern "C" keeps its own because that
+// is what the linkage specification asked for; everything else is mangled in
+// the ABI of the target being compiled for.
+std::string Parser::functionSymbol(const std::string &name, const Type *returns,
+                                   const std::vector<const Type *> &params,
+                                   bool variadic, bool internal, std::size_t pos) {
+    if (cLinkage_ > 0 || name == "main") return name;
+    const Type *fn = types_.functionType(returns, params, variadic);
+    std::string out, why;
+    bool ok = target_.microsoftNames()
+            ? microsoftFunctionName(name, fn, internal, &out, &why)
+            : itaniumFunctionName(name, fn, internal, &out, &why);
+    if (!ok)
+        src_.fail(pos, "'" + name + "' cannot be given a name the linker can "
+                       "hold: " + why);
+    return out;
+}
+
+// A variable at namespace scope is mangled by the Microsoft ABI and left
+// alone by Itanium. A static one is nobody else's business either way, so it
+// keeps the name it was written with.
+std::string Parser::dataSymbol(const std::string &name, const Type *type,
+                               bool isStatic, std::size_t pos) {
+    if (cLinkage_ > 0) return name;
+    if (!target_.microsoftNames()) return itaniumDataName(name, isStatic);
+    // Microsoft mangles a variable only where something outside could name
+    // it. An internal one keeps what it was written with - measured against
+    // clang, which spells it the same way.
+    if (isStatic) return name;
+    std::string out, why;
+    if (!microsoftDataName(name, type, &out, &why))
+        src_.fail(pos, "'" + name + "' cannot be given a name the linker can "
+                       "hold: " + why);
+    return out;
+}
+
 void Parser::declareFunction(const std::string &name, const Type *returns,
                              const std::vector<const Type *> &params,
-                             bool variadic, bool defining, std::size_t pos) {
+                             bool variadic, bool defining, std::size_t pos,
+                             bool internal) {
     auto known = functionIndex_.find(name);
     if (known != functionIndex_.end()) {
         Signature &f = functions_[known->second];
@@ -741,7 +784,10 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
         return;
     }
     functionIndex_[name] = functions_.size();
-    functions_.push_back(Signature{ name, returns, params, variadic, defining, pos });
+    functions_.push_back(Signature{ name,
+                                    functionSymbol(name, returns, params, variadic,
+                                                   internal, pos),
+                                    returns, params, variadic, defining, pos });
 }
 
 const Parser::Signature *Parser::findFunction(const std::string &name) const {
@@ -876,7 +922,7 @@ static const char *notYetSupported(const std::string &word) {
         "new", "noexcept", "not", "not_eq", "nullptr", "operator", "or",
         "or_eq", "private", "protected", "public", "reinterpret_cast",
         "static_assert", "static_cast", "template", "this", "thread_local",
-        "throw", "try", "typeid", "typename", "using", "virtual", "wchar_t",
+        "throw", "try", "typeid", "typename", "using", "virtual",
         "xor", "xor_eq"
     };
     for (const char *k : pending)
@@ -1059,7 +1105,7 @@ ExprPtr Parser::primary(Program *program) {
         if (peekAt(1).is("(") && !callsThroughObject) {
             at_ += 2;
             const Signature &sig = lookupFunction(name, pos);
-            return finishCall(name, nullptr, sig.returns, sig.params,
+            return finishCall(name, sig.symbol, nullptr, sig.returns, sig.params,
                               sig.variadic, pos);
         }
 
@@ -1622,7 +1668,7 @@ bool Parser::addressOfObject(const Expr &e, std::string *sym, long long *off) co
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
 
         if (v->isLocal()) return false;
-        *sym = v->name();
+        *sym = v->symbol();
         *off = 0;
         return true;
     }
@@ -1761,6 +1807,7 @@ ExprPtr Parser::objectRef(const std::string &name) {
     }
     if (const GlobalSym *g = findGlobal(name)) {
         Var *v = Var::global(name);
+        v->setSymbol(g->symbol);
         v->setReadOnly(g->isConst);
         ExprPtr n(v);
         n->setType(g->type);
@@ -1769,8 +1816,8 @@ ExprPtr Parser::objectRef(const std::string &name) {
     return nullptr;
 }
 
-ExprPtr Parser::finishCall(const std::string &name, ExprPtr callee,
-                           const Type *returns,
+ExprPtr Parser::finishCall(const std::string &name, const std::string &symbol,
+                           ExprPtr callee, const Type *returns,
                            const std::vector<const Type *> &params,
                            bool variadic, std::size_t pos) {
     std::vector<ExprPtr> args;
@@ -1810,8 +1857,10 @@ ExprPtr Parser::finishCall(const std::string &name, ExprPtr callee,
         if (args[i]->type()->isStructOrUnion())
             argSlots[i] = allocateFrameSlot(args[i]->type());
 
-    ExprPtr n(new Call(name, std::move(callee), std::move(args), variadic, slot,
-                       named, std::move(argSlots)));
+    Call *call = new Call(name, std::move(callee), std::move(args), variadic,
+                          slot, named, std::move(argSlots));
+    call->setSymbol(symbol);
+    ExprPtr n(call);
     n->setType(returns);
     // A call that returns a reference is an lvalue, and useReference is what
     // makes it one: the address comes back in a register and the dereference
@@ -1828,8 +1877,8 @@ ExprPtr Parser::postfix() {
             at_++;
             const Type *fn = n->type()->pointee();
             std::string called = n->type()->describe();
-            n = finishCall(called, std::move(n), fn->returns(), fn->params(),
-                           fn->isVariadicFn(), pos);
+            n = finishCall(called, called, std::move(n), fn->returns(),
+                           fn->params(), fn->isVariadicFn(), pos);
             continue;
         }
 
@@ -2425,7 +2474,10 @@ StmtPtr Parser::declarationBody() {
                     src_.fail(d.pos, "'" + d.name + "' is declared '" +
                                      d.type->describe() + "' here and '" +
                                      g->type->describe() + "' at file scope");
-            declareStaticLocal(d.name, d.type, d.pos, d.name);
+            const GlobalSym *seen = findGlobal(d.name);
+            declareStaticLocal(d.name, d.type, d.pos,
+                               seen != nullptr ? seen->symbol
+                                               : dataSymbol(d.name, d.type, false, d.pos));
         } while (consume(","));
         expect(";");
         return StmtPtr(new Block({}));
@@ -2496,8 +2548,8 @@ StmtPtr Parser::declarationBody() {
             }
             declareStaticLocal(d.name, d.type, d.pos, symbol);
             locals_.back().isConst = d.type->isConst();
-            current_->globals.push_back(Global{ symbol, d.type, std::move(pieces),
-                                                hasInit, true,
+            current_->globals.push_back(Global{ symbol, symbol, d.type,
+                                                std::move(pieces), hasInit, true,
                                                 locals_.back().isConst });
             continue;
         }
@@ -2878,7 +2930,43 @@ StmtPtr Parser::statementBody() {
     return StmtPtr(new ExprStmt(std::move(e)));
 }
 
+// extern "C" - [dcl.link]. Two forms: one declaration, or a brace-enclosed
+// list of them. The list is not a scope: what it holds is declared where the
+// specification is, and only the linkage of the names changes.
+bool Parser::linkageSpecification() {
+    if (!peek().is("extern") || peekAt(1).kind != TokenKind::Str) return false;
+    at_++;
+    std::size_t pos = peek().pos;
+    std::string language = peek().text;
+    at_++;
+
+    if (language != "C" && language != "C++")
+        src_.fail(pos, "'" + language + "' is not a linkage this compiler "
+                       "knows - the standard fixes only \"C\" and \"C++\", "
+                       "and every other spelling is the implementation's own");
+
+    bool c = language == "C";
+    if (c) cLinkage_++;
+
+    if (consume("{")) {
+        while (!peek().is("}")) {
+            if (peek().kind == TokenKind::End)
+                src_.fail(pos, "this 'extern \"" + language + "\"' block is "
+                               "never closed");
+            topLevel(*current_);
+        }
+        at_++;
+    } else {
+        topLevel(*current_);
+    }
+
+    if (c) cLinkage_--;
+    return true;
+}
+
 void Parser::topLevel(Program &program) {
+    if (linkageSpecification()) return;
+
     StorageClass sc;
     Qualifiers quals;
     std::size_t scPos = peek().pos;
@@ -2928,7 +3016,8 @@ void Parser::topLevel(Program &program) {
     if (d.type->isFunction() && d.paramsAt == 0 && !peek().is("(")) {
         std::vector<const Type *> ps(d.type->params());
         declareFunction(d.name, d.type->returns(), ps,
-                        d.type->isVariadicFn(), false, d.pos);
+                        d.type->isVariadicFn(), false, d.pos,
+                        sc == StorageStatic);
         if (peek().is("{"))
             src_.fail(d.pos, "'" + d.name + "' cannot be *defined* through a "
                              "typedef - the body has no names for the "
@@ -2980,8 +3069,9 @@ void Parser::topLevel(Program &program) {
                 if (sc != StorageExtern) {
                     if (!prev->emitted) {
                         prev->emitted = true;
-                        program.globals.push_back(Global{ d.name, d.type, pieces,
-                                                          hasInit, sc == StorageStatic,
+                        program.globals.push_back(Global{ d.name, prev->symbol,
+                                                          d.type, pieces, hasInit,
+                                                          sc == StorageStatic,
                                                           prev->isConst });
                     } else {
                         for (Global &g : program.globals)
@@ -2999,12 +3089,19 @@ void Parser::topLevel(Program &program) {
 
             globalIndex_[d.name] = globals_.size();
             bool objectIsConst = d.type->isConst();
-            globals_.push_back(GlobalSym{ d.name, d.type, objectIsConst,
+            // A const object at namespace scope has internal linkage of its
+            // own - [basic.link]/3 - which is why a header may define one and
+            // C, where it would be external, may not. Nothing outside can
+            // name it, so it keeps the name it was written with.
+            bool internal = sc == StorageStatic ||
+                            (objectIsConst && sc != StorageExtern);
+            std::string symbol = dataSymbol(d.name, d.type, internal, d.pos);
+            globals_.push_back(GlobalSym{ d.name, symbol, d.type, objectIsConst,
                                           sc != StorageExtern, hasInit });
             if (sc != StorageExtern)
-                program.globals.push_back(Global{ d.name, d.type, std::move(pieces),
-                                                  hasInit, sc == StorageStatic,
-                                                  objectIsConst });
+                program.globals.push_back(Global{ d.name, symbol, d.type,
+                                                  std::move(pieces), hasInit,
+                                                  internal, objectIsConst });
             if (!consume(",")) break;
             d = declarator(base);
         }
@@ -3076,14 +3173,16 @@ void Parser::topLevel(Program &program) {
     }
 
     if (consume(";")) {
-        declareFunction(d.name, d.type, params, variadic, false, d.pos);
+        declareFunction(d.name, d.type, params, variadic, false, d.pos,
+                        sc == StorageStatic);
         return;
     }
     if (sawUnnamed)
         src_.fail(unnamedParam, "a parameter of a definition needs a name - "
                                 "a prototype may leave it out, a body cannot");
 
-    declareFunction(d.name, d.type, params, variadic, true, d.pos);
+    declareFunction(d.name, d.type, params, variadic, true, d.pos,
+                    sc == StorageStatic);
     returnType_ = d.type;
     functionName_ = d.name;
     staticSymbols_.clear();
@@ -3111,11 +3210,13 @@ void Parser::topLevel(Program &program) {
     int frame = alignTo(frameSize_, 16);
     const Type *emittedReturn = d.type->isReference()
                               ? types_.pointerTo(d.type->referent()) : d.type;
+    const Signature &defined = lookupFunction(d.name, d.pos);
     program.functions.push_back(Function(d.name, emittedReturn, std::move(paramSlots),
                                          std::move(body), frame,
                                          sc == StorageStatic, sretSlot,
                                          variadic, regSaveSlot, d.pos,
                                          std::move(fnVars_)));
+    program.functions.back().setSymbol(defined.symbol);
     program.functions.back().setBlocks(std::move(blocks_));
 }
 

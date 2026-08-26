@@ -45,6 +45,13 @@ of it is valid C++11 and much is not (implicit `void *` conversions, `new` as
 an identifier). Do not report a number from it as a pass rate until it has
 been triaged case by case.
 
+A different 43 started compiling when `wchar_t` became a keyword type rather
+than a typedef. `<stddef.h>` had been declaring `typedef int wchar_t;` since
+rung 1 made `wchar_t` a keyword, so **the whole of `lib/` had been unusable
+and nothing noticed** - no case in the suite included a header, and the corpus
+cases that do were already failing for their own reasons. `wchar_t` is a type
+of its own in C++ and is spelled in the parser now.
+
 43 of those cases stopped compiling when `const` entered the type system, and
 all 43 are the same C idiom: `int printf(char *fmt, ...);` handed a string
 literal, which is an array of *const* char in C++11. clang refuses all 43 as
@@ -54,19 +61,11 @@ well. **Ask clang about a corpus case with
 `-pedantic-errors` the string-literal rule is only a warning, kept that way
 for old C++. Both defaults quietly turn the oracle into a rubber stamp.
 
-Asking clang about a case in `tests/cases/` has a different obstacle until
-rung 2 reaches mangling: the case declares `int printf(const char *, ...);`,
-which clang gives C++ linkage and then cannot link. Until `extern "C"` parses,
-compare against clang through a copy with the declaration wrapped:
-
-```
-sed 's/^int printf(const char \*, \.\.\.);/extern "C" { & }/' case.cpp > oracle.cpp
-```
-
-That is how `reference.expected` was taken. `const.expected` came from
-`clang -x c -std=c99`, which that case happens to be valid as; a case using
-anything C does not have needs the wrapper. Both are stopgaps with a known end
-date rather than habits.
+A case in `tests/cases/` can be handed straight to
+`clang++ -x c++ -std=c++11` now, because the cases declare what they take from
+the C library inside `extern "C"` - which is what a C++ program has to do, and
+what the earlier sed-a-copy stopgap was standing in for. Every `.expected` in
+the suite is clang's own output.
 
 ## What makes C++ different from C to parse
 
@@ -116,7 +115,37 @@ matching clang's mangled names is the whole reason for having the oracle;
 overload resolution cannot rank `f(char *)` against `f(const char *)` if they
 are one function. So the order is: `const` in the type system, then
 references, then `extern "C"` and mangling, then overloading, then
-`new`/`delete`. `const` and references are done.
+`new`/`delete`. `const`, references, `extern "C"` and mangling are done.
+
+**The linkage name is computed in the parser and carried beside the source
+name.** `Var`, `Call` and `Function` each answer `name()` for people and
+`symbol()` for the linker, and the backends emit the second - including in
+label prefixes, because two overloads will share a name and must not share a
+label. `src/Mangle.cpp` holds both ABIs: Itanium on Linux and Darwin,
+Microsoft on Windows, chosen by `Target::microsoftNames()`.
+
+What is *not* mangled: anything inside `extern "C"`, `main`, and a variable
+with internal linkage. What is: every other function, and on Windows every
+externally-visible variable. Internal linkage says so in an Itanium name -
+`_ZL5twicei` - and does not in a Microsoft one.
+
+**Every rule in the mangler was measured, not read.** clang will spell either
+ABI on any machine:
+
+```
+clang++ -target x86_64-linux-gnu       -S     # Itanium
+clang++ -target x86_64-pc-windows-msvc -S     # Microsoft
+```
+
+`tools/mangled-names case.cpp` puts cxx1's names beside clang's for all three
+targets, and `tests/names.sh` runs it over every case in the suite - the third
+suite, and the one that says the platform ABI was conformed to rather than
+approximated. It skips itself where there is no clang, saying so.
+
+Two things that surprised: MSVC numbers are the value minus one as a digit up
+to ten and the value itself in hexadecimal above that, and a const array
+element is written `$$CB` rather than by qualifying the array. Both are in the
+comments where they are used.
 
 **A reference is lowered to a pointer, and the parser is where it stops.**
 `Kind::LValueRef` exists in the type system, so a function's type can record

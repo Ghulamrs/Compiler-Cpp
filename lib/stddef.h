@@ -11,6 +11,12 @@
 #ifndef _CC1_STDDEF_H
 #define _CC1_STDDEF_H
 
+// Everything here is the C library, so it is named the way C names it.
+// Without this the compiler would give every declaration below a C++
+// linkage name and ask the linker for a symbol libc has never had.
+extern "C" {
+
+
 #ifdef _WIN32
 
 // LLP64, and **unsigned long is four bytes here** - so size_t has to be the
@@ -21,14 +27,12 @@
 // half of it.
 typedef unsigned long long size_t;
 typedef long long          ptrdiff_t;
-typedef unsigned short     wchar_t;
 
 #else
 
 // LP64 on Linux and macOS alike: long is eight bytes and matches a pointer.
 typedef unsigned long size_t;
 typedef long          ptrdiff_t;
-typedef int           wchar_t;
 
 #endif
 
@@ -45,4 +49,6 @@ typedef int           wchar_t;
 // out - which is why this is not the wild pointer it looks like.
 #define offsetof(type, member) ((size_t)&(((type *)0)->member))
 
+
+}  // extern "C"
 #endif

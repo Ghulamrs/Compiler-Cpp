@@ -2,7 +2,12 @@
 // case is mostly about proving the dereference is really there: writing
 // through a reference has to reach the original object, and a reference
 // parameter has to be the caller's variable rather than a copy of it.
+// The C library is named the way C names it, so its declarations go
+// inside a linkage specification. Without it these are C++ names and
+// the linker is asked for symbols libc has never had.
+extern "C" {
 int printf(const char *, ...);
+}
 
 struct Point { int x; int y; };
 

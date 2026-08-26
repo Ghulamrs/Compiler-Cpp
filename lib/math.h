@@ -18,6 +18,12 @@
 #ifndef _CC1_MATH_H
 #define _CC1_MATH_H
 
+// Everything here is the C library, so it is named the way C names it.
+// Without this the compiler would give every declaration below a C++
+// linkage name and ask the linker for a symbol libc has never had.
+extern "C" {
+
+
 // C90 requires HUGE_VAL to be a positive double, and permits it to be infinite.
 // 1e400 has no finite double to round to, so it folds to +inf here exactly as
 // it does under gcc - which was checked rather than assumed before writing it.
@@ -78,4 +84,6 @@ double fabs(double);
 double floor(double);
 double fmod(double, double);
 
+
+}  // extern "C"
 #endif

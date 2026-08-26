@@ -10,6 +10,7 @@ public:
     Kind sizeType() const override { return Kind::ULongLong; }
 
     Kind wcharType() const override { return Kind::UShort; }
+    bool microsoftNames() const override { return true; }
     const char *name() const override { return "x86_64-windows"; }
 };
 

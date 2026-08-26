@@ -1,8 +1,13 @@
 // const is part of a type here, not a flag on the object that has it. This
 // case is the part that must go on working: reading through it, passing it,
 // and letting a writable thing be used where a const one is asked for.
+// The C library is named the way C names it, so its declarations go
+// inside a linkage specification. Without it these are C++ names and
+// the linker is asked for symbols libc has never had.
+extern "C" {
 int printf(const char *, ...);
 int strcmp(const char *, const char *);
+}
 
 struct Point { int x; int y; };
 
@@ -42,7 +47,11 @@ int main(void) {
     struct Point back = copy;
     printf("%d %d\n", copy.x, back.y);
 
+    // The address is taken so that the object has to exist: a const at
+    // namespace scope has internal linkage, and a compiler that only ever
+    // read its value would be free to keep no storage for it at all.
+    const int *held = &limit;
     const void *opaque = text;
-    printf("%d\n", (int)(opaque != 0));
+    printf("%d %d\n", *held, (int)(opaque != 0));
     return 0;
 }

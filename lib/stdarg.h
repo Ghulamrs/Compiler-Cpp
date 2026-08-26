@@ -1,6 +1,12 @@
 #ifndef _STDARG_H
 #define _STDARG_H
 
+// Everything here is the C library, so it is named the way C names it.
+// Without this the compiler would give every declaration below a C++
+// linkage name and ask the linker for a symbol libc has never had.
+extern "C" {
+
+
 /* Three targets, two va_lists, and the split is not where you would guess.
  *
  * va_list is the ABI's choice and not this compiler's: vprintf lives in the C
@@ -63,4 +69,6 @@ int vprintf(const char *, va_list);
 int vfprintf(void *, const char *, va_list);
 int vsprintf(char *, const char *, va_list);
 
+
+}  // extern "C"
 #endif

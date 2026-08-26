@@ -49,6 +49,12 @@
 #ifndef _CC1_SETJMP_H
 #define _CC1_SETJMP_H
 
+// Everything here is the C library, so it is named the way C names it.
+// Without this the compiler would give every declaration below a C++
+// linkage name and ask the linker for a symbol libc has never had.
+extern "C" {
+
+
 // The size is the platform's and not this compiler's: setjmp lives in the C
 // library and writes as many bytes as it was built to write, so jmp_buf has to
 // be at least as large or the call scribbles past the end of the object.
@@ -112,4 +118,6 @@ int setjmp(jmp_buf env);
 
 void longjmp(jmp_buf env, int val);
 
+
+}  // extern "C"
 #endif
