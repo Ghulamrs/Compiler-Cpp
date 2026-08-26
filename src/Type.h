@@ -16,7 +16,11 @@ enum class Kind {
     LongLong, ULongLong,
     Float, Double, LongDouble,
     Struct, Union,
-    Pointer, Array, Function
+    Pointer, Array, Function,
+    // After Function, and it matters: TypeTable builds one Type per value
+    // from Void to Function, and a reference is never one of those - it is
+    // always a reference *to* something and so always derived.
+    LValueRef
 };
 
 class Target;
@@ -63,6 +67,13 @@ public:
     long long length() const { return length_; }
 
     bool isPointer() const { return kind_ == Kind::Pointer; }
+
+    // A reference is a pointer that has lost the right to be written or read
+    // as one: it holds an address and occupies a pointer's worth of storage,
+    // and every use of it goes through that address without saying so. The
+    // parser lowers it away, so no backend ever sees this kind.
+    bool isReference() const { return kind_ == Kind::LValueRef; }
+    const Type *referent() const { return pointee_; }
     bool isArray() const { return kind_ == Kind::Array; }
     bool isScalar() const { return isArithmetic() || isPointer(); }
 
@@ -145,6 +156,7 @@ public:
     const Type *withConst(const Type *t);
     const Type *withoutConst(const Type *t);
     const Type *pointerTo(const Type *t);
+    const Type *referenceTo(const Type *t);
     const Type *arrayOf(const Type *t, long long length);
     const Type *functionType(const Type *returns,
                              std::vector<const Type *> params, bool variadic);

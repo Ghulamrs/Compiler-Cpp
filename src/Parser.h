@@ -202,6 +202,10 @@ private:
                        std::size_t pos);
 
     ExprPtr objectRef(const std::string &name);
+    ExprPtr useReference(ExprPtr e);
+    ExprPtr bindReference(const Type *ref, ExprPtr init, std::size_t pos,
+                          const std::string &what);
+    int refTemps_ = 0;
 
     struct Init {
         bool isList = false;

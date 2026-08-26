@@ -54,6 +54,20 @@ well. **Ask clang about a corpus case with
 `-pedantic-errors` the string-literal rule is only a warning, kept that way
 for old C++. Both defaults quietly turn the oracle into a rubber stamp.
 
+Asking clang about a case in `tests/cases/` has a different obstacle until
+rung 2 reaches mangling: the case declares `int printf(const char *, ...);`,
+which clang gives C++ linkage and then cannot link. Until `extern "C"` parses,
+compare against clang through a copy with the declaration wrapped:
+
+```
+sed 's/^int printf(const char \*, \.\.\.);/extern "C" { & }/' case.cpp > oracle.cpp
+```
+
+That is how `reference.expected` was taken. `const.expected` came from
+`clang -x c -std=c99`, which that case happens to be valid as; a case using
+anything C does not have needs the wrapper. Both are stopgaps with a known end
+date rather than habits.
+
 ## What makes C++ different from C to parse
 
 Two facts shape the whole front end, and a design that ignores either has to be
@@ -102,7 +116,29 @@ matching clang's mangled names is the whole reason for having the oracle;
 overload resolution cannot rank `f(char *)` against `f(const char *)` if they
 are one function. So the order is: `const` in the type system, then
 references, then `extern "C"` and mangling, then overloading, then
-`new`/`delete`.
+`new`/`delete`. `const` and references are done.
+
+**A reference is lowered to a pointer, and the parser is where it stops.**
+`Kind::LValueRef` exists in the type system, so a function's type can record
+that a parameter is `int &` - overload resolution and the mangler will both
+need that - but no backend ever sees one. `Parser::useReference` turns every
+mention of a reference into a dereference of the slot holding its address, and
+from that point on assignment, address-of, member access and subscripting see
+an ordinary lvalue. `Parser::bindReference` is the other half: binding is
+taking an address, and where there is no address to take - a value, a
+bit-field, a `register` object, a converted type - a const reference gets a
+temporary in the frame and everything else is refused by name.
+
+The one asymmetry to remember: `sizeof` a reference asks about what it refers
+to, while the *frame slot* is a pointer. `Type::size` answers the first and
+`allocateFrameSlot` the second, and those are the only two places that differ.
+
+Refused by name rather than half-built: rvalue references (`&&`, rung 7), a
+reference member of a class (it needs a constructor, rung 3), a reference at
+file scope (it needs binding before `main`), a reference to a reference, an
+array of references, a pointer to a reference, and a cv-qualified reference.
+Also `?:` as an lvalue, which is real C++ and would let `return c ? a : b;`
+bind a reference - it is a Conditional here and Conditional is not an lvalue.
 
 **`const` is a property of the type, and a qualified type is a second `Type`
 that forwards.** `TypeTable::withConst` interns a copy carrying `unqual_`, and

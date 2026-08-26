@@ -16,6 +16,7 @@ const Type *TypeTable::get(Kind k) const {
 
 int Type::size(const Target &t) const {
     if (unqual_ != nullptr) return unqual_->size(t);
+    if (kind_ == Kind::LValueRef) return pointee_->size(t);
     if (kind_ == Kind::Array) return static_cast<int>(length_) * pointee_->size(t);
     if (kind_ == Kind::Struct || kind_ == Kind::Union) return size_;
     return t.sizeOf(kind_);
@@ -23,6 +24,7 @@ int Type::size(const Target &t) const {
 
 int Type::align(const Target &t) const {
     if (unqual_ != nullptr) return unqual_->align(t);
+    if (kind_ == Kind::LValueRef) return pointee_->align(t);
     if (kind_ == Kind::Array) return pointee_->align(t);
     if (kind_ == Kind::Struct || kind_ == Kind::Union) return align_;
     return t.alignOf(kind_);
@@ -49,6 +51,12 @@ std::string Type::describe() const {
     if (kind_ == Kind::Function)
         return pointee_->describe() + " " + parameterList();
     if (kind_ == Kind::Pointer) return pointee_->describe() + " *";
+    // A reference to an array is written round the name, the same way a
+    // pointer to a function is: 'int (&)[3]', never 'int [3] &'.
+    if (kind_ == Kind::LValueRef && pointee_->isArray())
+        return pointee_->pointee()->describe() + " (&)[" +
+               std::to_string(pointee_->length()) + "]";
+    if (kind_ == Kind::LValueRef) return pointee_->describe() + " &";
     if (kind_ == Kind::Array)
         return pointee_->describe() + " [" + std::to_string(length_) + "]";
     if (kind_ == Kind::Struct) return "struct " + (tag_.empty() ? "<anonymous>" : tag_);
@@ -109,6 +117,14 @@ const Type *TypeTable::pointerTo(const Type *t) {
         if (!d->isConst() && d->kind() == Kind::Pointer && d->pointee() == t)
             return d;
     derived_.push_back(new Type(Kind::Pointer, t, -1));
+    return derived_.back();
+}
+
+const Type *TypeTable::referenceTo(const Type *t) {
+    for (Type *d : derived_)
+        if (!d->isConst() && d->kind() == Kind::LValueRef && d->pointee() == t)
+            return d;
+    derived_.push_back(new Type(Kind::LValueRef, t, -1));
     return derived_.back();
 }
 
@@ -247,6 +263,7 @@ const char *Type::name() const {
     case Kind::Pointer:   return "pointer";
     case Kind::Array:     return "array";
     case Kind::Function:  return "function";
+    case Kind::LValueRef: return "reference";
     }
     return "?";
 }

@@ -140,6 +140,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind) {
 
             Declared d = declarator(base);
 
+            // A reference member has to be bound when the object is made,
+            // which means a constructor, which is rung 3. Refusing it by name
+            // is better than laying it out as if it were a pointer and having
+            // every use of it read the wrong thing.
+            if (d.type->isReference())
+                src_.fail(d.pos, "'" + d.name + "' is a reference member, and "
+                                 "binding one needs a constructor - not "
+                                 "supported yet; a pointer member works now");
+
             if (peek().is(":")) {
                 std::size_t cpos = peek().pos;
                 at_++;
@@ -341,6 +350,10 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
 }
 
 const Type *Parser::arraySuffix(const Type *base, std::size_t pos) {
+    if (base->isReference() && peek().is("["))
+        src_.fail(peek().pos, "there is no array of references - an array's "
+                              "elements are objects, and a reference is not "
+                              "one");
     std::vector<long long> dims;
     while (consume("[")) {
         if (consume("]")) { dims.push_back(-1); continue; }
@@ -376,6 +389,30 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
             if (consume("volatile")) continue;
             break;
         }
+    }
+
+    // A reference binds after every star - 'int *&r' is a reference to a
+    // pointer - and there is nothing to write on the other side of it,
+    // because a reference is not an object for a pointer to point at.
+    if (peek().is("&&"))
+        src_.fail(peek().pos, "an rvalue reference '&&' is not supported yet - "
+                              "it comes with move semantics");
+    if (consume("&")) {
+        base = types_.referenceTo(base);
+        if (peek().is("&") || peek().is("&&"))
+            src_.fail(peek().pos, "there is no reference to a reference");
+        if (peek().is("*"))
+            src_.fail(peek().pos, "there is no pointer to a reference - a "
+                                  "reference is not an object to point at");
+        // [dcl.ref]/1: there is no const reference, only a reference to a
+        // const. The distinction is worth keeping because the two are written
+        // so nearly the same way.
+        if (peek().is("const") || peek().is("volatile"))
+            src_.fail(peek().pos, "a reference cannot be const or volatile "
+                                  "itself - it never changes what it refers to "
+                                  "anyway; 'const " +
+                                  base->referent()->unqualified()->describe() +
+                                  " &' is what qualifies what it refers to");
     }
 
     if (peek().is("(")) {
@@ -599,8 +636,12 @@ void Parser::leaveScope() {
 }
 
 int Parser::allocateFrameSlot(const Type *type) {
-    frameSize_ += type->size(target_);
-    frameSize_ = alignTo(frameSize_, objectAlign(type, target_));
+    // What a reference occupies is a pointer, even though sizeof asks about
+    // what it refers to. This is the one place the difference shows.
+    const Type *stored = type->isReference()
+                       ? types_.pointerTo(type->referent()) : type;
+    frameSize_ += stored->size(target_);
+    frameSize_ = alignTo(frameSize_, objectAlign(stored, target_));
     return frameSize_;
 }
 
@@ -614,7 +655,12 @@ int Parser::declare(const std::string &name, const Type *type, std::size_t pos) 
 
     int offset = allocateFrameSlot(type);
     locals_.push_back(Local{ name, offset, type, false, std::string() });
-    fnVars_.push_back(::Local{ name, type, offset, inParams_, std::string(),
+    // The debug record describes the storage, which for a reference is the
+    // pointer it really is. DWARF has a tag for a reference and this does not
+    // use it yet.
+    const Type *stored = type->isReference()
+                       ? types_.pointerTo(type->referent()) : type;
+    fnVars_.push_back(::Local{ name, stored, offset, inParams_, std::string(),
                               currentBlock() });
     return offset;
 }
@@ -1591,6 +1637,118 @@ bool Parser::addressOfObject(const Expr &e, std::string *sym, long long *off) co
     return false;
 }
 
+static bool isLvalue(const Expr &e) {
+    if (dynamic_cast<const Var *>(&e)) return true;
+    if (dynamic_cast<const MemberAccess *>(&e)) return true;
+    if (const Unary *u = dynamic_cast<const Unary *>(&e)) return u->op() == '*';
+    return false;
+}
+
+// A reference is used by going through the address in its slot, and every
+// use does it. What the program named is what the slot points at, so the
+// parser hands back a dereference: from here on, assignment, address-of and
+// member access all see an ordinary lvalue and none of them needs to know a
+// reference was ever involved. This is the trade from '(bool)x' becoming
+// 'x != 0' - a new thing in the language, lowered to one the backends have.
+ExprPtr Parser::useReference(ExprPtr e) {
+    if (!e->type()->isReference()) return e;
+    const Type *referent = e->type()->referent();
+    e->setType(types_.pointerTo(referent));
+    ExprPtr deref(new Unary('*', std::move(e)));
+    deref->setType(referent);
+    return deref;
+}
+
+// What is stored in a reference is an address, so binding one is taking the
+// address of the initialiser. The rules here are the whole of what makes a
+// reference different from a pointer that is always dereferenced.
+ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
+                              const std::string &what) {
+    const Type *referent = ref->referent();
+    const Type *it = init->type();
+
+    // Binding takes an address, so the two things that have none cannot be
+    // bound to directly. A const reference still may: it copies them into a
+    // temporary below, which is what the standard says happens. Same rule as
+    // unary '&', reached by a road that does not go through it.
+    const char *noAddressBecause = nullptr;
+    std::string noAddressName;
+    if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(init.get()))
+        if (m->isBitField()) {
+            noAddressBecause = "a bit-field";
+            noAddressName = m->name();
+        }
+    if (const Var *v = dynamic_cast<const Var *>(init.get()))
+        if (v->noAddress()) {
+            noAddressBecause = "register";
+            noAddressName = v->name();
+        }
+
+    // The direct binding: an addressable lvalue of exactly the type named,
+    // which the reference then *is*. Everything else either makes a temporary
+    // below or is refused.
+    if (isLvalue(*init) && noAddressBecause == nullptr &&
+        it->unqualified() == referent->unqualified()) {
+        if (it->isConst() && !referent->isConst())
+            src_.fail(pos, what + " is '" + ref->describe() + "' and this is '" +
+                           it->describe() + "' - a reference that can write "
+                           "cannot bind to a const");
+        ExprPtr addr(new Unary('&', std::move(init)));
+        addr->setType(types_.pointerTo(referent));
+        return addr;
+    }
+
+    // Anything else needs a temporary to bind to, and only a const reference
+    // may have one - [dcl.init.ref]/5. A write through the other kind would
+    // land in a copy nobody can read back, so the two cases are refused
+    // separately: a type that does not match, and a value with no address.
+    if (!referent->isConst()) {
+        if (noAddressBecause != nullptr)
+            src_.fail(pos, "'" + noAddressName + "' is " + noAddressBecause +
+                           ", and has no address for a reference to hold - a "
+                           "'const " + referent->unqualified()->describe() +
+                           " &' would take a copy of it instead");
+        // In C++ a '?:' whose arms are lvalues of one type is itself an
+        // lvalue, so this is a reference binding the standard allows and
+        // this compiler cannot make yet. Say that, rather than the generic
+        // complaint about a value with no address.
+        if (dynamic_cast<const Conditional *>(init.get()) != nullptr)
+            src_.fail(pos, "a '?:' is an lvalue in C++ when both arms are, and "
+                           "this compiler does not build one yet - bind the "
+                           "reference in an if/else instead");
+        if (isLvalue(*init))
+            src_.fail(pos, what + " is '" + ref->describe() + "' and this is '" +
+                           it->describe() + "' - a reference binds to the type "
+                           "it names, and nothing is converted on the way in; a "
+                           "'const " + referent->unqualified()->describe() +
+                           " &' would take a converted copy");
+        src_.fail(pos, what + " is '" + ref->describe() + "', and this is a "
+                       "value with no address to bind to - a 'const " +
+                       referent->unqualified()->describe() + " &' would take a "
+                       "copy of it instead");
+    }
+
+    checkAssignable(*init, referent, pos, what);
+    const Type *store = referent->unqualified();
+    const Type *addrType = types_.pointerTo(referent);
+    int slot = allocateFrameSlot(store);
+    std::string temp = ".ref" + std::to_string(refTemps_++);
+
+    ExprPtr target(Var::local(temp, slot));
+    target->setType(store);
+    ExprPtr keep(new Assign(std::move(target), convert(std::move(init), store)));
+    keep->setType(store);
+
+    ExprPtr held(Var::local(temp, slot));
+    held->setType(store);
+    ExprPtr addr(new Unary('&', std::move(held)));
+    addr->setType(addrType);
+
+    ExprPtr both(new Comma(std::move(keep), std::move(addr)));
+    both->setType(addrType);
+    return both;
+}
+
 ExprPtr Parser::objectRef(const std::string &name) {
     if (const Local *l = findLocal(name)) {
         Var *v = l->staticName.empty() ? Var::local(name, l->offset)
@@ -1599,7 +1757,7 @@ ExprPtr Parser::objectRef(const std::string &name) {
         v->setNoAddress(l->isRegister);
         ExprPtr n(v);
         n->setType(l->type);
-        return n;
+        return useReference(std::move(n));
     }
     if (const GlobalSym *g = findGlobal(name)) {
         Var *v = Var::global(name);
@@ -1618,7 +1776,7 @@ ExprPtr Parser::finishCall(const std::string &name, ExprPtr callee,
     std::vector<ExprPtr> args;
     if (!consume(")")) {
         for (;;) {
-            args.push_back(decay(assign()));
+            args.push_back(assign());
             if (consume(")")) break;
             expect(",");
         }
@@ -1631,11 +1789,16 @@ ExprPtr Parser::finishCall(const std::string &name, ExprPtr callee,
 
     for (std::size_t i = 0; i < args.size(); i++) {
         if (i >= params.size()) {
-            args[i] = defaultPromote(std::move(args[i]));
+            args[i] = defaultPromote(decay(std::move(args[i])));
             continue;
         }
-        checkAssignable(*args[i], params[i], pos,
-                        "argument " + std::to_string(i + 1) + " of '" + name + "'");
+        std::string what = "argument " + std::to_string(i + 1) + " of '" + name + "'";
+        if (params[i]->isReference()) {
+            args[i] = bindReference(params[i], std::move(args[i]), pos, what);
+            continue;
+        }
+        args[i] = decay(std::move(args[i]));
+        checkAssignable(*args[i], params[i], pos, what);
         args[i] = convert(std::move(args[i]), params[i]);
     }
 
@@ -1650,7 +1813,10 @@ ExprPtr Parser::finishCall(const std::string &name, ExprPtr callee,
     ExprPtr n(new Call(name, std::move(callee), std::move(args), variadic, slot,
                        named, std::move(argSlots)));
     n->setType(returns);
-    return n;
+    // A call that returns a reference is an lvalue, and useReference is what
+    // makes it one: the address comes back in a register and the dereference
+    // around it is what the caller actually named.
+    return useReference(std::move(n));
 }
 
 ExprPtr Parser::postfix() {
@@ -1959,13 +2125,6 @@ ExprPtr Parser::logicalOr() {
         n = std::move(node);
     }
     return n;
-}
-
-static bool isLvalue(const Expr &e) {
-    if (dynamic_cast<const Var *>(&e)) return true;
-    if (dynamic_cast<const MemberAccess *>(&e)) return true;
-    if (const Unary *u = dynamic_cast<const Unary *>(&e)) return u->op() == '*';
-    return false;
 }
 
 ExprPtr Parser::clonePure(const Expr &e) {
@@ -2283,6 +2442,30 @@ StmtPtr Parser::declarationBody() {
             blockFunctionDeclaration(d);
             continue;
         }
+        if (d.type->isReference()) {
+            if (sc == StorageStatic)
+                src_.fail(d.pos, "'" + d.name + "' is a static reference, and "
+                                 "that needs the binding to happen once before "
+                                 "main - not supported yet");
+            if (!peek().is("="))
+                src_.fail(d.pos, "'" + d.name + "' is a reference and has to be "
+                                 "initialised here - there is no later "
+                                 "assignment that would bind it, only one that "
+                                 "writes through it");
+            at_++;
+            ExprPtr init = assign();
+            int off = declare(d.name, d.type, d.pos);
+            const Type *slot = types_.pointerTo(d.type->referent());
+            ExprPtr addr = bindReference(d.type, std::move(init), d.pos,
+                                         "'" + d.name + "'");
+            ExprPtr target(Var::local(d.name, off));
+            target->setType(slot);
+            ExprPtr bind(new Assign(std::move(target), std::move(addr)));
+            bind->setType(slot);
+            inits.push_back(StmtPtr(new ExprStmt(std::move(bind))));
+            continue;
+        }
+
         bool sizedByInitialiser = d.type->isArray() && d.type->length() < 0 &&
                                   peek().is("=");
         if (!d.type->isComplete() && !sizedByInitialiser)
@@ -2613,9 +2796,18 @@ StmtPtr Parser::statementBody() {
                                "only for a function returning 'void'");
             return StmtPtr(new Return(nullptr));
         }
-        ExprPtr value = decay(expr());
-        checkAssignable(*value, returnType_, pos, "this function's return type");
-        value = convert(std::move(value), returnType_);
+        ExprPtr value = returnType_->isReference() ? expr() : decay(expr());
+        if (returnType_->isReference()) {
+            value = bindReference(returnType_, std::move(value), pos,
+                                  "this function's return type");
+            if (dynamic_cast<const Comma *>(value.get()) != nullptr)
+                src_.fail(pos, "this returns a reference to a temporary of "
+                               "this function, which is gone by the time the "
+                               "caller could read it");
+        } else {
+            checkAssignable(*value, returnType_, pos, "this function's return type");
+            value = convert(std::move(value), returnType_);
+        }
         expect(";");
         return StmtPtr(new Return(std::move(value)));
     }
@@ -2748,6 +2940,14 @@ void Parser::topLevel(Program &program) {
     if (!peek().is("(") && d.paramsAt == 0) {
         for (;;) {
             if (d.type->isVoid()) src_.fail(d.pos, "'" + d.name + "' cannot have type void");
+            // A reference at file scope has to be bound before main runs,
+            // which is a whole mechanism - the same one static objects with
+            // constructors will need - and it is not here yet.
+            if (d.type->isReference())
+                src_.fail(d.pos, "'" + d.name + "' is a reference at file "
+                                 "scope, and binding one before main is not "
+                                 "supported yet - make it a local or a "
+                                 "pointer");
 
             std::vector<GlobalPiece> pieces;
             bool hasInit = false;
@@ -2856,7 +3056,9 @@ void Parser::topLevel(Program &program) {
                     locals_.back().isRegister = (psc == StorageRegister);
                 }
                 params.push_back(types_.withoutConst(pd.type));
-                paramSlots.push_back(Param{ pd.type, off });
+                paramSlots.push_back(Param{ pd.type->isReference()
+                                            ? types_.pointerTo(pd.type->referent())
+                                            : pd.type, off });
                 if (consume(")")) break;
                 expect(",");
             }
@@ -2907,7 +3109,9 @@ void Parser::topLevel(Program &program) {
     variadicBody_ = false;
 
     int frame = alignTo(frameSize_, 16);
-    program.functions.push_back(Function(d.name, d.type, std::move(paramSlots),
+    const Type *emittedReturn = d.type->isReference()
+                              ? types_.pointerTo(d.type->referent()) : d.type;
+    program.functions.push_back(Function(d.name, emittedReturn, std::move(paramSlots),
                                          std::move(body), frame,
                                          sc == StorageStatic, sretSlot,
                                          variadic, regSaveSlot, d.pos,
