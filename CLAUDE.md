@@ -45,6 +45,15 @@ of it is valid C++11 and much is not (implicit `void *` conversions, `new` as
 an identifier). Do not report a number from it as a pass rate until it has
 been triaged case by case.
 
+43 of those cases stopped compiling when `const` entered the type system, and
+all 43 are the same C idiom: `int printf(char *fmt, ...);` handed a string
+literal, which is an array of *const* char in C++11. clang refuses all 43 as
+well. **Ask clang about a corpus case with
+`clang++ -x c++ -std=c++11 -pedantic-errors`, and nothing less.** Without
+`-x c++` it compiles a `.c` file as C and agrees with everything; without
+`-pedantic-errors` the string-literal rule is only a warning, kept that way
+for old C++. Both defaults quietly turn the oracle into a rubber stamp.
+
 ## What makes C++ different from C to parse
 
 Two facts shape the whole front end, and a design that ignores either has to be
@@ -70,7 +79,7 @@ starts. No half-built pipelines waiting on a later phase.
 | --- | --- | --- |
 | 0 | The fork: C90 through three backends | **done**, 2026-08-26 |
 | 1 | C++ as a better C: keywords, `bool`, tag names, `::` | **done**, 2026-08-26 |
-| 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | |
+| 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | in progress |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | |
@@ -83,6 +92,27 @@ names, and character literals typed `char` rather than `int`. Mixed
 declarations and `for`-init scope came across from Compiler-C already working
 and now have cases holding them there. `auto` as a deduced type is refused by
 name and belongs to rung 7.
+
+**Rung 2 is done in dependency order, and `const` comes first.** The type
+system inherited from Compiler-C had no qualifier at all: constness was a bool
+on the declared object, and a pointee's const was discarded, so `const char *`
+and `char *` were the same `Type`. Nothing else in the rung can be built on
+that. A mangler cannot spell `PKc` for a type that does not exist, and
+matching clang's mangled names is the whole reason for having the oracle;
+overload resolution cannot rank `f(char *)` against `f(const char *)` if they
+are one function. So the order is: `const` in the type system, then
+references, then `extern "C"` and mangling, then overloading, then
+`new`/`delete`.
+
+**`const` is a property of the type, and a qualified type is a second `Type`
+that forwards.** `TypeTable::withConst` interns a copy carrying `unqual_`, and
+everything that depends on state a struct gains *later* - its members, its
+size, whether it is complete - is asked of the unqualified one rather than of
+the copy, which was taken before the struct was finished. The trap to know
+about: every interning loop in `Type.cpp` must skip qualified types. A
+`char * const` is a `Kind::Pointer` whose pointee is `char`, so a `pointerTo()`
+that did not skip it would hand it back for `char *` and quietly make every
+such pointer in the file read-only.
 
 **Not in rung 1, and deliberately**: a declaration in an `if` or `while`
 condition. It needs the condition's scope to wrap both branches, which is a

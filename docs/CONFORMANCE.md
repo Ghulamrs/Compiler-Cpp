@@ -35,6 +35,21 @@ conversions — so it is held until the type system needs to be opened anyway,
 rather than done twice. Inherited from Compiler-C, where C's own rules made it
 very nearly correct.
 
+## A `void *` converts to any object pointer on its own
+
+```cpp
+void *raw = malloc(4);
+int *p = raw;        // cxx1 accepts. C++ requires a cast; C does not.
+```
+
+This is C's rule, inherited from Compiler-C along with the parser, and it is
+what lets the untriaged C corpus reach `malloc` without a cast. It is the one
+direction that is wrong: `int *` to `void *` is legal in both languages.
+
+The const hole in it *is* closed - `const int *` will not convert to `void *`,
+only to `const void *` - because that route would have undone the whole of the
+const work in one line.
+
 ## A class name cannot be hidden by an object of the same name
 
 ```cpp

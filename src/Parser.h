@@ -54,13 +54,8 @@ private:
         std::string name;
         const Type *type;
         std::size_t pos;
-        bool sawPointer = false;
-        bool pointerConst = false;
 
         std::size_t paramsAt = 0;
-        bool objectIsConst(bool fromSpecifiers) const {
-            return sawPointer ? pointerConst : fromSpecifiers;
-        }
     };
 
     enum StorageClass { StorageNone, StorageStatic, StorageExtern, StorageTypedef,
@@ -160,6 +155,7 @@ private:
     const Type *enumSpecifier();
     bool atDeclarationStart() const;
     const Type *specifiers(StorageClass *storage, Qualifiers *quals = nullptr);
+    const Type *unqualifiedSpecifiers(StorageClass *storage, Qualifiers *quals);
 
     Declared declarator(const Type *base, bool nameOptional = false,
                         bool insideParens = false);

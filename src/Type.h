@@ -49,6 +49,16 @@ public:
 
     Kind kind() const { return kind_; }
 
+    // Constness belongs to the type, not to the object that has it: a
+    // 'const char *' and a 'char *' must be two different types, because
+    // overload resolution ranks between them and the mangler spells them
+    // differently. An array is const when its elements are - there is no
+    // separate qualifier to hang on the array itself.
+    bool isConst() const {
+        return const_ || (kind_ == Kind::Array && pointee_->isConst());
+    }
+    const Type *unqualified() const { return unqual_ != nullptr ? unqual_ : this; }
+
     const Type *pointee() const { return pointee_; }
     long long length() const { return length_; }
 
@@ -69,6 +79,7 @@ public:
     bool isBool() const { return kind_ == Kind::Bool; }
     bool isStructOrUnion() const { return kind_ == Kind::Struct || kind_ == Kind::Union; }
     bool isComplete() const {
+        if (unqual_ != nullptr) return unqual_->isComplete();
         if (isVoid()) return false;
         if (isArray() && length_ < 0) return false;
         if (isStructOrUnion()) return complete_;
@@ -85,8 +96,10 @@ public:
 
     std::string describe() const;
 
-    const std::string &tag() const { return tag_; }
-    const std::vector<Member> &members() const { return members_; }
+    const std::string &tag() const { return unqual_ ? unqual_->tag() : tag_; }
+    const std::vector<Member> &members() const {
+        return unqual_ ? unqual_->members() : members_;
+    }
     const Member *findMember(const std::string &name) const;
 
     void complete(std::vector<Member> members, int size, int align);
@@ -103,6 +116,14 @@ public:
 private:
     friend class TypeTable;
     Kind kind_;
+
+    // Set only on a qualified type, and it points at the unqualified one it
+    // was made from. Everything that depends on state a struct gains later -
+    // its members, its size - is asked of that one rather than of this copy,
+    // which was taken before the struct was complete.
+    const Type *unqual_ = nullptr;
+    bool const_ = false;
+
     const Type *pointee_ = nullptr;
     long long length_ = -1;
 
@@ -121,6 +142,8 @@ public:
     TypeTable();
     const Type *get(Kind k) const;
 
+    const Type *withConst(const Type *t);
+    const Type *withoutConst(const Type *t);
     const Type *pointerTo(const Type *t);
     const Type *arrayOf(const Type *t, long long length);
     const Type *functionType(const Type *returns,

@@ -15,12 +15,14 @@ const Type *TypeTable::get(Kind k) const {
 }
 
 int Type::size(const Target &t) const {
+    if (unqual_ != nullptr) return unqual_->size(t);
     if (kind_ == Kind::Array) return static_cast<int>(length_) * pointee_->size(t);
     if (kind_ == Kind::Struct || kind_ == Kind::Union) return size_;
     return t.sizeOf(kind_);
 }
 
 int Type::align(const Target &t) const {
+    if (unqual_ != nullptr) return unqual_->align(t);
     if (kind_ == Kind::Array) return pointee_->align(t);
     if (kind_ == Kind::Struct || kind_ == Kind::Union) return align_;
     return t.alignOf(kind_);
@@ -36,6 +38,12 @@ std::string Type::parameterList() const {
 }
 
 std::string Type::describe() const {
+    // A const pointer is written with the const behind the star, and every
+    // other const in front of the type. Saying 'const char *' where the
+    // program wrote 'char * const' would send a reader after the wrong error.
+    if (const_)
+        return kind_ == Kind::Pointer ? unqual_->describe() + " const"
+                                      : "const " + unqual_->describe();
     if (kind_ == Kind::Pointer && pointee_->isFunction())
         return pointee_->returns()->describe() + " (*)" + pointee_->parameterList();
     if (kind_ == Kind::Function)
@@ -48,11 +56,15 @@ std::string Type::describe() const {
     return name();
 }
 
+// Every one of these interning loops skips the qualified types, and must.
+// A 'char * const' is a Kind::Pointer whose pointee is char, so a pointerTo()
+// that did not skip it would hand back the const one and quietly make every
+// 'char *' in the file read-only.
 const Type *TypeTable::functionType(const Type *returns,
                                     std::vector<const Type *> params,
                                     bool variadic) {
     for (Type *d : derived_)
-        if (d->kind() == Kind::Function && d->pointee() == returns &&
+        if (!d->isConst() && d->kind() == Kind::Function && d->pointee() == returns &&
             d->variadic_ == variadic && d->params_ == params)
             return d;
     Type *t = new Type(Kind::Function, returns, -1);
@@ -62,16 +74,48 @@ const Type *TypeTable::functionType(const Type *returns,
     return derived_.back();
 }
 
+const Type *TypeTable::withConst(const Type *t) {
+    if (t->isConst()) return t;
+
+    // cv on an array is cv on its elements - [basic.type.qualifier]/3 - so
+    // 'const A' where A is int[3] must reach the int, or a write through a
+    // subscript would not be refused.
+    if (t->isArray())
+        return arrayOf(withConst(t->pointee()), t->length());
+
+    // A function type cannot be const-qualified; only a member function can,
+    // and that is written on the function rather than on its type. Silently
+    // returning it unqualified keeps the caller from having to know.
+    if (t->isFunction()) return t;
+
+    for (Type *d : derived_)
+        if (d->const_ && d->unqual_ == t) return d;
+
+    Type *c = new Type(*t);
+    c->const_ = true;
+    c->unqual_ = t;
+    derived_.push_back(c);
+    return c;
+}
+
+const Type *TypeTable::withoutConst(const Type *t) {
+    if (t->isArray() && t->pointee()->isConst())
+        return arrayOf(withoutConst(t->pointee()), t->length());
+    return t->unqualified();
+}
+
 const Type *TypeTable::pointerTo(const Type *t) {
     for (Type *d : derived_)
-        if (d->kind() == Kind::Pointer && d->pointee() == t) return d;
+        if (!d->isConst() && d->kind() == Kind::Pointer && d->pointee() == t)
+            return d;
     derived_.push_back(new Type(Kind::Pointer, t, -1));
     return derived_.back();
 }
 
 const Type *TypeTable::arrayOf(const Type *t, long long length) {
     for (Type *d : derived_)
-        if (d->kind() == Kind::Array && d->pointee() == t && d->length() == length)
+        if (!d->const_ && d->kind() == Kind::Array && d->pointee() == t &&
+            d->length() == length)
             return d;
     derived_.push_back(new Type(Kind::Array, t, length));
     return derived_.back();
@@ -92,7 +136,7 @@ void Type::complete(std::vector<Member> members, int size, int align) {
 
 Type *TypeTable::structType(Kind kind, const std::string &tag) {
     for (Type *d : derived_)
-        if (d->kind() == kind && d->tag_ == tag) return d;
+        if (!d->isConst() && d->kind() == kind && d->tag_ == tag) return d;
     Type *t = new Type(kind);
     t->tag_ = tag;
     derived_.push_back(t);

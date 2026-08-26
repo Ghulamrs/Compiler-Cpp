@@ -237,11 +237,20 @@ const Type *Parser::enumSpecifier() {
     return types_.intType();
 }
 
+// The specifiers are read without their qualifiers here, and specifiers()
+// folds the const in afterwards. It reads 'const' in two places - before the
+// type name and after it - and both must be collected before the type can be
+// built, so this cannot be done as it goes.
 const Type *Parser::specifiers(StorageClass *storage, Qualifiers *quals) {
-    std::size_t start = peek().pos;
-    *storage = StorageNone;
     Qualifiers discard;
     if (quals == nullptr) quals = &discard;
+    const Type *t = unqualifiedSpecifiers(storage, quals);
+    return quals->isConst ? types_.withConst(t) : t;
+}
+
+const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *quals) {
+    std::size_t start = peek().pos;
+    *storage = StorageNone;
 
     for (;;) {
         if (consume("static"))  { *storage = StorageStatic; continue; }
@@ -356,13 +365,14 @@ const Type *Parser::arraySuffix(const Type *base, std::size_t pos) {
 Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
                                     bool insideParens) {
 
-    bool sawPointer = false, pointerConst = false;
+    // The const after a star qualifies the pointer, not what it points at:
+    // 'char * const p' is a const pointer to a writable char, and 'const char
+    // *p' is the other way round. Both are now differences of type, so the
+    // declarator has nothing left to remember about them.
     while (consume("*")) {
         base = types_.pointerTo(base);
-        sawPointer = true;
-        pointerConst = false;
         for (;;) {
-            if (consume("const"))    { pointerConst = true; continue; }
+            if (consume("const"))    { base = types_.withConst(base); continue; }
             if (consume("volatile")) continue;
             break;
         }
@@ -392,10 +402,6 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
         Declared inner = declarator(outer, nameOptional, true);
         expect(")");
         at_ = after;
-        if (!inner.sawPointer && sawPointer) {
-            inner.sawPointer = true;
-            inner.pointerConst = pointerConst;
-        }
         return inner;
     }
 
@@ -414,7 +420,7 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
         parameterTypes(ignored, ignoredVariadic);
     }
 
-    return Declared{ name, t, pos, sawPointer, pointerConst, paramsAt };
+    return Declared{ name, t, pos, paramsAt };
 }
 
 const Type *Parser::unsignedVersion(const Type *t) const {
@@ -494,9 +500,37 @@ void Parser::requireScalar(const Expr &e, std::size_t pos, const char *what) {
                        e.type()->describe() + "'");
 }
 
+// A string literal reaches here wrapped in the Cast that decayed it from an
+// array, so the literal has to be looked for underneath.
+static bool isStringLiteral(const Expr &e) {
+    if (dynamic_cast<const StrLit *>(&e) != nullptr) return true;
+    if (const Cast *c = dynamic_cast<const Cast *>(&e))
+        return isStringLiteral(c->value());
+    return false;
+}
+
 static bool isNullConstant(const Expr &e) {
     const Num *n = dynamic_cast<const Num *>(&e);
     return n != nullptr && n->type()->isInteger() && n->value() == 0;
+}
+
+// [conv.qual]. A pointer may gain const on its way in and may never lose it,
+// and const gained below the first level only counts if every level above it
+// is const too - which is why 'char **' does not become 'const char **' but
+// does become 'const char * const *'. Without that last rule a program could
+// store a pointer-to-const into the writable pointer at the bottom and write
+// through it, with nothing along the way having said no.
+static bool qualificationConvertible(const Type *from, const Type *to) {
+    bool prefixConst = true;
+    for (;;) {
+        if (from->unqualified() == to->unqualified()) return true;
+        if (!from->isPointer() || !to->isPointer()) return false;
+        from = from->pointee();
+        to = to->pointee();
+        if (from->isConst() && !to->isConst()) return false;
+        if (!from->isConst() && to->isConst() && !prefixConst) return false;
+        prefixConst = prefixConst && to->isConst();
+    }
 }
 
 void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
@@ -504,6 +538,12 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
     const Type *ft = from.type();
 
     if (ft == to) return;
+
+    // Copying ignores the const at the top: [dcl.init]/2 strips it from the
+    // destination, and a const source is read rather than moved. Without this
+    // 'const S b = a;' would be refused for a struct, where the arithmetic
+    // rule below already lets 'const int b = a;' through.
+    if (ft->unqualified() == to->unqualified()) return;
 
     if (ft->isArithmetic() && to->isArithmetic()) return;
 
@@ -513,7 +553,23 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
     };
 
     if (to->isPointer() && ft->isPointer()) {
+        if (qualificationConvertible(ft, to)) return;
+        // An implicit conversion through void * is C's rule, kept here and
+        // recorded in docs/CONFORMANCE.md - but it must not become the way
+        // round const that the rule above just closed.
+        if (to->pointee()->isVoid() && !to->pointee()->isConst() &&
+            ft->pointee()->isConst())
+            refuse(" - 'void *' would drop the const; 'const void *' keeps it");
         if (to->pointee()->isVoid() || ft->pointee()->isVoid()) return;
+        // The commonest way to meet this rule is a C program handing a
+        // string literal to a 'char *', so it is worth saying which rule
+        // stopped it rather than leaving the reader to work back from const.
+        if (isStringLiteral(from))
+            refuse(" - a string literal is an array of const char in C++11, "
+                   "and does not convert to a writable pointer");
+        if (ft->pointee()->unqualified() == to->pointee()->unqualified())
+            refuse(" - the const would be dropped, and then the thing it "
+                   "protects could be written through");
         refuse(" - a cast says you meant it");
     }
     if (to->isPointer() && ft->isInteger()) {
@@ -675,7 +731,7 @@ void Parser::parameterTypes(std::vector<const Type *> &params, bool &variadic) {
         if (pd.type->isArray()) pd.type = types_.pointerTo(pd.type->pointee());
         if (pd.type->isVoid())
             src_.fail(pd.pos, "'void' is only a parameter list on its own");
-        params.push_back(pd.type);
+        params.push_back(types_.withoutConst(pd.type));
         if (consume(")")) break;
         expect(",");
     }
@@ -886,7 +942,8 @@ ExprPtr Parser::primary(Program *program) {
 
         program->strings.push_back(StringLit{ label, bytes, width });
         ExprPtr n(new StrLit(label, text));
-        n->setType(types_.arrayOf(elem, static_cast<long long>(text.size()) + 1));
+        n->setType(types_.arrayOf(types_.withConst(elem),
+                                  static_cast<long long>(text.size()) + 1));
         return n;
     }
 
@@ -1638,7 +1695,10 @@ ExprPtr Parser::postfix() {
             if (!m) src_.fail(pos, "'" + obj->describe() + "' has no member '" + name + "'");
             ExprPtr acc(new MemberAccess(std::move(n), name, m->offset,
                                          m->width, m->bitOffset));
-            acc->setType(m->type);
+            // A member reached through a const object is itself const:
+            // [expr.ref] gives the member the object's cv-qualification, and
+            // without this 's.x = 2' on a const s would be a way round it.
+            acc->setType(obj->isConst() ? types_.withConst(m->type) : m->type);
             n = std::move(acc);
             continue;
         }
@@ -1661,7 +1721,10 @@ ExprPtr Parser::postfix() {
             if (!m) src_.fail(pos, "'" + obj->describe() + "' has no member '" + name + "'");
             ExprPtr acc(new MemberAccess(std::move(n), name, m->offset,
                                          m->width, m->bitOffset));
-            acc->setType(m->type);
+            // A member reached through a const object is itself const:
+            // [expr.ref] gives the member the object's cv-qualification, and
+            // without this 's.x = 2' on a const s would be a way round it.
+            acc->setType(obj->isConst() ? types_.withConst(m->type) : m->type);
             n = std::move(acc);
             continue;
         }
@@ -1985,6 +2048,12 @@ void Parser::requireAssignable(const Expr &e, std::size_t pos, const char *what)
     if (const Var *v = dynamic_cast<const Var *>(&e))
         if (v->readOnly())
             src_.fail(pos, "'" + v->name() + "' is const and cannot be assigned to");
+    // Reaching a const through a pointer or a member is the case the
+    // read-only flag on the object cannot see: nothing here is a named
+    // object, and the only record that it may not be written is its type.
+    if (e.type()->isConst())
+        src_.fail(pos, std::string(what) + " is '" + e.type()->describe() +
+                       "', and a const cannot be assigned to");
 }
 
 ExprPtr Parser::compound(BinOp op, ExprPtr target, ExprPtr value, std::size_t pos) {
@@ -2243,7 +2312,7 @@ StmtPtr Parser::declarationBody() {
                                  "to take one from");
             }
             declareStaticLocal(d.name, d.type, d.pos, symbol);
-            locals_.back().isConst = d.objectIsConst(quals.isConst);
+            locals_.back().isConst = d.type->isConst();
             current_->globals.push_back(Global{ symbol, d.type, std::move(pieces),
                                                 hasInit, true,
                                                 locals_.back().isConst });
@@ -2264,7 +2333,7 @@ StmtPtr Parser::declarationBody() {
         }
 
         declare(d.name, d.type, d.pos);
-        locals_.back().isConst = d.objectIsConst(quals.isConst);
+        locals_.back().isConst = d.type->isConst();
         locals_.back().isRegister = (sc == StorageRegister);
 
         if (hasInit) {
@@ -2729,7 +2798,7 @@ void Parser::topLevel(Program &program) {
             }
 
             globalIndex_[d.name] = globals_.size();
-            bool objectIsConst = d.objectIsConst(quals.isConst);
+            bool objectIsConst = d.type->isConst();
             globals_.push_back(GlobalSym{ d.name, d.type, objectIsConst,
                                           sc != StorageExtern, hasInit });
             if (sc != StorageExtern)
@@ -2783,10 +2852,10 @@ void Parser::topLevel(Program &program) {
                     inParams_ = true;
                     off = declare(pd.name, pd.type, pd.pos);
                     inParams_ = false;
-                    locals_.back().isConst = pd.objectIsConst(pquals.isConst);
+                    locals_.back().isConst = pd.type->isConst();
                     locals_.back().isRegister = (psc == StorageRegister);
                 }
-                params.push_back(pd.type);
+                params.push_back(types_.withoutConst(pd.type));
                 paramSlots.push_back(Param{ pd.type, off });
                 if (consume(")")) break;
                 expect(",");
