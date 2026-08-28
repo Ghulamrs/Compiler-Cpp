@@ -4983,6 +4983,91 @@ void Parser::topLevel(Program &program) {
         declareFunction(d.name, d.type, params, variadic, true, d.pos,
                         sc == StorageStatic);
     }
+    // The mem-initializer list, [class.base.init]. Parsed here because `this`
+    // and the parameters are in scope and the body has not begun - which is
+    // exactly where the ':' sits in the grammar.
+    //
+    // What each entry may name: a non-static member, or a DIRECT base. The
+    // members become assignments through `this`; a base's arguments are kept
+    // for the chaining loop below, which is what actually calls its
+    // constructor. **Emission follows declaration order, not list order** -
+    // [class.base.init]/11 initialises in declaration order whatever the list
+    // says, and an emitter that followed the list would make the program mean
+    // something the standard says it does not.
+    std::vector<StmtPtr> memberInits;
+    std::map<std::string, std::vector<ExprPtr> > baseArgs;
+    const bool isCtor = memberOf != nullptr && d.name == d.qualifier;
+    if (memberOf != nullptr && peek().is(":")) {
+        if (!isCtor)
+            src_.fail(peek().pos, "an initialiser list belongs to a "
+                                  "constructor, and '" + d.name + "' is not one");
+        at_++;
+        std::map<std::string, std::vector<ExprPtr> > memberExprs;
+        std::map<std::string, std::size_t> where;
+        for (;;) {
+            std::size_t epos = peek().pos;
+            std::string entry = expectIdent("a member or base to initialise");
+            expect("(");
+            std::vector<ExprPtr> args;
+            parseArguments(args);
+
+            bool isBase = false;
+            const std::vector<Type::BaseSpec> &bs = memberOf->bases();
+            for (std::size_t i = 0; i < bs.size(); i++)
+                if (bs[i].type->tag() == entry) { isBase = true; break; }
+
+            if (isBase) {
+                if (baseArgs.count(entry))
+                    src_.fail(epos, "'" + entry + "' is initialised twice");
+                baseArgs[entry] = std::move(args);
+            } else if (const Member *m = memberOf->findMember(entry)) {
+                if (memberExprs.count(entry))
+                    src_.fail(epos, "'" + entry + "' is initialised twice");
+                if (m->type->isConst())
+                    src_.fail(epos, "a const member in an initialiser list is "
+                                    "not supported yet");
+                if (args.size() != 1)
+                    src_.fail(epos, "'" + entry + "' takes one value here, "
+                                    "given " + std::to_string(args.size()));
+                memberExprs[entry] = std::move(args);
+                where[entry] = epos;
+            } else if (entry == d.qualifier) {
+                src_.fail(epos, "a delegating constructor is not supported "
+                                "yet - it is C++11's own addition and comes "
+                                "later");
+            } else {
+                src_.fail(epos, "'" + entry + "' is neither a member of '" +
+                                d.qualifier + "' nor a direct base of it");
+            }
+            if (!consume(",")) break;
+        }
+
+        // Declaration order, walking the class's own member list.
+        const std::vector<Member> &all = memberOf->members();
+        for (std::size_t i = 0; i < all.size(); i++) {
+            std::map<std::string, std::vector<ExprPtr> >::iterator found =
+                memberExprs.find(all[i].name);
+            if (found == memberExprs.end()) continue;
+            const Member *m = &all[i];
+            std::size_t epos = where[m->name];
+
+            ExprPtr me(Var::local("this", thisOffset_));
+            me->setType(types_.pointerTo(memberOf));
+            ExprPtr obj(new Unary('*', std::move(me)));
+            obj->setType(memberOf);
+            ExprPtr field(new MemberAccess(std::move(obj), m->name, m->offset,
+                                           m->width, m->bitOffset));
+            field->setType(m->type);
+
+            ExprPtr value = decay(std::move(found->second[0]));
+            checkAssignable(*value, m->type, epos, "'" + m->name + "'");
+            value = convert(std::move(value), m->type);
+            ExprPtr assign(new Assign(std::move(field), std::move(value)));
+            assign->setType(m->type);
+            memberInits.push_back(StmtPtr(new ExprStmt(std::move(assign))));
+        }
+    }
+
     returnType_ = d.type;
     functionName_ = d.name;
     staticSymbols_.clear();
@@ -5006,6 +5091,17 @@ void Parser::topLevel(Program &program) {
     StmtPtr body = block();
     resolveGotos();
     variadicBody_ = false;
+
+    // Members initialise after the bases and the vptr and before the body -
+    // so they are stitched in front of the body here, and the vptr and base
+    // blocks below then wrap the result in their own order.
+    if (!memberInits.empty()) {
+        std::vector<StmtPtr> withInits;
+        for (std::size_t i = 0; i < memberInits.size(); i++)
+            withInits.push_back(std::move(memberInits[i]));
+        withInits.push_back(std::move(body));
+        body = StmtPtr(new Block(std::move(withInits)));
+    }
 
     // **A polymorphic object's vptr is set by its constructor**, before the
     // body and after the base's constructor - which is what makes the object
@@ -5131,20 +5227,32 @@ void Parser::topLevel(Program &program) {
                                          : destructorKey(base->tag());
 
         if (const std::vector<std::size_t> *set = overloadsOf(key)) {
+            // The initialiser list's arguments for this base, or none - in
+            // which case the default constructor is what runs, and a base
+            // without one is refused where the reader can fix it.
+            std::vector<ExprPtr> chosenArgs;
+            std::map<std::string, std::vector<ExprPtr> >::iterator named =
+                baseArgs.find(base->tag());
             const Signature *chosen = nullptr;
-            for (std::size_t k = 0; k < set->size(); k++)
-                if (functions_[(*set)[k]].params.empty()) chosen = &functions_[(*set)[k]];
+            if (building && named != baseArgs.end()) {
+                chosenArgs.swap(named->second);
+                chosen = &resolveOverload(key, chosenArgs, d.pos);
+            } else {
+                for (std::size_t k = 0; k < set->size(); k++)
+                    if (functions_[(*set)[k]].params.empty())
+                        chosen = &functions_[(*set)[k]];
+            }
             if (chosen == nullptr)
                 src_.fail(d.pos, "'" + base->tag() + "' has no constructor "
-                                 "taking nothing, and naming one for a base "
-                                 "needs an initialiser list - not supported yet");
+                                 "taking nothing - name one in the initialiser "
+                                 "list, ': " + base->tag() + "(...)'");
 
             std::string symbol = chosen->symbol;
             if (!target_.microsoftNames()) {
                 std::string sub;
                 if (building) {
                     const Type *fnType = types_.functionType(types_.get(Kind::Void),
-                                                             std::vector<const Type *>(),
+                                                             chosen->params,
                                                              false);
                     std::string why;
                     itaniumConstructorName(base->tag(), base, fnType, false,
@@ -5165,10 +5273,14 @@ void Parser::topLevel(Program &program) {
             }
             std::vector<ExprPtr> args;
             args.push_back(std::move(me));
-            std::vector<const Type *> params;
-            params.push_back(basePtr);
+            std::vector<const Type *> params2;
+            params2.push_back(basePtr);
+            for (std::size_t i = 0; i < chosen->params.size(); i++) {
+                args.push_back(std::move(chosenArgs[i]));
+                params2.push_back(chosen->params[i]);
+            }
             ExprPtr call = completeCall(base->tag(), symbol, nullptr,
-                                        types_.get(Kind::Void), params, false,
+                                        types_.get(Kind::Void), params2, false,
                                         d.pos, std::move(args));
 
             std::vector<StmtPtr> wrapped;
