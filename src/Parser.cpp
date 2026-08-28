@@ -94,8 +94,38 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // is one type written two ways - the standard allows the mix and says the
     // keywords are interchangeable here - so the body is what sets it and a
     // mere mention never unsets it.
-    if (peek().is("{")) type->setDeclaredClass(isClass);
+    if (peek().is("{") || peek().is(":")) type->setDeclaredClass(isClass);
     if (!tag.empty()) declareTypeName(tag, type);
+
+    // `class Derived : public Base {` - the base-clause. Default access is
+    // private for a class and public for a struct, the same split as members.
+    const Type *base = nullptr;
+    Access baseAccess = isClass ? Access::Private : Access::Public;
+    if (peek().is(":")) {
+        at_++;
+        if (peek().is("virtual"))
+            src_.fail(peek().pos, "a virtual base is not supported yet");
+        if (peek().is("public"))         { baseAccess = Access::Public;    at_++; }
+        else if (peek().is("protected")) { baseAccess = Access::Protected; at_++; }
+        else if (peek().is("private"))   { baseAccess = Access::Private;   at_++; }
+
+        std::size_t bpos = peek().pos;
+        std::string baseName = expectIdent("a base class name");
+        base = findTypedef(baseName);
+        if (base == nullptr || !base->isStructOrUnion())
+            src_.fail(bpos, "'" + baseName + "' is not a class, so it cannot be "
+                            "a base");
+        if (!base->isComplete())
+            src_.fail(bpos, "'" + baseName + "' is not defined yet - a base "
+                            "class has to be complete, because the derived "
+                            "object contains one");
+        if (peek().is(","))
+            src_.fail(peek().pos, "more than one base class is not supported "
+                                  "yet - a second base subobject cannot sit at "
+                                  "offset 0 as well, and every address in the "
+                                  "compiler assumes it does");
+        type->setBase(base, baseAccess);
+    }
 
     if (!peek().is("{")) {
         if (tag.empty()) src_.fail(pos, std::string(what) + " needs a tag or a body");
@@ -110,6 +140,28 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     int widest = 1;
     long long bitCursor = 0;
     long long widestBits = 0;
+
+    // **The base subobject is laid down first, at offset 0**, and its members
+    // are copied in at the offsets they already have. That is not a shortcut
+    // around lookup - it is what the layout IS, and it means `d.b` finds an
+    // inherited member with no second search. What the copy loses is which
+    // class declared the member, which nothing needs yet.
+    //
+    // Access travels through the inheritance: a public member of a private
+    // base is private in the derived class, and a private member of any base
+    // stays out of reach either way.
+    if (base != nullptr) {
+        const std::vector<Member> &inherited = base->members();
+        for (std::size_t i = 0; i < inherited.size(); i++) {
+            Member m = inherited[i];
+            if (m.access == Access::Private) m.access = Access::Private;
+            else if (baseAccess == Access::Private) m.access = Access::Private;
+            else if (baseAccess == Access::Protected) m.access = Access::Protected;
+            members.push_back(m);
+        }
+        bitCursor = static_cast<long long>(base->size(target_)) * 8;
+        if (base->align(target_) > widest) widest = base->align(target_);
+    }
 
     // **The one difference between the two keywords.** [class.access]: a class
     // starts private and a struct starts public, and everything else about
@@ -1660,9 +1712,11 @@ ExprPtr Parser::primary(Program *program) {
         // this class first - [class.mfct.non-static] makes `secret()` mean
         // `this->secret()`. It has to be asked before the free-function branch
         // below, which would otherwise report a member as undeclared.
+        bool inherited = false;
+        for (const Type *c = currentClass_; c != nullptr; c = c->base())
+            if (overloadsOf(c->tag() + "::" + name) != nullptr) { inherited = true; break; }
         if (peekAt(1).is("(") && !callsThroughObject && currentClass_ != nullptr &&
-            l == nullptr && g == nullptr &&
-            overloadsOf(currentClass_->tag() + "::" + name) != nullptr) {
+            l == nullptr && g == nullptr && inherited) {
             if (const Local *self = findLocal("this")) {
                 at_ += 2;
                 ExprPtr me(Var::local("this", self->offset));
@@ -2950,7 +3004,21 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
 ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
                            const std::string &name, std::size_t pos) {
     const Type *plain = cls->unqualified();
-    std::string key = plain->tag() + "::" + name;
+
+    // **A member function is looked for up the base chain**, unlike a data
+    // member, which the layout already copied down. The two are asymmetric on
+    // purpose: a member lives at an offset and can be copied, a function lives
+    // under a name and cannot be without inventing a second symbol for it.
+    //
+    // The first class that has the name wins outright - the derived class's
+    // set hides the base's rather than joining it, which is [class.member.
+    // lookup] and the reason a derived `f(int)` stops `f()` from being found.
+    const Type *owner = plain;
+    while (owner != nullptr &&
+           overloadsOf(owner->tag() + "::" + name) == nullptr)
+        owner = owner->base();
+    if (owner == nullptr) owner = plain;
+    std::string key = owner->tag() + "::" + name;
 
     std::vector<ExprPtr> args;
     parseArguments(args);
@@ -2958,7 +3026,8 @@ ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
 
     // Now there IS an inside, and this is where it starts to mean something:
     // a private member is reachable from another member of the same class.
-    if (sig.access != Access::Public && currentClass_ != plain) {
+    if (sig.access != Access::Public && currentClass_ != plain &&
+        currentClass_ != owner) {
         const char *how = sig.access == Access::Private ? "private" : "protected";
         src_.fail(pos, "'" + name + "' is " + how + " in '" + plain->describe() +
                        "' - it can be called only from inside the class");
@@ -2968,7 +3037,11 @@ ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
                        "object is const - calling it could change what the "
                        "const promised not to");
 
-    const Type *pointee = sig.constThis ? types_.withConst(plain) : plain;
+    // `this` inside the base's member function is a Base *, and the base
+    // subobject sits at offset 0 - so the derived address IS that pointer and
+    // the conversion costs nothing at run time.
+    const Type *self = owner;
+    const Type *pointee = sig.constThis ? types_.withConst(self) : self;
     const Type *thisType = types_.pointerTo(pointee);
 
     ExprPtr addr(new Unary('&', std::move(object)));
@@ -4311,6 +4384,68 @@ void Parser::topLevel(Program &program) {
     StmtPtr body = block();
     resolveGotos();
     variadicBody_ = false;
+
+    // **A constructor runs the base's first and a destructor runs it last**,
+    // which is the order the standard fixes and the order clang emits: the
+    // base subobject has to exist before the derived body can touch it, and it
+    // has to outlive the derived body for the same reason.
+    //
+    // The base's C2 and D2 are what is called - the base-object forms - and
+    // this is what those two names have been emitted for since constructors
+    // landed. On Windows there is one name for each and it is called directly.
+    if (memberOf != nullptr && memberOf->base() != nullptr &&
+        (d.name == d.qualifier || d.name == "~" + d.qualifier)) {
+        const Type *base = memberOf->base();
+        const bool building = d.name == d.qualifier;
+        const std::string key = building ? constructorKey(base->tag())
+                                         : destructorKey(base->tag());
+
+        if (const std::vector<std::size_t> *set = overloadsOf(key)) {
+            const Signature *chosen = nullptr;
+            for (std::size_t k = 0; k < set->size(); k++)
+                if (functions_[(*set)[k]].params.empty()) chosen = &functions_[(*set)[k]];
+            if (chosen == nullptr)
+                src_.fail(d.pos, "'" + base->tag() + "' has no constructor "
+                                 "taking nothing, and naming one for a base "
+                                 "needs an initialiser list - not supported yet");
+
+            std::string symbol = chosen->symbol;
+            if (!target_.microsoftNames()) {
+                std::string sub;
+                if (building) {
+                    const Type *fnType = types_.functionType(types_.get(Kind::Void),
+                                                             std::vector<const Type *>(),
+                                                             false);
+                    std::string why;
+                    itaniumConstructorName(base->tag(), fnType, false, &sub, &why);
+                } else {
+                    itaniumDestructorName(base->tag(), false, &sub);
+                }
+                symbol = sub;
+            }
+
+            const Type *basePtr = types_.pointerTo(base);
+            ExprPtr me(Var::local("this", thisOffset_));
+            me->setType(basePtr);          // the base sits at offset 0
+            std::vector<ExprPtr> args;
+            args.push_back(std::move(me));
+            std::vector<const Type *> params;
+            params.push_back(basePtr);
+            ExprPtr call = completeCall(base->tag(), symbol, nullptr,
+                                        types_.get(Kind::Void), params, false,
+                                        d.pos, std::move(args));
+
+            std::vector<StmtPtr> wrapped;
+            if (building) {
+                wrapped.push_back(StmtPtr(new ExprStmt(std::move(call))));
+                wrapped.push_back(std::move(body));
+            } else {
+                wrapped.push_back(std::move(body));
+                wrapped.push_back(StmtPtr(new ExprStmt(std::move(call))));
+            }
+            body = StmtPtr(new Block(std::move(wrapped)));
+        }
+    }
 
     int frame = alignTo(frameSize_, 16);
     const Type *emittedReturn = d.type->isReference()

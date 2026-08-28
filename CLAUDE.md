@@ -94,7 +94,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 1 | C++ as a better C: keywords, `bool`, tag names, `::` | **done**, 2026-08-26 |
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
-| 4 | Inheritance → virtual functions and vtables → multiple inheritance | |
+| 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
@@ -315,6 +315,27 @@ makes clang emit a cleanup path - the personality routine, `.gcc_except_table`,
 `_Unwind_Resume` - and this compiler has no exceptions until rung 6, so those
 symbols read as a disagreement about names when they are a difference in
 features. Mangling is unchanged by the flag.
+
+**Rung 4 opens with single, non-virtual inheritance**, and the base subobject
+sits at **offset 0** - measured. So a derived object's address is its base's
+address, no pointer adjustment happens anywhere, and passing `this` to a base's
+member function is a change of type and nothing else. Multiple inheritance is
+what ends that, which is why it is a later step and is refused by name until
+then rather than laid out wrongly.
+
+**Data members are copied down and member functions are searched up**, and the
+asymmetry is deliberate: a member lives at an offset and can be copied, a
+function lives under a name and cannot be without inventing a second symbol for
+it. Access travels through the inheritance - a public member of a private base
+is private in the derived class.
+
+**A constructor runs the base's first and a destructor runs it last**, calling
+the base's **C2 and D2** - the base-object forms. That is the first thing to
+call them, and the reason they have been emitted since constructors landed. On
+Windows there is one name for each and it is called directly.
+
+Naming a base's constructor needs a mem-initializer list, which does not exist
+yet, so a base with no default constructor is refused by name.
 
 `docs/CONFORMANCE.md` records what compiles here and should not — currently
 that an enumeration is still `int`, and that a class name cannot be hidden by

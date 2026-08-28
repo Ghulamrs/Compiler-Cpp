@@ -121,6 +121,14 @@ public:
     // sends the reader looking for a declaration that is not there.
     bool declaredClass() const { return unqual_ ? unqual_->declaredClass() : isClass_; }
     void setDeclaredClass(bool c) { isClass_ = c; }
+
+    // The one base class, or null. A base subobject sits at offset 0 - measured
+    // - so a derived object's address IS its base's address and no adjustment
+    // is needed anywhere. Multiple inheritance is what ends that, and it is a
+    // later step for exactly that reason.
+    const Type *base() const { return unqual_ ? unqual_->base() : base_; }
+    Access baseAccess() const { return unqual_ ? unqual_->baseAccess() : baseAccess_; }
+    void setBase(const Type *b, Access how) { base_ = b; baseAccess_ = how; }
     const std::vector<Member> &members() const {
         return unqual_ ? unqual_->members() : members_;
     }
@@ -156,6 +164,8 @@ private:
 
     std::string tag_;
     bool isClass_ = false;
+    const Type *base_ = nullptr;
+    Access baseAccess_ = Access::Public;
     std::vector<Member> members_;
     int size_ = 0;
     int align_ = 1;
