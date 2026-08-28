@@ -16,6 +16,15 @@ for src in tests/cases/*.cpp; do
     base=$(basename "$src" .cpp)
     [ -f "tests/cases/$base.error" ] && continue
     for target in x86_64-linux x86_64-windows arm64-darwin; do
+        # A case may name a target it does not compile for yet, one per line in
+        # <case>.notarget. **It has to say why in the file**, because a silent
+        # exclusion is how a suite stops testing something without anybody
+        # noticing. The line is printed on every run for the same reason.
+        if [ -f "tests/cases/$base.notarget" ] &&
+           grep -q "^$target\b" "tests/cases/$base.notarget"; then
+            echo "  skip $base for $target: $(grep "^$target\b" "tests/cases/$base.notarget" | sed "s/^$target[[:space:]]*//")"
+            continue
+        fi
         if cxx1 -S -arch "$target" "$src" -o "$OUT/$base.$target.s" \
                  2>"$OUT/$base.$target.err"; then
             pass=$((pass + 1))

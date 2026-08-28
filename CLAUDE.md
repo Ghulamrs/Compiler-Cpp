@@ -329,9 +329,30 @@ to the body and a destructor's is appended - prepending A last is what leaves
 it first. Walking forwards for the constructor put B before A, which the
 oracle caught immediately.
 
-Still refused by name: **a second base with virtual functions.** Its vptr
-cannot be at offset 0 as well, so it needs a secondary vtable and thunks that
-adjust `this` on the way into an override. That is the next step.
+**A polymorphic second base needs a secondary vtable and a thunk, and Itanium
+has both now.** `_ZTV1C` holds two tables back to back: the primary for A, then
+a secondary for B whose first word is **-16**, saying how far back the complete
+object is. The object carries two vptrs, at 0 and at B's offset.
+
+A call through a `B *` arrives with `this` pointing at the B subobject, and an
+override expects the whole object - so the secondary slot holds a **thunk**
+that walks `this` back and calls the real function. clang tail-jumps; cxx1
+calls and returns, which costs a frame and behaves identically and needed
+nothing new from any backend. The name is `_ZThn16_N1C1gEv`: the prefix, the
+offset, then the mangled name with its own `_Z` removed and its `N` kept.
+
+**The Microsoft ABI arranges this differently and is refused for now.**
+Measured with clang: it emits **two separate vftable symbols** -
+`??_7C@@6BA@@@` and `??_7C@@6BB@@@` - rather than one table in two sections,
+and the second points straight at `?g@C@@UEAAHXZ` with no thunk at all. That is
+a different arrangement, not the same one renamed, and whether **cl** agrees
+with clang there has not been measured. Guessing at an ABI is the one thing
+this project does not do.
+
+**A case may now name a target it does not compile for**, one per line in
+`<case>.notarget` with the reason on the line, honoured by `tests/emit.sh` and
+`tools/mangled-names`. The reason is printed on every run: an exclusion nobody
+sees is an exclusion nobody removes.
 
 **Rung 4 opened with single, non-virtual inheritance**, and the base subobject
 sits at **offset 0** - measured. So a derived object's address is its base's

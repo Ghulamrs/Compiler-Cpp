@@ -124,14 +124,6 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 src_.fail(bpos, "'" + baseName + "' is not defined yet - a base "
                                 "class has to be complete, because the derived "
                                 "object contains one");
-            // A second base sits at a non-zero offset, and every vtable this
-            // compiler emits assumes the vptr is at zero. Secondary tables and
-            // the thunks that adjust `this` on the way in are the next step.
-            if (!written.empty() && b->polymorphic())
-                src_.fail(bpos, "'" + baseName + "' has virtual functions and "
-                                "is not the first base - a second vtable and "
-                                "the thunks that adjust 'this' for it are not "
-                                "supported yet");
             written.push_back(WrittenBase{ b, how });
             if (!consume(",")) break;
         }
@@ -1453,9 +1445,82 @@ void Parser::emitDestructors(std::vector<StmtPtr> &into, std::size_t from,
 // constructor. The typeinfo slot is a plain 0 here: this compiler has no RTTI
 // and refuses `typeid` by name, and clang under -fno-rtti writes 0 too.
 // Microsoft has no header, so the vptr is the table's own address.
+// The thunk a secondary table points at. `B *p` calling an overridden `g`
+// passes `this` as the B subobject - the object's address plus B's offset -
+// and C::g expects the object's address, so something has to walk it back.
+// clang emits a tail jump; this is an ordinary call and return, which costs a
+// frame and behaves identically, and needs nothing new from any backend.
+std::string Parser::synthesizeThunk(const std::string &cls, const Type *type,
+                                    const VSlot &slot, int offset,
+                                    std::size_t pos) {
+    const bool ms = target_.microsoftNames();
+    const std::string name = ms
+        ? slot.symbol + "$adj" + std::to_string(offset)
+        // _ZThn16_N1C1gEv - the prefix, the offset, then the mangled name with
+        // its own "_Z" removed and its N kept. substr(3) dropped the N and
+        // gave _ZThn16_1C1gEv, which clang does not write.
+        : "_ZThn" + std::to_string(offset) + "_" + slot.symbol.substr(2);
+
+    const Type *self = types_.pointerTo(type);
+    const int savedFrame = frameSize_;
+    frameSize_ = 0;
+
+    std::vector<Param> params;
+    int thisSlot = allocateFrameSlot(self);
+    params.push_back(Param{ self, thisSlot });
+    std::vector<int> argSlots;
+    for (std::size_t i = 0; i < slot.params.size(); i++)
+        argSlots.push_back(allocateFrameSlot(slot.params[i]));
+    for (std::size_t i = 0; i < slot.params.size(); i++)
+        params.push_back(Param{ slot.params[i], argSlots[i] });
+
+    // (C *)((char *)this - offset)
+    ExprPtr me(Var::local("this", thisSlot));
+    me->setType(self);
+    const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+    ExprPtr asChars(new Cast(chars, std::move(me)));
+    asChars->setType(chars);
+    ExprPtr back(new Num(static_cast<long long>(-offset)));
+    back->setType(types_.intType());
+    ExprPtr moved(new Binary(BinOp::Add, std::move(asChars), std::move(back)));
+    moved->setType(chars);
+    ExprPtr whole(new Cast(self, std::move(moved)));
+    whole->setType(self);
+
+    std::vector<ExprPtr> args;
+    args.push_back(std::move(whole));
+    std::vector<const Type *> full;
+    full.push_back(self);
+    for (std::size_t i = 0; i < slot.params.size(); i++) {
+        ExprPtr a(Var::local("a" + std::to_string(i), argSlots[i]));
+        a->setType(slot.params[i]);
+        args.push_back(std::move(a));
+        full.push_back(slot.params[i]);
+    }
+
+    const Signature *target = nullptr;
+    if (const std::vector<std::size_t> *set = overloadsOf(cls + "::" + slot.name))
+        for (std::size_t k = 0; k < set->size(); k++)
+            if (functions_[(*set)[k]].symbol == slot.symbol) target = &functions_[(*set)[k]];
+    const Type *returns = target != nullptr ? target->returns : types_.get(Kind::Void);
+
+    ExprPtr call = completeCall(slot.name, slot.symbol, nullptr, returns, full,
+                                false, pos, std::move(args));
+    std::vector<StmtPtr> body;
+    body.push_back(StmtPtr(new Return(returns->isVoid() ? nullptr : std::move(call))));
+    if (returns->isVoid()) body.insert(body.begin(), StmtPtr(new ExprStmt(std::move(call))));
+
+    current_->functions.push_back(Function(name, returns, std::move(params),
+                                           StmtPtr(new Block(std::move(body))),
+                                           alignTo(frameSize_, 16), false, 0,
+                                           false, 0, pos, std::vector<::Local>()));
+    current_->functions.back().setSymbol(name);
+    frameSize_ = savedFrame;
+    return name;
+}
+
 void Parser::emitVtable(const Type *cls, const std::string &tag,
                         std::size_t pos) {
-    (void)cls;
     if (tag.empty())
         src_.fail(pos, "a class with a virtual function needs a name - its "
                        "vtable is a symbol, and an anonymous class has none");
@@ -1479,6 +1544,64 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
     for (std::size_t i = 0; i < slots.size(); i++) {
         pieces.push_back(GlobalPiece{ at, 8, 0, slots[i].symbol });
         at += 8;
+    }
+
+    // **A secondary table for every polymorphic base after the first**, laid
+    // down behind the primary one in the same symbol - measured: _ZTV1C holds
+    // both, and the second begins with an offset-to-top of -16 saying how far
+    // back the complete object is.
+    //
+    // Each entry is the base's own function unless this class overrides it, in
+    // which case it is a thunk: a call through a B * arrives with `this`
+    // pointing at the B subobject, and the override expects the whole object.
+    const std::vector<Type::BaseSpec> &bases = cls->bases();
+    for (std::size_t bi = 1; bi < bases.size(); bi++) {
+        const Type *b = bases[bi].type;
+        if (!b->polymorphic()) continue;
+        const int off = bases[bi].offset;
+
+        // **The Microsoft ABI arranges this differently, and it is not the
+        // same thing under other names.** Measured with clang: it emits two
+        // separate vftable symbols - ??_7C@@6BA@@@ for the A view and
+        // ??_7C@@6BB@@@ for the B one - rather than one table in two sections,
+        // and the second points straight at ?g@C@@UEAAHXZ with no thunk in
+        // sight, where Itanium needs _ZThn16_N1C1gEv. Whether cl agrees with
+        // clang there has not been measured, and guessing at an ABI is the one
+        // thing this project does not do.
+        if (ms)
+            src_.fail(pos, "'" + tag + "' has virtual functions in a base that "
+                           "is not the first, and the Microsoft ABI lays that "
+                           "out differently - two vftable symbols rather than "
+                           "one table in two parts. Not supported yet; it is "
+                           "measured for Itanium only");
+        secondaryVptr_[tag + "::" + b->tag()] = at + (ms ? 0 : 16);
+
+        if (!ms) {
+            pieces.push_back(GlobalPiece{ at, 8, -static_cast<long long>(off),
+                                          std::string() });
+            at += 8;
+            pieces.push_back(GlobalPiece{ at, 8, 0, std::string() });
+            at += 8;
+        }
+        const std::vector<VSlot> &theirs = vtables_[b->tag()];
+        for (std::size_t i = 0; i < theirs.size(); i++) {
+            std::string entry = theirs[i].symbol;
+            // Did this class override it? Its own slot list has the answer.
+            for (std::size_t k = 0; k < slots.size(); k++) {
+                if (slots[k].name != theirs[i].name) continue;
+                if (slots[k].constThis != theirs[i].constThis) continue;
+                if (slots[k].params.size() != theirs[i].params.size()) continue;
+                bool same = true;
+                for (std::size_t q = 0; q < slots[k].params.size(); q++)
+                    if (slots[k].params[q] != theirs[i].params[q]) { same = false; break; }
+                if (!same) continue;
+                if (slots[k].symbol != theirs[i].symbol)
+                    entry = synthesizeThunk(tag, cls, slots[k], off, pos);
+                break;
+            }
+            pieces.push_back(GlobalPiece{ at, 8, 0, entry });
+            at += 8;
+        }
     }
 
     const Type *entry = types_.pointerTo(types_.get(Kind::Void));
@@ -4905,8 +5028,13 @@ void Parser::topLevel(Program &program) {
         // first word in the vptr and crashed on the first call. Giving it the
         // array type and decaying it is what yields the address, the same road
         // any array name takes.
-        const std::size_t entryCount =
-            vtables_[d.qualifier].size() + (ms ? 0 : 2);
+        std::size_t entryCount = vtables_[d.qualifier].size() + (ms ? 0 : 2);
+        {
+            const std::vector<Type::BaseSpec> &all = memberOf->bases();
+            for (std::size_t bi = 1; bi < all.size(); bi++)
+                if (all[bi].type->polymorphic())
+                    entryCount += vtables_[all[bi].type->tag()].size() + (ms ? 0 : 2);
+        }
         ExprPtr base(Var::global(table));
         base->setType(types_.arrayOf(entry, static_cast<long long>(entryCount)));
         ExprPtr value = decay(std::move(base));
@@ -4936,6 +5064,42 @@ void Parser::topLevel(Program &program) {
 
         std::vector<StmtPtr> withVptr;
         withVptr.push_back(StmtPtr(new ExprStmt(std::move(store))));
+
+        // **A class with a polymorphic second base has a second vptr**, inside
+        // that base's subobject, pointing at the secondary table laid down
+        // behind the primary one. The first vptr is the object's own; this is
+        // the one a B * will read.
+        const std::vector<Type::BaseSpec> &bs = memberOf->bases();
+        for (std::size_t bi = 1; bi < bs.size(); bi++) {
+            if (!bs[bi].type->polymorphic()) continue;
+            std::map<std::string, int>::const_iterator where =
+                secondaryVptr_.find(d.qualifier + "::" + bs[bi].type->tag());
+            if (where == secondaryVptr_.end()) continue;
+
+            ExprPtr t2(Var::global(table));
+            t2->setType(types_.arrayOf(entry, static_cast<long long>(entryCount)));
+            ExprPtr addr2 = decay(std::move(t2));
+            ExprPtr skip2(new Num(static_cast<long long>(where->second)));
+            skip2->setType(types_.intType());
+            ExprPtr into(new Binary(BinOp::Add, std::move(addr2), std::move(skip2)));
+            into->setType(entries);
+            ExprPtr val2(new Cast(entry, std::move(into)));
+            val2->setType(entry);
+
+            ExprPtr self2(Var::local("this", thisOffset_));
+            self2->setType(types_.pointerTo(memberOf));
+            ExprPtr atBase = convert(std::move(self2),
+                                     types_.pointerTo(bs[bi].type));
+            ExprPtr slotPtr(new Cast(types_.pointerTo(entry), std::move(atBase)));
+            slotPtr->setType(types_.pointerTo(entry));
+            ExprPtr there(new Unary('*', std::move(slotPtr)));
+            there->setType(entry);
+
+            ExprPtr store2(new Assign(std::move(there), std::move(val2)));
+            store2->setType(entry);
+            withVptr.push_back(StmtPtr(new ExprStmt(std::move(store2))));
+        }
+
         withVptr.push_back(std::move(body));
         body = StmtPtr(new Block(std::move(withVptr)));
     }

@@ -76,7 +76,16 @@ private:
         bool constThis;
     };
     std::map<std::string, std::vector<VSlot> > vtables_;
+    // Where a class's secondary vptr for a given base points into its table,
+    // keyed "Derived::Base". Filled while the table is laid out, read by the
+    // constructor that has to store it.
+    std::map<std::string, int> secondaryVptr_;
     void emitVtable(const Type *cls, const std::string &tag, std::size_t pos);
+    // A thunk: the entry a secondary table holds for a function this class
+    // overrides. It moves `this` back to the complete object and calls the
+    // real one. Named for the offset it undoes - _ZThn16_N1C1gEv.
+    std::string synthesizeThunk(const std::string &cls, const Type *type,
+                                const VSlot &slot, int offset, std::size_t pos);
 
     // How well one argument matches one parameter, in the order
     // [over.ics.scs] ranks them. The values are compared, so the order of

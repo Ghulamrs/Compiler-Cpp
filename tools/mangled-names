@@ -65,6 +65,15 @@ for pair in "x86_64-linux:x86_64-linux-gnu" \
     mine=${pair%%:*}
     theirs=${pair#*:}
 
+    # The same <case>.notarget tests/emit.sh reads: a case may name a target it
+    # does not compile for yet, with the reason on the line. Printed every run,
+    # because an exclusion nobody sees is an exclusion nobody removes.
+    notarget="${SRC%.cpp}.notarget"
+    if [ -f "$notarget" ] && grep -q "^$mine\b" "$notarget"; then
+        echo "$mine: skipped - $(grep "^$mine\b" "$notarget" | sed "s/^$mine[[:space:]]*//")"
+        continue
+    fi
+
     if ! "$ROOT/cxx1.exe" -S -arch "$mine" "$SRC" -o "$OUT/mine.s" 2>"$OUT/mine.err"; then
         echo "$mine: cxx1 refused it"
         sed 's/^/    /' "$OUT/mine.err" | head -3
