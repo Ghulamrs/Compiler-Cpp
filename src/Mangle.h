@@ -78,6 +78,15 @@ bool itaniumDestructorName(const std::string &cls, const Type *clsType,
 std::string microsoftDestructorName(const std::string &cls, const Type *clsType,
                                     char access);
 
+// The deleting destructor - Itanium's D0 and Microsoft's ??_G - which lives in
+// a vtable and is the one `delete p` through a base pointer reaches. No
+// program writes it, so nothing else names it.
+std::string itaniumDeletingDestructorName(const std::string &cls,
+                                          const Type *clsType);
+
+std::string microsoftDeletingDestructorName(const std::string &cls,
+                                            const Type *clsType);
+
 // The copy assignment operator, the one operator this compiler names so far.
 // Itanium spells `operator=` as the two-letter code `aS` where a member
 // function writes its name's length and letters, and writes no return type;

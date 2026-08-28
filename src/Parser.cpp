@@ -1525,6 +1525,15 @@ StmtPtr Parser::constructLocal(const Declared &d, int offset,
     return StmtPtr(new ExprStmt(std::move(call)));
 }
 
+// The deleting destructor's name. Built through the manglers rather than by
+// concatenation, because a nested class's is a whole nested-name -
+// ??_GInner@Outer@@UEAAPEAXI@Z, not ??_GOuter::Inner@@...
+std::string Parser::deletingDestructorSymbol(const std::string &cls) {
+    return target_.microsoftNames()
+         ? microsoftDeletingDestructorName(cls, findTypedef(cls))
+         : itaniumDeletingDestructorName(cls, findTypedef(cls));
+}
+
 void Parser::declareDestructor(const std::string &cls, std::size_t pos,
                                Access access, bool isVirtual) {
     std::vector<const Type *> params;
@@ -1533,11 +1542,23 @@ void Parser::declareDestructor(const std::string &cls, std::size_t pos,
     if (!params.empty() || variadic)
         src_.fail(pos, "a destructor takes no parameters");
 
-    std::string key = destructorKey(cls);
-    if (overloadsOf(key) != nullptr)
+    if (overloadsOf(destructorKey(cls)) != nullptr)
         src_.fail(pos, "'" + cls + "' has two destructors, and a class has one");
+    registerDestructor(cls, pos, access, isVirtual, false);
+}
 
-    const char code = access == Access::Public    ? 'Q'
+// Everything a destructor needs in the tables, whether a program wrote it or
+// the compiler did: the name, the entry, and the vtable slots a virtual one
+// claims.
+void Parser::registerDestructor(const std::string &cls, std::size_t pos,
+                                Access access, bool isVirtual, bool implicit) {
+    const std::vector<const Type *> params;
+    const std::string key = destructorKey(cls);
+    // **A virtual destructor is U on Microsoft whatever its access**, the same
+    // rule a virtual member function already followed - measured with cl,
+    // which writes ??1VB@@UEAA@XZ where a non-virtual public one is QEAA.
+    const char code = isVirtual                   ? 'U'
+                    : access == Access::Public    ? 'Q'
                     : access == Access::Protected ? 'I'
                                                   : 'A';
     std::string out;
@@ -1548,6 +1569,7 @@ void Parser::declareDestructor(const std::string &cls, std::size_t pos,
     functions_.push_back(Signature{ "~" + localOf(cls), out, types_.get(Kind::Void),
                                     params, false, false, pos, false, cls, false,
                                     access, isVirtual });
+    functions_.back().implicit = implicit;
 
     // **A virtual destructor claims slots where it is declared**, and how many
     // depends on the ABI: Itanium wants two, the complete-object destructor
@@ -1559,9 +1581,7 @@ void Parser::declareDestructor(const std::string &cls, std::size_t pos,
     // since ~Base and ~Derived are different spellings of the same slot.
     if (!isVirtual) return;
     const bool ms = target_.microsoftNames();
-    const std::string deleting = ms
-        ? "??_G" + cls + "@@UEAAPEAXI@Z"
-        : "_ZN" + std::to_string(cls.size()) + cls + "D0Ev";
+    const std::string deleting = deletingDestructorSymbol(cls);
 
     std::vector<VSlot> &slots = vtables_[cls];
     std::vector<const Type *> none;
@@ -1689,9 +1709,7 @@ void Parser::synthesizeDeleting(const std::string &cls, const Type *type,
                                 Access access, std::size_t pos) {
     const bool ms = target_.microsoftNames();
     const Type *self = types_.pointerTo(type);
-    const std::string symbol = ms
-        ? "??_G" + cls + "@@UEAAPEAXI@Z"
-        : "_ZN" + std::to_string(cls.size()) + cls + "D0Ev";
+    const std::string symbol = deletingDestructorSymbol(cls);
     (void)access;
 
     // Its own frame: `this`, and on Windows the flag beside it.
@@ -1768,6 +1786,9 @@ const Parser::Signature *Parser::destructorOf(const Type *cls) const {
 // takes nothing but `this`, so this is the smallest call the compiler makes.
 ExprPtr Parser::destructorCall(ExprPtr address, const Signature &dtor,
                                std::size_t pos) {
+    // Calling one is what asks for a body, which is the only thing that makes
+    // an implicit destructor a function at all.
+    functions_[static_cast<std::size_t>(&dtor - &functions_[0])].used = true;
     std::vector<ExprPtr> args;
     args.push_back(std::move(address));
     std::vector<const Type *> params;
@@ -2026,6 +2047,27 @@ static const Type *memberClass(const Type *t) {
     return (t != nullptr && t->isStructOrUnion()) ? t->unqualified() : nullptr;
 }
 
+// One element of an array member, by address: the member's own address,
+// decayed, plus the index times the element's size.
+//
+// **In bytes, and deliberately.** A Binary built here is not the parser's
+// pointer arithmetic and gets none of its scaling - the same trap the vptr
+// store hit, where `+ 2` added two bytes rather than two entries.
+static ExprPtr indexBytes(TypeTable &types, ExprPtr decayed, const Type *elem,
+                          int indexSlot, const Target &target) {
+    const Type *idx = types.intType();
+    ExprPtr i(Var::local("$i", indexSlot));
+    i->setType(idx);
+    ExprPtr size(new Num(static_cast<long long>(elem->size(target))));
+    size->setType(idx);
+    ExprPtr off(new Binary(BinOp::Mul, std::move(i), std::move(size)));
+    off->setType(idx);
+    const Type *ptr = types.pointerTo(elem);
+    ExprPtr at(new Binary(BinOp::Add, std::move(decayed), std::move(off)));
+    at->setType(ptr);
+    return at;
+}
+
 const Parser::Signature *Parser::defaultConstructorOf(const Type *cls) const {
     if (cls == nullptr || !cls->isStructOrUnion() || cls->tag().empty())
         return nullptr;
@@ -2090,6 +2132,7 @@ void Parser::declareImplicitSpecials(const std::string &tag, const Type *type,
     // implicit default one; a class that writes any constructor still gets an
     // implicit copy constructor.
     const bool wroteConstructor = overloadsOf(constructorKey(tag)) != nullptr;
+    declareImplicitDestructor(tag, type, pos);
     declareImplicitCopyCtor(tag, type, pos);
     declareImplicitCopyAssign(tag, type, pos);
     if (wroteConstructor) return;
@@ -2125,6 +2168,183 @@ void Parser::declareImplicitSpecials(const std::string &tag, const Type *type,
                                     false, false, pos, false, tag, false,
                                     Access::Public, false });
     functions_.back().implicit = true;
+}
+
+// **The destructor the class did not write.** It becomes a function exactly
+// when a base or a member has one of its own to run - measured with cl, which
+// emits `??1Has@@QEAA@XZ` for a class holding members with destructors and no
+// destructor symbol at all for a class of plain members.
+//
+// **A virtual function does not make it non-trivial**, which is the one that
+// would have been guessed wrong: cl emits nothing for a class with a virtual
+// `f()` and no destructor anywhere. What makes it *virtual* is a base whose
+// destructor is virtual, and then it takes over that slot and gets a deleting
+// form beside it like any other virtual destructor.
+void Parser::declareImplicitDestructor(const std::string &tag, const Type *type,
+                                       std::size_t pos) {
+    if (overloadsOf(destructorKey(tag)) != nullptr) return;
+
+    bool work = false;
+    bool isVirtual = false;
+    const std::vector<Type::BaseSpec> &bs = type->bases();
+    for (std::size_t i = 0; i < bs.size(); i++)
+        if (const Signature *d = destructorOf(bs[i].type)) {
+            work = true;
+            if (d->isVirtual) isVirtual = true;
+        }
+    const std::vector<Member> &ms = type->members();
+    for (std::size_t i = 0; i < ms.size() && !work; i++)
+        if (destructorOf(memberClass(ms[i].type)) != nullptr) work = true;
+    if (!work) return;
+
+    registerDestructor(tag, pos, Access::Public, isVirtual, true);
+}
+
+// Its body: the members this class added, in the reverse of the order they
+// were declared, and then the bases in the reverse of the order they were
+// written. A base's own destructor deals with the members it brought, which is
+// why they are skipped here - they are in this class's member list too,
+// because data members are copied down.
+void Parser::synthesizeDestructor(std::size_t which) {
+    const std::string cls = functions_[which].owner;
+    const std::size_t pos = functions_[which].pos;
+    const std::string symbol = functions_[which].symbol;
+    const bool isVirtual = functions_[which].isVirtual;
+    const Type *type = findTypedef(cls);
+    if (type == nullptr || !type->isStructOrUnion()) return;
+
+    const int savedFrame = frameSize_;
+    frameSize_ = 0;
+    const Type *self = types_.pointerTo(type);
+    std::vector<Param> params;
+    const int thisSlot = allocateFrameSlot(self);
+    params.push_back(Param{ self, thisSlot });
+
+    std::vector<StmtPtr> body;
+
+    const std::vector<Type::BaseSpec> &bs = type->bases();
+    const std::vector<Member> &ms = type->members();
+
+    for (std::size_t n = ms.size(); n-- > 0; ) {
+        bool fromBase = false;
+        for (std::size_t k = 0; k < bs.size() && !fromBase; k++)
+            if (ms[n].offset >= bs[k].offset &&
+                ms[n].offset < bs[k].offset + bs[k].type->dataSize())
+                fromBase = true;
+        if (fromBase) continue;
+
+        const Type *mt = ms[n].type;
+        const Type *elem = mt->isArray() ? mt->pointee() : mt;
+        const Signature *dtor = destructorOf(memberClass(mt));
+        if (dtor == nullptr) continue;
+        if (dtor->access != Access::Public)
+            src_.fail(pos, "'" + cls + "' cannot be destroyed by the destructor "
+                           "the compiler would write: the destructor of '" +
+                           memberClass(mt)->tag() + "', the type of '" +
+                           ms[n].name + "', is " +
+                           (dtor->access == Access::Private ? "private"
+                                                            : "protected"));
+
+        int indexSlot = 0;
+        long long count = 0;
+        if (mt->isArray()) {
+            count = mt->length();
+            if (count < 0)
+                src_.fail(pos, "'" + cls + "::" + ms[n].name + "' has no length, "
+                               "so the destructor the compiler would write does "
+                               "not know how many elements to destroy");
+            indexSlot = allocateFrameSlot(types_.intType());
+        }
+
+        ExprPtr me(Var::local("this", thisSlot));
+        me->setType(self);
+        ExprPtr obj(new Unary('*', std::move(me)));
+        obj->setType(type);
+        ExprPtr acc(new MemberAccess(std::move(obj), ms[n].name, ms[n].offset));
+        acc->setType(mt);
+
+        ExprPtr address;
+        if (mt->isArray()) {
+            // **Backwards**, because an array is destroyed in the reverse of
+            // the order it was built: the index counts up and the element it
+            // reaches is (count - 1 - i).
+            const Type *idx = types_.intType();
+            ExprPtr last(new Num(count - 1));
+            last->setType(idx);
+            ExprPtr i(Var::local("$i", indexSlot));
+            i->setType(idx);
+            ExprPtr back(new Binary(BinOp::Sub, std::move(last), std::move(i)));
+            back->setType(idx);
+            ExprPtr size(new Num(static_cast<long long>(elem->size(target_))));
+            size->setType(idx);
+            ExprPtr off(new Binary(BinOp::Mul, std::move(back), std::move(size)));
+            off->setType(idx);
+            const Type *ptr = types_.pointerTo(elem->unqualified());
+            ExprPtr at(new Binary(BinOp::Add, decay(std::move(acc)),
+                                  std::move(off)));
+            at->setType(ptr);
+            address = std::move(at);
+        } else {
+            address = ExprPtr(new Unary('&', std::move(acc)));
+            address->setType(types_.pointerTo(elem->unqualified()));
+        }
+
+        StmtPtr one(new ExprStmt(destructorCall(std::move(address), *dtor, pos)));
+        body.push_back(mt->isArray()
+                       ? eachElement(indexSlot, count, std::move(one))
+                       : std::move(one));
+    }
+
+    for (std::size_t n = bs.size(); n-- > 0; ) {
+        const Type *base = bs[n].type;
+        const Signature *dtor = destructorOf(base);
+        if (dtor == nullptr) continue;
+        if (dtor->access != Access::Public)
+            src_.fail(pos, "'" + cls + "' cannot be destroyed by the destructor "
+                           "the compiler would write: the destructor of its "
+                           "base '" + base->tag() + "' is " +
+                           (dtor->access == Access::Private ? "private"
+                                                            : "protected"));
+        // The base-subobject form, D2, which is what a derived class calls -
+        // the same name a written destructor reaches for.
+        std::string sym = dtor->symbol;
+        if (!target_.microsoftNames())
+            itaniumDestructorName(base->tag(), base, false, &sym);
+
+        const Type *basePtr = types_.pointerTo(base);
+        ExprPtr me(Var::local("this", thisSlot));
+        if (bs[n].offset == 0) {
+            me->setType(basePtr);
+        } else {
+            me->setType(self);
+            me = convert(std::move(me), basePtr);
+        }
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(me));
+        std::vector<const Type *> ps;
+        ps.push_back(basePtr);
+        body.push_back(StmtPtr(new ExprStmt(
+            completeCall("~" + base->tag(), sym, nullptr, types_.get(Kind::Void),
+                         ps, false, pos, std::move(args)))));
+    }
+
+    current_->functions.push_back(Function(cls + "::~" + localOf(cls),
+                                           types_.get(Kind::Void),
+                                           std::move(params),
+                                           StmtPtr(new Block(std::move(body))),
+                                           alignTo(frameSize_, 16), false, 0,
+                                           false, 0, pos, std::vector<::Local>()));
+    current_->functions.back().setSymbol(symbol);
+    if (!target_.microsoftNames()) {
+        std::string d2;
+        itaniumDestructorName(cls, type, false, &d2);
+        current_->functions.back().setAlias(d2);
+    }
+    frameSize_ = savedFrame;
+
+    // A virtual one carries the deleting form into the vtable beside it, the
+    // same as a written virtual destructor does.
+    if (isVirtual) synthesizeDeleting(cls, type, Access::Public, pos);
 }
 
 // The copy assignment operator the class did not write - which is every class,
@@ -2294,15 +2514,6 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
         const Type *mc = memberClass(ms[i].type);
         if (mc == nullptr || mc->tag().empty()) continue;
         if (overloadsOf(constructorKey(mc->tag())) == nullptr) continue;
-        // An array of them needs each element built, one call per element or a
-        // loop - and getting that wrong builds some of the array and leaves the
-        // rest as whatever the frame held. Refused by name until it is written.
-        if (ms[i].type->isArray())
-            src_.fail(pos, "'" + cls + "::" + ms[i].name + "' is an array of '" +
-                           mc->tag() + "', which has a constructor - building "
-                           "one element at a time is not supported yet; the "
-                           "constructor '" + cls + "' would otherwise get is "
-                           "what needs it");
         const Signature *ctor = defaultConstructorOf(mc);
         if (ctor == nullptr)
             src_.fail(pos, "'" + cls + "' has no constructor of its own, and the "
@@ -2317,22 +2528,45 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
                                                             : "protected"));
         functions_[static_cast<std::size_t>(ctor - &functions_[0])].used = true;
 
+        // An array of them is built one element at a time, in order - a loop
+        // rather than N calls, because N is a property of the type.
+        int indexSlot = 0;
+        long long count = 0;
+        if (ms[i].type->isArray()) {
+            count = ms[i].type->length();
+            if (count < 0)
+                src_.fail(pos, "'" + cls + "::" + ms[i].name + "' has no length, "
+                               "so the constructor the compiler would write does "
+                               "not know how many elements to build");
+            indexSlot = allocateFrameSlot(types_.intType());
+        }
+
         ExprPtr me(Var::local("this", thisSlot));
         me->setType(self);
         ExprPtr obj(new Unary('*', std::move(me)));
         obj->setType(type);
         ExprPtr acc(new MemberAccess(std::move(obj), ms[i].name, ms[i].offset));
         acc->setType(ms[i].type);
-        ExprPtr addr(new Unary('&', std::move(acc)));
-        addr->setType(types_.pointerTo(mc));
+
+        ExprPtr addr;
+        if (ms[i].type->isArray()) {
+            addr = indexBytes(types_, decay(std::move(acc)), mc, indexSlot,
+                              target_);
+        } else {
+            addr = ExprPtr(new Unary('&', std::move(acc)));
+            addr->setType(types_.pointerTo(mc));
+        }
 
         std::vector<ExprPtr> args;
         args.push_back(std::move(addr));
         std::vector<const Type *> ps;
         ps.push_back(types_.pointerTo(mc));
-        body.push_back(StmtPtr(new ExprStmt(
+        StmtPtr one(new ExprStmt(
             completeCall(mc->tag(), ctor->symbol, nullptr, types_.get(Kind::Void),
-                         ps, false, pos, std::move(args)))));
+                         ps, false, pos, std::move(args))));
+        body.push_back(ms[i].type->isArray()
+                       ? eachElement(indexSlot, count, std::move(one))
+                       : std::move(one));
     }
 
     current_->functions.push_back(Function(cls + "::" + cls, types_.get(Kind::Void),
@@ -2393,26 +2627,6 @@ StmtPtr Parser::eachElement(int indexSlot, long long count, StmtPtr one) {
     return StmtPtr(new Block(std::move(all)));
 }
 
-// One element of an array member, by address: the member's own address,
-// decayed, plus the index times the element's size.
-//
-// **In bytes, and deliberately.** A Binary built here is not the parser's
-// pointer arithmetic and gets none of its scaling - the same trap the vptr
-// store hit, where `+ 2` added two bytes rather than two entries.
-static ExprPtr indexBytes(TypeTable &types, ExprPtr decayed, const Type *elem,
-                          int indexSlot, const Target &target) {
-    const Type *idx = types.intType();
-    ExprPtr i(Var::local("$i", indexSlot));
-    i->setType(idx);
-    ExprPtr size(new Num(static_cast<long long>(elem->size(target))));
-    size->setType(idx);
-    ExprPtr off(new Binary(BinOp::Mul, std::move(i), std::move(size)));
-    off->setType(idx);
-    const Type *ptr = types.pointerTo(elem);
-    ExprPtr at(new Binary(BinOp::Add, std::move(decayed), std::move(off)));
-    at->setType(ptr);
-    return at;
-}
 
 // The body of a copy constructor nobody wrote: the bases that have one of
 // their own, then the vptrs, then every member that no base already copied.
@@ -2639,7 +2853,9 @@ void Parser::defineImplicitFunctions() {
                 functions_[i].defined)
                 continue;
             functions_[i].defined = true;
-            if (functions_[i].name == "operator=")   synthesizeCopy(i, true);
+            if (!functions_[i].name.empty() && functions_[i].name[0] == '~')
+                                                    synthesizeDestructor(i);
+            else if (functions_[i].name == "operator=") synthesizeCopy(i, true);
             else if (functions_[i].params.empty())   synthesizeDefaultCtor(i);
             else                                    synthesizeCopy(i, false);
             again = true;
@@ -5648,6 +5864,8 @@ StmtPtr Parser::declarationBody() {
                 ExprPtr store(new Assign(std::move(target), std::move(args[0])));
                 store->setType(d.type);
                 inits.push_back(StmtPtr(new ExprStmt(std::move(store))));
+                if (destructorOf(d.type) != nullptr)
+                    alive_.push_back(Alive{ d.name, off, d.type->unqualified() });
                 if (!consume(",")) break;
                 continue;
             }
@@ -5735,9 +5953,18 @@ StmtPtr Parser::declarationBody() {
                              "to take one from");
         }
 
-        declare(d.name, d.type, d.pos);
+        const int off = declare(d.name, d.type, d.pos);
         locals_.back().isConst = d.type->isConst();
         locals_.back().isRegister = (sc == StorageRegister);
+
+        // **An object with a destructor is alive from here**, whether or not
+        // it had a constructor to run. A class can have one and not the
+        // other, and before implicit destructors existed nothing but the
+        // constructor path ever added to this list - so a class with a member
+        // that needed destroying and no constructor of its own was destroyed
+        // by nobody.
+        if (destructorOf(d.type) != nullptr)
+            alive_.push_back(Alive{ d.name, off, d.type->unqualified() });
 
         if (hasInit) {
             std::vector<InitStep> path;

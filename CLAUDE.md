@@ -695,6 +695,36 @@ outside the class spells.
 A nested class is a member, so `private:` reaches it, and the name is refused
 where it is written rather than at the first use of an object.
 
+**The destructor a class does not write** is the fourth special member, and it
+decides when the other three's work is undone. It becomes a function exactly
+when a base or a member has one of its own to run - measured with cl, which
+emits `??1Has@@QEAA@XZ` for a class holding members with destructors and no
+destructor symbol at all for a class of plain ones.
+
+**A virtual function does not make it non-trivial**, and that is the one worth
+writing down because it would have been guessed the other way: cl emits no
+destructor for a class with a virtual `f()` and nothing else. What makes it
+*virtual* is a base whose destructor is virtual - then it takes over that slot,
+gets a deleting form beside it, and `delete` through a base pointer reaches it.
+Microsoft writes `U` there where a non-virtual one is `Q`, the same rule a
+member function already had and one this compiler was getting wrong for written
+virtual destructors too.
+
+Members are undone after the body, in the reverse of the order they were
+declared, then the bases in reverse - and an array backwards, which is the
+same `eachElement` loop the constructor uses with the index read as
+`count - 1 - i`. A base's own destructor deals with the members it brought, so
+they are skipped here: they are in this class's member list too, because data
+members are copied down.
+
+**Nothing but the constructor path used to add to `alive_`**, so a class with a
+member that needed destroying and no constructor of its own was destroyed by
+nobody. Any local whose type has a destructor is registered now, constructor or
+not - a class can have one and not the other.
+
+Building an array member element by element arrived with this, since the
+destructor needed the loop anyway; it had been refused by name until then.
+
 **Two exclusion files, and the difference matters.** `<case>.notarget` says
 cxx1 cannot compile that case for that target at all - `emit.sh` and
 `mangled-names` both read it. `<case>.nonames` says it compiles fine and only

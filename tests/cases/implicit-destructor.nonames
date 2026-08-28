@@ -1,0 +1,2 @@
+x86_64-linux  cxx1 emits both of Itanium's constructor and destructor forms where clang emits only the ones a use needs - see docs/CONFORMANCE.md, "An inline member function is a strong symbol"
+arm64-darwin  same: VB is only ever built as a base here, so clang writes its C2 and no C1

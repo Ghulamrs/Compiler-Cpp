@@ -150,10 +150,14 @@ public:
         if (fn->isVariadicFn()) out += "z";
     }
 
-    void destructor(const std::string &cls, const Type *clsType, bool complete) {
+    // D1 complete, D2 base-subobject, D0 the deleting form that lives in a
+    // vtable. All three are the same nested-name with two characters after it.
+    void destructor(const std::string &cls, const Type *clsType, char form) {
         out = "_ZN";
         prefix(clsType, cls);
-        out += complete ? "D1Ev" : "D2Ev";
+        out += 'D';
+        out += form;
+        out += "Ev";
     }
 
     void staticMember(const std::string &cls, const Type *clsType,
@@ -323,6 +327,14 @@ public:
         out += access;
         out += "EAA";
         out += "@XZ";
+    }
+
+    // ??_GVB@@UEAAPEAXI@Z - the deleting destructor, which takes a flag beside
+    // `this` and answers `this`.
+    void deletingDestructor(const std::string &cls, const Type *clsType) {
+        out = "??_G";
+        scopeOf(clsType, cls);
+        out += "UEAAPEAXI@Z";
     }
 
     void function(const std::string &name, const Type *fn) {
@@ -570,9 +582,23 @@ bool itaniumDestructorName(const std::string &cls, const Type *clsType,
     // spell but the class - which is a whole nested-name once a class can be
     // written inside another.
     Itanium m;
-    m.destructor(cls, clsType, complete);
+    m.destructor(cls, clsType, complete ? '1' : '2');
     *out = m.out;
     return true;
+}
+
+std::string itaniumDeletingDestructorName(const std::string &cls,
+                                          const Type *clsType) {
+    Itanium m;
+    m.destructor(cls, clsType, '0');
+    return m.out;
+}
+
+std::string microsoftDeletingDestructorName(const std::string &cls,
+                                            const Type *clsType) {
+    Microsoft m;
+    m.deletingDestructor(cls, clsType);
+    return m.out;
 }
 
 std::string microsoftDestructorName(const std::string &cls, const Type *clsType,

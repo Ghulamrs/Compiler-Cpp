@@ -1,0 +1,17 @@
+trivial
+own
+  ~Base 1
+two
+  ~M 20
+  ~M 10
+arr
+  ~M 3
+  ~M 2
+  ~M 1
+dv
+  ~M 8
+  ~VB 7
+poly
+  ~M 0
+  ~VB 9
+end

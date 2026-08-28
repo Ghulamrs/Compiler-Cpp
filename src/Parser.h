@@ -258,6 +258,12 @@ private:
     void declareConstructor(const std::string &cls, std::size_t pos, Access access);
     void declareDestructor(const std::string &cls, std::size_t pos, Access access,
                            bool isVirtual);
+    std::string deletingDestructorSymbol(const std::string &cls);
+    void registerDestructor(const std::string &cls, std::size_t pos,
+                            Access access, bool isVirtual, bool implicit);
+    void declareImplicitDestructor(const std::string &tag, const Type *type,
+                                   std::size_t pos);
+    void synthesizeDestructor(std::size_t which);
     // The deleting destructor, which no program writes: it runs the
     // destructor and then frees. Itanium calls it D0 and Microsoft ??_G, and
     // it is what a `delete` through a base pointer reaches.
