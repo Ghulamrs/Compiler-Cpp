@@ -346,7 +346,14 @@ private:
         if (t->isStructOrUnion()) {
             const std::string *tag = tagOf(t);
             if (tag == nullptr) return;
-            out += t->kind() == Kind::Union ? 'T' : 'U';
+            // **T union, U struct, V class** - the Microsoft ABI spells the
+            // three differently, and until vtables there was nothing declared
+            // with `class` whose type reached a name, so U covered both.
+            // clang writes ?f@@YAHPEAVShape@@@Z where cxx1 wrote ...PEAUShape...
+            // Itanium spells all three by tag and does not care.
+            out += t->kind() == Kind::Union ? 'T'
+                 : t->declaredClass()       ? 'V'
+                                            : 'U';
             nameComponent(*tag);
             return;
         }

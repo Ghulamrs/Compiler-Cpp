@@ -31,6 +31,11 @@ trap 'rm -rf "$OUT"' EXIT
 # ??_C@... - and merges it across translation units. cxx1 gives it a local
 # label. That is a difference in how a literal is stored rather than in how a
 # name is spelled, so it is left out here.
+#
+# **An indirect call names no symbol**, so the two `call` rules below skip an
+# operand starting with '*'. Virtual dispatch is exactly that - `call *%r11` -
+# and without the guard the register was scraped as a name and reported as a
+# symbol cxx1 had and clang did not.
 names() {
     sed -n \
         -e 's/^[[:space:]]*\.globl[[:space:]]*//p' \
@@ -39,12 +44,17 @@ names() {
         -e 's/^\([^[:space:]]*\)[[:space:]][[:space:]]*PROC.*/\1/p' \
         -e 's/^\([^[:space:]:]*\):.*/\1/p' \
         -e 's/^\([A-Za-z_$?][A-Za-z0-9_$?@]*\)[[:space:]][[:space:]]*D[BWDQ][[:space:]].*/\1/p' \
-        -e 's/^[[:space:]]*call[[:space:]][[:space:]]*//p' \
-        -e 's/^[[:space:]]*callq[[:space:]][[:space:]]*//p' \
+        -e 's/^[[:space:]]*call[[:space:]][[:space:]]*\([^*][^[:space:]]*\).*/\1/p' \
+        -e 's/^[[:space:]]*callq[[:space:]][[:space:]]*\([^*][^[:space:]]*\).*/\1/p' \
         -e 's/^[[:space:]]*bl[[:space:]][[:space:]]*//p' "$1" |
     sed -e 's/"//g' -e 's/[:,].*//' -e 's/@PLT$//' -e 's/[[:space:]].*//' |
     grep -vE '^$|^[.$]|^_*L|^l_|^@feat|^\?\?|_end_|_begin_|^_*main$' |
     grep -vE '^_*stack_chk|^_*fltused$|^__real@|^__xmm@' |
+    # MASM writes an indirect call as `call r11`, with no '*' to tell it from a
+    # symbol - so the register names go here. The AT&T targets are handled by
+    # the '*' guard above; this is the same exclusion for a syntax that offers
+    # no marker.
+    grep -vE '^r[0-9]+[dwb]?$|^[re]?[abcd]x$|^[re]?[sd]i$|^[re]?[sb]p$|^x[0-9]+$' |
     sort -u
 }
 

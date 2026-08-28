@@ -791,6 +791,25 @@ static bool isNullConstant(const Expr &e) {
 // does become 'const char * const *'. Without that last rule a program could
 // store a pointer-to-const into the writable pointer at the bottom and write
 // through it, with nothing along the way having said no.
+// Is `base` a base class of `derived`, publicly, at any depth? The conversion
+// this permits costs nothing at run time - a base subobject sits at offset 0 -
+// but it has to be allowed by the type system before a Derived * can be handed
+// to anything taking a Base *.
+//
+// Only through public inheritance: a private base is an implementation detail
+// and [conv.ptr] does not convert to it from outside.
+static bool publiclyDerivedFrom(const Type *derived, const Type *base) {
+    if (derived == nullptr || base == nullptr) return false;
+    const Type *d = derived->unqualified();
+    const Type *b = base->unqualified();
+    for (const Type *c = d->base(); c != nullptr; c = c->base()) {
+        if (d->baseAccess() != Access::Public) return false;
+        if (c->unqualified() == b) return true;
+        d = c;
+    }
+    return false;
+}
+
 static bool qualificationConvertible(const Type *from, const Type *to) {
     bool prefixConst = true;
     for (;;) {
@@ -868,6 +887,12 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
         // Match, so it still beats a promotion. It loses to the identity
         // conversion alone, which is the whole reason the two are separate.
         if (qualificationConvertible(from, to)) return Rank::Qualification;
+        // Derived * to Base * is a pointer conversion, which ranks below a
+        // promotion - so f(Base *) loses to f(Derived *) for a Derived *,
+        // which is what [over.ics.rank] asks for.
+        if (publiclyDerivedFrom(from->pointee(), to->pointee()) &&
+            (to->pointee()->isConst() || !from->pointee()->isConst()))
+            return Rank::Conversion;
         if (to->pointee()->isVoid() && !to->pointee()->isConst() &&
             from->pointee()->isConst())
             return Rank::None;
@@ -981,6 +1006,11 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
 
     if (to->isPointer() && ft->isPointer()) {
         if (qualificationConvertible(ft, to)) return;
+        // Derived * converts to Base *, the base being at offset 0, so the
+        // value is unchanged and only the type moves.
+        if (publiclyDerivedFrom(ft->pointee(), to->pointee()) &&
+            (to->pointee()->isConst() || !ft->pointee()->isConst()))
+            return;
         // An implicit conversion through void * is C's rule, kept here and
         // recorded in docs/CONFORMANCE.md - but it must not become the way
         // round const that the rule above just closed.
@@ -3157,15 +3187,6 @@ ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
         src_.fail(pos, "'" + name + "' is " + how + " in '" + plain->describe() +
                        "' - it can be called only from inside the class");
     }
-    // Slice one of this step emits the table and sets the vptr; nothing reads
-    // it yet. A static call to a virtual function would be right whenever the
-    // static type happened to be the dynamic one and silently wrong otherwise,
-    // which is the one outcome worth refusing loudly.
-    if (sig.isVirtual)
-        src_.fail(pos, "'" + name + "' is virtual, and dispatching through the "
-                       "vtable is not supported yet - the table is emitted and "
-                       "the vptr is set, but nothing reads it");
-
     if (cls->isConst() && !sig.constThis)
         src_.fail(pos, "'" + name + "' is not a const member function, and this "
                        "object is const - calling it could change what the "
@@ -3181,16 +3202,86 @@ ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
     ExprPtr addr(new Unary('&', std::move(object)));
     addr->setType(thisType);
 
-    std::vector<ExprPtr> all;
-    all.push_back(std::move(addr));
-    for (std::size_t i = 0; i < args.size(); i++) all.push_back(std::move(args[i]));
-
     std::vector<const Type *> full;
     full.push_back(thisType);
     for (std::size_t i = 0; i < sig.params.size(); i++) full.push_back(sig.params[i]);
 
-    return completeCall(name, sig.symbol, nullptr, sig.returns, full,
-                        sig.variadic, pos, std::move(all));
+    // **A virtual call reads the slot rather than naming the function.** The
+    // object's first word is the vptr; the slot is at a fixed index, the same
+    // index in every class in the chain, which is what the table's ordering
+    // bought. Everything below the load is an ordinary indirect call - the
+    // machinery a call through a function pointer already used.
+    ExprPtr callee;
+    ExprPtr keepAddress;
+    if (sig.isVirtual) {
+        int index = -1;
+        const std::vector<VSlot> &slots = vtables_[plain->tag()];
+        for (std::size_t i = 0; i < slots.size(); i++) {
+            if (slots[i].name != name || slots[i].constThis != sig.constThis) continue;
+            if (slots[i].params.size() != sig.params.size()) continue;
+            bool same = true;
+            for (std::size_t k = 0; k < sig.params.size(); k++)
+                if (slots[i].params[k] != sig.params[k]) { same = false; break; }
+            if (same) { index = static_cast<int>(i); break; }
+        }
+        if (index < 0)
+            src_.fail(pos, "'" + name + "' is virtual but has no vtable slot in "
+                           "'" + plain->describe() + "'");
+
+        const Type *fnType = types_.functionType(sig.returns, full, sig.variadic);
+        const Type *fnPtr = types_.pointerTo(fnType);
+        const Type *table = types_.pointerTo(fnPtr);       // what the vptr is
+
+        // **The address is needed twice** - once to read the vptr out of the
+        // object, once as the `this` argument - and an expression is used up
+        // when it is moved. So it goes into a slot first and both readers name
+        // that, which is the shape bindReference and `new` already use.
+        int slot = allocateFrameSlot(thisType);
+        std::string temp = ".vc" + std::to_string(refTemps_++);
+
+        ExprPtr held(Var::local(temp, slot));
+        held->setType(thisType);
+        keepAddress.reset(new Assign(std::move(held), std::move(addr)));
+        keepAddress->setType(thisType);
+
+        ExprPtr again(Var::local(temp, slot));
+        again->setType(thisType);
+        addr.reset(Var::local(temp, slot));
+        addr->setType(thisType);
+
+        ExprPtr forLoad(new Cast(types_.pointerTo(table), std::move(again)));
+        forLoad->setType(types_.pointerTo(table));
+        ExprPtr vptr(new Unary('*', std::move(forLoad)));
+        vptr->setType(table);
+
+        if (index != 0) {
+            // Bytes again, and for the same reason as the header skip in the
+            // constructor: a hand-built Add is not scaled by the pointee.
+            ExprPtr at(new Num(static_cast<long long>(index) * fnPtr->size(target_)));
+            at->setType(types_.intType());
+            ExprPtr moved(new Binary(BinOp::Add, std::move(vptr), std::move(at)));
+            moved->setType(table);
+            vptr = std::move(moved);
+        }
+        ExprPtr entry(new Unary('*', std::move(vptr)));
+        entry->setType(fnPtr);
+        callee = std::move(entry);
+    }
+
+    std::vector<ExprPtr> all;
+    all.push_back(std::move(addr));
+    for (std::size_t i = 0; i < args.size(); i++) all.push_back(std::move(args[i]));
+
+    ExprPtr call = completeCall(name, sig.symbol, std::move(callee), sig.returns,
+                                full, sig.variadic, pos, std::move(all));
+    if (keepAddress == nullptr) return call;
+
+    // The address is saved, then the call reads it - in that order, which the
+    // comma operator is exactly for.
+    const Type *result = call->type();
+    ExprPtr both(new Comma(std::move(keepAddress), std::move(call)));
+    both->setType(result);
+    return both;
 }
 
 // [class.access]: a member that is not public may be named only from inside the
@@ -4536,13 +4627,26 @@ void Parser::topLevel(Program &program) {
         const Type *entry = types_.pointerTo(types_.get(Kind::Void));
         const Type *entries = types_.pointerTo(entry);
 
+        // **The table's ADDRESS, not its contents.** A global Var is an
+        // lvalue and reading one loads from it - which stored the table's
+        // first word in the vptr and crashed on the first call. Giving it the
+        // array type and decaying it is what yields the address, the same road
+        // any array name takes.
+        const std::size_t entryCount =
+            vtables_[d.qualifier].size() + (ms ? 0 : 2);
         ExprPtr base(Var::global(table));
-        base->setType(entries);
-        ExprPtr value = std::move(base);
+        base->setType(types_.arrayOf(entry, static_cast<long long>(entryCount)));
+        ExprPtr value = decay(std::move(base));
         if (!ms) {
-            ExprPtr two(new Num(2LL));                 // past the two header words
-            two->setType(types_.intType());
-            ExprPtr past(new Binary(BinOp::Add, std::move(value), std::move(two)));
+            // **In bytes, because this Add is not the parser's pointer
+            // arithmetic.** Building the node by hand and typing it by hand
+            // skips the scaling `p + n` normally gets, so adding 2 added two
+            // bytes and the vptr pointed two bytes into the table's first
+            // word. The header is two pointers wide; that is what to add.
+            const long long header = 2LL * entry->size(target_);
+            ExprPtr skip(new Num(header));
+            skip->setType(types_.intType());
+            ExprPtr past(new Binary(BinOp::Add, std::move(value), std::move(skip)));
             past->setType(entries);
             value = std::move(past);
         }

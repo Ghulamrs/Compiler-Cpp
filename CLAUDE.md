@@ -369,6 +369,26 @@ single inheritance passed without it.
 A polymorphic class with no constructor is refused: nothing else sets the vptr,
 and an implicit default constructor is not written yet.
 
+**Dispatch reads the slot rather than naming the function**: the object's first
+word is the vptr, the slot is at a fixed index - the same index in every class
+in the chain, which is what the table's ordering bought - and from there it is
+an ordinary indirect call, the machinery a call through a function pointer
+already used. It needs `Derived *` to convert to `Base *`, which costs nothing
+at run time because the base is at offset 0, and ranks as a pointer conversion
+so `f(Derived *)` still beats `f(Base *)` for a `Derived *`.
+
+**Two traps in building AST by hand, both found by running.** A global `Var` is
+an lvalue, so naming the vtable *loaded* its first word instead of taking its
+address - the array type and `decay` are what yield an address. And a `Binary`
+built by hand is not the parser's pointer arithmetic: `+ 2` added two bytes
+rather than two entries, so the vptr pointed two bytes into the table's first
+word. Both places compute bytes explicitly now and say why.
+
+**T union, U struct, V class** in a Microsoft name. Until vtables nothing
+declared with `class` had its type reach a name, so U covered both; clang and
+cl both write `?viaPointer@@YAHPEAVShape@@@Z` where cxx1 wrote `...PEAUShape...`.
+Itanium spells all three by tag and does not care.
+
 `docs/CONFORMANCE.md` records what compiles here and should not — currently
 that an enumeration is still `int`, and that a class name cannot be hidden by
 an object of the same name.
