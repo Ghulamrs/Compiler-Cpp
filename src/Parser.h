@@ -55,6 +55,12 @@ private:
         // declaration is refused where it stands and the message wants to say
         // which rule stopped it.
         bool cLinkage;
+        // The class this belongs to, empty for a free function. A member is
+        // keyed in the table as "Point::get", so overload resolution works on
+        // members with no second implementation of it.
+        std::string owner;
+        bool constThis = false;
+        Access access = Access::Public;
     };
 
     // How well one argument matches one parameter, in the order
@@ -75,6 +81,10 @@ private:
         std::size_t pos;
 
         std::size_t paramsAt = 0;
+        // The class named before a `::` in a definition's declarator -
+        // `int Point::get()` declares nothing called "Point::get", it defines
+        // the `get` that Point already declared.
+        std::string qualifier;
     };
 
     enum StorageClass { StorageNone, StorageStatic, StorageExtern, StorageTypedef,
@@ -176,6 +186,19 @@ private:
     const EnumConst *findEnum(const std::string &name) const;
     const Type *structOrUnionSpecifier(Kind kind, bool isClass = false);
     void checkAccessible(const Type *object, const Member &m, std::size_t pos) const;
+    void declareMember(const std::string &cls, const Declared &d, bool constThis,
+                       Access access, bool inUnion);
+    std::string memberSymbol(const std::string &cls, const std::string &name,
+                             const Type *fn, Access access, bool constThis,
+                             std::size_t pos);
+    ExprPtr memberCall(ExprPtr object, const Type *cls, const std::string &name,
+                       std::size_t pos);
+
+    // The class whose member function is being parsed, and the frame offset of
+    // its hidden `this` parameter. Empty and 0 outside one, which is what
+    // makes "is this inside the class" a question with an answer.
+    const Type *currentClass_ = nullptr;
+    int thisOffset_ = 0;
     const Type *enumSpecifier();
     bool atDeclarationStart() const;
     const Type *specifiers(StorageClass *storage, Qualifiers *quals = nullptr);

@@ -232,6 +232,37 @@ which keyword defined it so a diagnostic says "class Account" about something
 written as a class - only a *definition* sets that, since `class X;` followed
 by `struct X { }` is one type written two ways and the standard allows the mix.
 
+**Member functions are free functions with one extra leading pointer**, and
+that is why the backends needed nothing: `this` is parameter zero and every
+backend already knew how to pass a pointer. It is bound before any written
+parameter so it takes the first slot, and it is deliberately not in the
+signature's `params` - that vector is the declared type, which is what
+overload resolution ranks and the mangler spells, and `this` is in neither.
+
+A member is keyed in the one function table as `"Point::get"`, which is what
+gave members overload resolution with no second implementation of it: two
+members with different parameters are two entries under that key, exactly as
+two free functions would be.
+
+**Both ABIs spell the class into the name, and only Microsoft spells in the
+access** - Q public, I protected, A private, measured. So a member that changes
+from private to public changes its symbol on Windows and keeps it on Linux. A
+const member function is `_ZNK...` and `...QEBA...`, and const is part of which
+member it is: `get()` and `get() const` are two functions.
+
+**An empty class became legal here with this step**, and that was not a loose
+end: a class holding only member functions has no data members, and C's rule
+that a struct needs one would have refused the ordinary shape of a class that
+carries behaviour and no state. Size is one byte so two objects have different
+addresses.
+
+Refused by name rather than half-built: a member function **defined inside**
+the class body, because the body would have to see members declared after it -
+which means holding it until the class is closed, and that is a change to when
+parsing happens rather than an addition to it; a nested class; a member
+function of a union; and a member function declared out of line that the class
+never declared.
+
 `docs/CONFORMANCE.md` records what compiles here and should not — currently
 that an enumeration is still `int`, and that a class name cannot be hidden by
 an object of the same name.

@@ -213,6 +213,38 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 continue;
             }
 
+            // A '(' after the name is a member function, not a member. The
+            // declarator leaves the parameter list for its caller to read -
+            // that is how a free function is parsed too - so this reads it and
+            // builds the function type from it.
+            //
+            // It goes in the same table free functions use, under
+            // "Point::get", which is what gives members overload resolution
+            // with no second implementation of it.
+            if (peek().is("(")) {
+                std::vector<const Type *> mparams;
+                bool mvariadic = false;
+                parameterTypes(mparams, mvariadic);
+                d.type = types_.functionType(d.type, std::move(mparams), mvariadic);
+                bool constThis = false;
+                if (consume("const")) constThis = true;
+                if (peek().is("{"))
+                    src_.fail(peek().pos,
+                              "a member function defined inside the class is "
+                              "not supported yet - the body would have to see "
+                              "members declared after it, which means holding "
+                              "it until the class is closed. Define it outside "
+                              "with '" + (tag.empty() ? std::string("Class")
+                                                      : tag) + "::" + d.name +
+                              "'");
+                if (tag.empty())
+                    src_.fail(d.pos, "a member function needs a class with a "
+                                     "name - this one is anonymous");
+                declareMember(tag, d, constThis, access, kind == Kind::Union);
+                if (!consume(",")) break;
+                continue;
+            }
+
             if (!d.type->isComplete())
                 src_.fail(d.pos, "'" + d.name + "' has an incomplete type");
             int a = d.type->align(target_);
@@ -231,8 +263,18 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     expect("}");
 
     long long totalBits = (kind == Kind::Union) ? widestBits : bitCursor;
-    if (members.empty() && totalBits == 0)
-        src_.fail(pos, std::string(what) + " has no members");
+
+    // **An empty class is legal in C++ and has size 1**, where C required at
+    // least one member. That rule arrived with member functions rather than
+    // before them: a class holding only member functions has no data members
+    // at all, and refusing it would have refused the ordinary shape of a class
+    // that carries behaviour and no state. The size is one byte so that two
+    // objects of it have different addresses, which is what the standard asks
+    // for and not an arbitrary choice.
+    if (members.empty() && totalBits == 0) {
+        type->complete(members, 1, 1);
+        return type;
+    }
 
     int size = static_cast<int>(alignTo((totalBits + 7) / 8, widest));
     type->complete(members, size, widest);
@@ -472,8 +514,21 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
 
     std::size_t pos = peek().pos;
     std::string name;
+    std::string qualifier;
     if (nameOptional && peek().kind != TokenKind::Ident) name.clear();
     else name = expectIdent("a name");
+
+    // `int Point::get()` - the name before the '::' is the class, and what
+    // follows is the member being defined. Only one level: a class inside a
+    // class is not a thing this compiler has yet.
+    if (!name.empty() && peek().is("::")) {
+        at_++;
+        qualifier = name;
+        name = expectIdent("a member name after '::'");
+        if (peek().is("::"))
+            src_.fail(peek().pos, "a nested class is not supported yet - only "
+                                  "'Class::member' names something here");
+    }
 
     const Type *t = arraySuffix(base, pos);
 
@@ -485,7 +540,7 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
         parameterTypes(ignored, ignoredVariadic);
     }
 
-    return Declared{ name, t, pos, paramsAt };
+    return Declared{ name, t, pos, paramsAt, qualifier };
 }
 
 const Type *Parser::unsignedVersion(const Type *t) const {
@@ -918,6 +973,59 @@ std::string Parser::functionSymbol(const std::string &name, const Type *returns,
     return out;
 }
 
+// A member function declaration, keyed under "Class::name" in the one table
+// every function lives in. Nothing about overload resolution had to be told
+// that members exist: two members of one class with different parameters are
+// two entries under that key, exactly as two free functions would be.
+void Parser::declareMember(const std::string &cls, const Declared &d,
+                           bool constThis, Access access, bool inUnion) {
+    if (inUnion)
+        src_.fail(d.pos, "a member function of a union is not supported yet");
+
+    const Type *fn = d.type;
+    std::string key = cls + "::" + d.name;
+    std::vector<std::size_t> &set = functionIndex_[key];
+
+    const std::vector<const Type *> &params = fn->params();
+    for (std::size_t k = 0; k < set.size(); k++) {
+        const Signature &f = functions_[set[k]];
+        if (f.params.size() != params.size() || f.constThis != constThis) continue;
+        bool same = true;
+        for (std::size_t i = 0; i < params.size(); i++)
+            if (f.params[i] != params[i]) { same = false; break; }
+        if (same)
+            src_.fail(d.pos, "'" + key + "' is declared twice");
+    }
+
+    set.push_back(functions_.size());
+    functions_.push_back(Signature{
+        d.name,
+        memberSymbol(cls, d.name, fn, access, constThis, d.pos),
+        fn->returns(), params, fn->isVariadicFn(), false, d.pos, false,
+        cls, constThis, access });
+}
+
+// A member function's linkage name. Never plain, and never affected by
+// `extern "C"`: a member cannot have C linkage, so the two ABIs are the only
+// choice here.
+std::string Parser::memberSymbol(const std::string &cls, const std::string &name,
+                                 const Type *fn, Access access, bool constThis,
+                                 std::size_t pos) {
+    // Q public, I protected, A private - the Microsoft ABI puts access in the
+    // name and Itanium does not, both measured against clang.
+    const char code = access == Access::Public    ? 'Q'
+                    : access == Access::Protected ? 'I'
+                                                  : 'A';
+    std::string out, why;
+    bool ok = target_.microsoftNames()
+            ? microsoftMemberName(cls, name, fn, code, constThis, &out, &why)
+            : itaniumMemberName(cls, name, fn, constThis, &out, &why);
+    if (!ok)
+        src_.fail(pos, "'" + cls + "::" + name + "' cannot be given a name the "
+                       "linker can hold: " + why);
+    return out;
+}
+
 // A variable at namespace scope is mangled by the Microsoft ABI and left
 // alone by Itanium. A static one is nobody else's business either way, so it
 // keeps the name it was written with.
@@ -990,7 +1098,8 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
                                     functionSymbol(name, returns, params, variadic,
                                                    internal, pos),
                                     returns, params, variadic, defining, pos,
-                                    cName });
+                                    cName, std::string(), false,
+                                    Access::Public });
 }
 
 const std::vector<std::size_t> *
@@ -1157,7 +1266,7 @@ static const char *notYetSupported(const std::string &word) {
         "explicit", "export", "friend", "inline", "mutable", "namespace",
         "noexcept", "not", "not_eq", "nullptr", "operator", "or",
         "or_eq", "reinterpret_cast",
-        "static_assert", "static_cast", "template", "this", "thread_local",
+        "static_assert", "static_cast", "template", "thread_local",
         "throw", "try", "typeid", "typename", "using", "virtual",
         "xor", "xor_eq"
     };
@@ -1173,6 +1282,22 @@ ExprPtr Parser::primary(Program *program) {
         ExprPtr n(new Num(static_cast<long long>(value ? 1 : 0)));
         n->setType(types_.get(Kind::Bool));
         return n;
+    }
+
+    // `this` is the hidden first parameter, read back. It is a pointer and not
+    // a reference, which is C++'s own choice and the reason `->` is written so
+    // often inside a member function.
+    if (peek().is("this")) {
+        std::size_t pos = peek().pos;
+        at_++;
+        if (currentClass_ == nullptr)
+            src_.fail(pos, "'this' is only inside a member function, and this "
+                           "is not one");
+        const Local *slot = findLocal("this");
+        ExprPtr v(Var::local("this", slot != nullptr ? slot->offset : thisOffset_));
+        v->setType(slot != nullptr ? slot->type
+                                   : types_.pointerTo(currentClass_));
+        return v;
     }
 
     if (peek().kind == TokenKind::Keyword) {
@@ -1338,6 +1463,23 @@ ExprPtr Parser::primary(Program *program) {
         const Type *held = l != nullptr ? l->type : (g != nullptr ? g->type : nullptr);
         bool callsThroughObject = held != nullptr && held->isFunctionPointer();
 
+        // An unqualified call inside a member function looks for a member of
+        // this class first - [class.mfct.non-static] makes `secret()` mean
+        // `this->secret()`. It has to be asked before the free-function branch
+        // below, which would otherwise report a member as undeclared.
+        if (peekAt(1).is("(") && !callsThroughObject && currentClass_ != nullptr &&
+            l == nullptr && g == nullptr &&
+            overloadsOf(currentClass_->tag() + "::" + name) != nullptr) {
+            if (const Local *self = findLocal("this")) {
+                at_ += 2;
+                ExprPtr me(Var::local("this", self->offset));
+                me->setType(self->type);
+                ExprPtr obj(new Unary('*', std::move(me)));
+                obj->setType(self->type->pointee());
+                return memberCall(std::move(obj), self->type->pointee(), name, pos);
+            }
+        }
+
         if (peekAt(1).is("(") && !callsThroughObject) {
             at_ += 2;
             // The arguments first, then the function: with a set to choose
@@ -1356,6 +1498,28 @@ ExprPtr Parser::primary(Program *program) {
             return n;
         }
         if (ExprPtr v = objectRef(name)) return v;
+
+        // Inside a member function an unqualified name may be a member of the
+        // class - [class.mfct.non-static] says it is `this->name`, and that is
+        // exactly what is built here rather than a second kind of lookup.
+        if (currentClass_ != nullptr && findLocal(name) == nullptr &&
+            findGlobal(name) == nullptr) {
+            const Local *self = findLocal("this");
+            if (const Member *m = currentClass_->findMember(name)) {
+                if (self == nullptr)
+                    src_.fail(pos, "'" + name + "' is a member and there is no "
+                                   "object here to read it from");
+                ExprPtr me(Var::local("this", self->offset));
+                me->setType(self->type);
+                ExprPtr obj(new Unary('*', std::move(me)));
+                const Type *held = self->type->pointee();
+                obj->setType(held);
+                ExprPtr acc(new MemberAccess(std::move(obj), name, m->offset,
+                                             m->width, m->bitOffset));
+                acc->setType(held->isConst() ? types_.withConst(m->type) : m->type);
+                return acc;
+            }
+        }
 
         // Taking the address of an overloaded name needs a target type to
         // choose by - [over.over] - and there is none here. Refused by name
@@ -2173,6 +2337,7 @@ ExprPtr Parser::postfix() {
             deref->setType(obj);
             n = std::move(deref);
             std::string name = expectIdent("a member name");
+            if (consume("(")) { n = memberCall(std::move(n), obj, name, pos); continue; }
             const Member *m = obj->findMember(name);
             if (!m) src_.fail(pos, "'" + obj->describe() + "' has no member '" + name + "'");
             checkAccessible(obj, *m, pos);
@@ -2200,6 +2365,7 @@ ExprPtr Parser::postfix() {
                                n->type()->describe() + "'");
             const Type *obj = n->type();
             std::string name = expectIdent("a member name");
+            if (consume("(")) { n = memberCall(std::move(n), obj, name, pos); continue; }
             const Member *m = obj->findMember(name);
             if (!m) src_.fail(pos, "'" + obj->describe() + "' has no member '" + name + "'");
             checkAccessible(obj, *m, pos);
@@ -2507,6 +2673,49 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
                          types_.get(Kind::Void), std::move(raw), pos);
 }
 
+// A call through an object: `p.move(1, 2)`. The object's address goes in front
+// of the written arguments and the declared parameters gain a matching leading
+// pointer, so from here down it is an ordinary call - arity, conversions and
+// the backends all see what they already knew how to handle.
+ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
+                           const std::string &name, std::size_t pos) {
+    const Type *plain = cls->unqualified();
+    std::string key = plain->tag() + "::" + name;
+
+    std::vector<ExprPtr> args;
+    parseArguments(args);
+    const Signature &sig = resolveOverload(key, args, pos);
+
+    // Now there IS an inside, and this is where it starts to mean something:
+    // a private member is reachable from another member of the same class.
+    if (sig.access != Access::Public && currentClass_ != plain) {
+        const char *how = sig.access == Access::Private ? "private" : "protected";
+        src_.fail(pos, "'" + name + "' is " + how + " in '" + plain->describe() +
+                       "' - it can be called only from inside the class");
+    }
+    if (cls->isConst() && !sig.constThis)
+        src_.fail(pos, "'" + name + "' is not a const member function, and this "
+                       "object is const - calling it could change what the "
+                       "const promised not to");
+
+    const Type *pointee = sig.constThis ? types_.withConst(plain) : plain;
+    const Type *thisType = types_.pointerTo(pointee);
+
+    ExprPtr addr(new Unary('&', std::move(object)));
+    addr->setType(thisType);
+
+    std::vector<ExprPtr> all;
+    all.push_back(std::move(addr));
+    for (std::size_t i = 0; i < args.size(); i++) all.push_back(std::move(args[i]));
+
+    std::vector<const Type *> full;
+    full.push_back(thisType);
+    for (std::size_t i = 0; i < sig.params.size(); i++) full.push_back(sig.params[i]);
+
+    return completeCall(name, sig.symbol, nullptr, sig.returns, full,
+                        sig.variadic, pos, std::move(all));
+}
+
 // [class.access]: a member that is not public may be named only from inside the
 // class. There is no inside yet - member functions are the next step of this
 // rung - so from here every non-public member is out of reach, which is exactly
@@ -2514,6 +2723,7 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
 void Parser::checkAccessible(const Type *object, const Member &m,
                              std::size_t pos) const {
     if (m.access == Access::Public) return;
+    if (currentClass_ != nullptr && currentClass_ == object->unqualified()) return;
     const char *how = m.access == Access::Private ? "private" : "protected";
     src_.fail(pos, "'" + m.name + "' is " + how + " in '" + object->describe() +
                    "' - it can be named only from inside the class, and this "
@@ -3596,6 +3806,20 @@ void Parser::topLevel(Program &program) {
     std::size_t unnamedParam = 0;
     bool sawUnnamed = false;
 
+    // **`this` is parameter zero, and it is declared before any written one so
+    // that it takes the first slot.** That is the whole of how a member
+    // function differs from a free one at the machine: an extra leading
+    // pointer, which every backend already knows how to pass. It is not in
+    // `params`, because `params` is the declared signature - what overload
+    // resolution ranks and what the mangler spells - and `this` is in neither.
+    const Type *memberOf = nullptr;
+    if (!d.qualifier.empty()) {
+        memberOf = findTypedef(d.qualifier);
+        if (memberOf == nullptr || !memberOf->isStructOrUnion())
+            src_.fail(d.pos, "'" + d.qualifier + "' is not a class");
+        currentClass_ = memberOf;
+    }
+
     if (!consume(")")) {
         if (peek().is("void") && peekAt(1).is(")")) {
             at_ += 2;
@@ -3646,7 +3870,17 @@ void Parser::topLevel(Program &program) {
                   (fn ? "int (*f(void))(void)" : "int (*f(void))[3]") + "'");
     }
 
+    // A member function's constness is written after the parameter list, and
+    // it is part of which member this is - Point::get() const and
+    // Point::get() are two functions.
+    bool constThis = false;
+    if (memberOf != nullptr && consume("const")) constThis = true;
+
     if (consume(";")) {
+        if (memberOf != nullptr)
+            src_.fail(d.pos, "'" + d.qualifier + "::" + d.name + "' is declared "
+                             "inside the class - this says it again outside, "
+                             "which declares nothing new");
         declareFunction(d.name, d.type, params, variadic, false, d.pos,
                         sc == StorageStatic);
         return;
@@ -3655,8 +3889,46 @@ void Parser::topLevel(Program &program) {
         src_.fail(unnamedParam, "a parameter of a definition needs a name - "
                                 "a prototype may leave it out, a body cannot");
 
-    declareFunction(d.name, d.type, params, variadic, true, d.pos,
-                    sc == StorageStatic);
+    const Signature *member = nullptr;
+    if (memberOf != nullptr) {
+        std::string key = d.qualifier + "::" + d.name;
+        if (const std::vector<std::size_t> *set = overloadsOf(key)) {
+            for (std::size_t k = 0; k < set->size() && member == nullptr; k++) {
+                const Signature &f = functions_[(*set)[k]];
+                if (f.params.size() != params.size() ||
+                    f.constThis != constThis) continue;
+                bool same = true;
+                for (std::size_t i = 0; i < params.size(); i++)
+                    if (f.params[i] != params[i]) { same = false; break; }
+                if (same) member = &f;
+            }
+        }
+        if (member == nullptr)
+            src_.fail(d.pos, "'" + d.qualifier + "' declares no member '" +
+                             d.name + "' with these parameters");
+        if (member->returns != d.type)
+            src_.fail(d.pos, "'" + key + "' was declared to return '" +
+                             member->returns->describe() + "' and this says '" +
+                             d.type->describe() + "'");
+        if (member->defined)
+            src_.fail(d.pos, "'" + key + "' is defined twice");
+        functions_[(*overloadsOf(key))[0]].pos = member->pos;   // keep the table stable
+        const_cast<Signature *>(member)->defined = true;
+
+        // `this` takes the first slot, and its type carries the constness the
+        // member was declared with - so a const member function cannot write
+        // through it, by the ordinary rule that a const object's members are
+        // const.
+        const Type *pointee = constThis ? types_.withConst(memberOf) : memberOf;
+        const Type *thisType = types_.pointerTo(pointee);
+        inParams_ = true;
+        thisOffset_ = declare("this", thisType, d.pos);
+        inParams_ = false;
+        paramSlots.insert(paramSlots.begin(), Param{ thisType, thisOffset_ });
+    } else {
+        declareFunction(d.name, d.type, params, variadic, true, d.pos,
+                        sc == StorageStatic);
+    }
     returnType_ = d.type;
     functionName_ = d.name;
     staticSymbols_.clear();
@@ -3684,7 +3956,10 @@ void Parser::topLevel(Program &program) {
     int frame = alignTo(frameSize_, 16);
     const Type *emittedReturn = d.type->isReference()
                               ? types_.pointerTo(d.type->referent()) : d.type;
-    const Signature &defined = lookupSignature(d.name, params, variadic, d.pos);
+    const Signature &defined = memberOf != nullptr
+                             ? *member
+                             : lookupSignature(d.name, params, variadic, d.pos);
+    currentClass_ = nullptr;
     program.functions.push_back(Function(d.name, emittedReturn, std::move(paramSlots),
                                          std::move(body), frame,
                                          sc == StorageStatic, sretSlot,

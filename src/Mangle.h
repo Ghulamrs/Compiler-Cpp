@@ -28,6 +28,23 @@ bool itaniumFunctionName(const std::string &name, const Type *fn, bool internal,
 bool microsoftFunctionName(const std::string &name, const Type *fn, bool internal,
                            std::string *out, std::string *problem);
 
+// A non-static member function. Both ABIs spell the class into the name, and
+// both record whether `this` is const - Itanium with a K after the _ZN,
+// Microsoft with a B where a non-const one has an A.
+//
+// **The Microsoft name carries the access and the Itanium name does not**,
+// which is measured rather than assumed: Q is public, I protected, A private,
+// and clang writes ?priv@C@@AEAAHXZ for a private member of C. So a member
+// that changes from private to public changes its symbol on Windows and keeps
+// it on Linux.
+bool itaniumMemberName(const std::string &cls, const std::string &name,
+                       const Type *fn, bool constThis,
+                       std::string *out, std::string *problem);
+
+bool microsoftMemberName(const std::string &cls, const std::string &name,
+                         const Type *fn, char access, bool constThis,
+                         std::string *out, std::string *problem);
+
 // A variable at namespace scope. The Microsoft ABI mangles it whatever its
 // linkage; Itanium leaves an external one alone and marks an internal one,
 // the same way it marks an internal function.

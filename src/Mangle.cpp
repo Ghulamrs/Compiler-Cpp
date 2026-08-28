@@ -82,6 +82,24 @@ protected:
 
 class Itanium : public Mangler {
 public:
+    // <nested-name> ::= N [<CV-qualifiers>] <prefix> <unqualified-name> E
+    // The K is the const on `this` and it comes before the class, not after
+    // it: _ZNK5Point4cgetEv, measured.
+    void memberFunction(const std::string &cls, const std::string &name,
+                        const Type *fn, bool constThis) {
+        out = "_ZN";
+        if (constThis) out += "K";
+        out += std::to_string(cls.size());
+        out += cls;
+        out += std::to_string(name.size());
+        out += name;
+        out += "E";
+        const std::vector<const Type *> &params = fn->params();
+        if (params.empty() && !fn->isVariadicFn()) { out += "v"; return; }
+        for (const Type *p : params) type(p);
+        if (fn->isVariadicFn()) out += "z";
+    }
+
     void function(const std::string &name, const Type *fn, bool internal) {
         out = internal ? "_ZL" : "_Z";
         out += std::to_string(name.size());
@@ -161,6 +179,27 @@ private:
 
 class Microsoft : public Mangler {
 public:
+    // ?name@Class@@ then four letters: the access, __ptr64, the constness of
+    // this, and the calling convention. ?get@Point@@QEAAHXZ is public and
+    // non-const; ?cget@Point@@QEBAHXZ is public and const; ?priv@C@@AEAAHXZ
+    // is private. All measured.
+    void memberFunction(const std::string &cls, const std::string &name,
+                        const Type *fn, char access, bool constThis) {
+        out = "?";
+        pushName(name);
+        pushName(cls);
+        out += '@';               // closes the scope list
+        out += access;            // Q public, I protected, A private
+        out += 'E';               // this is __ptr64
+        out += constThis ? 'B' : 'A';
+        out += 'A';               // __cdecl
+        returnType(fn->returns());
+        const std::vector<const Type *> &params = fn->params();
+        if (params.empty() && !fn->isVariadicFn()) { out += "XZ"; return; }
+        for (const Type *p : params) argument(p);
+        out += fn->isVariadicFn() ? "ZZ" : "@Z";
+    }
+
     void function(const std::string &name, const Type *fn) {
         out = "?";
         nameComponent(name);      // the name, and the empty list of scopes
@@ -187,13 +226,19 @@ private:
     // Names repeat by index, and the function's own name is the first one in
     // the table - so the second mention of a class is '1' where the first was
     // spelled out.
-    void nameComponent(const std::string &n) {
+    // One component and the '@' that ends it. A free function has exactly one
+    // and then an empty scope list; a member has two, its own and its class.
+    void pushName(const std::string &n) {
         for (std::size_t i = 0; i < names_.size(); i++)
             if (names_[i] == n) { out += static_cast<char>('0' + i); out += '@'; return; }
         if (names_.size() < 10) names_.push_back(n);
         out += n;
         out += '@';
-        out += '@';
+    }
+
+    void nameComponent(const std::string &n) {
+        pushName(n);
+        out += '@';               // and the empty scope list
     }
 
     // Numbers: one less than the value as a digit up to ten, and the value
@@ -294,6 +339,26 @@ bool microsoftFunctionName(const std::string &name, const Type *fn, bool interna
     (void)internal;   // the Microsoft ABI spells an internal function the same
     Microsoft m;
     m.function(name, fn);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
+bool itaniumMemberName(const std::string &cls, const std::string &name,
+                       const Type *fn, bool constThis,
+                       std::string *out, std::string *problem) {
+    Itanium m;
+    m.memberFunction(cls, name, fn, constThis);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
+bool microsoftMemberName(const std::string &cls, const std::string &name,
+                         const Type *fn, char access, bool constThis,
+                         std::string *out, std::string *problem) {
+    Microsoft m;
+    m.memberFunction(cls, name, fn, access, constThis);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;
