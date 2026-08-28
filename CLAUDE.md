@@ -384,6 +384,22 @@ built by hand is not the parser's pointer arithmetic: `+ 2` added two bytes
 rather than two entries, so the vptr pointed two bytes into the table's first
 word. Both places compute bytes explicitly now and say why.
 
+**A virtual destructor puts a function in the vtable that no program writes.**
+`delete p` through a base pointer has to reach the right destructor and then
+free, so one slot does both and holds a *deleting* destructor. cxx1
+synthesizes it - there is no source for it - and emits it as ordinary AST, so
+no backend knows it was invented.
+
+The ABIs diverge here more than anywhere else, both measured. Itanium takes
+**two adjacent slots**, D1 for the complete object and D0 for the deleting
+form, and `delete` calls the second. Microsoft takes **one**, `??_G`, which
+takes a flag beside `this`, frees only when its low bit is set - so a non-heap
+object can reach the same slot safely - and returns `this`. cl spells it
+`??_GBase@@UEAAPEAXI@Z` and so does cxx1.
+
+`delete[]` of a polymorphic type is refused by name: it needs the element count
+and the dynamic type, and neither is recorded.
+
 **T union, U struct, V class** in a Microsoft name. Until vtables nothing
 declared with `class` had its type reach a name, so U covered both; clang and
 cl both write `?viaPointer@@YAHPEAVShape@@@Z` where cxx1 wrote `...PEAUShape...`.

@@ -201,6 +201,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             continue;
         }
 
+        bool isVirtual = false;
+        if (peek().is("virtual")) { isVirtual = true; at_++; }
+
         // `~Point();` - a destructor, recognised the same way and for the same
         // reason as a constructor: it has no return type and its name is the
         // class, so specifiers() must not be asked for one.
@@ -208,7 +211,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             peekAt(1).text == tag && peekAt(2).is("(")) {
             std::size_t dpos = peek().pos;
             at_ += 2;
-            declareDestructor(tag, dpos, access);
+            declareDestructor(tag, dpos, access, isVirtual);
             if (peek().is("{"))
                 src_.fail(peek().pos, "a destructor defined inside the class is "
                                       "not supported yet - define it outside "
@@ -225,9 +228,6 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             at_ += 2;
             continue;
         }
-
-        bool isVirtual = false;
-        if (peek().is("virtual")) { isVirtual = true; at_++; }
 
         StorageClass msc;
         const Type *base = specifiers(&msc);
@@ -1189,7 +1189,7 @@ StmtPtr Parser::constructLocal(const Declared &d, int offset,
 }
 
 void Parser::declareDestructor(const std::string &cls, std::size_t pos,
-                               Access access) {
+                               Access access, bool isVirtual) {
     std::vector<const Type *> params;
     bool variadic = false;
     parameterTypes(params, variadic);
@@ -1210,7 +1210,115 @@ void Parser::declareDestructor(const std::string &cls, std::size_t pos,
     functionIndex_[key].push_back(functions_.size());
     functions_.push_back(Signature{ "~" + cls, out, types_.get(Kind::Void),
                                     params, false, false, pos, false, cls, false,
-                                    access });
+                                    access, isVirtual });
+
+    // **A virtual destructor claims slots where it is declared**, and how many
+    // depends on the ABI: Itanium wants two, the complete-object destructor
+    // and the deleting one, adjacent and in that order; Microsoft wants one,
+    // holding only the deleting form. Measured from clang for both.
+    //
+    // A derived class overrides the base's entries in place, the way any
+    // virtual does - matching on the name "~", not on the class's own name,
+    // since ~Base and ~Derived are different spellings of the same slot.
+    if (!isVirtual) return;
+    const bool ms = target_.microsoftNames();
+    const std::string deleting = ms
+        ? "??_G" + cls + "@@UEAAPEAXI@Z"
+        : "_ZN" + std::to_string(cls.size()) + cls + "D0Ev";
+
+    std::vector<VSlot> &slots = vtables_[cls];
+    std::vector<const Type *> none;
+    for (std::size_t i = 0; i < slots.size(); i++) {
+        if (slots[i].name != "~") continue;
+        slots[i].symbol = ms ? deleting : out;          // the complete form
+        if (!ms && i + 1 < slots.size() && slots[i + 1].name == "~$deleting")
+            slots[i + 1].symbol = deleting;
+        return;
+    }
+    slots.push_back(VSlot{ "~", ms ? deleting : out, none, false });
+    if (!ms) slots.push_back(VSlot{ "~$deleting", deleting, none, false });
+}
+
+// **A function with no source behind it.** The deleting destructor is the one
+// thing in the vtable that no program writes: it runs the destructor and then
+// gives the memory back, and it exists because `delete p` through a base
+// pointer has to reach both through one slot.
+//
+// Itanium's D0 takes `this` and returns nothing. Microsoft's ??_G takes `this`
+// and a flag, returns `this`, and frees only when the low bit is set - which
+// is how a non-heap object reaches the same slot safely. Both are built here
+// as ordinary AST and emitted like any other function, so no backend knows
+// this one was invented.
+void Parser::synthesizeDeleting(const std::string &cls, const Type *type,
+                                Access access, std::size_t pos) {
+    const bool ms = target_.microsoftNames();
+    const Type *self = types_.pointerTo(type);
+    const std::string symbol = ms
+        ? "??_G" + cls + "@@UEAAPEAXI@Z"
+        : "_ZN" + std::to_string(cls.size()) + cls + "D0Ev";
+    (void)access;
+
+    // Its own frame: `this`, and on Windows the flag beside it.
+    const int savedFrame = frameSize_;
+    frameSize_ = 0;
+    std::vector<Param> params;
+    int thisSlot = allocateFrameSlot(self);
+    params.push_back(Param{ self, thisSlot });
+    int flagSlot = 0;
+    const Type *flagType = types_.get(Kind::UInt);
+    if (ms) {
+        flagSlot = allocateFrameSlot(flagType);
+        params.push_back(Param{ flagType, flagSlot });
+    }
+
+    std::vector<StmtPtr> body;
+
+    const Signature *dtor = destructorOf(type);
+    if (dtor != nullptr) {
+        ExprPtr me(Var::local("this", thisSlot));
+        me->setType(self);
+        body.push_back(StmtPtr(new ExprStmt(destructorCall(std::move(me), *dtor, pos))));
+    }
+
+    // operator delete(this)
+    ExprPtr again(Var::local("this", thisSlot));
+    again->setType(self);
+    const Type *vp = types_.pointerTo(types_.get(Kind::Void));
+    ExprPtr raw(new Cast(vp, std::move(again)));
+    raw->setType(vp);
+    StmtPtr freeIt(new ExprStmt(callAllocator("_ZdlPv", "??3@YAXPEAX@Z",
+                                              types_.get(Kind::Void),
+                                              std::move(raw), pos)));
+
+    if (ms) {
+        // if (flags & 1) operator delete(this);
+        ExprPtr flags(Var::local("flags", flagSlot));
+        flags->setType(flagType);
+        ExprPtr one(new Num(1LL));
+        one->setType(flagType);
+        ExprPtr test(new Binary(BinOp::BitAnd, std::move(flags), std::move(one)));
+        test->setType(flagType);
+        body.push_back(StmtPtr(new If(std::move(test), std::move(freeIt), nullptr)));
+
+        ExprPtr back(Var::local("this", thisSlot));
+        back->setType(self);
+        ExprPtr asVoid(new Cast(vp, std::move(back)));
+        asVoid->setType(vp);
+        body.push_back(StmtPtr(new Return(std::move(asVoid))));
+    } else {
+        body.push_back(std::move(freeIt));
+        body.push_back(StmtPtr(new Return(nullptr)));
+    }
+
+    const Type *returns = ms ? vp : types_.get(Kind::Void);
+    current_->functions.push_back(Function(cls + "::deleting", returns,
+                                           std::move(params),
+                                           StmtPtr(new Block(std::move(body))),
+                                           alignTo(frameSize_, 16), false, 0,
+                                           false, 0, pos,
+                                           std::vector<::Local>()));
+    current_->functions.back().setSymbol(symbol);
+    frameSize_ = savedFrame;
 }
 
 const Parser::Signature *Parser::destructorOf(const Type *cls) const {
@@ -3110,6 +3218,78 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
     // clang emits and the only one that can work: the destructor reads the
     // object. A class with no destructor skips straight to the free.
     const Signature *dtor = destructorOf(t->pointee());
+
+    // **A virtual destructor is reached through the vtable**, because the
+    // static type is not necessarily the one that has to be destroyed. The
+    // slot holds the deleting form, which destroys AND frees - so this path
+    // makes one indirect call and does not call operator delete itself.
+    if (dtor != nullptr && dtor->isVirtual) {
+        if (array)
+            src_.fail(pos, "'delete[]' of a polymorphic type is not supported "
+                           "yet - the count and the dynamic type are both "
+                           "needed and neither is recorded");
+        const Type *cls = t->pointee()->unqualified();
+        const std::vector<VSlot> &slots = vtables_[cls->tag()];
+        int index = -1;
+        for (std::size_t i = 0; i < slots.size(); i++) {
+            const bool ms = target_.microsoftNames();
+            if (slots[i].name == (ms ? "~" : "~$deleting")) { index = static_cast<int>(i); break; }
+        }
+        if (index < 0)
+            src_.fail(pos, "'" + cls->describe() + "' has a virtual destructor "
+                           "with no deleting slot");
+
+        const bool ms = target_.microsoftNames();
+        std::vector<const Type *> full;
+        full.push_back(t);
+        const Type *flagType = types_.get(Kind::UInt);
+        if (ms) full.push_back(flagType);
+        const Type *ret = ms ? types_.pointerTo(types_.get(Kind::Void))
+                             : types_.get(Kind::Void);
+
+        int slot = allocateFrameSlot(t);
+        std::string temp = ".dv" + std::to_string(refTemps_++);
+        ExprPtr keep(Var::local(temp, slot));
+        keep->setType(t);
+        ExprPtr save(new Assign(std::move(keep), std::move(what)));
+        save->setType(t);
+
+        const Type *fnType = types_.functionType(ret, full, false);
+        const Type *fnPtr = types_.pointerTo(fnType);
+        const Type *table = types_.pointerTo(fnPtr);
+
+        ExprPtr load(Var::local(temp, slot));
+        load->setType(t);
+        ExprPtr asTable(new Cast(types_.pointerTo(table), std::move(load)));
+        asTable->setType(types_.pointerTo(table));
+        ExprPtr vptr(new Unary('*', std::move(asTable)));
+        vptr->setType(table);
+        if (index != 0) {
+            ExprPtr at(new Num(static_cast<long long>(index) * fnPtr->size(target_)));
+            at->setType(types_.intType());
+            ExprPtr moved(new Binary(BinOp::Add, std::move(vptr), std::move(at)));
+            moved->setType(table);
+            vptr = std::move(moved);
+        }
+        ExprPtr entry(new Unary('*', std::move(vptr)));
+        entry->setType(fnPtr);
+
+        std::vector<ExprPtr> args;
+        ExprPtr self(Var::local(temp, slot));
+        self->setType(t);
+        args.push_back(std::move(self));
+        if (ms) {
+            ExprPtr flag(new Num(1LL));      // 1 = free the memory too
+            flag->setType(flagType);
+            args.push_back(std::move(flag));
+        }
+        ExprPtr call = completeCall("~", std::string(), std::move(entry), ret,
+                                    full, false, pos, std::move(args));
+        ExprPtr both(new Comma(std::move(save), std::move(call)));
+        both->setType(ret);
+        return both;
+    }
+
     if (dtor != nullptr) {
         if (array)
             src_.fail(pos, "'delete[]' of a type with a destructor needs the "
@@ -4756,6 +4936,11 @@ void Parser::topLevel(Program &program) {
         itaniumDestructorName(d.qualifier, false, &d2);
         program.functions.back().setAlias(d2);
     }
+    // The deleting form is emitted beside the destructor that was just
+    // defined, because that is where its body comes from.
+    if (memberOf != nullptr && d.name == "~" + d.qualifier && member != nullptr &&
+        member->isVirtual)
+        synthesizeDeleting(d.qualifier, memberOf, member->access, d.pos);
     program.functions.back().setBlocks(std::move(blocks_));
 }
 

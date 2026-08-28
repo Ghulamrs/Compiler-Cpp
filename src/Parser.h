@@ -205,7 +205,13 @@ private:
     // resolving one is resolving an overload set like any other.
     static std::string constructorKey(const std::string &cls) { return cls + "::" + cls; }
     void declareConstructor(const std::string &cls, std::size_t pos, Access access);
-    void declareDestructor(const std::string &cls, std::size_t pos, Access access);
+    void declareDestructor(const std::string &cls, std::size_t pos, Access access,
+                           bool isVirtual);
+    // The deleting destructor, which no program writes: it runs the
+    // destructor and then frees. Itanium calls it D0 and Microsoft ??_G, and
+    // it is what a `delete` through a base pointer reaches.
+    void synthesizeDeleting(const std::string &cls, const Type *type,
+                            Access access, std::size_t pos);
     static std::string destructorKey(const std::string &cls) { return cls + "::~" + cls; }
     const Signature *destructorOf(const Type *cls) const;
     ExprPtr destructorCall(ExprPtr address, const Signature &dtor, std::size_t pos);
