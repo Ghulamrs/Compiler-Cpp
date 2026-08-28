@@ -97,28 +97,6 @@ type names, so the declaration of `stat` as an object collides with it. This is
 the C compatibility rule, it exists for headers written before C++ did, and no
 program here wants it. It costs a second lookup table to fix.
 
-## The callee destroys a by-value argument on Windows, and cxx1's caller does
-
-A class passed by value is copied by its copy constructor now, and the copy is
-a temporary the **caller** builds and the **caller** destroys. That is the
-Itanium rule and clang emits exactly that on both Itanium targets - the
-destructor of the argument temporary appears at the call site.
-
-**The Microsoft ABI puts the destruction on the callee**, and it was measured
-rather than read: cl's `?useE@@YAHUE@@@Z` calls `??1E@@QEAA@XZ` on its own
-parameter before returning, and the caller emits no destructor for it.
-
-cxx1 does it the Itanium way on all three targets. In one program built by one
-compiler that is invisible and correct - the object is destroyed exactly once
-either way. It shows only where a cxx1 object is linked with a cl object and a
-class with a destructor crosses between them by value: neither destroys it, or
-both do.
-
-Fixing it means the Windows target moving the destructor into the callee,
-which also means the callee owning the parameter rather than reading it
-through the caller's pointer - a different lowering for that target, not a
-different place to put one call.
-
 ## Eliding a copy is allowed, and the two oracles disagree about when
 
 C++11 permits a compiler to elide a copy constructor and does not require it,
@@ -130,10 +108,15 @@ Counted giveCounted() { Counted c; return c; }
 Counted r = giveCounted();      // clang: one construction. cl: a copy as well.
 ```
 
-cxx1 elides, which is clang's answer, in the two places worth having it: a
-declaration initialised by a call that already returns the class through a
-hidden pointer, and such a call passed straight in as a by-value argument. In
-both the callee builds its result where the object had to end up anyway.
+cxx1 elides, which is clang's answer, in three places: a declaration
+initialised by a call that already returns the class through a hidden pointer,
+such a call passed straight in as a by-value argument, and a local returned by
+value - which is not destroyed on the way out, because the caller destroys it
+where it lands.
+
+That third one is not only a choice about how many constructors run. Copying
+the bytes out *without* eliding the destruction would destroy the same object
+twice, once in the callee and once in the caller.
 
 So a program that *counts* constructor calls has no single right answer here,
 and `tests/cases/by-value.cpp` deliberately does not count them.

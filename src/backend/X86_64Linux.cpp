@@ -807,7 +807,7 @@ void X86_64Linux::visit(const Call &n) {
     std::vector<bool> padBelow;
     bool byRef = abi_.aggregatesByReference;
     bool sret = n.type()->isStructOrUnion() &&
-               (n.type()->nonTrivialCopy() ||
+               (n.type()->nonTrivialCopy() || n.type()->hasDestructor() ||
                 containsX87(n.type(), target_) ||
                 (byRef ? !msInRegister(n.type()->size(target_))
                        : n.type()->size(target_) > abi_.structReturnLimit));

@@ -626,6 +626,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // if one was just declared for it, and one was just declared exactly when
     // a base or member made the copy non-trivial.
     if (copyConstructorOf(type) != nullptr) type->setNonTrivialCopy(true);
+    if (destructorOf(type) != nullptr) type->setHasDestructor(true);
     if (type->polymorphic()) emitVtable(type, tag, pos);
     replayInlineBodies(std::move(mine));
     return type;
@@ -1827,16 +1828,25 @@ ExprPtr Parser::destructorCall(ExprPtr address, const Signature &dtor,
 // can be right when one object's destructor may read another that was built
 // before it.
 void Parser::emitDestructors(std::vector<StmtPtr> &into, std::size_t from,
-                             std::size_t pos) {
+                             std::size_t pos, int except) {
     for (std::size_t i = alive_.size(); i > from; i--) {
         const Alive &a = alive_[i - 1];
+        if (except >= 0 && a.offset == except && !a.byAddress) continue;
         const Signature *dtor = destructorOf(a.cls);
         if (dtor == nullptr) continue;
 
-        ExprPtr object(Var::local(a.name, a.offset));
-        object->setType(a.cls);
-        ExprPtr addr(new Unary('&', std::move(object)));
-        addr->setType(types_.pointerTo(a.cls));
+        ExprPtr addr;
+        if (a.byAddress) {
+            // The slot holds the caller's pointer, and that pointer IS the
+            // object's address.
+            addr = ExprPtr(Var::local(a.name, a.offset));
+            addr->setType(types_.pointerTo(a.cls));
+        } else {
+            ExprPtr object(Var::local(a.name, a.offset));
+            object->setType(a.cls);
+            addr = ExprPtr(new Unary('&', std::move(object)));
+            addr->setType(types_.pointerTo(a.cls));
+        }
         into.push_back(StmtPtr(new ExprStmt(destructorCall(std::move(addr),
                                                            *dtor, pos))));
     }
@@ -4465,10 +4475,32 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
                                 std::vector<std::pair<int, const Type *> > &destroy) {
     const Type *cls = type->unqualified();
     const Signature *cc = copyConstructorOf(cls);
-    if (cc == nullptr) {                       // the flag said there was one
-        arg = decay(std::move(arg));
-        checkAssignable(*arg, type, pos, what);
-        return convert(std::move(arg), type);
+
+    // **A class that only has a destructor still goes by address on Itanium**,
+    // and the copy the caller makes for it is a move of bytes rather than a
+    // call - there is no copy constructor, because copying it is trivial. What
+    // is not trivial is destroying it, which is why it travels this way at
+    // all.
+    if (cc == nullptr) {
+        checkAssignable(*arg, cls, pos, what);
+        const int plain = allocateFrameSlot(cls);
+        const Type *to = types_.pointerTo(cls);
+        if (destructorOf(cls) != nullptr)
+            destroy.push_back(std::make_pair(plain, cls));
+
+        ExprPtr slot(Var::local("$copy", plain));
+        slot->setType(cls);
+        ExprPtr store(new Assign(std::move(slot), std::move(arg)));
+        store->setType(cls);
+
+        ExprPtr again(Var::local("$copy", plain));
+        again->setType(cls);
+        ExprPtr at(new Unary('&', std::move(again)));
+        at->setType(to);
+
+        ExprPtr node(new Comma(std::move(store), std::move(at)));
+        node->setType(to);
+        return node;
     }
     if (cc->access != Access::Public && currentClass_ != cls)
         src_.fail(pos, "'" + cls->describe() + "' is passed by value as " + what +
@@ -4554,7 +4586,7 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
         // receives is that temporary's address. Measured on all three
         // targets: clang and cl each emit the copy constructor at the call
         // site and then pass a pointer.
-        if (params[i]->isStructOrUnion() && params[i]->nonTrivialCopy()) {
+        if (passedByAddress(params[i])) {
             args[i] = materialiseCopy(params[i], std::move(args[i]), pos, what,
                                       destroy);
             continue;
@@ -4584,8 +4616,9 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
     // the difference and what it costs. They are handed to the full
     // expression rather than destroyed here, because that is when the
     // standard says they go.
-    for (std::size_t k = 0; k < destroy.size(); k++)
-        pendingTemps_.push_back(destroy[k]);
+    if (!target_.microsoftNames())
+        for (std::size_t k = 0; k < destroy.size(); k++)
+            pendingTemps_.push_back(destroy[k]);
 
     // A call that returns a reference is an lvalue, and useReference is what
     // makes it one: the address comes back in a register and the dereference
@@ -6302,6 +6335,23 @@ StmtPtr Parser::statementBody() {
         // slot of its own, then the destructors run, then the slot is
         // returned. Without the temporary this would return a value read out
         // of an object after its destructor had been told it was finished.
+        // **The object being returned is not destroyed here.** Returning a
+        // local by value puts it in the caller's storage, and the caller
+        // destroys it there; running the local's destructor as well would
+        // destroy the same object twice - once here and once in the caller -
+        // which for a class that owns anything is a double free.
+        //
+        // That is copy elision, which [class.copy] permits and clang takes at
+        // -O0 where cl does not. Taking it is what makes the two consistent:
+        // the bytes go straight to the caller's storage with no copy
+        // constructor called, and a copy that was not made must not be
+        // destroyed either.
+        int elided = -1;
+        if (returnType_->isStructOrUnion() &&
+            destructorOf(returnType_) != nullptr)
+            if (const Var *v = dynamic_cast<const Var *>(value.get()))
+                if (v->isLocal()) elided = v->offset();
+
         if (!alive_.empty()) {
             std::vector<StmtPtr> unwind;
             int slot = allocateFrameSlot(returnType_);
@@ -6313,7 +6363,7 @@ StmtPtr Parser::statementBody() {
             save->setType(returnType_);
             unwind.push_back(StmtPtr(new ExprStmt(std::move(save))));
 
-            emitDestructors(unwind, 0, pos);
+            emitDestructors(unwind, 0, pos, elided);
 
             ExprPtr give(Var::local(temp, slot));
             give->setType(returnType_);
@@ -6606,6 +6656,7 @@ void Parser::topLevel(Program &program) {
     bool variadic = false;
     std::size_t unnamedParam = 0;
     bool sawUnnamed = false;
+    std::size_t aliveParams = 0;
 
     // **`this` is parameter zero, and it is declared before any written one so
     // that it takes the first slot.** That is the whole of how a member
@@ -6655,8 +6706,7 @@ void Parser::topLevel(Program &program) {
                 // ABI has the callee destroy its parameter instead, which is
                 // in docs/CONFORMANCE.md as a difference that only shows when
                 // an object of cxx1's is linked with one of cl's.
-                const bool byAddress = pd.type->isStructOrUnion() &&
-                                       pd.type->nonTrivialCopy();
+                const bool byAddress = passedByAddress(pd.type);
                 const Type *held = byAddress ? types_.referenceTo(pd.type)
                                              : pd.type;
                 int off;
@@ -6672,6 +6722,20 @@ void Parser::topLevel(Program &program) {
                     inParams_ = false;
                     locals_.back().isConst = pd.type->isConst();
                     locals_.back().isRegister = (psc == StorageRegister);
+
+                    // **On Microsoft the callee destroys its by-value class
+                    // parameter**, whether it arrived in a register or as the
+                    // address of a copy the caller made - measured with cl,
+                    // whose ?useSmall calls ??1Small on its own parameter.
+                    // Itanium puts that on the caller instead, which is where
+                    // the temporary is made.
+                    if (target_.microsoftNames() && pd.type->isStructOrUnion() &&
+                        pd.type->hasDestructor()) {
+                        alive_.push_back(Alive{ pd.name, off,
+                                                pd.type->unqualified(),
+                                                byAddress });
+                        aliveParams++;
+                    }
                 }
                 params.push_back(types_.withoutConst(pd.type));
                 paramSlots.push_back(Param{ held->isReference()
@@ -6856,10 +6920,26 @@ void Parser::topLevel(Program &program) {
     }
     variadicBody_ = variadic;
 
+    // Anything already alive belongs to an enclosing function - a class can
+    // be defined inside one, and its member functions are defined from there.
+    const std::size_t paramsFrom = alive_.size() - aliveParams;
+
     atFunctionBody_ = true;
     StmtPtr body = block();
     resolveGotos();
     variadicBody_ = false;
+
+    // **The by-value parameters Microsoft makes this function destroy.** A
+    // `return` already unwinds everything the function owes, parameters
+    // included, so these are appended for the one path that does not go
+    // through one: falling off the end.
+    if (aliveParams != 0) {
+        std::vector<StmtPtr> withParams;
+        withParams.push_back(std::move(body));
+        emitDestructors(withParams, paramsFrom, d.pos);
+        body = StmtPtr(new Block(std::move(withParams)));
+        alive_.resize(paramsFrom);
+    }
 
     // Members initialise after the bases and the vptr and before the body -
     // so they are stitched in front of the body here, and the vptr and base

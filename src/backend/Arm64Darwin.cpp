@@ -128,7 +128,11 @@ Arm64Darwin::AggPlan Arm64Darwin::planFor(const Type *t) const {
     // caller owns the storage and passes its address. Asked before the
     // homogeneous-float question, which would otherwise put a class of two
     // floats in registers however it has to be copied.
-    if (t->nonTrivialCopy()) { p.byRef = true; p.words = 1; return p; }
+    if (t->nonTrivialCopy() || t->hasDestructor()) {
+        p.byRef = true;
+        p.words = 1;
+        return p;
+    }
     Kind elem;
     int n = homogeneousFloatCount(t, &elem);
     if (n > 0) { p.hfa = n; p.elem = elem; return p; }

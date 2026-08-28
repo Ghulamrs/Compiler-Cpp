@@ -750,6 +750,36 @@ Nothing here is about names: `_ZN1P3getEv` and `_ZNK1P3getEv`, `QEAA` against
 `QEBA`, have been two symbols since const member functions landed. It was the
 ranking that was missing.
 
+**A class with only a destructor is where the two ABIs genuinely part
+company**, and both halves were measured. Itanium passes one **by address**
+whatever its size, and the **caller** destroys the copy it made. Microsoft
+passes it by the ordinary size rules - in a register if it fits - and the
+**callee** destroys its own parameter: cl's `?useSmall@@YAHUSmall@@@Z` calls
+`??1Small@@QEAA@XZ` on its parameter before returning, and its caller emits no
+destructor for it at all, for the by-address case as much as the register one.
+Both return such a class through a hidden pointer.
+
+`Type::hasDestructor()` is the flag, `Parser::passedByAddress` is the rule, and
+it is the first thing here that reads `microsoftNames()` to answer a question
+about *semantics* rather than about spelling. On Windows a by-value class
+parameter with a destructor goes into `alive_` - `Alive::byAddress` says
+whether the slot holds the object or a pointer to it - so a `return` unwinds it
+with everything else, and the path that falls off the end gets it appended.
+
+**The copy is destroyed at a different moment on the two platforms**, and no
+recorded output can cover both: at the end of the full expression on Itanium,
+inside the callee on Windows. `tests/cases/by-value-destructor.cpp` takes each
+result into a variable before printing it, so the full expression ends before
+anything observable happens either way.
+
+**A returned local is not destroyed on the way out.** Its bytes go straight to
+the caller's storage and the caller destroys it there - one construction, one
+destruction. Destroying it here as well would destroy the same object twice,
+which for a class that owns anything is a double free, and it was the shape the
+code had: bytes copied *as if* eliding and the local destroyed *as if* not.
+Taking the elision is what makes the two consistent, and it is what clang does
+at -O0 where cl does not.
+
 **Two exclusion files, and the difference matters.** `<case>.notarget` says
 cxx1 cannot compile that case for that target at all - `emit.sh` and
 `mangled-names` both read it. `<case>.nonames` says it compiles fine and only

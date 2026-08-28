@@ -1,0 +1,18 @@
+  ~D 1
+takeD 1
+  ~D 1
+---
+  ~Wide 2
+takeWide 2
+  ~Wide 2
+---
+takePlain 3
+---
+gave 9
+  ~D 9
+---
+  inside 4
+  ~D 4
+after
+  ~D 4
+end

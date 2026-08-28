@@ -79,11 +79,16 @@ int main() {
     // itself, built where the argument had to go.
     printf("%d\n", takeCounted(giveCounted()));
 
-    // The copy the caller made is destroyed at the end of the full
-    // expression - after the printf, not between the two calls.
+    // **When the copy is destroyed is a question the two ABIs answer
+    // differently**, so nothing observable may sit between the call and that
+    // moment. Itanium destroys it at the end of the full expression, in the
+    // caller; Microsoft destroys it inside the callee, before it returns.
+    // Taking the result into a variable ends the full expression before the
+    // printf, which is the same on both. See tests/cases/by-value-destructor.
     {
         Noisy d;
-        printf("takeNoisy %d\n", takeNoisy(d));
+        int seen = takeNoisy(d);
+        printf("takeNoisy %d\n", seen);
         printf("after\n");
     }
     return 0;

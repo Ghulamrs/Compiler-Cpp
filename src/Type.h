@@ -169,6 +169,16 @@ public:
     }
     void setNonTrivialCopy(bool n) { nonTrivialCopy_ = n; }
 
+    // **Whether this class has a destructor to run.** It decides how the class
+    // is *passed*, and the two ABIs disagree about how: Itanium passes such a
+    // class by address whatever its size and has the caller destroy the copy,
+    // where Microsoft passes it by the ordinary size rules and has the callee
+    // destroy its own. Both return it through a hidden pointer. All measured.
+    bool hasDestructor() const {
+        return unqual_ ? unqual_->hasDestructor() : hasDestructor_;
+    }
+    void setHasDestructor(bool h) { hasDestructor_ = h; }
+
     // **Every base, with the offset it sits at.** The first is at 0 and any
     // second is not - measured: `class C : public A, public B` puts A at 0 and
     // B at 4 - which is the whole difference multiple inheritance makes. A
@@ -270,6 +280,7 @@ private:
     int dataSize_ = 0;
     bool polymorphic_ = false;
     bool nonTrivialCopy_ = false;
+    bool hasDestructor_ = false;
     std::vector<BaseSpec> bases_;
     std::vector<Member> members_;
     std::vector<StaticMember> statics_;

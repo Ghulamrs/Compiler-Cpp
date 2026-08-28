@@ -169,13 +169,24 @@ private:
     bool aggregatesByReference_;
 
     bool homogeneousFloatAggregates_;
+    // **How a class goes to a function, and the two ABIs part company here.**
+    // Itanium passes one by address whenever copying or destroying it is a
+    // call - so a class with only a destructor goes by address too, and the
+    // caller destroys the copy it made. Microsoft passes that same class by
+    // the ordinary size rules, in a register if it fits, and has the *callee*
+    // destroy its own parameter. Measured with cl and with clang.
+    bool passedByAddress(const Type *t) const {
+        if (!t->isStructOrUnion()) return false;
+        if (t->nonTrivialCopy()) return true;
+        return !target_.microsoftNames() && t->hasDestructor();
+    }
     bool returnsIndirectly(const Type *t) const {
         int size = t->size(target_);
 
-        // A class whose copy is a constructor call is returned through a
+        // A class whose copy or destruction is a call is returned through a
         // hidden pointer whatever its size - the caller owns the storage and
-        // the callee builds into it. Both ABIs, measured.
-        if (t->nonTrivialCopy()) return true;
+        // the callee builds into it. Both ABIs agree here, measured.
+        if (t->nonTrivialCopy() || t->hasDestructor()) return true;
         if (containsX87(t, target_)) return true;
         if (aggregatesByReference_)
             return !(size == 1 || size == 2 || size == 4 || size == 8);
@@ -316,10 +327,16 @@ private:
         std::string name;
         int offset;
         const Type *cls;
+        // Set for a by-value class parameter that arrived by address: its slot
+        // holds the caller's pointer, so the object's address is what the slot
+        // *contains* rather than where the slot sits.
+        bool byAddress = false;
     };
     std::vector<Alive> alive_;
+    // `except` is the frame offset of an object not to destroy - the one
+    // being returned, which the caller destroys instead.
     void emitDestructors(std::vector<StmtPtr> &into, std::size_t from,
-                         std::size_t pos);
+                         std::size_t pos, int except = -1);
     StmtPtr constructLocal(const Declared &d, int offset,
                            std::vector<ExprPtr> args);
 
