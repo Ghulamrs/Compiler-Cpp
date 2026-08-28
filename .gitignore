@@ -2,3 +2,5 @@ obj/
 cxx1.exe
 tests/out-*/
 .DS_Store
+obj-msvc/
+cxx1-msvc.exe
