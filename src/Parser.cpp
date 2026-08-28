@@ -1247,7 +1247,8 @@ std::string Parser::describeSignature(const Signature &f) {
 // meaning depends on the order of its own prototypes.
 const Parser::Signature &Parser::resolveOverload(const std::string &name,
                                                  const std::vector<ExprPtr> &args,
-                                                 std::size_t pos) {
+                                                 std::size_t pos,
+                                                 const Type *object) {
     const std::vector<std::size_t> *set = overloadsOf(name);
     if (set == nullptr) {
         // **`C(...)` where C is a class** is a temporary, not a call to a
@@ -1265,23 +1266,46 @@ const Parser::Signature &Parser::resolveOverload(const std::string &name,
 
     std::vector<std::size_t> viable;
     std::vector<std::vector<Rank> > ranks;
+    // Set when the only thing that stopped a candidate was the constness of
+    // the object, so that "no function takes these arguments" can be replaced
+    // by the message that says what actually went wrong.
+    bool droppedForConst = false;
 
     for (std::size_t k = 0; k < set->size(); k++) {
         const Signature &f = functions_[(*set)[k]];
         if (f.variadic ? args.size() < f.params.size()
                        : args.size() != f.params.size()) continue;
 
-        std::vector<Rank> r(args.size(), Rank::Ellipsis);
+        // **The implicit object parameter goes first**, and ranking it is what
+        // separates `get()` from `get() const`. Binding it is a reference
+        // binding like any other: an exact match where the constness agrees, a
+        // qualification conversion where a const member is called on a
+        // non-const object - which is why the non-const one wins there - and
+        // no match at all the other way round.
+        std::vector<Rank> r;
+        if (object != nullptr) {
+            if (object->isConst() && !f.constThis) { droppedForConst = true; continue; }
+            r.push_back(object->isConst() == f.constThis ? Rank::Identity
+                                                         : Rank::Qualification);
+        }
+
+        const std::size_t first = r.size();
+        r.resize(first + args.size(), Rank::Ellipsis);
         bool ok = true;
         for (std::size_t i = 0; i < args.size() && ok; i++) {
             if (i >= f.params.size()) continue;      // reached by the ellipsis
-            r[i] = rankArgument(*args[i], f.params[i]);
-            if (r[i] == Rank::None) ok = false;
+            r[first + i] = rankArgument(*args[i], f.params[i]);
+            if (r[first + i] == Rank::None) ok = false;
         }
         if (!ok) continue;
         viable.push_back((*set)[k]);
         ranks.push_back(r);
     }
+
+    if (viable.empty() && droppedForConst)
+        src_.fail(pos, "'" + name + "' is not a const member function, and this "
+                       "object is const - calling it could change what the "
+                       "const promised not to");
 
     if (viable.empty()) {
         std::string why = "no function called '" + name + "' takes these " +
@@ -1298,7 +1322,7 @@ const Parser::Signature &Parser::resolveOverload(const std::string &name,
     std::size_t best = 0;
     for (std::size_t k = 1; k < viable.size(); k++) {
         bool better = false, worse = false;
-        for (std::size_t i = 0; i < args.size(); i++) {
+        for (std::size_t i = 0; i < ranks[k].size(); i++) {
             if (ranks[k][i] < ranks[best][i]) better = true;
             if (ranks[k][i] > ranks[best][i]) worse = true;
         }
@@ -1307,7 +1331,7 @@ const Parser::Signature &Parser::resolveOverload(const std::string &name,
     for (std::size_t k = 0; k < viable.size(); k++) {
         if (k == best) continue;
         bool bestWins = false, bestLoses = false;
-        for (std::size_t i = 0; i < args.size(); i++) {
+        for (std::size_t i = 0; i < ranks[k].size(); i++) {
             if (ranks[best][i] < ranks[k][i]) bestWins = true;
             if (ranks[best][i] > ranks[k][i]) bestLoses = true;
         }
@@ -5163,7 +5187,7 @@ ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
 
     std::vector<ExprPtr> args;
     parseArguments(args);
-    const Signature &sig = resolveOverload(key, args, pos);
+    const Signature &sig = resolveOverload(key, args, pos, cls);
 
     // Now there IS an inside, and this is where it starts to mean something:
     // a private member is reachable from another member of the same class.

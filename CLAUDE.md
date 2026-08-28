@@ -725,6 +725,31 @@ not - a class can have one and not the other.
 Building an array member element by element arrived with this, since the
 destructor needed the loop anyway; it had been refused by name until then.
 
+**A member function has an implicit object parameter, and it is ranked like
+any other argument** - [over.match.funcs]. That is the whole of what tells
+`get()` from `get() const`, and without it a class declaring both could not be
+called at all: the two candidates had identical parameter lists and tied.
+
+Binding the object is a reference binding, so it ranks as one:
+
+    object          get()                 get() const
+    P               Identity              Qualification   -> get() wins
+    const P         not viable            Identity        -> get() const
+
+The last row is why a non-const member on a const object is *unavailable*
+rather than merely worse. When it leaves nothing viable, the message that says
+so by name is kept - "no function takes these arguments" would send the reader
+looking for a parameter mismatch that is not there.
+
+`resolveOverload` takes the object's type and puts its rank in front of the
+written arguments', so the best-and-unambiguous machinery below needed nothing
+new. Inside a member function the object is `this`, which is what makes a const
+member function reach only the const one.
+
+Nothing here is about names: `_ZN1P3getEv` and `_ZNK1P3getEv`, `QEAA` against
+`QEBA`, have been two symbols since const member functions landed. It was the
+ranking that was missing.
+
 **Two exclusion files, and the difference matters.** `<case>.notarget` says
 cxx1 cannot compile that case for that target at all - `emit.sh` and
 `mangled-names` both read it. `<case>.nonames` says it compiles fine and only

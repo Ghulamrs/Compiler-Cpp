@@ -409,9 +409,14 @@ private:
     static std::string describeSignature(const Signature &f);
     const Type *decayedType(const Type *t);
     Rank rankArgument(const Expr &arg, const Type *param);
+    // `object` is the type the call is made on for a member function, and
+    // null for a free one. **A member function has an implicit object
+    // parameter** - [over.match.funcs] - and it is ranked like any other,
+    // which is the whole of what tells `get()` from `get() const`.
     const Signature &resolveOverload(const std::string &name,
                                      const std::vector<ExprPtr> &args,
-                                     std::size_t pos);
+                                     std::size_t pos,
+                                     const Type *object = nullptr);
 
     ExprPtr newExpression(std::size_t pos);
     ExprPtr deleteExpression(std::size_t pos);
