@@ -1,0 +1,31 @@
+#!/bin/sh
+# Ask cl on the Windows box about a C++ file, and print what it answers.
+#
+#   tools/cl-measure some.cpp            listing and symbols
+#   tools/cl-measure some.cpp symbols    just the external symbols
+#
+# cl is the oracle of record for the Microsoft ABI: it *is* that ABI, where
+# clang -target x86_64-pc-windows-msvc is a second implementation of it. clang
+# still answers for the two Itanium targets, which cl cannot speak about at
+# all - see tools/mangled-names.
+#
+# The script and its Windows half live in the repository rather than on the
+# box, because a box gets rebuilt and scaffold that lived only there comes
+# back as what looks like a network fault.
+set -e
+[ -n "$1" ] || { echo "usage: cl-measure <file.cpp> [symbols]" >&2; exit 2; }
+src=$1
+base=$(basename "$src" .cpp)
+host=${CXX1_WINDOWS:-windows}
+remote='C:\Users\GRA\source\measure'
+
+ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "if not exist $remote mkdir $remote" >/dev/null
+scp -q -o BatchMode=yes "$src" "$host:$remote\\$base.cpp"
+scp -q -o BatchMode=yes "$(dirname "$0")/windows/measure.cmd" "$host:$remote\\measure.cmd"
+
+out=$(ssh -o BatchMode=yes "$host" "$remote\\measure.cmd $base")
+if [ "$2" = symbols ]; then
+    printf '%s\n' "$out" | sed -n '/=== external symbols ===/,$p'
+else
+    printf '%s\n' "$out"
+fi

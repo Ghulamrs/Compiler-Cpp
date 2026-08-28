@@ -1,0 +1,89 @@
+#!/bin/sh
+# Build and test this tree on all three machines, from the Mac.
+#
+# The standing rule in CLAUDE.md is that a change is not done until the Mac,
+# the Linux box and the Windows box have all passed. This is that rule with a
+# command behind it - it relays the working tree rather than a commit, so it
+# can be run before committing, which is the order the rule wants.
+#
+#   tools/verify-three              both boxes
+#   tools/verify-three linux        one of them
+#   tools/verify-three windows
+#
+# It ships the tree as a tar rather than pulling a commit: the Windows box has
+# no git, and on the Linux box a pull would test what was pushed instead of
+# what is here.
+set -u
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+WHICH=${1:-all}
+KEY=${CXX1_LINUX_KEY:-$HOME/Documents/Claude/myMorningWalk.pem}
+LINUX=${CXX1_LINUX:-ec2-user@52.202.164.123}
+WINDOWS=${CXX1_WINDOWS:-windows}
+TAR=$(mktemp -t cxx1src).tgz
+STATUS=0
+
+# The tree, minus everything a build makes. `winout` and the out-* directories
+# are outputs of a previous run on the other side and shipping them back would
+# compare a run against itself.
+# **COPYFILE_DISABLE, and it is not optional.** Without it macOS bsdtar writes
+# an AppleDouble `._Driver.cpp` beside every file that carries an extended
+# attribute, `--no-xattrs` does not stop it, and `src\*.cpp` in msvc\build.cmd
+# then hands those to cl - which reports `unknown character '0x5'` in a file
+# nobody wrote. Same shape as the duplicate-file trap the Makefiles guard
+# against with a $(wildcard) filter.
+COPYFILE_DISABLE=1 tar -C "$ROOT" --no-xattrs -czf "$TAR" \
+    --exclude .git --exclude obj --exclude obj-msvc --exclude winout \
+    --exclude 'tests/out-*' --exclude '*.exe' --exclude .DS_Store \
+    src tests lib tools docs msvc Makefile CLAUDE.md README.md build 2>/dev/null
+
+if [ "$WHICH" = all ] || [ "$WHICH" = linux ]; then
+    echo "=== linux ($LINUX) ==="
+    scp -q -i "$KEY" -o BatchMode=yes "$TAR" "$LINUX:/tmp/cxx1src.tgz" || STATUS=1
+    ssh -i "$KEY" -o BatchMode=yes "$LINUX" '
+        rm -rf ~/cxx1-verify && mkdir -p ~/cxx1-verify &&
+        tar -C ~/cxx1-verify -xzf /tmp/cxx1src.tgz &&
+        cd ~/cxx1-verify && make -j4 >/dev/null && make test' || STATUS=1
+fi
+
+if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then
+    echo "=== windows ($WINDOWS) ==="
+    REMOTE='C:\Users\GRA\source\cxx1-verify'
+    scp -q -o BatchMode=yes "$TAR" "$WINDOWS:C:\\Users\\GRA\\source\\cxx1src.tgz" || STATUS=1
+    # Windows ships its own tar. Extracting over a previous run rather than
+    # into a clean directory is what leaves a stale object linking perfectly,
+    # so the directory goes first.
+    ssh -o BatchMode=yes "$WINDOWS" "rmdir /s /q $REMOTE 2>nul & mkdir $REMOTE && tar -C $REMOTE -xzf C:\\Users\\GRA\\source\\cxx1src.tgz" >/dev/null || STATUS=1
+    ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\run-cases.cmd $REMOTE" || STATUS=1
+
+    # The comparison happens here, not there - see run-cases.cmd for why.
+    OUT=$(mktemp -d)
+    # Forward slashes: scp's remote path goes through the shell, which eats
+    # the backslashes, and the copy then silently finds nothing.
+    scp -q -r -o BatchMode=yes "$WINDOWS:C:/Users/GRA/source/cxx1-verify/winout" "$OUT"
+    pass=0; fail=0
+    for e in "$ROOT"/tests/cases/*.expected; do
+        n=$(basename "$e" .expected)
+        nt="$ROOT/tests/cases/$n.notarget"
+        if [ -f "$nt" ] && grep -q x86_64-windows "$nt"; then
+            echo "  skip $n: $(grep x86_64-windows "$nt")"
+            continue
+        fi
+        got="$OUT/winout/$n.out"
+        if [ ! -f "$got" ]; then
+            echo "  $n: did not run"; fail=$((fail + 1)); continue
+        fi
+        if tr -d '\r' < "$got" | diff -q - "$e" >/dev/null; then
+            pass=$((pass + 1))
+        else
+            echo "  $n: output differs"
+            tr -d '\r' < "$got" | diff - "$e" | head -6
+            fail=$((fail + 1))
+        fi
+    done
+    echo "windows cases: $pass passed, $fail failed"
+    [ "$fail" -eq 0 ] || STATUS=1
+    rm -rf "$OUT"
+fi
+
+rm -f "$TAR"
+exit $STATUS
