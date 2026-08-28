@@ -120,6 +120,22 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     while (!peek().is("}")) {
         if (peek().kind == TokenKind::End) src_.fail(pos, "unclosed '{'");
 
+        // A constructor has the class's own name and no return type, so it
+        // has to be seen before specifiers() is asked for one - the name is a
+        // registered type name by now and would be read as the type.
+        if (!tag.empty() && peek().kind == TokenKind::Ident && peek().text == tag &&
+            peekAt(1).is("(")) {
+            std::size_t cpos = peek().pos;
+            at_++;
+            declareConstructor(tag, cpos, access);
+            if (peek().is("{"))
+                src_.fail(peek().pos, "a constructor defined inside the class "
+                                      "is not supported yet - define it outside "
+                                      "with '" + tag + "::" + tag + "'");
+            expect(";");
+            continue;
+        }
+
         if ((peek().is("public") || peek().is("private") || peek().is("protected")) &&
             peekAt(1).is(":")) {
             access = peek().is("public")  ? Access::Public
@@ -341,6 +357,16 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // spelled here rather than in <stddef.h>, which cannot declare it: the
     // name is a keyword, and a keyword is not something a typedef can name.
     if (consume("wchar_t")) return types_.get(target_.wcharType());
+    // **`Point::Point(...)` has no type before the name, and the name is a
+    // type.** So the specifier list has to decline it: it answers void and
+    // consumes nothing, which leaves `Point::Point` for the declarator's
+    // qualified-name path to read exactly as it reads `Point::get`. Every
+    // other route would have meant a second copy of the definition machinery.
+    if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
+        peekAt(2).kind == TokenKind::Ident && peekAt(2).text == peek().text &&
+        peekAt(3).is("(") && findTypedef(peek().text) != nullptr)
+        return types_.get(Kind::Void);
+
     if (peek().is("struct")) { at_++; return structOrUnionSpecifier(Kind::Struct); }
     if (peek().is("class"))  { at_++; return structOrUnionSpecifier(Kind::Struct, true); }
     if (peek().is("union"))  { at_++; return structOrUnionSpecifier(Kind::Union); }
@@ -971,6 +997,84 @@ std::string Parser::functionSymbol(const std::string &name, const Type *returns,
         src_.fail(pos, "'" + name + "' cannot be given a name the linker can "
                        "hold: " + why);
     return out;
+}
+
+// Building an object: the constructor is chosen from the arguments the way any
+// overload is, and then called with the object's address in front of them. The
+// object exists before the call - it is a frame slot like any other local - and
+// what the constructor does is give its members values.
+StmtPtr Parser::constructLocal(const Declared &d, int offset,
+                               std::vector<ExprPtr> args) {
+    const std::string key = constructorKey(d.type->tag());
+    const Signature &ctor = resolveOverload(key, args, d.pos);
+
+    if (ctor.access != Access::Public && currentClass_ != d.type->unqualified())
+        src_.fail(d.pos, "'" + d.type->describe() + "' has no public constructor "
+                         "taking these arguments - the one that matches is " +
+                         (ctor.access == Access::Private ? "private" : "protected"));
+
+    const Type *thisType = types_.pointerTo(d.type->unqualified());
+    ExprPtr object(Var::local(d.name, offset));
+    object->setType(d.type);
+    ExprPtr addr(new Unary('&', std::move(object)));
+    addr->setType(thisType);
+
+    std::vector<ExprPtr> all;
+    all.push_back(std::move(addr));
+    for (std::size_t i = 0; i < args.size(); i++) all.push_back(std::move(args[i]));
+
+    std::vector<const Type *> full;
+    full.push_back(thisType);
+    for (std::size_t i = 0; i < ctor.params.size(); i++) full.push_back(ctor.params[i]);
+
+    ExprPtr call = completeCall(d.type->tag(), ctor.symbol, nullptr,
+                                types_.get(Kind::Void), full, false, d.pos,
+                                std::move(all));
+    return StmtPtr(new ExprStmt(std::move(call)));
+}
+
+// A constructor, read at the point its '(' was seen. It is a member function
+// whose name is the class and whose return type is nothing at all - so it is
+// keyed under "Point::Point" and every piece of overload machinery applies to
+// it unchanged, which is what makes Point() and Point(int,int) two entries
+// that a construction chooses between.
+void Parser::declareConstructor(const std::string &cls, std::size_t pos,
+                                Access access) {
+    std::vector<const Type *> params;
+    bool variadic = false;
+    parameterTypes(params, variadic);
+    if (variadic)
+        src_.fail(pos, "a constructor cannot take '...'");
+
+    // A constructor returns nothing, and saying so as void is what lets the
+    // rest of the compiler treat the call like any other.
+    const Type *fn = types_.functionType(types_.get(Kind::Void), params, false);
+
+    std::string key = constructorKey(cls);
+    std::vector<std::size_t> &set = functionIndex_[key];
+    for (std::size_t k = 0; k < set.size(); k++) {
+        const Signature &f = functions_[set[k]];
+        if (f.params.size() != params.size()) continue;
+        bool same = true;
+        for (std::size_t i = 0; i < params.size(); i++)
+            if (f.params[i] != params[i]) { same = false; break; }
+        if (same) src_.fail(pos, "'" + cls + "::" + cls + "' is declared twice");
+    }
+
+    const char code = access == Access::Public    ? 'Q'
+                    : access == Access::Protected ? 'I'
+                                                  : 'A';
+    std::string out, why;
+    bool ok = target_.microsoftNames()
+            ? microsoftConstructorName(cls, fn, code, &out, &why)
+            : itaniumConstructorName(cls, fn, true, &out, &why);
+    if (!ok)
+        src_.fail(pos, "'" + cls + "::" + cls + "' cannot be given a name the "
+                       "linker can hold: " + why);
+
+    set.push_back(functions_.size());
+    functions_.push_back(Signature{ cls, out, types_.get(Kind::Void), params,
+                                    false, false, pos, false, cls, false, access });
 }
 
 // A member function declaration, keyed under "Class::name" in the one table
@@ -3170,6 +3274,39 @@ StmtPtr Parser::declarationBody() {
     std::vector<StmtPtr> inits;
     do {
         Declared d = declarator(base);
+
+        // An object of a class that declares constructors is built by calling
+        // one, and that has to be asked before the branch below - `Point p(1)`
+        // and a function declaration look the same until the type is known to
+        // be a class with constructors.
+        if (d.type->isStructOrUnion() && !d.type->tag().empty() &&
+            overloadsOf(constructorKey(d.type->tag())) != nullptr) {
+            if (sc == StorageStatic)
+                src_.fail(d.pos, "'" + d.name + "' is static and has a "
+                                 "constructor - running one before main is not "
+                                 "supported yet");
+            std::vector<ExprPtr> args;
+            if (consume("(")) {
+                if (peek().is(")"))
+                    src_.fail(d.pos, "'" + d.name + "()' declares a function "
+                                     "taking nothing and returning '" +
+                                     d.type->describe() + "' - C++ reads it that "
+                                     "way and not as a construction. Write '" +
+                                     d.type->describe() + " " + d.name +
+                                     ";' for the default constructor");
+                parseArguments(args);
+            } else if (peek().is("=")) {
+                src_.fail(d.pos, "'" + d.name + " = ...' copy-initialises, which "
+                                 "needs a copy constructor - not supported yet. "
+                                 "Write '" + d.name + "(...)' instead");
+            }
+
+            int off = declare(d.name, d.type, d.pos);
+            inits.push_back(constructLocal(d, off, std::move(args)));
+            if (!consume(",")) break;
+            continue;
+        }
+
         if (peek().is("(")) {
             if (sc == StorageStatic)
                 src_.fail(d.pos, "'" + d.name + "' is a function declared inside a "
@@ -3966,6 +4103,15 @@ void Parser::topLevel(Program &program) {
                                          variadic, regSaveSlot, d.pos,
                                          std::move(fnVars_)));
     program.functions.back().setSymbol(defined.symbol);
+    // A constructor is emitted under both of Itanium's names: C1 for a
+    // complete object, C2 for a base subobject, the second as a label in front
+    // of the first. The Microsoft ABI has one name and wants no alias.
+    if (memberOf != nullptr && d.name == d.qualifier && !target_.microsoftNames()) {
+        const Type *fnType = types_.functionType(types_.get(Kind::Void), params, false);
+        std::string c2, why;
+        if (itaniumConstructorName(d.qualifier, fnType, false, &c2, &why))
+            program.functions.back().setAlias(c2);
+    }
     program.functions.back().setBlocks(std::move(blocks_));
 }
 

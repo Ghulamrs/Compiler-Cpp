@@ -186,6 +186,13 @@ private:
     const EnumConst *findEnum(const std::string &name) const;
     const Type *structOrUnionSpecifier(Kind kind, bool isClass = false);
     void checkAccessible(const Type *object, const Member &m, std::size_t pos) const;
+    // A constructor is keyed in the function table under "Point::Point", so
+    // resolving one is resolving an overload set like any other.
+    static std::string constructorKey(const std::string &cls) { return cls + "::" + cls; }
+    void declareConstructor(const std::string &cls, std::size_t pos, Access access);
+    StmtPtr constructLocal(const Declared &d, int offset,
+                           std::vector<ExprPtr> args);
+
     void declareMember(const std::string &cls, const Declared &d, bool constThis,
                        Access access, bool inUnion);
     std::string memberSymbol(const std::string &cls, const std::string &name,

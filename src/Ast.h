@@ -489,6 +489,14 @@ public:
     const std::string &name() const { return name_; }
     const std::string &symbol() const { return symbol_.empty() ? name_ : symbol_; }
     void setSymbol(std::string s) { symbol_ = std::move(s); }
+
+    // A second name for the same code, emitted as an extra label in front of
+    // it. Itanium gives a constructor two - C1 for a complete object and C2
+    // for a base subobject - and clang emits both, so an object file that
+    // emitted only one would not be the same object file. Empty for everything
+    // else, the Microsoft ABI included: it has one constructor name.
+    const std::string &alias() const { return alias_; }
+    void setAlias(std::string a) { alias_ = std::move(a); }
     const Type *returns() const { return returns_; }
     const std::vector<Param> &params() const { return params_; }
     const Stmt &body() const { return *body_; }
@@ -507,6 +515,7 @@ public:
 private:
     std::string name_;
     std::string symbol_;
+    std::string alias_;
     const Type *returns_;
     std::vector<Param> params_;
     StmtPtr body_;

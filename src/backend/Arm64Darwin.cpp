@@ -905,6 +905,12 @@ void Arm64Darwin::emitFunction(const Function &fn) {
     if (!fn.isStatic()) out_ << "  .globl _" << fn.symbol() << "\n";
     out_ << "  .p2align 2\n";
     out_ << "_" << fn.symbol() << ":\n";
+    // A second name for the same code - see Function::alias. It is a label at
+    // the same address rather than a copy of the body.
+    if (!fn.alias().empty()) {
+        if (!fn.isStatic()) out_ << "  .globl _" << fn.alias() << "\n";
+        out_ << "_" << fn.alias() << ":\n";
+    }
     if (const Source *src = lineSource()) {
         Source::Place at = src->locate(fn.pos());
         DwarfFunction d;

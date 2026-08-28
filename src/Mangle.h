@@ -45,6 +45,20 @@ bool microsoftMemberName(const std::string &cls, const std::string &name,
                          const Type *fn, char access, bool constThis,
                          std::string *out, std::string *problem);
 
+// A constructor. **Itanium gives one constructor two names** - C1 for a
+// complete object and C2 for a base subobject - and clang emits both. Only C1
+// is spelled here, because C2 is called from a derived class's constructor and
+// there is no inheritance yet - but both are emitted anyway, C2 as a second
+// label in front of C1's body, because an object file missing one is not the
+// object file clang produces. Which one a construction *calls* was measured by
+// reading the call: C1. The Microsoft ABI has one name, ??0, and writes '@' where a
+// member function writes its return type.
+bool itaniumConstructorName(const std::string &cls, const Type *fn,
+                            bool complete, std::string *out, std::string *problem);
+
+bool microsoftConstructorName(const std::string &cls, const Type *fn,
+                              char access, std::string *out, std::string *problem);
+
 // A variable at namespace scope. The Microsoft ABI mangles it whatever its
 // linkage; Itanium leaves an external one alone and marks an internal one,
 // the same way it marks an internal function.

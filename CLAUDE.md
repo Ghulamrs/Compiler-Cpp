@@ -263,6 +263,34 @@ parsing happens rather than an addition to it; a nested class; a member
 function of a union; and a member function declared out of line that the class
 never declared.
 
+**A constructor is a member function whose name is its class and whose return
+type is nothing**, so it is keyed under `"Point::Point"` and every piece of the
+overload machinery applies unchanged - `Point()` and `Point(int,int)` are two
+entries a construction chooses between. The object exists before the call, as
+a frame slot like any other local; the constructor gives its members values.
+
+Two things had to be taught rather than reused. `Point::Point(...)` has **no
+type before a name that IS a type**, so `specifiers()` declines it - answers
+void and consumes nothing - which leaves the declarator's qualified-name path
+to read `Point::Point` exactly as it reads `Point::get`. And `Point p(1)` and a
+function declaration look the same until the type is known to be a class with
+constructors, so that question is asked before the block-function branch.
+
+**Itanium gives a constructor two names and both are emitted**: C1 for a
+complete object, C2 for a base subobject. A construction calls C1 - measured,
+by reading which one clang's call names - and nothing calls C2 until a derived
+class does, but an object file missing it is not the object file clang
+produces. `Function::alias` carries the second name and the two Itanium
+backends emit it as a label in front of the body, which is one address with two
+names rather than two copies of the code. The Microsoft ABI has one name, ??0,
+and writes '@' where a member function writes its return type.
+
+Refused by name: a constructor defined inside the class body, a variadic
+constructor, a static local with a constructor (it would have to run before
+main), copy-initialisation `Point p = ...` (it needs a copy constructor), and
+`Point p();` - which declares a function, and a compiler that quietly built an
+object there would compile a program that means something else everywhere else.
+
 `docs/CONFORMANCE.md` records what compiles here and should not — currently
 that an enumeration is still `int`, and that a class name cannot be hidden by
 an object of the same name.

@@ -1193,6 +1193,13 @@ void X86_64Linux::emit(const Function &fn) {
     returnLabel_ = ".L.return." + fn.symbol();
 
     a_->functionBegin(fn.symbol(), !fn.isStatic());
+    // A second name for the same code - see Function::alias. Emitted as a
+    // label at the same address, which is what makes it the same function
+    // rather than a second copy of it.
+    if (!fn.alias().empty()) {
+        if (!fn.isStatic()) a_->globl(fn.alias());
+        a_->defLabel(fn.alias());
+    }
     if (const Source *src = lineSource()) {
         Source::Place at = src->locate(fn.pos());
         DwarfFunction d;

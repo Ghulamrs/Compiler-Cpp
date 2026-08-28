@@ -100,6 +100,22 @@ public:
         if (fn->isVariadicFn()) out += "z";
     }
 
+    // _ZN5PointC1Eii - the class, then C1 or C2, then E, then the parameters.
+    // **A constructor has both names**: C1 builds a complete object and C2 a
+    // base subobject, and clang emits the two of them. Nothing calls C2 until
+    // a derived class does, but the object file is not the same object file
+    // without it - so both are emitted, C2 as a label in front of C1's body.
+    void constructor(const std::string &cls, const Type *fn, bool complete) {
+        out = "_ZN";
+        out += std::to_string(cls.size());
+        out += cls;
+        out += complete ? "C1E" : "C2E";
+        const std::vector<const Type *> &params = fn->params();
+        if (params.empty() && !fn->isVariadicFn()) { out += "v"; return; }
+        for (const Type *p : params) type(p);
+        if (fn->isVariadicFn()) out += "z";
+    }
+
     void function(const std::string &name, const Type *fn, bool internal) {
         out = internal ? "_ZL" : "_Z";
         out += std::to_string(name.size());
@@ -194,6 +210,21 @@ public:
         out += constThis ? 'B' : 'A';
         out += 'A';               // __cdecl
         returnType(fn->returns());
+        const std::vector<const Type *> &params = fn->params();
+        if (params.empty() && !fn->isVariadicFn()) { out += "XZ"; return; }
+        for (const Type *p : params) argument(p);
+        out += fn->isVariadicFn() ? "ZZ" : "@Z";
+    }
+
+    // ??0Point@@QEAA@HH@Z - ??0 says constructor, and the '@' after QEAA sits
+    // where a member function writes its return type.
+    void constructor(const std::string &cls, const Type *fn, char access) {
+        out = "??0";
+        pushName(cls);
+        out += '@';
+        out += access;
+        out += "EAA";
+        out += '@';               // a constructor returns nothing to say
         const std::vector<const Type *> &params = fn->params();
         if (params.empty() && !fn->isVariadicFn()) { out += "XZ"; return; }
         for (const Type *p : params) argument(p);
@@ -359,6 +390,24 @@ bool microsoftMemberName(const std::string &cls, const std::string &name,
                          std::string *out, std::string *problem) {
     Microsoft m;
     m.memberFunction(cls, name, fn, access, constThis);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
+bool itaniumConstructorName(const std::string &cls, const Type *fn,
+                            bool complete, std::string *out, std::string *problem) {
+    Itanium m;
+    m.constructor(cls, fn, complete);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
+bool microsoftConstructorName(const std::string &cls, const Type *fn,
+                              char access, std::string *out, std::string *problem) {
+    Microsoft m;
+    m.constructor(cls, fn, access);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;
