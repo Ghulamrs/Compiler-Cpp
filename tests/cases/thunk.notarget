@@ -1,1 +1,1 @@
-x86_64-windows  two vftable symbols rather than one table in two parts, and no thunk - measured with clang, not yet with cl
+x86_64-windows  MSVC biases `this` to the secondary base inside the override rather than using a thunk - see CLAUDE.md, measured with cl

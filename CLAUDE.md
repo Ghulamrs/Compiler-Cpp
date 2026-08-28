@@ -341,13 +341,32 @@ calls and returns, which costs a frame and behaves identically and needed
 nothing new from any backend. The name is `_ZThn16_N1C1gEv`: the prefix, the
 offset, then the mangled name with its own `_Z` removed and its `N` kept.
 
-**The Microsoft ABI arranges this differently and is refused for now.**
-Measured with clang: it emits **two separate vftable symbols** -
-`??_7C@@6BA@@@` and `??_7C@@6BB@@@` - rather than one table in two sections,
-and the second points straight at `?g@C@@UEAAHXZ` with no thunk at all. That is
-a different arrangement, not the same one renamed, and whether **cl** agrees
-with clang there has not been measured. Guessing at an ABI is the one thing
-this project does not do.
+**The Microsoft ABI does not use a thunk at all, and that is a difference in
+code generation rather than in naming.** Measured with **cl itself**, from its
+own `/FAs` listing:
+
+- Two separate vftable symbols, `??_7C@@6BA@@@` and `??_7C@@6BB@@@`, rather
+  than one table in two sections. Each is stored at its own base's offset.
+- The second points **straight at `?g@C@@UEAAHXZ`**. There is no adjustor
+  symbol anywhere in the object.
+
+The adjustment is inside the override. For `int C::g() { return c*100 + b*10 + a; }`
+cl emits
+
+    imul eax, DWORD PTR [rax+16], 100     ; c
+    imul ecx, DWORD PTR [rcx+8], 10       ; b
+    add  eax, DWORD PTR [rcx-8]           ; a  <- NEGATIVE
+
+so **`this` arrives pointing at the B subobject**, and the first base's members
+are reached backwards from it. MSVC compiles the whole function against a
+biased `this`; Itanium compiles it against the complete object and puts a thunk
+in front.
+
+That is why this is refused on Windows rather than approximated: implementing
+it means carrying a `this` bias through member lookup for the whole body of
+such an override, not emitting a different symbol. It is a rung-4 remainder
+with a known shape, and the shape is written down here so the next attempt
+starts from a measurement rather than from a guess.
 
 **A case may now name a target it does not compile for**, one per line in
 `<case>.notarget` with the reason on the line, honoured by `tests/emit.sh` and
