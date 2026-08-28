@@ -76,6 +76,15 @@ bool Parser::atTypeName() const {
 }
 
 bool Parser::atDeclarationStart() const {
+    // **`Counter::total = 1;` is a statement, not a declaration**, even though
+    // it starts with a name that names a type. A declaration whose type is
+    // written `C::something` needs a nested class, which is refused by name,
+    // so an identifier naming a class and followed by '::' is always the
+    // start of an expression here - a static member being read or written.
+    if (peek().kind == TokenKind::Ident && peekAt(1).is("::")) {
+        const Type *named = findTypedef(peek().text);
+        if (named != nullptr && named->isStructOrUnion()) return false;
+    }
 
     return atTypeName() || peek().is("static") || peek().is("extern")
         || peek().is("register") || peek().is("auto") || peek().is("typedef");
@@ -292,8 +301,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
         StorageClass msc;
         const Type *base = specifiers(&msc);
-        if (msc != StorageNone)
-            src_.fail(peek().pos, "a storage class on a member is not supported yet");
+        if (msc != StorageNone && msc != StorageStatic)
+            src_.fail(peek().pos, "'static' is the only storage class a member "
+                                  "may have");
         for (;;) {
             if (peek().is(":")) {
                 std::size_t cpos = peek().pos;
@@ -331,6 +341,18 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 src_.fail(d.pos, "'" + d.name + "' is a reference member, and "
                                  "binding one needs a constructor - not "
                                  "supported yet; a pointer member works now");
+
+            // **A static member is not part of the object**, so it leaves the
+            // layout untouched and the cursor where it was.
+            if (msc == StorageStatic) {
+                if (peek().is("("))
+                    src_.fail(d.pos, "'" + d.name + "' is a static member "
+                                     "function, which is not supported yet - a "
+                                     "static data member works now");
+                declareStaticMember(tag, type, d, access);
+                if (!consume(",")) break;
+                continue;
+            }
 
             if (peek().is(":")) {
                 std::size_t cpos = peek().pos;
@@ -2484,6 +2506,136 @@ void Parser::defineImplicitFunctions() {
     }
 }
 
+std::string Parser::staticMemberSymbol(const std::string &cls,
+                                       const std::string &name, const Type *t,
+                                       Access access, std::size_t pos) {
+    if (!target_.microsoftNames()) return itaniumStaticMemberName(cls, name);
+    // Microsoft writes the access as a digit where a member function writes a
+    // letter, so a static member that changes from private to public changes
+    // its symbol on Windows and keeps it on Linux - the same asymmetry member
+    // functions already have, measured the same way.
+    const char code = access == Access::Public    ? '2'
+                    : access == Access::Protected ? '1'
+                                                  : '0';
+    std::string out, why;
+    if (!microsoftStaticMemberName(cls, name, t, code, &out, &why))
+        src_.fail(pos, "'" + cls + "::" + name + "' cannot be given a name the "
+                       "linker can hold: " + why);
+    return out;
+}
+
+// `static int total;` inside a class. It declares one object shared by every
+// object of the class and takes no room in any of them, so nothing here
+// touches the layout - what it needs is a name the linker can hold and a
+// definition outside the class to go with it.
+void Parser::declareStaticMember(const std::string &cls, Type *owner,
+                                 const Declared &d, Access access) {
+    if (cls.empty())
+        src_.fail(d.pos, "a static member needs a class with a name - this one "
+                         "is anonymous");
+    if (owner->findMember(d.name) != nullptr)
+        src_.fail(d.pos, "'" + cls + "::" + d.name + "' is a static member and "
+                         "an ordinary one, and it can only be one of them");
+    for (const Type::StaticMember &had : owner->staticMembers())
+        if (had.name == d.name)
+            src_.fail(d.pos, "'" + cls + "::" + d.name + "' is declared twice");
+
+    Type::StaticMember s;
+    s.name = d.name;
+    s.type = d.type;
+    s.access = access;
+
+    // **`static const int k = 5;` written in the class needs no definition**,
+    // and that is measured rather than assumed: cl emits no symbol for one and
+    // folds the value in wherever it is read. Anything else with an
+    // initialiser here is refused, because the definition outside the class is
+    // where the storage comes from and the value belongs with it.
+    if (consume("=")) {
+        if (!d.type->isConst() || !d.type->isInteger())
+            src_.fail(d.pos, "'" + cls + "::" + d.name + "' is initialised "
+                             "inside the class, and only a 'static const' of "
+                             "integer type may be - write the value on the "
+                             "definition outside the class instead");
+        s.folded = true;
+        s.value = constantExpression("a static member's value");
+    } else if (d.type->isArray() && d.type->length() < 0) {
+        src_.fail(d.pos, "'" + cls + "::" + d.name + "' has no length, and a "
+                         "static member cannot take one from its definition - "
+                         "the class is what says how big it is");
+    }
+
+    s.symbol = staticMemberSymbol(cls, d.name, d.type, access, d.pos);
+    owner->addStaticMember(s);
+}
+
+// `int Counter::total = 0;` at file scope - the definition the declaration
+// inside the class asked for. It is an ordinary global that the class gave its
+// name to, so all this adds to the global path is finding which member it is
+// and taking the symbol from it.
+void Parser::defineStaticMember(Declared &d, Program &program) {
+    const Type *owner = findTypedef(d.qualifier);
+    if (owner == nullptr || !owner->isStructOrUnion())
+        src_.fail(d.pos, "'" + d.qualifier + "' is not a class");
+    const Type::StaticMember *s = owner->findStaticMember(d.name);
+    if (s == nullptr)
+        src_.fail(d.pos, "'" + d.qualifier + "' declares no static member '" +
+                         d.name + "'");
+    if (s->type->unqualified() != d.type->unqualified() ||
+        s->type->isConst() != d.type->isConst())
+        src_.fail(d.pos, "'" + d.qualifier + "::" + d.name + "' was declared '" +
+                         s->type->describe() + "' and this defines it as '" +
+                         d.type->describe() + "'");
+    for (const Global &g : program.globals)
+        if (g.symbol == s->symbol)
+            src_.fail(d.pos, "'" + d.qualifier + "::" + d.name + "' is defined "
+                             "twice");
+
+    // **A static member of class type has to be constructed before main**,
+    // which is the mechanism a static local with a constructor needs and is
+    // not here yet. Refused where the storage is made, which is the line that
+    // has to change, rather than where it is read. A class with no
+    // constructor is an aggregate and initialises like any other global.
+    if (const Type *cls = memberClass(s->type))
+        if (!cls->tag().empty() &&
+            overloadsOf(constructorKey(cls->tag())) != nullptr)
+            src_.fail(d.pos, "'" + d.qualifier + "::" + d.name + "' is a static "
+                             "member of '" + cls->tag() + "', which has a "
+                             "constructor - running one before main is not "
+                             "supported yet");
+
+    std::vector<GlobalPiece> pieces;
+    bool hasInit = false;
+    if (consume("=")) {
+        Init in = parseInitialiser();
+        flattenInit(s->type, in, 0, pieces);
+        hasInit = true;
+    }
+    expect(";");
+
+    program.globals.push_back(Global{ d.qualifier + "::" + d.name, s->symbol,
+                                      s->type, std::move(pieces), hasInit, false,
+                                      s->type->isConst() });
+}
+
+// Naming a static member, however it was reached. A folded one is its value
+// and has no storage at all; every other is the one global the class named.
+ExprPtr Parser::staticMemberRef(const Type *owner, const Type::StaticMember &s,
+                                const std::string &cls, std::size_t pos) {
+    if (s.access != Access::Public && currentClass_ != owner->unqualified())
+        src_.fail(pos, "'" + cls + "::" + s.name + "' is " +
+                       (s.access == Access::Private ? "private" : "protected"));
+    if (s.folded) {
+        ExprPtr n(new Num(s.value));
+        n->setType(s.type);
+        return n;
+    }
+    Var *v = Var::global(cls + "::" + s.name);
+    v->setSymbol(s.symbol);
+    ExprPtr n(v);
+    n->setType(s.type);
+    return n;
+}
+
 // A member function declaration, keyed under "Class::name" in the one table
 // every function lives in. Nothing about overload resolution had to be told
 // that members exist: two members of one class with different parameters are
@@ -2995,6 +3147,25 @@ ExprPtr Parser::primary(Program *program) {
         return n;
     }
 
+    // **`Counter::total` - a static member named through its class.** Asked
+    // before the identifier is read as a name of its own, and only taken when
+    // the class really does have such a member, so `Point::get()` and anything
+    // else spelled with a '::' falls through untouched.
+    if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
+        peekAt(2).kind == TokenKind::Ident) {
+        if (const Type *owner = findTypedef(peek().text)) {
+            if (owner->isStructOrUnion()) {
+                if (const Type::StaticMember *s =
+                        owner->findStaticMember(peekAt(2).text)) {
+                    const std::size_t qpos = peek().pos;
+                    const std::string cls = peek().text;
+                    at_ += 3;
+                    return staticMemberRef(owner, *s, cls, qpos);
+                }
+            }
+        }
+    }
+
     if (peek().kind == TokenKind::Ident) {
         std::string name = peek().text;
         std::size_t pos = peek().pos;
@@ -3003,6 +3174,20 @@ ExprPtr Parser::primary(Program *program) {
         const GlobalSym *g = l != nullptr ? nullptr : findGlobal(name);
         const Type *held = l != nullptr ? l->type : (g != nullptr ? g->type : nullptr);
         bool callsThroughObject = held != nullptr && held->isFunctionPointer();
+
+        // **An unqualified static member, inside a member function.** It needs
+        // no object, which is what lets it be answered here rather than
+        // through `this` the way an ordinary member is. A local or a global of
+        // the same name is nearer and was already found above.
+        if (l == nullptr && g == nullptr && currentClass_ != nullptr &&
+            !peekAt(1).is("(")) {
+            if (const Type::StaticMember *s =
+                    currentClass_->findStaticMember(name)) {
+                at_++;
+                return staticMemberRef(currentClass_, *s, currentClass_->tag(),
+                                       pos);
+            }
+        }
 
         // An unqualified call inside a member function looks for a member of
         // this class first - [class.mfct.non-static] makes `secret()` mean
@@ -3646,6 +3831,14 @@ static bool isLvalue(const Expr &e) {
     if (dynamic_cast<const Var *>(&e)) return true;
     if (dynamic_cast<const MemberAccess *>(&e)) return true;
     if (const Unary *u = dynamic_cast<const Unary *>(&e)) return u->op() == '*';
+    // **A comma has the value category of its right operand** - [expr.comma],
+    // and it is C++'s rule rather than C's, where the result is always a
+    // value. It matters here because `b.count` for a static member is built
+    // as one: the object is evaluated and thrown away and what the expression
+    // names is the shared object, which can be assigned to and have its
+    // address taken like any other.
+    if (const Comma *c = dynamic_cast<const Comma *>(&e))
+        return isLvalue(c->right());
     return false;
 }
 
@@ -4044,6 +4237,25 @@ ExprPtr Parser::postfix() {
             n = std::move(deref);
             std::string name = expectIdent("a member name");
             if (consume("(")) { n = memberCall(std::move(n), obj, name, pos); continue; }
+            // **`p->count` where count is static** names the one shared
+            // object, and the expression on the left is still evaluated -
+            // [expr.ref] says so - which is what the comma is for.
+            if (const Type::StaticMember *s = obj->findStaticMember(name)) {
+                ExprPtr one = staticMemberRef(obj, *s, obj->tag(), pos);
+                // [expr.ref] evaluates the object expression even though what
+                // the whole thing names is the one shared object. Where that
+                // expression is pure there is nothing to evaluate, and
+                // dropping it leaves an ordinary lvalue rather than a comma -
+                // which is what `b.count = 1` and `&b.count` need.
+                if (clonePure(*n) == nullptr) {
+                    const Type *st = one->type();
+                    ExprPtr both(new Comma(std::move(n), std::move(one)));
+                    both->setType(st);
+                    one = std::move(both);
+                }
+                n = std::move(one);
+                continue;
+            }
             const Member *m = obj->findMember(name);
             if (!m) src_.fail(pos, "'" + obj->describe() + "' has no member '" + name + "'");
             checkAccessible(obj, *m, pos);
@@ -4072,6 +4284,25 @@ ExprPtr Parser::postfix() {
             const Type *obj = n->type();
             std::string name = expectIdent("a member name");
             if (consume("(")) { n = memberCall(std::move(n), obj, name, pos); continue; }
+            // **`p->count` where count is static** names the one shared
+            // object, and the expression on the left is still evaluated -
+            // [expr.ref] says so - which is what the comma is for.
+            if (const Type::StaticMember *s = obj->findStaticMember(name)) {
+                ExprPtr one = staticMemberRef(obj, *s, obj->tag(), pos);
+                // [expr.ref] evaluates the object expression even though what
+                // the whole thing names is the one shared object. Where that
+                // expression is pure there is nothing to evaluate, and
+                // dropping it leaves an ordinary lvalue rather than a comma -
+                // which is what `b.count = 1` and `&b.count` need.
+                if (clonePure(*n) == nullptr) {
+                    const Type *st = one->type();
+                    ExprPtr both(new Comma(std::move(n), std::move(one)));
+                    both->setType(st);
+                    one = std::move(both);
+                }
+                n = std::move(one);
+                continue;
+            }
             const Member *m = obj->findMember(name);
             if (!m) src_.fail(pos, "'" + obj->describe() + "' has no member '" + name + "'");
             checkAccessible(obj, *m, pos);
@@ -5832,6 +6063,16 @@ void Parser::topLevel(Program &program) {
     enterScope();
     frameSize_ = 0;
     Declared d = declarator(base);
+
+    // `int Counter::total = 0;` - a static member's definition. A member
+    // *function*'s definition is spelled the same way up to here and is told
+    // apart by the '(' that follows, which is the same question the class body
+    // asks about a member.
+    if (!d.qualifier.empty() && !peek().is("(") && d.paramsAt == 0 &&
+        !d.type->isFunction()) {
+        defineStaticMember(d, program);
+        return;
+    }
 
     if (d.type->isFunction() && d.paramsAt == 0 && !peek().is("(")) {
         std::vector<const Type *> ps(d.type->params());

@@ -90,6 +90,21 @@ bool itaniumCopyAssignName(const std::string &cls, const Type *clsType,
 bool microsoftCopyAssignName(const std::string &cls, const Type *fn, char access,
                              std::string *out, std::string *problem);
 
+// A static data member: one object shared by the class rather than one per
+// object, and so a global that the class gave its name to. Itanium spells it
+// like a member function without the parameters and without any note of the
+// access - `_ZN1C3pubE` whether it is public or private. Microsoft writes the
+// access as a **digit** where a member function writes a letter, measured with
+// cl: 2 public, 1 protected, 0 private, and then the type exactly as a
+// namespace-scope variable has it - `?pub@C@@2HA`, `?priv@C@@0HA`,
+// `?k@S@@2HB` for a const one.
+std::string itaniumStaticMemberName(const std::string &cls,
+                                    const std::string &name);
+
+bool microsoftStaticMemberName(const std::string &cls, const std::string &name,
+                               const Type *t, char access,
+                               std::string *out, std::string *problem);
+
 // A variable at namespace scope. The Microsoft ABI mangles it whatever its
 // linkage; Itanium leaves an external one alone and marks an internal one,
 // the same way it marks an internal function.

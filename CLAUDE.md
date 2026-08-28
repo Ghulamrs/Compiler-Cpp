@@ -597,6 +597,58 @@ links with one clang compiled, in both directions, and the program prints what
 the all-clang build prints.** A mangled name can be diffed, but a calling
 convention has to be run.
 
+**A static data member is one object shared by the class**, and the whole of
+what makes it different from a global is where its name comes from. It takes no
+room in the layout - `Type::StaticMember` is kept apart from `members()` so
+that neither the size computation nor anything walking the members has to learn
+to skip it - and it is **searched up through the bases** rather than copied
+down, the way a member function is, because it lives under a name and not at an
+offset.
+
+Both ABIs spell the class into the name and **only Microsoft spells in the
+access**, as a *digit* where a member function writes a letter - `2` public,
+`1` protected, `0` private, measured with cl:
+
+    ?pub@C@@2HA   ?prot@C@@1HA   ?priv@C@@0HA        _ZN1C3pubE (all three)
+
+**`static const int k = 5;` written inside the class needs no definition and
+gets no symbol** - measured, cl folds the value in - so it is kept as a value
+on the `StaticMember` and read back as one. Anything else with an initialiser
+inside the class is refused: the definition outside is where the storage comes
+from and the value belongs with it.
+
+Three ways to name one and they all reach the same object: `C::n`, `obj.n` and
+`p->n`, plus the unqualified `n` inside a member function, which is found by
+name rather than through `this` because it needs no object at all. `obj.n`
+still *evaluates* obj - [expr.ref] - but where that expression is pure there is
+nothing to evaluate, and dropping it is what leaves an ordinary lvalue rather
+than a comma, which is what `b.count = 1` and `&b.count` need. A comma is an
+lvalue here when its right operand is, which is C++'s rule and not C's.
+
+`Counter::total = 1;` as a *statement* had to be taught to `atDeclarationStart`,
+which otherwise saw a name that names a type and tried to read a declaration. A
+declaration whose type is written `C::something` needs a nested class and is
+refused, so an identifier naming a class followed by `::` always begins an
+expression here.
+
+Refused by name: a static member *function* (the data member is what this step
+is), a static member of a class with a constructor - it would have to run
+before main, the same mechanism a static local with a constructor needs - and
+an initialiser inside the class for anything but a `static const` of integer
+type.
+
+**Two Microsoft data-symbol bugs came out on the way**, both pre-existing and
+both measured with cl, because a static member is spelled with exactly the same
+machinery a namespace-scope variable is:
+
+    int arr[3]        ?arr@@3PAHA        an array decays; cxx1 wrote Y02H
+    int m2[2][3]      ?m2@@3PAY02HA      to a pointer to its element
+    S *self           ?self@@3PEAUS@@EA  the qualifier carries E as well
+    const char *ccp   ?ccp@@3PEBDEB      and repeats the POINTEE's const
+
+The last is the surprising one: `ccp` is a mutable pointer to const char and
+the qualifier after the type says `B` all the same.
+
 **Two exclusion files, and the difference matters.** `<case>.notarget` says
 cxx1 cannot compile that case for that target at all - `emit.sh` and
 `mangled-names` both read it. `<case>.nonames` says it compiles fine and only

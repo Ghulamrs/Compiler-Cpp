@@ -152,6 +152,17 @@ const Member *Type::findMember(const std::string &name) const {
     return nullptr;
 }
 
+const Type::StaticMember *Type::findStaticMember(const std::string &name) const {
+    for (const StaticMember &s : staticMembers())
+        if (s.name == name) return &s;
+    // Not its own, so a base's - searched the way a member function is,
+    // because a static member lives under a name and not at an offset, and a
+    // derived class names its base's without anything being copied down.
+    for (const BaseSpec &b : bases())
+        if (const StaticMember *s = b.type->findStaticMember(name)) return s;
+    return nullptr;
+}
+
 void Type::complete(std::vector<Member> members, int size, int align) {
     members_ = std::move(members);
     size_ = size;

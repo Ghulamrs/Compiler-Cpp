@@ -307,6 +307,15 @@ private:
     StmtPtr constructLocal(const Declared &d, int offset,
                            std::vector<ExprPtr> args);
 
+    // A static data member: declared inside the class, defined outside it,
+    // and reached by all three of `C::n`, `obj.n` and `p->n`.
+    std::string staticMemberSymbol(const std::string &cls, const std::string &name,
+                                   const Type *t, Access access, std::size_t pos);
+    void declareStaticMember(const std::string &cls, Type *owner,
+                             const Declared &d, Access access);
+    void defineStaticMember(Declared &d, Program &program);
+    ExprPtr staticMemberRef(const Type *owner, const Type::StaticMember &s,
+                            const std::string &cls, std::size_t pos);
     void declareMember(const std::string &cls, const Declared &d, bool constThis,
                        Access access, bool inUnion, bool isVirtual);
     std::string memberSymbol(const std::string &cls, const std::string &name,

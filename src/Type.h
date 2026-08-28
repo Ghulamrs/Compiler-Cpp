@@ -177,6 +177,29 @@ public:
     }
     const Member *findMember(const std::string &name) const;
 
+    // **A static data member is one object shared by the class, not one per
+    // object.** It has no offset and takes no room, so it is kept apart from
+    // the members rather than among them - neither the size computation nor
+    // anything walking members() has to learn to skip it.
+    struct StaticMember {
+        std::string name;
+        const Type *type;
+        Access access;
+        std::string symbol;
+        // A `static const` of integer type whose initialiser is written
+        // inside the class is a constant and needs no definition at all - cl
+        // emits no symbol for one and folds the value in. That value is here.
+        bool folded = false;
+        long long value = 0;
+    };
+    const std::vector<StaticMember> &staticMembers() const {
+        return unqual_ ? unqual_->staticMembers() : statics_;
+    }
+    void addStaticMember(StaticMember s) { statics_.push_back(std::move(s)); }
+    // Searched up through the bases, the way a member function is: a static
+    // member lives under a name, and a derived class names its base's.
+    const StaticMember *findStaticMember(const std::string &name) const;
+
     void complete(std::vector<Member> members, int size, int align);
 
     // **Where this class's data actually ends, before the padding.** A base
@@ -222,6 +245,7 @@ private:
     bool nonTrivialCopy_ = false;
     std::vector<BaseSpec> bases_;
     std::vector<Member> members_;
+    std::vector<StaticMember> statics_;
     int size_ = 0;
     int align_ = 1;
     bool complete_ = false;
