@@ -1,0 +1,10 @@
+A up
+B up
+C up
+sizes 4 4 12
+offs 0 4 8
+adjust 0 4
+calls 10 200
+C down
+B down
+A down

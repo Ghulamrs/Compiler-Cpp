@@ -236,6 +236,9 @@ private:
                              std::size_t pos, bool isVirtual = false);
     ExprPtr memberCall(ExprPtr object, const Type *cls, const std::string &name,
                        std::size_t pos);
+    // The class up the chain that declares this member function, searching
+    // every base rather than only the first.
+    const Type *findMemberOwner(const Type *cls, const std::string &name) const;
 
     // The class whose member function is being parsed, and the frame offset of
     // its hidden `this` parameter. Empty and 0 outside one, which is what

@@ -125,7 +125,6 @@ public:
     // The one base class, or null. A base subobject sits at offset 0 - measured
     // - so a derived object's address IS its base's address and no adjustment
     // is needed anywhere. Multiple inheritance is what ends that, and it is a
-    // later step for exactly that reason.
     // Whether this class has any virtual function, its bases' included. It
     // decides the layout - a polymorphic object carries a vptr at offset 0 and
     // its members start after it - so it has to be answerable before the
@@ -133,9 +132,33 @@ public:
     bool polymorphic() const { return unqual_ ? unqual_->polymorphic() : polymorphic_; }
     void setPolymorphic(bool p) { polymorphic_ = p; }
 
-    const Type *base() const { return unqual_ ? unqual_->base() : base_; }
-    Access baseAccess() const { return unqual_ ? unqual_->baseAccess() : baseAccess_; }
-    void setBase(const Type *b, Access how) { base_ = b; baseAccess_ = how; }
+    // **Every base, with the offset it sits at.** The first is at 0 and any
+    // second is not - measured: `class C : public A, public B` puts A at 0 and
+    // B at 4 - which is the whole difference multiple inheritance makes. A
+    // pointer to the second base is the object's address plus that offset, and
+    // so is the `this` its member functions expect.
+    struct BaseSpec {
+        const Type *type;
+        int offset;
+        Access access;
+    };
+    const std::vector<BaseSpec> &bases() const {
+        return unqual_ ? unqual_->bases() : bases_;
+    }
+    void addBase(const Type *b, int offset, Access how) {
+        bases_.push_back(BaseSpec{ b, offset, how });
+    }
+
+    // The first base - the only one for most classes, and the only one that
+    // needs no adjustment. Kept because most callers ask exactly that.
+    const Type *base() const {
+        const std::vector<BaseSpec> &b = bases();
+        return b.empty() ? nullptr : b[0].type;
+    }
+    Access baseAccess() const {
+        const std::vector<BaseSpec> &b = bases();
+        return b.empty() ? Access::Public : b[0].access;
+    }
     const std::vector<Member> &members() const {
         return unqual_ ? unqual_->members() : members_;
     }
@@ -183,8 +206,7 @@ private:
     bool isClass_ = false;
     int dataSize_ = 0;
     bool polymorphic_ = false;
-    const Type *base_ = nullptr;
-    Access baseAccess_ = Access::Public;
+    std::vector<BaseSpec> bases_;
     std::vector<Member> members_;
     int size_ = 0;
     int align_ = 1;

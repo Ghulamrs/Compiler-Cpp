@@ -99,33 +99,44 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
     // `class Derived : public Base {` - the base-clause. Default access is
     // private for a class and public for a struct, the same split as members.
-    const Type *base = nullptr;
-    Access baseAccess = isClass ? Access::Private : Access::Public;
+    // The base-clause, which may now name more than one. They are laid down in
+    // the order written, each at the offset the one before it ended at, and
+    // that order is also the order their constructors run in.
+    struct WrittenBase { const Type *type; Access access; };
+    std::vector<WrittenBase> written;
     if (peek().is(":")) {
         at_++;
-        if (peek().is("virtual"))
-            src_.fail(peek().pos, "a virtual base is not supported yet");
-        if (peek().is("public"))         { baseAccess = Access::Public;    at_++; }
-        else if (peek().is("protected")) { baseAccess = Access::Protected; at_++; }
-        else if (peek().is("private"))   { baseAccess = Access::Private;   at_++; }
+        for (;;) {
+            Access how = isClass ? Access::Private : Access::Public;
+            if (peek().is("virtual"))
+                src_.fail(peek().pos, "a virtual base is not supported yet");
+            if (peek().is("public"))         { how = Access::Public;    at_++; }
+            else if (peek().is("protected")) { how = Access::Protected; at_++; }
+            else if (peek().is("private"))   { how = Access::Private;   at_++; }
 
-        std::size_t bpos = peek().pos;
-        std::string baseName = expectIdent("a base class name");
-        base = findTypedef(baseName);
-        if (base == nullptr || !base->isStructOrUnion())
-            src_.fail(bpos, "'" + baseName + "' is not a class, so it cannot be "
-                            "a base");
-        if (!base->isComplete())
-            src_.fail(bpos, "'" + baseName + "' is not defined yet - a base "
-                            "class has to be complete, because the derived "
-                            "object contains one");
-        if (peek().is(","))
-            src_.fail(peek().pos, "more than one base class is not supported "
-                                  "yet - a second base subobject cannot sit at "
-                                  "offset 0 as well, and every address in the "
-                                  "compiler assumes it does");
-        type->setBase(base, baseAccess);
+            std::size_t bpos = peek().pos;
+            std::string baseName = expectIdent("a base class name");
+            const Type *b = findTypedef(baseName);
+            if (b == nullptr || !b->isStructOrUnion())
+                src_.fail(bpos, "'" + baseName + "' is not a class, so it "
+                                "cannot be a base");
+            if (!b->isComplete())
+                src_.fail(bpos, "'" + baseName + "' is not defined yet - a base "
+                                "class has to be complete, because the derived "
+                                "object contains one");
+            // A second base sits at a non-zero offset, and every vtable this
+            // compiler emits assumes the vptr is at zero. Secondary tables and
+            // the thunks that adjust `this` on the way in are the next step.
+            if (!written.empty() && b->polymorphic())
+                src_.fail(bpos, "'" + baseName + "' has virtual functions and "
+                                "is not the first base - a second vtable and "
+                                "the thunks that adjust 'this' for it are not "
+                                "supported yet");
+            written.push_back(WrittenBase{ b, how });
+            if (!consume(",")) break;
+        }
     }
+    const Type *base = written.empty() ? nullptr : written[0].type;
 
     if (!peek().is("{")) {
         if (tag.empty()) src_.fail(pos, std::string(what) + " needs a tag or a body");
@@ -150,22 +161,33 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // Access travels through the inheritance: a public member of a private
     // base is private in the derived class, and a private member of any base
     // stays out of reach either way.
-    if (base != nullptr) {
-        const std::vector<Member> &inherited = base->members();
+    for (std::size_t bi = 0; bi < written.size(); bi++) {
+        const Type *b = written[bi].type;
+        const Access how = written[bi].access;
+
+        // Each base starts where the last one's data ended, aligned to its own
+        // requirement. The first therefore sits at 0 and the rest do not.
+        long long byteCursor = (bitCursor + 7) / 8;
+        const int at = static_cast<int>(alignTo(byteCursor, b->align(target_)));
+
+        const std::vector<Member> &inherited = b->members();
         for (std::size_t i = 0; i < inherited.size(); i++) {
             Member m = inherited[i];
+            m.offset += at;
             if (m.access == Access::Private) m.access = Access::Private;
-            else if (baseAccess == Access::Private) m.access = Access::Private;
-            else if (baseAccess == Access::Protected) m.access = Access::Protected;
+            else if (how == Access::Private) m.access = Access::Private;
+            else if (how == Access::Protected) m.access = Access::Protected;
             members.push_back(m);
         }
+        type->addBase(b, at, how);
+
         // The base's DATA size, not its sizeof - see Type::dataSize.
-        bitCursor = static_cast<long long>(base->dataSize()) * 8;
-        if (base->align(target_) > widest) widest = base->align(target_);
-        // The base's slots come down in order, and an override in this class
-        // replaces one rather than appending - declareMember does that part.
-        if (!tag.empty() && base->polymorphic())
-            vtables_[tag] = vtables_[base->tag()];
+        bitCursor = static_cast<long long>(at + b->dataSize()) * 8;
+        if (b->align(target_) > widest) widest = b->align(target_);
+        // The first base's slots come down in order, and an override in this
+        // class replaces one rather than appending - declareMember does that.
+        if (!tag.empty() && bi == 0 && b->polymorphic())
+            vtables_[tag] = vtables_[b->tag()];
     }
 
     // **A polymorphic object carries a vptr at offset 0**, so its members
@@ -732,8 +754,53 @@ const Type *Parser::usualArithmetic(const Type *a, const Type *b) const {
     return unsignedVersion(sig);
 }
 
+// Defined below, beside the conversion rules it belongs with.
+static int publicBaseOffset(const Type *derived, const Type *base);
+
 ExprPtr Parser::convert(ExprPtr e, const Type *to) const {
     if (e->type() == to) return e;
+
+    // **Derived * to Base * moves the value when the base is not the first
+    // one.** A is at 0 and needs nothing; B is at 4 and the pointer has to be
+    // walked forward by four. The null check is not caution - [conv.ptr] says
+    // a null pointer converts to a null pointer, and `(char *)0 + 4` is not
+    // null.
+    if (to->isPointer() && e->type()->isPointer() &&
+        to->pointee()->isStructOrUnion() && e->type()->pointee()->isStructOrUnion()) {
+        const int off = publicBaseOffset(e->type()->pointee(), to->pointee());
+        if (off > 0) {
+            const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+            ExprPtr asChars(new Cast(chars, std::move(e)));
+            asChars->setType(chars);
+
+            int slot = const_cast<Parser *>(this)->allocateFrameSlot(chars);
+            std::string temp = ".bp" + std::to_string(const_cast<Parser *>(this)->refTemps_++);
+            ExprPtr held(Var::local(temp, slot));
+            held->setType(chars);
+            ExprPtr save(new Assign(std::move(held), std::move(asChars)));
+            save->setType(chars);
+
+            ExprPtr test(Var::local(temp, slot));
+            test->setType(chars);
+            ExprPtr shift(Var::local(temp, slot));
+            shift->setType(chars);
+            ExprPtr by(new Num(static_cast<long long>(off)));
+            by->setType(types_.intType());
+            ExprPtr moved(new Binary(BinOp::Add, std::move(shift), std::move(by)));
+            moved->setType(chars);
+            ExprPtr zero(new Num(0LL));
+            zero->setType(chars);
+            ExprPtr pick(new Conditional(std::move(test), std::move(moved),
+                                         std::move(zero)));
+            pick->setType(chars);
+
+            ExprPtr both(new Comma(std::move(save), std::move(pick)));
+            both->setType(chars);
+            ExprPtr out(new Cast(to, std::move(both)));
+            out->setType(to);
+            return out;
+        }
+    }
 
     // A conversion to bool is not a narrowing. [conv.bool] says every non-zero
     // value becomes true, so (bool)256 is true where (char)256 is 0 - the two
@@ -798,16 +865,28 @@ static bool isNullConstant(const Expr &e) {
 //
 // Only through public inheritance: a private base is an implementation detail
 // and [conv.ptr] does not convert to it from outside.
-static bool publiclyDerivedFrom(const Type *derived, const Type *base) {
-    if (derived == nullptr || base == nullptr) return false;
+// How far into a `derived` object its `base` subobject sits, or -1 when base
+// is not a public base of it at all. **Walks every base, not just the first**,
+// which is what multiple inheritance needs: A is at 0 and B is at 4, and a
+// pointer to the second is the object's address plus that four.
+static int publicBaseOffset(const Type *derived, const Type *base) {
+    if (derived == nullptr || base == nullptr) return -1;
     const Type *d = derived->unqualified();
     const Type *b = base->unqualified();
-    for (const Type *c = d->base(); c != nullptr; c = c->base()) {
-        if (d->baseAccess() != Access::Public) return false;
-        if (c->unqualified() == b) return true;
-        d = c;
+    if (d == b) return 0;
+    const std::vector<Type::BaseSpec> &bases = d->bases();
+    for (std::size_t i = 0; i < bases.size(); i++) {
+        if (bases[i].access != Access::Public) continue;
+        int deeper = publicBaseOffset(bases[i].type, b);
+        if (deeper >= 0) return bases[i].offset + deeper;
     }
-    return false;
+    return -1;
+}
+
+static bool publiclyDerivedFrom(const Type *derived, const Type *base) {
+    if (derived == nullptr || base == nullptr) return false;
+    if (derived->unqualified() == base->unqualified()) return false;
+    return publicBaseOffset(derived, base) >= 0;
 }
 
 static bool qualificationConvertible(const Type *from, const Type *to) {
@@ -3336,6 +3415,17 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
 // of the written arguments and the declared parameters gain a matching leading
 // pointer, so from here down it is an ordinary call - arity, conversions and
 // the backends all see what they already knew how to handle.
+const Type *Parser::findMemberOwner(const Type *cls,
+                                    const std::string &name) const {
+    if (cls == nullptr) return nullptr;
+    const Type *c = cls->unqualified();
+    if (overloadsOf(c->tag() + "::" + name) != nullptr) return c;
+    const std::vector<Type::BaseSpec> &bases = c->bases();
+    for (std::size_t i = 0; i < bases.size(); i++)
+        if (const Type *found = findMemberOwner(bases[i].type, name)) return found;
+    return nullptr;
+}
+
 ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
                            const std::string &name, std::size_t pos) {
     const Type *plain = cls->unqualified();
@@ -3348,10 +3438,7 @@ ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
     // The first class that has the name wins outright - the derived class's
     // set hides the base's rather than joining it, which is [class.member.
     // lookup] and the reason a derived `f(int)` stops `f()` from being found.
-    const Type *owner = plain;
-    while (owner != nullptr &&
-           overloadsOf(owner->tag() + "::" + name) == nullptr)
-        owner = owner->base();
+    const Type *owner = findMemberOwner(plain, name);
     if (owner == nullptr) owner = plain;
     std::string key = owner->tag() + "::" + name;
 
@@ -3379,8 +3466,14 @@ ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
     const Type *pointee = sig.constThis ? types_.withConst(self) : self;
     const Type *thisType = types_.pointerTo(pointee);
 
+    // **`this` is the base's address, not the object's**, and those differ
+    // once a class has a second base: B sits at offset 4 in C, so B's member
+    // functions expect &c + 4. convert() knows how to move a pointer to a
+    // base, so the address is built as a Derived * and handed to it.
     ExprPtr addr(new Unary('&', std::move(object)));
-    addr->setType(thisType);
+    addr->setType(types_.pointerTo(plain));
+    if (owner != plain) addr = convert(std::move(addr), thisType);
+    else addr->setType(thisType);
 
     std::vector<const Type *> full;
     full.push_back(thisType);
@@ -4855,10 +4948,20 @@ void Parser::topLevel(Program &program) {
     // The base's C2 and D2 are what is called - the base-object forms - and
     // this is what those two names have been emitted for since constructors
     // landed. On Windows there is one name for each and it is called directly.
-    if (memberOf != nullptr && memberOf->base() != nullptr &&
-        (d.name == d.qualifier || d.name == "~" + d.qualifier)) {
-        const Type *base = memberOf->base();
+    for (std::size_t bn = 0;
+         memberOf != nullptr && bn < memberOf->bases().size() &&
+         (d.name == d.qualifier || d.name == "~" + d.qualifier); bn++) {
         const bool building = d.name == d.qualifier;
+        // Bases are built in the order they were written and destroyed in the
+        // reverse - measured: A up, B up, C up, then C down, B down, A down.
+        //
+        // **Both walk the list backwards**, because a constructor's call is
+        // prepended to the body and a destructor's is appended. Prepending A
+        // last is what leaves it first; appending A last is what leaves it
+        // last. Walking forwards for the constructor put B before A.
+        const std::size_t which = memberOf->bases().size() - 1 - bn;
+        const Type *base = memberOf->bases()[which].type;
+        const int baseAt = memberOf->bases()[which].offset;
         const std::string key = building ? constructorKey(base->tag())
                                          : destructorKey(base->tag());
 
@@ -4888,7 +4991,12 @@ void Parser::topLevel(Program &program) {
 
             const Type *basePtr = types_.pointerTo(base);
             ExprPtr me(Var::local("this", thisOffset_));
-            me->setType(basePtr);          // the base sits at offset 0
+            if (baseAt == 0) {
+                me->setType(basePtr);      // the first base is the object
+            } else {
+                me->setType(types_.pointerTo(memberOf));
+                me = convert(std::move(me), basePtr);
+            }
             std::vector<ExprPtr> args;
             args.push_back(std::move(me));
             std::vector<const Type *> params;

@@ -316,7 +316,24 @@ makes clang emit a cleanup path - the personality routine, `.gcc_except_table`,
 symbols read as a disagreement about names when they are a difference in
 features. Mangling is unchanged by the flag.
 
-**Rung 4 opens with single, non-virtual inheritance**, and the base subobject
+**Multiple inheritance is where "the base is at offset 0" stops being true**,
+and every step before it leaned on that. `class C : public A, public B` puts A
+at 0 and B at 4 - measured - so `B *pb = &c` is `&c + 4`, and the same four is
+what B's member functions expect as `this`. `Type::bases()` carries each base
+with its offset; `convert()` moves the pointer, **and keeps a null pointer
+null**, because [conv.ptr] says so and `(char *)0 + 4` is not null.
+
+Bases are constructed in the order written and destroyed in reverse. Both
+loops walk the list **backwards**, because a constructor's call is prepended
+to the body and a destructor's is appended - prepending A last is what leaves
+it first. Walking forwards for the constructor put B before A, which the
+oracle caught immediately.
+
+Still refused by name: **a second base with virtual functions.** Its vptr
+cannot be at offset 0 as well, so it needs a secondary vtable and thunks that
+adjust `this` on the way into an override. That is the next step.
+
+**Rung 4 opened with single, non-virtual inheritance**, and the base subobject
 sits at **offset 0** - measured. So a derived object's address is its base's
 address, no pointer adjustment happens anywhere, and passing `this` to a base's
 member function is a change of type and nothing else. Multiple inheritance is
