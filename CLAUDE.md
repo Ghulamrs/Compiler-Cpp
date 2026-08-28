@@ -472,6 +472,131 @@ needed no second implementation. `inlineOwner_` supplies the `Class::` the
 source does not have and is **one-shot**, cleared by the first declarator that
 uses it, so declarations inside the body stay ordinary locals.
 
+**The three special members a class does not write, the compiler does** -
+default constructor, copy constructor, copy assignment - and the first thing
+to know is that **a trivial one is not a function at all**. That is measured,
+with cl first: for a class with no virtual function and no member that needs
+building, cl emits no symbol for any of the three, and clang emits none on
+either Itanium target either. So a plain class is copied by moving its bytes -
+the struct assignment this compiler has emitted since it was a C compiler -
+and no implicit member is declared for it, which is what keeps the symbol
+lists level with the oracles' and leaves the old C path untouched.
+
+An implicit member is declared where it has *work* to do: a virtual function,
+whose vptr somebody has to store, or a base or member with a special member of
+its own to run. And it is given a body only when something calls it, which is
+[class.copy]'s own rule about implicit *definition* and also what cl does -
+`??0Poly@@QEAA@XZ` appears because a `Poly` is built, not because `Poly` is
+declared. `defineImplicitFunctions` runs at the end of the file and to a fixed
+point, since giving one class a body can be what first calls another's.
+
+**A copy constructor stores the vptr and a copy assignment does not**, which
+is the only difference between the two bodies and was read out of cl's own
+listing:
+
+    ??0Poly@@QEAA@AEBU0@@Z   lea rcx, OFFSET FLAT:??_7Poly@@6B@   <- its own
+                             mov QWORD PTR [rax], rcx
+                             mov ecx, DWORD PTR [rcx+8]           <- then members
+    ??4Poly@@QEAAAEAU0@AEBU0@@Z
+                             mov ecx, DWORD PTR [rcx+8]           <- members only
+
+The reason is that a constructor is *making* an object, so the new object is of
+this class whatever the source was, while assignment writes into one that is
+already of this class. A polymorphic class is non-trivial for *both*, even
+though only one of them touches the vptr.
+
+**Members are copied one at a time and not as one block.** A base subobject
+occupies its data size rather than its sizeof, so a derived class may have put
+a member of its own in this class's tail padding - and a `sizeof`-sized copy
+through the C2 form would take that member with it. Where a base has a copy of
+its own, its call is emitted and the members it covers are skipped: they are in
+this class's member list too, because data members are copied down.
+
+**An array member is copied by a loop**, `int i = 0; while (i < n) { ... }`,
+built as ordinary AST. N statements would have been simpler and is wrong: the
+count is a property of the type and nothing bounds it. The element addresses
+are computed in *bytes*, index times element size - a Binary built by hand gets
+none of the parser's pointer scaling, the same trap the vptr store hit.
+
+**`operator=` is the one operator this compiler spells**, and both ABIs were
+measured: Itanium writes the two-letter code `aS` where a member function
+writes the length and letters of its name, and no return type -
+`_ZN4PolyaSERKS_`. Microsoft replaces the whole `?name@` with `??4` and, unlike
+`??0`, *does* write the return type - `??4Poly@@QEAAAEAU0@AEBU0@@Z`. Only the
+class is pushed as a name there, so it is back-reference 0 where a named member
+function would leave it 1. The rest of the operators arrive with operator
+overloading; until then `operator` is refused by name.
+
+**Copy-initialisation came with the copy constructor** and is not a separate
+feature: `X b = a;` is a constructor called with one argument, chosen by the
+ordinary overload rules, so `Conv c = 5;` picks a converting constructor by the
+same road. What the standard adds here is that an `explicit` constructor may
+not be picked, and `explicit` is refused by name until rung 7.
+
+`X q(p);` for a class with no constructor at all is the lowering trade again:
+there is no constructor to call, so it becomes the assignment the backends
+already emit. A parameter list begins with a type name and this does not, which
+is what tells the two apart - the same question the constructor path asks, from
+the other side.
+
+Refused by name rather than half-built: a base or member whose default
+constructor takes arguments, where the implicit one has no way to name them -
+the message says to write a constructor with an initialiser list; and a base or
+member whose special member is private or protected. A class with a `const`
+member simply has no implicit copy assignment declared, which is [class.copy]'s
+deleted one arriving as "there is no such function" rather than as a wrong one.
+
+**Passing a class by value is a copy constructor call, and that changes how it
+is passed.** Measured with cl first and confirmed on both Itanium targets: a
+class with a **non-trivial copy constructor** goes **by address whatever its
+size**, where a trivially copyable class of the same size goes in a register.
+The two halves are one change - making the copy happen means the callee has to
+be handed the address of storage the caller owns - and neither is right
+without the other.
+
+`Type::nonTrivialCopy()` is where the two sides agree. It is set when the
+class is completed, exactly when a copy constructor exists for it - written or
+just implicitly declared - and it is read by `returnsIndirectly` in the parser
+and by the two code generators, so nothing has to re-derive it.
+
+**Both sides are lowered in the parser, so the backends needed almost
+nothing.** The parameter becomes a **reference**: its frame slot holds the
+caller's pointer and every mention of it dereferences, which is the machinery
+references already had. The argument becomes `(ctor(&tmp, arg), &tmp)` - one
+expression, so it works wherever a call does. What the backends see on both
+sides is a pointer. The only thing they were told is that such a class is
+returned through a hidden pointer whatever its size.
+
+**The caller makes the copy and the caller destroys it** - Itanium's rule,
+and clang emits the destructor of the argument temporary at the call site.
+**cl puts that on the callee**, measured: `?useE@@YAHUE@@@Z` destroys its own
+parameter. cxx1 follows Itanium on all three targets; `docs/CONFORMANCE.md`
+records what that costs, which is nothing until a cxx1 object is linked with a
+cl object.
+
+**A temporary dies at the end of the full expression, not when the call it was
+made for returns**, and that is visible rather than pedantic:
+`printf("%d", takeNoisy(d))` destroys the copy *after* the printf. So the
+temporaries are collected in `pendingTemps_` and `endFullExpression` empties
+the list at the places an expression becomes a statement or a condition. A site
+that forgets to call it does not lose the destructor - the temporary stays on
+the list and goes at the next full expression - so the failure mode is late
+rather than absent.
+
+**Copy elision is permitted rather than required in C++11, and the two oracles
+take different options**: clang elides at `-O0`, cl does not at `/O0`. cxx1
+elides in the two places worth having it - a declaration initialised by a call
+that already returns the class through a hidden pointer, and such a call passed
+straight in as an argument. In both, the callee builds its result where the
+object had to end up anyway, which is one `setResultSlot` and no copy. It also
+means a case that *counts* constructor calls has no single right answer, and
+`tests/cases/by-value.cpp` says so and does not count them.
+
+The check that says this is right is not the suite: **an object cxx1 compiled
+links with one clang compiled, in both directions, and the program prints what
+the all-clang build prints.** A mangled name can be diffed, but a calling
+convention has to be run.
+
 **Two exclusion files, and the difference matters.** `<case>.notarget` says
 cxx1 cannot compile that case for that target at all - `emit.sh` and
 `mangled-names` both read it. `<case>.nonames` says it compiles fine and only
@@ -529,6 +654,25 @@ against cl, and with self-hosting off the table it is the only oracle here.
 A green suite proves nothing until you prove what it ran against. Rebuild from
 clean before believing a number, and record the commit it was measured at.
 
+**cl on the Windows box is the primary venue for measuring the Microsoft
+ABI.** clang will spell Microsoft names on any machine and stays useful for
+that, but it is a second implementation of that ABI where cl is the ABI, and
+the two have already been seen to differ about code generation - the secondary
+vtable and the biased `this` in `tests/cases/thunk.cpp` were settled by cl and
+not by clang. So a Microsoft question is asked of cl first.
+
+    tools/cl-measure some.cpp             cl's assembly listing and symbols
+    tools/cl-measure some.cpp symbols     just the symbols
+
+cl has no C++11 mode - its floor is `/std:c++14` - so it answers about the ABI
+and not about which language version a construct belongs to. That question
+still goes to `clang++ -x c++ -std=c++11 -pedantic-errors`, and the two Itanium
+targets have no other oracle at all.
+
+**Its Windows half lives in `tools/windows/`, in this repository**, and that is
+deliberate: scaffold kept only on the box comes back after a rebuild as what
+looks like a network fault.
+
 ## Build
 
 ```
@@ -542,6 +686,21 @@ and diffs against its `.expected`; a case with a `.error` file instead must
 fail to compile with that text in the message. `tests/emit.sh` compiles every
 case for all three targets and stops at assembly, so it needs no assembler and
 runs anywhere.
+
+```
+tools/verify-three            Mac, Linux box and Windows box
+tools/verify-three linux      one of them
+tools/verify-three windows
+```
+
+A change is not done until all three have passed, and this relays the *working
+tree* rather than a commit so it can be run before committing - which is the
+order that rule wants. Two things it has to do and that are easy to leave out:
+`COPYFILE_DISABLE=1` on the tar, or macOS ships an AppleDouble `._Driver.cpp`
+that `src\*.cpp` in `msvcuild.cmd` hands to cl; and comparing the Windows
+output back on the Mac, because a `.expected` has Unix line endings and a
+program's own output leaves through the CRT with Windows ones, so `fc` would
+call every case different.
 
 `-MMD -MP` writes header dependencies. Do not remove it: a stale object here
 links perfectly and corrupts the heap three passes away, which is exactly what

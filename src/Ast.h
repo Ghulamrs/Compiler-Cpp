@@ -220,6 +220,9 @@ public:
     const Expr *callee() const { return callee_.get(); }
     bool isVariadic() const { return variadic_; }
     int resultSlot() const { return resultSlot_; }
+    // Copy elision points this at the variable being initialised, so the
+    // callee builds its result there and no copy constructor runs.
+    void setResultSlot(int s) { resultSlot_ = s; }
 
     int namedArgs() const { return namedArgs_; }
 

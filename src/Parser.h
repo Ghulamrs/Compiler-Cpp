@@ -63,6 +63,13 @@ private:
         bool constThis = false;
         Access access = Access::Public;
         bool isVirtual = false;
+        // **Nobody wrote this one.** An implicitly declared special member is
+        // put in the table so overload resolution finds it, and given a body
+        // only if something calls it. That second half is what keeps the
+        // symbol list level with the oracles: cl and clang both emit an
+        // implicit special member on use and not on declaration - measured.
+        bool implicit = false;
+        bool used = false;
     };
 
     // One vtable slot: the function it currently points at, and enough of the
@@ -99,6 +106,11 @@ private:
     std::string inlineOwner_;
 
     void emitVtable(const Type *cls, const std::string &tag, std::size_t pos);
+    // The statements that set an object's vptrs - the primary one and any a
+    // polymorphic second base needs. Every constructor emits these, written
+    // or implicit, which is why they live in one place.
+    std::vector<StmtPtr> storeVptrs(const std::string &cls, const Type *memberOf,
+                                    int thisSlot);
     // A thunk: the entry a secondary table holds for a function this class
     // overrides. It moves `this` back to the complete object and calls the
     // real one. Named for the offset it undoes - _ZThn16_N1C1gEv.
@@ -160,6 +172,10 @@ private:
     bool returnsIndirectly(const Type *t) const {
         int size = t->size(target_);
 
+        // A class whose copy is a constructor call is returned through a
+        // hidden pointer whatever its size - the caller owns the storage and
+        // the callee builds into it. Both ABIs, measured.
+        if (t->nonTrivialCopy()) return true;
         if (containsX87(t, target_)) return true;
         if (aggregatesByReference_)
             return !(size == 1 || size == 2 || size == 4 || size == 8);
@@ -240,6 +256,41 @@ private:
     void synthesizeDeleting(const std::string &cls, const Type *type,
                             Access access, std::size_t pos);
     static std::string destructorKey(const std::string &cls) { return cls + "::~" + cls; }
+    // A constructor of this class taking nothing, written or implicit.
+    const Signature *defaultConstructorOf(const Type *cls) const;
+    // What the class did not write, the compiler declares. Called once the
+    // class is complete, because whether an implicit member is trivial - and
+    // so whether it is a function at all - is a question about the members.
+    void declareImplicitSpecials(const std::string &tag, const Type *type,
+                                 std::size_t pos);
+    // Bodies for the implicit members something actually called, run at the
+    // end of the file and to a fixed point: giving one class a body can be
+    // what first calls another's.
+    void defineImplicitFunctions();
+    void synthesizeDefaultCtor(std::size_t which);
+    // One body for both halves of the copy. They differ in three places -
+    // which member function to call, whether the vptr is stored, and whether
+    // there is a value to return - and in nothing else.
+    void synthesizeCopy(std::size_t which, bool assigning);
+    const Signature *copyAssignOf(const Type *cls) const;
+    void declareImplicitCopyAssign(const std::string &tag, const Type *type,
+                                   std::size_t pos);
+    static std::string assignmentKey(const std::string &cls) {
+        return cls + "::operator=";
+    }
+    void declareImplicitCopyCtor(const std::string &tag, const Type *type,
+                                 std::size_t pos);
+    // A constructor of this class taking one reference to it, written or
+    // implicit - which is what [class.copy] calls a copy constructor.
+    const Signature *copyConstructorOf(const Type *cls) const;
+    // `int i = 0; while (i < count) { one; i = i + 1; }` over an array
+    // member's elements. A loop rather than `count` copies of the statement,
+    // because the count is a property of the type and nothing bounds it.
+    StmtPtr eachElement(int indexSlot, long long count, StmtPtr one);
+    // The name a base subobject's constructor is called by: Itanium's C2
+    // rather than the C1 the signature carries, and on Windows the one name
+    // there is.
+    std::string baseConstructorSymbol(const Signature &ctor, const Type *base);
     const Signature *destructorOf(const Type *cls) const;
     ExprPtr destructorCall(ExprPtr address, const Signature &dtor, std::size_t pos);
 
@@ -333,6 +384,21 @@ private:
     int newTemps_ = 0;
 
     void parseArguments(std::vector<ExprPtr> &args);
+    // The copy the caller makes for a by-value class argument: a temporary in
+    // the caller's frame, built by the copy constructor, whose address is what
+    // the callee receives.
+    ExprPtr materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
+                            const std::string &what,
+                            std::vector<std::pair<int, const Type *> > &destroy);
+    // Temporaries this full expression has made for by-value class arguments.
+    // **They are destroyed at the end of the full expression and not when the
+    // call they were made for returns** - [class.temporary], and it is
+    // visible: `printf("%d", useD(d))` destroys the copy after the printf, not
+    // between the two calls. Held here rather than wrapped around the call for
+    // exactly that reason.
+    std::vector<std::pair<int, const Type *> > pendingTemps_;
+    ExprPtr endFullExpression(ExprPtr e);
+    void flushTemporaries(std::vector<StmtPtr> &into);
     ExprPtr completeCall(const std::string &name, const std::string &symbol,
                          ExprPtr callee, const Type *returns,
                          const std::vector<const Type *> &params, bool variadic,

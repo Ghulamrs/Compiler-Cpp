@@ -1,0 +1,10 @@
+5 6
+101
+1
+201
+3 1
+1
+takeNoisy 101
+  ~Noisy 101
+after
+  ~Noisy 1

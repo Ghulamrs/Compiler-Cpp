@@ -124,6 +124,11 @@ void Arm64Darwin::narrowInt(const Type *to) {
 
 Arm64Darwin::AggPlan Arm64Darwin::planFor(const Type *t) const {
     AggPlan p;
+    // A class whose copy is a constructor call is never in registers: the
+    // caller owns the storage and passes its address. Asked before the
+    // homogeneous-float question, which would otherwise put a class of two
+    // floats in registers however it has to be copied.
+    if (t->nonTrivialCopy()) { p.byRef = true; p.words = 1; return p; }
     Kind elem;
     int n = homogeneousFloatCount(t, &elem);
     if (n > 0) { p.hfa = n; p.elem = elem; return p; }

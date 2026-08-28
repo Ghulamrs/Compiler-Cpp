@@ -75,6 +75,21 @@ bool itaniumDestructorName(const std::string &cls, bool complete,
 
 std::string microsoftDestructorName(const std::string &cls, char access);
 
+// The copy assignment operator, the one operator this compiler names so far.
+// Itanium spells `operator=` as the two-letter code `aS` where a member
+// function writes its name's length and letters, and writes no return type;
+// Microsoft replaces the whole `?name@` with `??4` and - unlike a constructor,
+// which writes a bare '@' there - does write the return type. Both measured,
+// cl first: ??4Poly@@QEAAAEAU0@AEBU0@@Z and _ZN4PolyaSERKS_.
+//
+// One operator and not a table of them: the rest arrive with operator
+// overloading, and until then `operator` is refused by name.
+bool itaniumCopyAssignName(const std::string &cls, const Type *clsType,
+                           const Type *fn, std::string *out, std::string *problem);
+
+bool microsoftCopyAssignName(const std::string &cls, const Type *fn, char access,
+                             std::string *out, std::string *problem);
+
 // A variable at namespace scope. The Microsoft ABI mangles it whatever its
 // linkage; Itanium leaves an external one alone and marks an internal one,
 // the same way it marks an internal function.

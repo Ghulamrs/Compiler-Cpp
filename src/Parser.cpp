@@ -482,16 +482,14 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         pendingBodies_.swap(rest);
     }
 
-    if (type->polymorphic()) {
-        // Nothing else sets the vptr, and an implicit default constructor is
-        // not written yet - so a polymorphic class without one would hand out
-        // objects whose vptr is whatever the frame held.
-        if (!tag.empty() && overloadsOf(constructorKey(tag)) == nullptr)
-            src_.fail(pos, "'" + tag + "' has a virtual function and no "
-                           "constructor - the vptr is set by one, and an "
-                           "implicit default constructor is not supported yet");
-        emitVtable(type, tag, pos);
-    }
+    declareImplicitSpecials(tag, type, pos);
+    // **Whether copying this is a call decides how it is passed**, and the
+    // question is settled here because it is settled for both reasons at
+    // once: a copy constructor exists at this point if the class wrote one or
+    // if one was just declared for it, and one was just declared exactly when
+    // a base or member made the copy non-trivial.
+    if (copyConstructorOf(type) != nullptr) type->setNonTrivialCopy(true);
+    if (type->polymorphic()) emitVtable(type, tag, pos);
     replayInlineBodies(std::move(mine));
     return type;
 }
@@ -1088,8 +1086,19 @@ const Parser::Signature &Parser::resolveOverload(const std::string &name,
                                                  const std::vector<ExprPtr> &args,
                                                  std::size_t pos) {
     const std::vector<std::size_t> *set = overloadsOf(name);
-    if (set == nullptr)
+    if (set == nullptr) {
+        // **`C(...)` where C is a class** is a temporary, not a call to a
+        // function nobody declared, and saying "no prototype" sends the
+        // reader looking for a declaration that was never meant to exist.
+        // Worth intercepting by name now that passing a class by value copies
+        // it, which is exactly when somebody writes this.
+        if (const Type *cls = findTypedef(name))
+            if (cls->isStructOrUnion())
+                src_.fail(pos, "'" + name + "(...)' makes a temporary of type '" +
+                               cls->describe() + "', which is not supported yet - "
+                               "name a variable of that type and use that");
         src_.fail(pos, "'" + name + "' was not declared - a prototype must come first");
+    }
 
     std::vector<std::size_t> viable;
     std::vector<std::vector<Rank> > ranks;
@@ -1118,7 +1127,10 @@ const Parser::Signature &Parser::resolveOverload(const std::string &name,
             why += "\n    candidate: " + describeSignature(functions_[(*set)[k]]);
         src_.fail(pos, why);
     }
-    if (viable.size() == 1) return functions_[viable[0]];
+    if (viable.size() == 1) {
+        functions_[viable[0]].used = true;
+        return functions_[viable[0]];
+    }
 
     std::size_t best = 0;
     for (std::size_t k = 1; k < viable.size(); k++) {
@@ -1143,6 +1155,7 @@ const Parser::Signature &Parser::resolveOverload(const std::string &name,
             src_.fail(pos, why);
         }
     }
+    functions_[viable[best]].used = true;
     return functions_[viable[best]];
 }
 
@@ -1398,6 +1411,105 @@ void Parser::declareDestructor(const std::string &cls, std::size_t pos,
     }
     slots.push_back(VSlot{ "~", ms ? deleting : out, none, false });
     if (!ms) slots.push_back(VSlot{ "~$deleting", deleting, none, false });
+}
+
+// **Setting the vptr, for whoever is building the object.** Pulled out of the
+// constructor path when implicit constructors arrived: an implicitly declared
+// default or copy constructor stores exactly the same pointers a written one
+// does, and a second copy of this would be a second place to get the header
+// offset wrong.
+//
+// What is stored is the table's address plus the header: Itanium writes
+// offset-to-top and typeinfo first, so the vptr points at table + 16 -
+// measured from clang's own `addq $16` - and Microsoft has no header, so the
+// address is the table's own.
+std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
+                                        const Type *memberOf, int thisSlot) {
+    const bool ms = target_.microsoftNames();
+    const std::string table = ms ? "??_7" + cls + "@@6B@"
+                                 : "_ZTV" + std::to_string(cls.size()) +
+                                   cls;
+    const Type *entry = types_.pointerTo(types_.get(Kind::Void));
+    const Type *entries = types_.pointerTo(entry);
+
+    // **The table's ADDRESS, not its contents.** A global Var is an
+    // lvalue and reading one loads from it - which stored the table's
+    // first word in the vptr and crashed on the first call. Giving it the
+    // array type and decaying it is what yields the address, the same road
+    // any array name takes.
+    std::size_t entryCount = vtables_[cls].size() + (ms ? 0 : 2);
+    {
+        const std::vector<Type::BaseSpec> &all = memberOf->bases();
+        for (std::size_t bi = 1; bi < all.size(); bi++)
+            if (all[bi].type->polymorphic())
+                entryCount += vtables_[all[bi].type->tag()].size() + (ms ? 0 : 2);
+    }
+    ExprPtr base(Var::global(table));
+    base->setType(types_.arrayOf(entry, static_cast<long long>(entryCount)));
+    ExprPtr value = decay(std::move(base));
+    if (!ms) {
+        // **In bytes, because this Add is not the parser's pointer
+        // arithmetic.** Building the node by hand and typing it by hand
+        // skips the scaling `p + n` normally gets, so adding 2 added two
+        // bytes and the vptr pointed two bytes into the table's first
+        // word. The header is two pointers wide; that is what to add.
+        const long long header = 2LL * entry->size(target_);
+        ExprPtr skip(new Num(header));
+        skip->setType(types_.intType());
+        ExprPtr past(new Binary(BinOp::Add, std::move(value), std::move(skip)));
+        past->setType(entries);
+        value = std::move(past);
+    }
+    ExprPtr asVoid(new Cast(entry, std::move(value)));
+    asVoid->setType(entry);
+
+    ExprPtr self(Var::local("this", thisSlot));
+    self->setType(entries);                        // the vptr lives at offset 0
+    ExprPtr where(new Unary('*', std::move(self)));
+    where->setType(entry);
+
+    ExprPtr store(new Assign(std::move(where), std::move(asVoid)));
+    store->setType(entry);
+
+    std::vector<StmtPtr> withVptr;
+    withVptr.push_back(StmtPtr(new ExprStmt(std::move(store))));
+
+    // **A class with a polymorphic second base has a second vptr**, inside
+    // that base's subobject, pointing at the secondary table laid down
+    // behind the primary one. The first vptr is the object's own; this is
+    // the one a B * will read.
+    const std::vector<Type::BaseSpec> &bs = memberOf->bases();
+    for (std::size_t bi = 1; bi < bs.size(); bi++) {
+        if (!bs[bi].type->polymorphic()) continue;
+        std::map<std::string, int>::const_iterator where =
+            secondaryVptr_.find(cls + "::" + bs[bi].type->tag());
+        if (where == secondaryVptr_.end()) continue;
+
+        ExprPtr t2(Var::global(table));
+        t2->setType(types_.arrayOf(entry, static_cast<long long>(entryCount)));
+        ExprPtr addr2 = decay(std::move(t2));
+        ExprPtr skip2(new Num(static_cast<long long>(where->second)));
+        skip2->setType(types_.intType());
+        ExprPtr into(new Binary(BinOp::Add, std::move(addr2), std::move(skip2)));
+        into->setType(entries);
+        ExprPtr val2(new Cast(entry, std::move(into)));
+        val2->setType(entry);
+
+        ExprPtr self2(Var::local("this", thisSlot));
+        self2->setType(types_.pointerTo(memberOf));
+        ExprPtr atBase = convert(std::move(self2),
+                                 types_.pointerTo(bs[bi].type));
+        ExprPtr slotPtr(new Cast(types_.pointerTo(entry), std::move(atBase)));
+        slotPtr->setType(types_.pointerTo(entry));
+        ExprPtr there(new Unary('*', std::move(slotPtr)));
+        there->setType(entry);
+
+        ExprPtr store2(new Assign(std::move(there), std::move(val2)));
+        store2->setType(entry);
+        withVptr.push_back(StmtPtr(new ExprStmt(std::move(store2))));
+    }
+
+    return withVptr;
 }
 
 // **A function with no source behind it.** The deleting destructor is the one
@@ -1742,6 +1854,634 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
     set.push_back(functions_.size());
     functions_.push_back(Signature{ cls, out, types_.get(Kind::Void), params,
                                     false, false, pos, false, cls, false, access });
+}
+
+// The class a member is built from: the element type when the member is an
+// array, and nothing at all when it is not of class type.
+static const Type *memberClass(const Type *t) {
+    while (t != nullptr && t->isArray()) t = t->pointee();
+    return (t != nullptr && t->isStructOrUnion()) ? t->unqualified() : nullptr;
+}
+
+const Parser::Signature *Parser::defaultConstructorOf(const Type *cls) const {
+    if (cls == nullptr || !cls->isStructOrUnion() || cls->tag().empty())
+        return nullptr;
+    const std::vector<std::size_t> *set = overloadsOf(constructorKey(cls->tag()));
+    if (set == nullptr) return nullptr;
+    for (std::size_t k = 0; k < set->size(); k++)
+        if (functions_[(*set)[k]].params.empty()) return &functions_[(*set)[k]];
+    return nullptr;
+}
+
+const Parser::Signature *Parser::copyConstructorOf(const Type *cls) const {
+    if (cls == nullptr || !cls->isStructOrUnion() || cls->tag().empty())
+        return nullptr;
+    const std::vector<std::size_t> *set = overloadsOf(constructorKey(cls->tag()));
+    if (set == nullptr) return nullptr;
+    for (std::size_t k = 0; k < set->size(); k++) {
+        const Signature &f = functions_[(*set)[k]];
+        if (f.params.size() != 1 || !f.params[0]->isReference()) continue;
+        if (f.params[0]->referent()->unqualified() != cls->unqualified()) continue;
+        return &f;
+    }
+    return nullptr;
+}
+
+const Parser::Signature *Parser::copyAssignOf(const Type *cls) const {
+    if (cls == nullptr || !cls->isStructOrUnion() || cls->tag().empty())
+        return nullptr;
+    const std::vector<std::size_t> *set = overloadsOf(assignmentKey(cls->tag()));
+    return set == nullptr ? nullptr : &functions_[(*set)[0]];
+}
+
+std::string Parser::baseConstructorSymbol(const Signature &ctor, const Type *base) {
+    if (target_.microsoftNames()) return ctor.symbol;
+    const Type *fnType = types_.functionType(types_.get(Kind::Void), ctor.params,
+                                             false);
+    std::string sub, why;
+    if (itaniumConstructorName(base->tag(), base, fnType, false, &sub, &why))
+        return sub;
+    return ctor.symbol;
+}
+
+// **A trivial special member is not a function**, and that is measured rather
+// than reasoned: cl emits no symbol at all for the default constructor,
+// copy constructor or copy assignment of a class with no virtual function and
+// no member that needs building, and clang emits none either, on both Itanium
+// targets. A class like that leaves its storage alone and `X x;` is a frame
+// slot and no call - which is exactly what this compiler already did for a C
+// struct, and why the old path is left to handle it untouched.
+//
+// So an implicit member is declared only where it has work to do. What makes
+// work: a virtual function, whose vptr somebody has to store, or a base or
+// member that has a constructor of its own to run.
+//
+// A class that writes any constructor gets no implicit default one - that is
+// [class.ctor], and it is also what makes `Point p;` still an error for a
+// class whose only constructor takes arguments.
+void Parser::declareImplicitSpecials(const std::string &tag, const Type *type,
+                                     std::size_t pos) {
+    if (tag.empty() || type->kind() == Kind::Union) return;
+    // Asked before the copy constructor is declared, because declaring one
+    // would answer it yes. A class that writes any constructor gets no
+    // implicit default one; a class that writes any constructor still gets an
+    // implicit copy constructor.
+    const bool wroteConstructor = overloadsOf(constructorKey(tag)) != nullptr;
+    declareImplicitCopyCtor(tag, type, pos);
+    declareImplicitCopyAssign(tag, type, pos);
+    if (wroteConstructor) return;
+
+    bool work = type->polymorphic();
+    const std::vector<Type::BaseSpec> &bs = type->bases();
+    for (std::size_t i = 0; i < bs.size() && !work; i++)
+        if (!bs[i].type->tag().empty() &&
+            overloadsOf(constructorKey(bs[i].type->tag())) != nullptr)
+            work = true;
+    const std::vector<Member> &ms = type->members();
+    for (std::size_t i = 0; i < ms.size() && !work; i++) {
+        const Type *mc = memberClass(ms[i].type);
+        if (mc != nullptr && !mc->tag().empty() &&
+            overloadsOf(constructorKey(mc->tag())) != nullptr)
+            work = true;
+    }
+    if (!work) return;
+
+    const std::vector<const Type *> params;
+    const Type *fn = types_.functionType(types_.get(Kind::Void), params, false);
+    std::string out, why;
+    const bool ok = target_.microsoftNames()
+            ? microsoftConstructorName(tag, fn, 'Q', &out, &why)
+            : itaniumConstructorName(tag, type, fn, true, &out, &why);
+    if (!ok)
+        src_.fail(pos, "'" + tag + "' needs a default constructor the compiler "
+                       "would write, and it cannot be given a name the linker "
+                       "can hold: " + why);
+
+    functionIndex_[constructorKey(tag)].push_back(functions_.size());
+    functions_.push_back(Signature{ tag, out, types_.get(Kind::Void), params,
+                                    false, false, pos, false, tag, false,
+                                    Access::Public, false });
+    functions_.back().implicit = true;
+}
+
+// The copy assignment operator the class did not write - which is every class,
+// since `operator` is refused by name until operator overloading arrives, so
+// nothing can write one yet. The trivial line is drawn in the same place and
+// was measured the same way: cl emits ??4Poly@@QEAAAEAU0@AEBU0@@Z for a
+// polymorphic class, and nothing at all for a class of plain members, where
+// `a = b` is the struct assignment this compiler has always emitted.
+//
+// A polymorphic class is non-trivial here even though the body does not touch
+// the vptr. That is [class.copy] and it is what cl does; the vptr is not
+// copied because assignment writes into an object that is already of this
+// class.
+void Parser::declareImplicitCopyAssign(const std::string &tag, const Type *type,
+                                       std::size_t pos) {
+    if (overloadsOf(assignmentKey(tag)) != nullptr) return;
+
+    // **A const member has no assignment to give**, so the operator the
+    // compiler would write is deleted rather than non-trivial and none is
+    // declared - which is what makes `a = b` say there is no such function
+    // rather than quietly writing through a const. Asked over every member
+    // before anything else, because the search below stops at the first
+    // member that gives the operator work to do and a const one after it
+    // would never be reached. A reference member is refused where it is
+    // declared and cannot get this far.
+    const std::vector<Member> &ms = type->members();
+    for (std::size_t i = 0; i < ms.size(); i++)
+        if (ms[i].type->isConst()) return;
+
+    bool work = type->polymorphic();
+    const std::vector<Type::BaseSpec> &bs = type->bases();
+    for (std::size_t i = 0; i < bs.size() && !work; i++)
+        if (copyAssignOf(bs[i].type) != nullptr) work = true;
+    for (std::size_t i = 0; i < ms.size() && !work; i++)
+        if (copyAssignOf(memberClass(ms[i].type)) != nullptr) work = true;
+    if (!work) return;
+
+    std::vector<const Type *> params;
+    params.push_back(types_.referenceTo(types_.withConst(type)));
+    const Type *self = types_.referenceTo(type);
+    const Type *fn = types_.functionType(self, params, false);
+    std::string out, why;
+    const bool ok = target_.microsoftNames()
+            ? microsoftCopyAssignName(tag, fn, 'Q', &out, &why)
+            : itaniumCopyAssignName(tag, type, fn, &out, &why);
+    if (!ok)
+        src_.fail(pos, "'" + tag + "' needs a copy assignment the compiler would "
+                       "write, and it cannot be given a name the linker can "
+                       "hold: " + why);
+
+    functionIndex_[assignmentKey(tag)].push_back(functions_.size());
+    functions_.push_back(Signature{ "operator=", out, self, params, false, false,
+                                    pos, false, tag, false, Access::Public,
+                                    false });
+    functions_.back().implicit = true;
+}
+
+// The copy constructor the class did not write. The trivial/non-trivial line
+// is the same one and measured the same way - cl emits `??0Poly@@QEAA@AEBU0@@Z`
+// for a polymorphic class and nothing at all for a class of plain members -
+// but what it is drawn on is different. A class writing *any* constructor
+// still gets an implicit copy constructor; only writing a copy constructor
+// takes it away.
+//
+// What makes one non-trivial: a virtual function, because the new object's
+// vptr is its own and not a copy of the source's, or a base or member whose
+// own copy constructor has to run.
+void Parser::declareImplicitCopyCtor(const std::string &tag, const Type *type,
+                                     std::size_t pos) {
+    if (copyConstructorOf(type) != nullptr) return;
+
+    bool work = type->polymorphic();
+    const std::vector<Type::BaseSpec> &bs = type->bases();
+    for (std::size_t i = 0; i < bs.size() && !work; i++)
+        if (copyConstructorOf(bs[i].type) != nullptr) work = true;
+    const std::vector<Member> &ms = type->members();
+    for (std::size_t i = 0; i < ms.size() && !work; i++)
+        if (copyConstructorOf(memberClass(ms[i].type)) != nullptr) work = true;
+    if (!work) return;
+
+    std::vector<const Type *> params;
+    params.push_back(types_.referenceTo(types_.withConst(type)));
+    const Type *fn = types_.functionType(types_.get(Kind::Void), params, false);
+    std::string out, why;
+    const bool ok = target_.microsoftNames()
+            ? microsoftConstructorName(tag, fn, 'Q', &out, &why)
+            : itaniumConstructorName(tag, type, fn, true, &out, &why);
+    if (!ok)
+        src_.fail(pos, "'" + tag + "' needs a copy constructor the compiler "
+                       "would write, and it cannot be given a name the linker "
+                       "can hold: " + why);
+
+    functionIndex_[constructorKey(tag)].push_back(functions_.size());
+    functions_.push_back(Signature{ tag, out, types_.get(Kind::Void), params,
+                                    false, false, pos, false, tag, false,
+                                    Access::Public, false });
+    functions_.back().implicit = true;
+}
+
+// The body of a default constructor nobody wrote: the bases built in the order
+// they were written, then the vptrs, then the members that have constructors
+// of their own. Scalars are left alone, which is what [dcl.init] means by
+// default-initialisation and what makes an uninitialised `int` member still
+// uninitialised here.
+void Parser::synthesizeDefaultCtor(std::size_t which) {
+    const std::string cls = functions_[which].owner;
+    const std::size_t pos = functions_[which].pos;
+    const std::string symbol = functions_[which].symbol;
+    const Type *type = findTypedef(cls);
+    if (type == nullptr || !type->isStructOrUnion()) return;
+
+    const int savedFrame = frameSize_;
+    frameSize_ = 0;
+    const Type *self = types_.pointerTo(type);
+    std::vector<Param> params;
+    const int thisSlot = allocateFrameSlot(self);
+    params.push_back(Param{ self, thisSlot });
+
+    std::vector<StmtPtr> body;
+
+    const std::vector<Type::BaseSpec> &bs = type->bases();
+    for (std::size_t i = 0; i < bs.size(); i++) {
+        const Type *base = bs[i].type;
+        if (base->tag().empty()) continue;
+        if (overloadsOf(constructorKey(base->tag())) == nullptr) continue;
+        const Signature *ctor = defaultConstructorOf(base);
+        if (ctor == nullptr)
+            src_.fail(pos, "'" + cls + "' has no constructor of its own, and the "
+                           "one the compiler would write cannot build its base '" +
+                           base->tag() + "', which has no constructor taking "
+                           "nothing - write a constructor for '" + cls + "' with "
+                           "': " + base->tag() + "(...)' in its initialiser list");
+        if (ctor->access != Access::Public)
+            src_.fail(pos, "'" + cls + "' cannot be built by the constructor the "
+                           "compiler would write: the constructor of its base '" +
+                           base->tag() + "' taking nothing is " +
+                           (ctor->access == Access::Private ? "private"
+                                                            : "protected"));
+        functions_[static_cast<std::size_t>(ctor - &functions_[0])].used = true;
+        const std::string sym = baseConstructorSymbol(*ctor, base);
+
+        const Type *basePtr = types_.pointerTo(base);
+        ExprPtr me(Var::local("this", thisSlot));
+        if (bs[i].offset == 0) {
+            me->setType(basePtr);
+        } else {
+            me->setType(self);
+            me = convert(std::move(me), basePtr);
+        }
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(me));
+        std::vector<const Type *> ps;
+        ps.push_back(basePtr);
+        body.push_back(StmtPtr(new ExprStmt(
+            completeCall(base->tag(), sym, nullptr, types_.get(Kind::Void), ps,
+                         false, pos, std::move(args)))));
+    }
+
+    if (type->polymorphic()) {
+        std::vector<StmtPtr> vp = storeVptrs(cls, type, thisSlot);
+        for (std::size_t i = 0; i < vp.size(); i++)
+            body.push_back(std::move(vp[i]));
+    }
+
+    const std::vector<Member> &ms = type->members();
+    for (std::size_t i = 0; i < ms.size(); i++) {
+        const Type *mc = memberClass(ms[i].type);
+        if (mc == nullptr || mc->tag().empty()) continue;
+        if (overloadsOf(constructorKey(mc->tag())) == nullptr) continue;
+        // An array of them needs each element built, one call per element or a
+        // loop - and getting that wrong builds some of the array and leaves the
+        // rest as whatever the frame held. Refused by name until it is written.
+        if (ms[i].type->isArray())
+            src_.fail(pos, "'" + cls + "::" + ms[i].name + "' is an array of '" +
+                           mc->tag() + "', which has a constructor - building "
+                           "one element at a time is not supported yet; the "
+                           "constructor '" + cls + "' would otherwise get is "
+                           "what needs it");
+        const Signature *ctor = defaultConstructorOf(mc);
+        if (ctor == nullptr)
+            src_.fail(pos, "'" + cls + "' has no constructor of its own, and the "
+                           "one the compiler would write cannot build its member '" +
+                           ms[i].name + "': '" + mc->tag() + "' has no "
+                           "constructor taking nothing");
+        if (ctor->access != Access::Public)
+            src_.fail(pos, "'" + cls + "' cannot be built by the constructor the "
+                           "compiler would write: the constructor of '" +
+                           mc->tag() + "' taking nothing is " +
+                           (ctor->access == Access::Private ? "private"
+                                                            : "protected"));
+        functions_[static_cast<std::size_t>(ctor - &functions_[0])].used = true;
+
+        ExprPtr me(Var::local("this", thisSlot));
+        me->setType(self);
+        ExprPtr obj(new Unary('*', std::move(me)));
+        obj->setType(type);
+        ExprPtr acc(new MemberAccess(std::move(obj), ms[i].name, ms[i].offset));
+        acc->setType(ms[i].type);
+        ExprPtr addr(new Unary('&', std::move(acc)));
+        addr->setType(types_.pointerTo(mc));
+
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(addr));
+        std::vector<const Type *> ps;
+        ps.push_back(types_.pointerTo(mc));
+        body.push_back(StmtPtr(new ExprStmt(
+            completeCall(mc->tag(), ctor->symbol, nullptr, types_.get(Kind::Void),
+                         ps, false, pos, std::move(args)))));
+    }
+
+    current_->functions.push_back(Function(cls + "::" + cls, types_.get(Kind::Void),
+                                           std::move(params),
+                                           StmtPtr(new Block(std::move(body))),
+                                           alignTo(frameSize_, 16), false, 0,
+                                           false, 0, pos, std::vector<::Local>()));
+    current_->functions.back().setSymbol(symbol);
+    // The same two names a written constructor is emitted under: C1 for a
+    // complete object and C2 for a base subobject, the second a label in front
+    // of the first. Microsoft has one name and wants no alias.
+    if (!target_.microsoftNames()) {
+        const Type *fnType = types_.functionType(types_.get(Kind::Void),
+                                                 std::vector<const Type *>(), false);
+        std::string c2, why;
+        if (itaniumConstructorName(cls, type, fnType, false, &c2, &why))
+            current_->functions.back().setAlias(c2);
+    }
+    frameSize_ = savedFrame;
+}
+
+StmtPtr Parser::eachElement(int indexSlot, long long count, StmtPtr one) {
+    const Type *idx = types_.intType();
+
+    ExprPtr i0(Var::local("$i", indexSlot));
+    i0->setType(idx);
+    ExprPtr zero(new Num(0LL));
+    zero->setType(idx);
+    ExprPtr init(new Assign(std::move(i0), std::move(zero)));
+    init->setType(idx);
+
+    ExprPtr i1(Var::local("$i", indexSlot));
+    i1->setType(idx);
+    ExprPtr n(new Num(count));
+    n->setType(idx);
+    ExprPtr cond(new Binary(BinOp::Lt, std::move(i1), std::move(n)));
+    cond->setType(idx);
+
+    ExprPtr i2(Var::local("$i", indexSlot));
+    i2->setType(idx);
+    ExprPtr step1(new Num(1LL));
+    step1->setType(idx);
+    ExprPtr sum(new Binary(BinOp::Add, std::move(i2), std::move(step1)));
+    sum->setType(idx);
+    ExprPtr i3(Var::local("$i", indexSlot));
+    i3->setType(idx);
+    ExprPtr step(new Assign(std::move(i3), std::move(sum)));
+    step->setType(idx);
+
+    std::vector<StmtPtr> inner;
+    inner.push_back(std::move(one));
+    inner.push_back(StmtPtr(new ExprStmt(std::move(step))));
+
+    std::vector<StmtPtr> all;
+    all.push_back(StmtPtr(new ExprStmt(std::move(init))));
+    all.push_back(StmtPtr(new While(std::move(cond),
+                                    StmtPtr(new Block(std::move(inner))))));
+    return StmtPtr(new Block(std::move(all)));
+}
+
+// One element of an array member, by address: the member's own address,
+// decayed, plus the index times the element's size.
+//
+// **In bytes, and deliberately.** A Binary built here is not the parser's
+// pointer arithmetic and gets none of its scaling - the same trap the vptr
+// store hit, where `+ 2` added two bytes rather than two entries.
+static ExprPtr indexBytes(TypeTable &types, ExprPtr decayed, const Type *elem,
+                          int indexSlot, const Target &target) {
+    const Type *idx = types.intType();
+    ExprPtr i(Var::local("$i", indexSlot));
+    i->setType(idx);
+    ExprPtr size(new Num(static_cast<long long>(elem->size(target))));
+    size->setType(idx);
+    ExprPtr off(new Binary(BinOp::Mul, std::move(i), std::move(size)));
+    off->setType(idx);
+    const Type *ptr = types.pointerTo(elem);
+    ExprPtr at(new Binary(BinOp::Add, std::move(decayed), std::move(off)));
+    at->setType(ptr);
+    return at;
+}
+
+// The body of a copy constructor nobody wrote: the bases that have one of
+// their own, then the vptrs, then every member that no base already copied.
+//
+// **The vptr is set and not copied**, which is the whole difference between
+// this and the copy assignment beside it: a copy constructor is making a new
+// object, and the new object is of *this* class whatever the source was.
+// Measured, in cl's own listing: it stores `OFFSET FLAT:??_7Poly@@6B@` and
+// then moves the members across.
+//
+// Members are copied one at a time rather than the whole object at once. A
+// base subobject occupies its data size and not its sizeof, so a derived
+// class may have put a member of its own in this class's tail padding - and a
+// copy of `sizeof` bytes through the C2 form would take that member with it.
+void Parser::synthesizeCopy(std::size_t which, bool assigning) {
+    const std::string cls = functions_[which].owner;
+    const std::size_t pos = functions_[which].pos;
+    const std::string symbol = functions_[which].symbol;
+    const Type *srcRef = functions_[which].params[0];
+    const Type *type = findTypedef(cls);
+    if (type == nullptr || !type->isStructOrUnion()) return;
+
+    const int savedFrame = frameSize_;
+    frameSize_ = 0;
+    const Type *self = types_.pointerTo(type);
+    const Type *srcPtr = types_.pointerTo(srcRef->referent());
+    std::vector<Param> params;
+    const int thisSlot = allocateFrameSlot(self);
+    const int thatSlot = allocateFrameSlot(srcPtr);
+    params.push_back(Param{ self, thisSlot });
+    params.push_back(Param{ srcPtr, thatSlot });
+
+    std::vector<StmtPtr> body;
+
+    // What a base's own copy constructor has already dealt with. Its members
+    // are in this class's member list too - they were copied down - and
+    // copying them again would run past a base that did the work itself.
+    std::vector<std::pair<int, int> > taken;
+
+    const std::vector<Type::BaseSpec> &bs = type->bases();
+    for (std::size_t i = 0; i < bs.size(); i++) {
+        const Type *base = bs[i].type;
+        const Signature *cc = assigning ? copyAssignOf(base)
+                                        : copyConstructorOf(base);
+        if (cc == nullptr) continue;              // trivial: its members copy below
+        if (cc->access != Access::Public)
+            src_.fail(pos, "'" + cls + "' cannot be copied by the " +
+                           (assigning ? "assignment" : "constructor") +
+                           " the compiler would write: the copy " +
+                           (assigning ? "assignment" : "constructor") +
+                           " of its base '" + base->tag() + "' is " +
+                           (cc->access == Access::Private ? "private" : "protected"));
+        functions_[static_cast<std::size_t>(cc - &functions_[0])].used = true;
+        const std::string sym = assigning ? cc->symbol
+                                          : baseConstructorSymbol(*cc, base);
+        const Type *basePtr = types_.pointerTo(base);
+
+        ExprPtr me(Var::local("this", thisSlot));
+        if (bs[i].offset == 0) {
+            me->setType(basePtr);
+        } else {
+            me->setType(self);
+            me = convert(std::move(me), basePtr);
+        }
+        ExprPtr from(Var::local("that", thatSlot));
+        from->setType(srcPtr);
+        from = convert(std::move(from), types_.pointerTo(types_.withConst(base)));
+        ExprPtr fromObj(new Unary('*', std::move(from)));
+        fromObj->setType(base);
+
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(me));
+        args.push_back(std::move(fromObj));
+        std::vector<const Type *> ps;
+        ps.push_back(basePtr);
+        ps.push_back(cc->params[0]);
+        body.push_back(StmtPtr(new ExprStmt(
+            completeCall(base->tag(), sym, nullptr, cc->returns, ps,
+                         false, pos, std::move(args)))));
+        taken.push_back(std::make_pair(bs[i].offset,
+                                       bs[i].offset + base->dataSize()));
+    }
+
+    // **A copy constructor sets the vptr; a copy assignment leaves it alone.**
+    // That is the whole difference between the two bodies, and it is measured:
+    // cl's ??0Poly stores OFFSET FLAT:??_7Poly@@6B@ before moving the members
+    // and its ??4Poly moves the members and nothing else. The reason is that
+    // assignment writes into an object that already exists and is already of
+    // this class, where a constructor is making one.
+    if (!assigning && type->polymorphic()) {
+        std::vector<StmtPtr> vp = storeVptrs(cls, type, thisSlot);
+        for (std::size_t i = 0; i < vp.size(); i++)
+            body.push_back(std::move(vp[i]));
+    }
+
+    const std::vector<Member> &ms = type->members();
+    for (std::size_t i = 0; i < ms.size(); i++) {
+        bool done = false;
+        for (std::size_t k = 0; k < taken.size() && !done; k++)
+            if (ms[i].offset >= taken[k].first && ms[i].offset < taken[k].second)
+                done = true;
+        if (done) continue;
+
+        const Type *mt = ms[i].type;
+        const Type *elem = mt->isArray() ? mt->pointee() : mt;
+        const Signature *cc = assigning ? copyAssignOf(memberClass(mt))
+                                        : copyConstructorOf(memberClass(mt));
+        if (cc != nullptr) {
+            if (cc->access != Access::Public)
+                src_.fail(pos, "'" + cls + "' cannot be copied by the " +
+                               (assigning ? "assignment" : "constructor") +
+                               " the compiler would write: the copy " +
+                               (assigning ? "assignment" : "constructor") +
+                               " of '" + memberClass(mt)->tag() + "', the type of '" +
+                               ms[i].name + "', is " +
+                               (cc->access == Access::Private ? "private"
+                                                              : "protected"));
+            functions_[static_cast<std::size_t>(cc - &functions_[0])].used = true;
+        }
+
+        int indexSlot = 0;
+        long long count = 0;
+        if (mt->isArray()) {
+            count = mt->length();
+            if (count < 0)
+                src_.fail(pos, "'" + cls + "::" + ms[i].name + "' has no length, "
+                               "so the copy constructor the compiler would write "
+                               "does not know how much to copy");
+            indexSlot = allocateFrameSlot(types_.intType());
+        }
+
+        // Both sides of the copy, as lvalues: this->m and that->m, or one
+        // element of each when the member is an array.
+        ExprPtr me(Var::local("this", thisSlot));
+        me->setType(self);
+        ExprPtr meObj(new Unary('*', std::move(me)));
+        meObj->setType(type);
+        ExprPtr dst(new MemberAccess(std::move(meObj), ms[i].name, ms[i].offset,
+                                     ms[i].width, ms[i].bitOffset));
+        dst->setType(mt);
+
+        ExprPtr from(Var::local("that", thatSlot));
+        from->setType(srcPtr);
+        ExprPtr fromObj(new Unary('*', std::move(from)));
+        fromObj->setType(srcRef->referent());
+        ExprPtr src(new MemberAccess(std::move(fromObj), ms[i].name, ms[i].offset,
+                                     ms[i].width, ms[i].bitOffset));
+        src->setType(mt);
+
+        if (mt->isArray()) {
+            ExprPtr dstAt = indexBytes(types_, decay(std::move(dst)), elem,
+                                       indexSlot, target_);
+            ExprPtr srcAt = indexBytes(types_, decay(std::move(src)), elem,
+                                       indexSlot, target_);
+            dst = ExprPtr(new Unary('*', std::move(dstAt)));
+            dst->setType(elem);
+            src = ExprPtr(new Unary('*', std::move(srcAt)));
+            src->setType(elem);
+        }
+
+        StmtPtr one;
+        if (cc != nullptr) {
+            ExprPtr addr(new Unary('&', std::move(dst)));
+            addr->setType(types_.pointerTo(elem->unqualified()));
+            std::vector<ExprPtr> args;
+            args.push_back(std::move(addr));
+            args.push_back(std::move(src));
+            std::vector<const Type *> ps;
+            ps.push_back(types_.pointerTo(elem->unqualified()));
+            ps.push_back(cc->params[0]);
+            one = StmtPtr(new ExprStmt(
+                completeCall(elem->unqualified()->tag(), cc->symbol, nullptr,
+                             cc->returns, ps, false, pos, std::move(args))));
+        } else {
+            ExprPtr store(new Assign(std::move(dst), std::move(src)));
+            store->setType(elem);
+            one = StmtPtr(new ExprStmt(std::move(store)));
+        }
+
+        body.push_back(mt->isArray() ? eachElement(indexSlot, count, std::move(one))
+                                     : std::move(one));
+    }
+
+    // **`a = b` is an expression and has to have a value**, and the value is
+    // the object assigned to. The declared return type is `X &`, and a
+    // reference is a pointer everywhere below the parser - so what the
+    // function actually returns is `this`.
+    const Type *returns = types_.get(Kind::Void);
+    if (assigning) {
+        returns = types_.pointerTo(type);
+        ExprPtr me(Var::local("this", thisSlot));
+        me->setType(self);
+        body.push_back(StmtPtr(new Return(std::move(me))));
+    }
+
+    current_->functions.push_back(Function(cls + "::" + (assigning ? "operator="
+                                                                  : cls),
+                                           returns, std::move(params),
+                                           StmtPtr(new Block(std::move(body))),
+                                           alignTo(frameSize_, 16), false, 0,
+                                           false, 0, pos, std::vector<::Local>()));
+    current_->functions.back().setSymbol(symbol);
+    // A constructor is emitted under both of Itanium's names; an operator has
+    // one name in either ABI.
+    if (!assigning && !target_.microsoftNames()) {
+        std::vector<const Type *> ps;
+        ps.push_back(srcRef);
+        const Type *fnType = types_.functionType(types_.get(Kind::Void), ps, false);
+        std::string c2, why;
+        if (itaniumConstructorName(cls, type, fnType, false, &c2, &why))
+            current_->functions.back().setAlias(c2);
+    }
+    frameSize_ = savedFrame;
+}
+
+// **To a fixed point, because a body can be what first calls another.** Giving
+// Owner its constructor is what calls Held's, and Held's may not have been
+// wanted by anything the program wrote.
+void Parser::defineImplicitFunctions() {
+    for (bool again = true; again; ) {
+        again = false;
+        for (std::size_t i = 0; i < functions_.size(); i++) {
+            if (!functions_[i].implicit || !functions_[i].used ||
+                functions_[i].defined)
+                continue;
+            functions_[i].defined = true;
+            if (functions_[i].name == "operator=")   synthesizeCopy(i, true);
+            else if (functions_[i].params.empty())   synthesizeDefaultCtor(i);
+            else                                    synthesizeCopy(i, false);
+            again = true;
+        }
+    }
 }
 
 // A member function declaration, keyed under "Class::name" in the one table
@@ -3058,6 +3798,145 @@ ExprPtr Parser::finishCall(const std::string &name, const std::string &symbol,
                         variadic, pos, std::move(args));
 }
 
+// The caller's half of passing a class by value: a temporary in this frame,
+// the copy constructor run into it, and its address handed over. The whole
+// thing is one expression - `(ctor(&tmp, arg), &tmp)` - so it needs no
+// statement to sit in and works wherever a call does.
+//
+// The temporary belongs to the caller on the Itanium targets, which is also
+// who destroys it. The Microsoft ABI puts that on the callee; see
+// docs/CONFORMANCE.md, which records the difference and what it costs.
+// The end of a full expression, where the temporaries it made are destroyed,
+// in the reverse of the order they were made. The value has to be put
+// somewhere first, because the destructors run between the expression and its
+// value being used: `(r = <expr>, ~T(&tmp), r)`.
+//
+// Called from the places an expression becomes a statement or a condition. A
+// site that forgets to call it does not lose the destructor - the temporary
+// stays on the list and goes at the next full expression - so the failure
+// mode is late rather than absent.
+// The same end-of-full-expression rule where the expression has already
+// become statements - a declaration's initialiser - so there is no value to
+// carry past the destructors and they are simply appended.
+void Parser::flushTemporaries(std::vector<StmtPtr> &into) {
+    if (pendingTemps_.empty()) return;
+    std::vector<std::pair<int, const Type *> > mine;
+    mine.swap(pendingTemps_);
+    for (std::size_t k = mine.size(); k-- > 0; ) {
+        const Signature *dtor = destructorOf(mine[k].second);
+        if (dtor == nullptr) continue;
+        ExprPtr what(Var::local("$copy", mine[k].first));
+        what->setType(mine[k].second);
+        ExprPtr at(new Unary('&', std::move(what)));
+        at->setType(types_.pointerTo(mine[k].second));
+        into.push_back(StmtPtr(new ExprStmt(
+            destructorCall(std::move(at), *dtor, 0))));
+    }
+}
+
+ExprPtr Parser::endFullExpression(ExprPtr e) {
+    if (pendingTemps_.empty()) return e;
+    std::vector<std::pair<int, const Type *> > mine;
+    mine.swap(pendingTemps_);
+
+    const Type *t = e->type();
+    const bool hasValue = t != nullptr && !t->isVoid() && !t->isFunction();
+    int keep = 0;
+    if (hasValue) {
+        keep = allocateFrameSlot(t);
+        ExprPtr where(Var::local("$full", keep));
+        where->setType(t);
+        ExprPtr save(new Assign(std::move(where), std::move(e)));
+        save->setType(t);
+        e = std::move(save);
+    }
+    for (std::size_t k = mine.size(); k-- > 0; ) {
+        const Signature *dtor = destructorOf(mine[k].second);
+        if (dtor == nullptr) continue;
+        ExprPtr what(Var::local("$copy", mine[k].first));
+        what->setType(mine[k].second);
+        ExprPtr at(new Unary('&', std::move(what)));
+        at->setType(types_.pointerTo(mine[k].second));
+        ExprPtr gone = destructorCall(std::move(at), *dtor, 0);
+        ExprPtr seq(new Comma(std::move(e), std::move(gone)));
+        seq->setType(t);
+        e = std::move(seq);
+    }
+    if (hasValue) {
+        ExprPtr back(Var::local("$full", keep));
+        back->setType(t);
+        ExprPtr seq(new Comma(std::move(e), std::move(back)));
+        seq->setType(t);
+        e = std::move(seq);
+    }
+    return e;
+}
+
+ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
+                                const std::string &what,
+                                std::vector<std::pair<int, const Type *> > &destroy) {
+    const Type *cls = type->unqualified();
+    const Signature *cc = copyConstructorOf(cls);
+    if (cc == nullptr) {                       // the flag said there was one
+        arg = decay(std::move(arg));
+        checkAssignable(*arg, type, pos, what);
+        return convert(std::move(arg), type);
+    }
+    if (cc->access != Access::Public && currentClass_ != cls)
+        src_.fail(pos, "'" + cls->describe() + "' is passed by value as " + what +
+                       ", which copies it, and its copy constructor is " +
+                       (cc->access == Access::Private ? "private" : "protected"));
+    checkAssignable(*arg, cls, pos, what);
+
+    const int tmp = allocateFrameSlot(cls);
+    const Type *ptr = types_.pointerTo(cls);
+    if (destructorOf(cls) != nullptr)
+        destroy.push_back(std::make_pair(tmp, cls));
+
+    // **Elision, where the argument is already one of these coming back
+    // through a hidden pointer.** The call can build its result straight into
+    // the temporary this argument needs, and then no copy constructor runs at
+    // all - which is what clang does at -O0 and what C++11 permits.
+    if (Call *made = dynamic_cast<Call *>(arg.get())) {
+        if (made->type() == cls && returnsIndirectly(cls)) {
+            made->setResultSlot(tmp);
+            ExprPtr built(Var::local("$copy", tmp));
+            built->setType(cls);
+            ExprPtr at(new Unary('&', std::move(built)));
+            at->setType(ptr);
+            ExprPtr node(new Comma(std::move(arg), std::move(at)));
+            node->setType(ptr);
+            return node;
+        }
+    }
+
+    functions_[static_cast<std::size_t>(cc - &functions_[0])].used = true;
+
+    ExprPtr slot(Var::local("$copy", tmp));
+    slot->setType(cls);
+    ExprPtr addr(new Unary('&', std::move(slot)));
+    addr->setType(ptr);
+
+    std::vector<ExprPtr> ctorArgs;
+    ctorArgs.push_back(std::move(addr));
+    ctorArgs.push_back(std::move(arg));
+    std::vector<const Type *> ps;
+    ps.push_back(ptr);
+    ps.push_back(cc->params[0]);
+    ExprPtr build = completeCall(cls->tag(), cc->symbol, nullptr,
+                                 types_.get(Kind::Void), ps, false, pos,
+                                 std::move(ctorArgs));
+
+    ExprPtr again(Var::local("$copy", tmp));
+    again->setType(cls);
+    ExprPtr result(new Unary('&', std::move(again)));
+    result->setType(ptr);
+
+    ExprPtr node(new Comma(std::move(build), std::move(result)));
+    node->setType(ptr);
+    return node;
+}
+
 ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
                              ExprPtr callee, const Type *returns,
                              const std::vector<const Type *> &params,
@@ -3068,6 +3947,10 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
                        std::to_string(params.size()) + " argument(s), given " +
                        std::to_string(args.size()));
 
+    // Temporaries this call makes for its by-value class arguments, and which
+    // this call therefore has to destroy once it returns.
+    std::vector<std::pair<int, const Type *> > destroy;
+
     for (std::size_t i = 0; i < args.size(); i++) {
         if (i >= params.size()) {
             args[i] = defaultPromote(decay(std::move(args[i])));
@@ -3076,6 +3959,16 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
         std::string what = "argument " + std::to_string(i + 1) + " of '" + name + "'";
         if (params[i]->isReference()) {
             args[i] = bindReference(params[i], std::move(args[i]), pos, what);
+            continue;
+        }
+        // **A class whose copy is a constructor call is copied by the
+        // caller**, into a temporary the caller owns, and what the callee
+        // receives is that temporary's address. Measured on all three
+        // targets: clang and cl each emit the copy constructor at the call
+        // site and then pass a pointer.
+        if (params[i]->isStructOrUnion() && params[i]->nonTrivialCopy()) {
+            args[i] = materialiseCopy(params[i], std::move(args[i]), pos, what,
+                                      destroy);
             continue;
         }
         args[i] = decay(std::move(args[i]));
@@ -3096,6 +3989,16 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
     call->setSymbol(symbol);
     ExprPtr n(call);
     n->setType(returns);
+
+    // **The caller destroys the copies it made** - measured from clang, which
+    // emits the destructor of the argument temporary in the caller. The
+    // Microsoft ABI puts that on the callee instead; docs/CONFORMANCE.md has
+    // the difference and what it costs. They are handed to the full
+    // expression rather than destroyed here, because that is when the
+    // standard says they go.
+    for (std::size_t k = 0; k < destroy.size(); k++)
+        pendingTemps_.push_back(destroy[k]);
+
     // A call that returns a reference is an lvalue, and useReference is what
     // makes it one: the address comes back in a register and the dereference
     // around it is what the caller actually named.
@@ -4148,6 +5051,33 @@ ExprPtr Parser::assign() {
     const Type *to = n->type();
     ExprPtr value = decay(assign());
     checkAssignable(*value, to, pos, "the left of '='");
+
+    // **A class with a copy assignment of its own is assigned by calling it**,
+    // not by moving its bytes. Where the copy is trivial there is no such
+    // function and nothing was declared, and this is the struct assignment it
+    // has always been.
+    if (const Signature *op = copyAssignOf(to->unqualified())) {
+        functions_[static_cast<std::size_t>(op - &functions_[0])].used = true;
+        const Type *selfPtr = types_.pointerTo(to->unqualified());
+        ExprPtr addr(new Unary('&', std::move(n)));
+        addr->setType(selfPtr);
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(addr));
+        args.push_back(std::move(value));
+        std::vector<const Type *> ps;
+        ps.push_back(selfPtr);
+        ps.push_back(op->params[0]);
+        ExprPtr call = completeCall(to->unqualified()->tag() + "::operator=",
+                                    op->symbol, nullptr, selfPtr, ps, false, pos,
+                                    std::move(args));
+        // It answers `X &`, which is a pointer below the parser - so what the
+        // expression yields is that pointer read back, and `(a = b).m` goes on
+        // working the way it does for a written assignment.
+        ExprPtr result(new Unary('*', std::move(call)));
+        result->setType(to->unqualified());
+        return result;
+    }
+
     ExprPtr node(new Assign(std::move(n), convert(std::move(value), to)));
     node->setType(to);
     return node;
@@ -4246,18 +5176,78 @@ StmtPtr Parser::declarationBody() {
                                      d.type->describe() + " " + d.name +
                                      ";' for the default constructor");
                 parseArguments(args);
-            } else if (peek().is("=")) {
-                src_.fail(d.pos, "'" + d.name + " = ...' copy-initialises, which "
-                                 "needs a copy constructor - not supported yet. "
-                                 "Write '" + d.name + "(...)' instead");
+            } else if (consume("=")) {
+                // **Copy-initialisation.** `X b = a;` is a constructor called
+                // with one argument, chosen by the ordinary overload rules -
+                // the copy constructor for an `X`, a converting constructor
+                // for anything else. What separates it from `X b(a);` in the
+                // standard is that an `explicit` constructor may not be picked
+                // here, and `explicit` is refused by name until rung 7.
+                args.push_back(assign());
             }
 
             int off = declare(d.name, d.type, d.pos);
-            inits.push_back(constructLocal(d, off, std::move(args)));
+
+            // **Copy elision, in the one case worth having it.** When the
+            // initialiser is a call that already returns one of these through
+            // a hidden pointer, the object is built straight into this
+            // variable and no copy constructor runs at all. clang does this at
+            // -O0 on both Itanium targets; cl at /O0 makes the copy instead,
+            // and C++11 permits either - which is why a case that counts
+            // constructor calls cannot have one recorded output for all three
+            // machines, and why the suite's cases do not count them.
+            Call *made = args.size() == 1 && d.type->nonTrivialCopy()
+                       ? dynamic_cast<Call *>(args[0].get()) : nullptr;
+            if (made != nullptr && made->type() == d.type &&
+                returnsIndirectly(d.type)) {
+                made->setResultSlot(off);
+                inits.push_back(StmtPtr(new ExprStmt(std::move(args[0]))));
+            } else {
+                inits.push_back(constructLocal(d, off, std::move(args)));
+            }
+            flushTemporaries(inits);
             if (destructorOf(d.type) != nullptr)
                 alive_.push_back(Alive{ d.name, off, d.type->unqualified() });
             if (!consume(",")) break;
             continue;
+        }
+
+        // **`X q(p);` where X has no constructor at all.** Its copy is
+        // trivial, so there is no constructor to call and none was declared -
+        // what the standard asks for here is the bytes, which is the struct
+        // assignment the backends already emit. This is the lowering trade
+        // again: an operation that exists is cheaper than a fourth thing for
+        // three code generators to know about.
+        //
+        // A parameter list begins with a type name and this does not, which is
+        // what tells `X q(p);` from a function declaration. The same question
+        // is asked above for a class that does have constructors; here it is
+        // asked the other way round because there is no overload set to
+        // resolve against.
+        if (peek().is("(") && d.type->isStructOrUnion() && sc != StorageStatic) {
+            const std::size_t save = at_;
+            at_++;
+            const bool looksLikeParameters = peek().is(")") || atDeclarationStart();
+            if (!looksLikeParameters) {
+                std::vector<ExprPtr> args;
+                parseArguments(args);
+                if (args.size() != 1)
+                    src_.fail(d.pos, "'" + d.type->describe() + "' has no "
+                                     "constructor, so '" + d.name + "(...)' can "
+                                     "only be a copy of another '" +
+                                     d.type->describe() + "' - and this gives " +
+                                     std::to_string(args.size()) + " arguments");
+                checkAssignable(*args[0], d.type, d.pos, "'" + d.name + "'");
+                const int off = declare(d.name, d.type, d.pos);
+                ExprPtr target(Var::local(d.name, off));
+                target->setType(d.type);
+                ExprPtr store(new Assign(std::move(target), std::move(args[0])));
+                store->setType(d.type);
+                inits.push_back(StmtPtr(new ExprStmt(std::move(store))));
+                if (!consume(",")) break;
+                continue;
+            }
+            at_ = save;
         }
 
         if (peek().is("(")) {
@@ -4349,6 +5339,7 @@ StmtPtr Parser::declarationBody() {
             std::vector<InitStep> path;
             emitInit(d.name, path, d.type, in, inits);
         }
+        flushTemporaries(inits);
     } while (consume(","));
 
     expect(";");
@@ -4364,15 +5355,15 @@ StmtPtr Parser::forStatement() {
     StmtPtr init;
     if (!consume(";")) {
         if (atDeclarationStart()) init = declaration();
-        else { ExprPtr e = expr(); expect(";"); init = StmtPtr(new ExprStmt(std::move(e))); }
+        else { ExprPtr e = endFullExpression(expr()); expect(";"); init = StmtPtr(new ExprStmt(std::move(e))); }
     }
 
     ExprPtr cond;
-    if (!peek().is(";")) cond = decay(expr());
+    if (!peek().is(";")) cond = endFullExpression(decay(expr()));
     expect(";");
 
     ExprPtr step;
-    if (!peek().is(")")) step = decay(expr());
+    if (!peek().is(")")) step = endFullExpression(decay(expr()));
     expect(")");
 
     loopDepth_++;
@@ -4494,7 +5485,7 @@ StmtPtr Parser::switchStatement() {
     std::size_t pos = peek().pos;
     expect("switch");
     expect("(");
-    ExprPtr cond = decay(expr());
+    ExprPtr cond = endFullExpression(decay(expr()));
     if (!cond->type()->isInteger())
         src_.fail(pos, "a switch needs an integer, not '" +
                        cond->type()->describe() + "'");
@@ -4635,7 +5626,8 @@ StmtPtr Parser::statementBody() {
             }
             return StmtPtr(new Return(nullptr));
         }
-        ExprPtr value = returnType_->isReference() ? expr() : decay(expr());
+        ExprPtr value = endFullExpression(returnType_->isReference() ? expr()
+                                                                  : decay(expr()));
         if (returnType_->isReference()) {
             value = bindReference(returnType_, std::move(value), pos,
                                   "this function's return type");
@@ -4677,7 +5669,7 @@ StmtPtr Parser::statementBody() {
     }
     if (consume("if")) {
         expect("(");
-        ExprPtr cond = decay(expr());
+        ExprPtr cond = endFullExpression(decay(expr()));
         expect(")");
         StmtPtr thenArm = statement();
         StmtPtr elseArm;
@@ -4686,7 +5678,7 @@ StmtPtr Parser::statementBody() {
     }
     if (consume("while")) {
         expect("(");
-        ExprPtr cond = decay(expr());
+        ExprPtr cond = endFullExpression(decay(expr()));
         expect(")");
         loopDepth_++;
         StmtPtr body = statement();
@@ -4702,7 +5694,7 @@ StmtPtr Parser::statementBody() {
         loopDepth_--;
         expect("while");
         expect("(");
-        ExprPtr cond = decay(expr());
+        ExprPtr cond = endFullExpression(decay(expr()));
         expect(")");
         expect(";");
         return StmtPtr(new DoWhile(std::move(body), std::move(cond)));
@@ -4753,7 +5745,7 @@ StmtPtr Parser::statementBody() {
     if (peek().is("{")) return block();
     if (consume(";")) return StmtPtr(new Block({}));
 
-    ExprPtr e = expr();
+    ExprPtr e = endFullExpression(expr());
     expect(";");
     return StmtPtr(new ExprStmt(std::move(e)));
 }
@@ -4980,6 +5972,28 @@ void Parser::topLevel(Program &program) {
                 Declared pd = declarator(pt, true);
                 if (pd.type->isArray())
                     pd.type = types_.pointerTo(pd.type->pointee());
+
+                // **A class whose copy is a constructor call arrives by
+                // address**, on both ABIs and whatever its size - measured
+                // with cl and with clang for both Itanium targets. So the
+                // parameter is *lowered to a reference*: its frame slot holds
+                // the caller's pointer, and every mention of it dereferences
+                // that, which is the machinery a reference already has and
+                // which no backend had to be told about.
+                //
+                // The declared type is untouched - `params` still says the
+                // class - so the mangler and overload resolution go on seeing
+                // a parameter passed by value, which is what it is.
+                //
+                // The object itself belongs to the caller: it built the copy
+                // and it destroys it. That is the Itanium rule; the Microsoft
+                // ABI has the callee destroy its parameter instead, which is
+                // in docs/CONFORMANCE.md as a difference that only shows when
+                // an object of cxx1's is linked with one of cl's.
+                const bool byAddress = pd.type->isStructOrUnion() &&
+                                       pd.type->nonTrivialCopy();
+                const Type *held = byAddress ? types_.referenceTo(pd.type)
+                                             : pd.type;
                 int off;
                 if (pd.name.empty()) {
                     if (pd.type->isVoid())
@@ -4989,15 +6003,15 @@ void Parser::topLevel(Program &program) {
                     off = 0;
                 } else {
                     inParams_ = true;
-                    off = declare(pd.name, pd.type, pd.pos);
+                    off = declare(pd.name, held, pd.pos);
                     inParams_ = false;
                     locals_.back().isConst = pd.type->isConst();
                     locals_.back().isRegister = (psc == StorageRegister);
                 }
                 params.push_back(types_.withoutConst(pd.type));
-                paramSlots.push_back(Param{ pd.type->isReference()
-                                            ? types_.pointerTo(pd.type->referent())
-                                            : pd.type, off });
+                paramSlots.push_back(Param{ held->isReference()
+                                            ? types_.pointerTo(held->referent())
+                                            : held, off });
                 if (consume(")")) break;
                 expect(",");
             }
@@ -5198,95 +6212,8 @@ void Parser::topLevel(Program &program) {
     // this class's during its own body even though the base already set the
     // pointer to its own table.
     //
-    // What is stored is the table's address plus the header: Itanium writes
-    // offset-to-top and typeinfo first, so the vptr points at table + 16
-    // (measured from clang's own `addq $16`), and Microsoft has no header so
-    // the address is the table's own.
     if (memberOf != nullptr && d.name == d.qualifier && memberOf->polymorphic()) {
-        const bool ms = target_.microsoftNames();
-        const std::string table = ms ? "??_7" + d.qualifier + "@@6B@"
-                                     : "_ZTV" + std::to_string(d.qualifier.size()) +
-                                       d.qualifier;
-        const Type *entry = types_.pointerTo(types_.get(Kind::Void));
-        const Type *entries = types_.pointerTo(entry);
-
-        // **The table's ADDRESS, not its contents.** A global Var is an
-        // lvalue and reading one loads from it - which stored the table's
-        // first word in the vptr and crashed on the first call. Giving it the
-        // array type and decaying it is what yields the address, the same road
-        // any array name takes.
-        std::size_t entryCount = vtables_[d.qualifier].size() + (ms ? 0 : 2);
-        {
-            const std::vector<Type::BaseSpec> &all = memberOf->bases();
-            for (std::size_t bi = 1; bi < all.size(); bi++)
-                if (all[bi].type->polymorphic())
-                    entryCount += vtables_[all[bi].type->tag()].size() + (ms ? 0 : 2);
-        }
-        ExprPtr base(Var::global(table));
-        base->setType(types_.arrayOf(entry, static_cast<long long>(entryCount)));
-        ExprPtr value = decay(std::move(base));
-        if (!ms) {
-            // **In bytes, because this Add is not the parser's pointer
-            // arithmetic.** Building the node by hand and typing it by hand
-            // skips the scaling `p + n` normally gets, so adding 2 added two
-            // bytes and the vptr pointed two bytes into the table's first
-            // word. The header is two pointers wide; that is what to add.
-            const long long header = 2LL * entry->size(target_);
-            ExprPtr skip(new Num(header));
-            skip->setType(types_.intType());
-            ExprPtr past(new Binary(BinOp::Add, std::move(value), std::move(skip)));
-            past->setType(entries);
-            value = std::move(past);
-        }
-        ExprPtr asVoid(new Cast(entry, std::move(value)));
-        asVoid->setType(entry);
-
-        ExprPtr self(Var::local("this", thisOffset_));
-        self->setType(entries);                        // the vptr lives at offset 0
-        ExprPtr where(new Unary('*', std::move(self)));
-        where->setType(entry);
-
-        ExprPtr store(new Assign(std::move(where), std::move(asVoid)));
-        store->setType(entry);
-
-        std::vector<StmtPtr> withVptr;
-        withVptr.push_back(StmtPtr(new ExprStmt(std::move(store))));
-
-        // **A class with a polymorphic second base has a second vptr**, inside
-        // that base's subobject, pointing at the secondary table laid down
-        // behind the primary one. The first vptr is the object's own; this is
-        // the one a B * will read.
-        const std::vector<Type::BaseSpec> &bs = memberOf->bases();
-        for (std::size_t bi = 1; bi < bs.size(); bi++) {
-            if (!bs[bi].type->polymorphic()) continue;
-            std::map<std::string, int>::const_iterator where =
-                secondaryVptr_.find(d.qualifier + "::" + bs[bi].type->tag());
-            if (where == secondaryVptr_.end()) continue;
-
-            ExprPtr t2(Var::global(table));
-            t2->setType(types_.arrayOf(entry, static_cast<long long>(entryCount)));
-            ExprPtr addr2 = decay(std::move(t2));
-            ExprPtr skip2(new Num(static_cast<long long>(where->second)));
-            skip2->setType(types_.intType());
-            ExprPtr into(new Binary(BinOp::Add, std::move(addr2), std::move(skip2)));
-            into->setType(entries);
-            ExprPtr val2(new Cast(entry, std::move(into)));
-            val2->setType(entry);
-
-            ExprPtr self2(Var::local("this", thisOffset_));
-            self2->setType(types_.pointerTo(memberOf));
-            ExprPtr atBase = convert(std::move(self2),
-                                     types_.pointerTo(bs[bi].type));
-            ExprPtr slotPtr(new Cast(types_.pointerTo(entry), std::move(atBase)));
-            slotPtr->setType(types_.pointerTo(entry));
-            ExprPtr there(new Unary('*', std::move(slotPtr)));
-            there->setType(entry);
-
-            ExprPtr store2(new Assign(std::move(there), std::move(val2)));
-            store2->setType(entry);
-            withVptr.push_back(StmtPtr(new ExprStmt(std::move(store2))));
-        }
-
+        std::vector<StmtPtr> withVptr = storeVptrs(d.qualifier, memberOf, thisOffset_);
         withVptr.push_back(std::move(body));
         body = StmtPtr(new Block(std::move(withVptr)));
     }
@@ -5426,6 +6353,7 @@ Program Parser::parse() {
     current_ = &program;
     while (peek().kind != TokenKind::End)
         topLevel(program);
+    defineImplicitFunctions();
     if (program.functions.empty())
         src_.fail(0, "the file defines no functions");
     return program;

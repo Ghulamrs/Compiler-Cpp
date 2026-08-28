@@ -132,6 +132,19 @@ public:
     bool polymorphic() const { return unqual_ ? unqual_->polymorphic() : polymorphic_; }
     void setPolymorphic(bool p) { polymorphic_ = p; }
 
+    // **Whether copying this class is a function call rather than a move of
+    // bytes**, which both platform ABIs make a question about how it is
+    // *passed*: a class with a non-trivial copy constructor goes by address,
+    // whatever its size, where a trivially copyable one of the same size goes
+    // in a register. Measured with cl and with clang for both Itanium
+    // targets. The backends need to agree with the parser about this, which
+    // is why it lives on the type rather than in the function table where
+    // copy constructors are actually kept.
+    bool nonTrivialCopy() const {
+        return unqual_ ? unqual_->nonTrivialCopy() : nonTrivialCopy_;
+    }
+    void setNonTrivialCopy(bool n) { nonTrivialCopy_ = n; }
+
     // **Every base, with the offset it sits at.** The first is at 0 and any
     // second is not - measured: `class C : public A, public B` puts A at 0 and
     // B at 4 - which is the whole difference multiple inheritance makes. A
@@ -206,6 +219,7 @@ private:
     bool isClass_ = false;
     int dataSize_ = 0;
     bool polymorphic_ = false;
+    bool nonTrivialCopy_ = false;
     std::vector<BaseSpec> bases_;
     std::vector<Member> members_;
     int size_ = 0;

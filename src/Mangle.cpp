@@ -104,6 +104,21 @@ public:
         if (fn->isVariadicFn()) out += "z";
     }
 
+    // _ZN4PolyaSERKS_ - the class, then `aS` where a member function writes
+    // the length and letters of its name, then E and the parameters. There is
+    // no return type in an Itanium function name, and the class is candidate
+    // zero in the substitution table, which is what makes the parameter S_.
+    void copyAssign(const std::string &cls, const Type *clsType, const Type *fn) {
+        out = "_ZN";
+        out += std::to_string(cls.size());
+        out += cls;
+        if (clsType != nullptr) subs_.push_back(clsType);
+        out += "aSE";
+        const std::vector<const Type *> &params = fn->params();
+        if (params.empty()) { out += "v"; return; }
+        for (const Type *p : params) type(p);
+    }
+
     // _ZN5PointC1Eii - the class, then C1 or C2, then E, then the parameters.
     // **A constructor has both names**: C1 builds a complete object and C2 a
     // base subobject, and clang emits the two of them. Nothing calls C2 until
@@ -220,6 +235,22 @@ public:
         if (params.empty() && !fn->isVariadicFn()) { out += "XZ"; return; }
         for (const Type *p : params) argument(p);
         out += fn->isVariadicFn() ? "ZZ" : "@Z";
+    }
+
+    // ??4X@@QEAAAEAU0@AEBU0@@Z - ??4 says operator=, and unlike ??0 it does
+    // write the return type. Only the class is pushed as a name, so it is the
+    // back-reference 0 rather than the 1 a named member function leaves it.
+    void copyAssign(const std::string &cls, const Type *fn, char access) {
+        out = "??4";
+        pushName(cls);
+        out += '@';
+        out += access;
+        out += "EAA";
+        returnType(fn->returns());
+        const std::vector<const Type *> &params = fn->params();
+        if (params.empty()) { out += "XZ"; return; }
+        for (const Type *p : params) argument(p);
+        out += "@Z";
     }
 
     // ??0Point@@QEAA@HH@Z - ??0 says constructor, and the '@' after QEAA sits
@@ -410,6 +441,24 @@ bool microsoftMemberName(const std::string &cls, const std::string &name,
                          std::string *out, std::string *problem) {
     Microsoft m;
     m.memberFunction(cls, name, fn, access, constThis);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
+bool itaniumCopyAssignName(const std::string &cls, const Type *clsType,
+                           const Type *fn, std::string *out, std::string *problem) {
+    Itanium m;
+    m.copyAssign(cls, clsType, fn);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
+bool microsoftCopyAssignName(const std::string &cls, const Type *fn, char access,
+                             std::string *out, std::string *problem) {
+    Microsoft m;
+    m.copyAssign(cls, fn, access);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;

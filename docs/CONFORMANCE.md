@@ -97,6 +97,71 @@ type names, so the declaration of `stat` as an object collides with it. This is
 the C compatibility rule, it exists for headers written before C++ did, and no
 program here wants it. It costs a second lookup table to fix.
 
+## The callee destroys a by-value argument on Windows, and cxx1's caller does
+
+A class passed by value is copied by its copy constructor now, and the copy is
+a temporary the **caller** builds and the **caller** destroys. That is the
+Itanium rule and clang emits exactly that on both Itanium targets - the
+destructor of the argument temporary appears at the call site.
+
+**The Microsoft ABI puts the destruction on the callee**, and it was measured
+rather than read: cl's `?useE@@YAHUE@@@Z` calls `??1E@@QEAA@XZ` on its own
+parameter before returning, and the caller emits no destructor for it.
+
+cxx1 does it the Itanium way on all three targets. In one program built by one
+compiler that is invisible and correct - the object is destroyed exactly once
+either way. It shows only where a cxx1 object is linked with a cl object and a
+class with a destructor crosses between them by value: neither destroys it, or
+both do.
+
+Fixing it means the Windows target moving the destructor into the callee,
+which also means the callee owning the parameter rather than reading it
+through the caller's pointer - a different lowering for that target, not a
+different place to put one call.
+
+## Eliding a copy is allowed, and the two oracles disagree about when
+
+C++11 permits a compiler to elide a copy constructor and does not require it,
+and the two oracles take different options at their lowest optimisation
+setting: clang elides at `-O0`, cl does not at `/O0`.
+
+```cpp
+Counted giveCounted() { Counted c; return c; }
+Counted r = giveCounted();      // clang: one construction. cl: a copy as well.
+```
+
+cxx1 elides, which is clang's answer, in the two places worth having it: a
+declaration initialised by a call that already returns the class through a
+hidden pointer, and such a call passed straight in as a by-value argument. In
+both the callee builds its result where the object had to end up anyway.
+
+So a program that *counts* constructor calls has no single right answer here,
+and `tests/cases/by-value.cpp` deliberately does not count them.
+
+## A `const` member does not make the special members deleted
+
+```cpp
+struct Holder { int i; const int k; };
+Holder a;            // cxx1 accepts. C++ deletes the default constructor:
+                     // k has no initialiser and never could get one.
+Holder b;
+b = a;               // cxx1 accepts, and copies k's bytes. C++ deletes the
+                     // copy assignment, because k cannot be assigned to.
+```
+
+The copy assignment half is handled as far as the compiler's own work goes:
+where a class has a `const` member, no implicit copy assignment is *declared*,
+which is this compiler's way of saying the standard's "deleted". What is left
+is the older rule underneath it - a struct has always been assignable here,
+inherited from Compiler-C along with the parser, and that assignment copies
+every byte including the const member's.
+
+So the diagnosis is missing rather than the semantics wrong: the bytes that
+move are the bytes clang would have moved if the program had been legal.
+Refusing it means refusing struct assignment for a case C refuses too, which
+is a change to the C path and to a 424-case corpus that has not been triaged
+for it - so it is recorded here rather than done in passing.
+
 ## A failed `new` terminates rather than throwing
 
 `new` here calls the platform's own `operator new`, which throws `std::bad_alloc`
@@ -133,6 +198,21 @@ only `C2` and no `C1` at all, where the out-of-line case emits both. cxx1 emits
 both in either case, which is why `tests/cases/inline-body` is compared for
 Darwin and Windows and skipped for Linux - Darwin's spelling keeps `.globl`
 beside the weak marker and so still agrees name for name.
+
+**The special members the compiler writes are inline in exactly this sense**,
+so they carry both halves of it. clang marks an implicit default, copy or
+assignment `.weak` on Linux and `.weak_def_can_be_hidden` on Darwin, and cxx1
+emits a strong global. And clang emits only the constructor *forms* a use asks
+for, where cxx1 emits C1 and C2 for every constructor - so a class that is only
+ever built as a base gets a `C2` from clang and a `C1` and a `C2` from cxx1.
+`tests/cases/implicit-special` is compared for Windows, where there is one name
+per constructor and the lists agree exactly, and skipped for the two Itanium
+targets with that reason on the line.
+
+Emitting only the used form is not the fix. cxx1 knows which form an *implicit*
+constructor was called by - that is the same `used` flag that decides whether
+it gets a body at all - but a written constructor would still emit both, and a
+compiler with two rules for that is worse than one with a recorded divergence.
 
 Fixing it is backend work in three places - `.weak` in the GNU spelling,
 `.weak_def_can_be_hidden` on Darwin, a COMDAT section on Windows - plus knowing
