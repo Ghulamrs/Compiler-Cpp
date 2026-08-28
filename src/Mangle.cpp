@@ -395,6 +395,25 @@ bool microsoftMemberName(const std::string &cls, const std::string &name,
     return true;
 }
 
+bool itaniumDestructorName(const std::string &cls, bool complete,
+                           std::string *out) {
+    // A destructor takes nothing and returns nothing, so there is no type to
+    // spell and no table to consult - the name is the whole of it.
+    *out = "_ZN" + std::to_string(cls.size()) + cls +
+           (complete ? "D1Ev" : "D2Ev");
+    return true;
+}
+
+std::string microsoftDestructorName(const std::string &cls, char access) {
+    std::string out = "??1";
+    out += cls;
+    out += "@@";
+    out += access;
+    out += "EAA";
+    out += "@XZ";
+    return out;
+}
+
 bool itaniumConstructorName(const std::string &cls, const Type *fn,
                             bool complete, std::string *out, std::string *problem) {
     Itanium m;

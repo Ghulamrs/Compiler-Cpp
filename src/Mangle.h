@@ -59,6 +59,15 @@ bool itaniumConstructorName(const std::string &cls, const Type *fn,
 bool microsoftConstructorName(const std::string &cls, const Type *fn,
                               char access, std::string *out, std::string *problem);
 
+// A destructor. The same two-name split as a constructor - D1 complete, D2
+// base - and the same reason for emitting both. Microsoft writes ??1. There is
+// also a D0, the deleting destructor, which belongs to polymorphic delete and
+// so to rung 4; clang emits none here.
+bool itaniumDestructorName(const std::string &cls, bool complete,
+                           std::string *out);
+
+std::string microsoftDestructorName(const std::string &cls, char access);
+
 // A variable at namespace scope. The Microsoft ABI mangles it whatever its
 // linkage; Itanium leaves an external one alone and marks an internal one,
 // the same way it marks an internal function.

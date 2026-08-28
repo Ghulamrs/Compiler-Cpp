@@ -190,6 +190,21 @@ private:
     // resolving one is resolving an overload set like any other.
     static std::string constructorKey(const std::string &cls) { return cls + "::" + cls; }
     void declareConstructor(const std::string &cls, std::size_t pos, Access access);
+    void declareDestructor(const std::string &cls, std::size_t pos, Access access);
+    static std::string destructorKey(const std::string &cls) { return cls + "::~" + cls; }
+    const Signature *destructorOf(const Type *cls) const;
+    ExprPtr destructorCall(ExprPtr address, const Signature &dtor, std::size_t pos);
+
+    // Objects that have been constructed and not yet destroyed, innermost
+    // last. RAII is this list read backwards at the right moments.
+    struct Alive {
+        std::string name;
+        int offset;
+        const Type *cls;
+    };
+    std::vector<Alive> alive_;
+    void emitDestructors(std::vector<StmtPtr> &into, std::size_t from,
+                         std::size_t pos);
     StmtPtr constructLocal(const Declared &d, int offset,
                            std::vector<ExprPtr> args);
 

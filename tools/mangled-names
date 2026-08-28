@@ -61,7 +61,14 @@ for pair in "x86_64-linux:x86_64-linux-gnu" \
         status=1
         continue
     fi
-    if ! clang++ -x c++ -std=c++11 -w -target "$theirs" -S "$SRC" -o "$OUT/theirs.s" \
+    # **-fno-exceptions, and it is about the comparison rather than the code.**
+    # A class with a destructor makes clang emit a cleanup path - the
+    # personality routine, .gcc_except_table, _Unwind_Resume - and cxx1 has no
+    # exceptions until rung 6, so those symbols would read as a disagreement
+    # about names when they are a difference in features. Turning them off asks
+    # clang the question this tool is actually asking. Mangling is unchanged by
+    # the flag; only the cleanup machinery goes.
+    if ! clang++ -x c++ -std=c++11 -fno-exceptions -w -target "$theirs" -S "$SRC" -o "$OUT/theirs.s" \
                  2>"$OUT/theirs.err"; then
         echo "$mine: clang refused it, so there is nothing to compare against"
         sed 's/^/    /' "$OUT/theirs.err" | head -3

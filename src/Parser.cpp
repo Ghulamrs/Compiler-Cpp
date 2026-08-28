@@ -136,6 +136,22 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             continue;
         }
 
+        // `~Point();` - a destructor, recognised the same way and for the same
+        // reason as a constructor: it has no return type and its name is the
+        // class, so specifiers() must not be asked for one.
+        if (!tag.empty() && peek().is("~") && peekAt(1).kind == TokenKind::Ident &&
+            peekAt(1).text == tag && peekAt(2).is("(")) {
+            std::size_t dpos = peek().pos;
+            at_ += 2;
+            declareDestructor(tag, dpos, access);
+            if (peek().is("{"))
+                src_.fail(peek().pos, "a destructor defined inside the class is "
+                                      "not supported yet - define it outside "
+                                      "with '" + tag + "::~" + tag + "'");
+            expect(";");
+            continue;
+        }
+
         if ((peek().is("public") || peek().is("private") || peek().is("protected")) &&
             peekAt(1).is(":")) {
             access = peek().is("public")  ? Access::Public
@@ -367,6 +383,12 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         peekAt(3).is("(") && findTypedef(peek().text) != nullptr)
         return types_.get(Kind::Void);
 
+    // The same for a destructor, `Point::~Point(`, whose name carries a '~'.
+    if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
+        peekAt(2).is("~") && peekAt(3).kind == TokenKind::Ident &&
+        peekAt(3).text == peek().text && findTypedef(peek().text) != nullptr)
+        return types_.get(Kind::Void);
+
     if (peek().is("struct")) { at_++; return structOrUnionSpecifier(Kind::Struct); }
     if (peek().is("class"))  { at_++; return structOrUnionSpecifier(Kind::Struct, true); }
     if (peek().is("union"))  { at_++; return structOrUnionSpecifier(Kind::Union); }
@@ -550,7 +572,9 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
     if (!name.empty() && peek().is("::")) {
         at_++;
         qualifier = name;
+        bool destructor = consume("~");
         name = expectIdent("a member name after '::'");
+        if (destructor) name = "~" + name;
         if (peek().is("::"))
             src_.fail(peek().pos, "a nested class is not supported yet - only "
                                   "'Class::member' names something here");
@@ -1031,6 +1055,71 @@ StmtPtr Parser::constructLocal(const Declared &d, int offset,
                                 types_.get(Kind::Void), full, false, d.pos,
                                 std::move(all));
     return StmtPtr(new ExprStmt(std::move(call)));
+}
+
+void Parser::declareDestructor(const std::string &cls, std::size_t pos,
+                               Access access) {
+    std::vector<const Type *> params;
+    bool variadic = false;
+    parameterTypes(params, variadic);
+    if (!params.empty() || variadic)
+        src_.fail(pos, "a destructor takes no parameters");
+
+    std::string key = destructorKey(cls);
+    if (overloadsOf(key) != nullptr)
+        src_.fail(pos, "'" + cls + "' has two destructors, and a class has one");
+
+    const char code = access == Access::Public    ? 'Q'
+                    : access == Access::Protected ? 'I'
+                                                  : 'A';
+    std::string out;
+    if (target_.microsoftNames()) out = microsoftDestructorName(cls, code);
+    else                          itaniumDestructorName(cls, true, &out);
+
+    functionIndex_[key].push_back(functions_.size());
+    functions_.push_back(Signature{ "~" + cls, out, types_.get(Kind::Void),
+                                    params, false, false, pos, false, cls, false,
+                                    access });
+}
+
+const Parser::Signature *Parser::destructorOf(const Type *cls) const {
+    if (cls == nullptr || !cls->isStructOrUnion() || cls->tag().empty())
+        return nullptr;
+    const std::vector<std::size_t> *set = overloadsOf(destructorKey(cls->tag()));
+    return set == nullptr ? nullptr : &functions_[(*set)[0]];
+}
+
+// One destructor call, given the address of what to destroy. A destructor
+// takes nothing but `this`, so this is the smallest call the compiler makes.
+ExprPtr Parser::destructorCall(ExprPtr address, const Signature &dtor,
+                               std::size_t pos) {
+    std::vector<ExprPtr> args;
+    args.push_back(std::move(address));
+    std::vector<const Type *> params;
+    params.push_back(args[0]->type());
+    return completeCall("~" + dtor.owner, dtor.symbol, nullptr,
+                        types_.get(Kind::Void), params, false, pos,
+                        std::move(args));
+}
+
+// **RAII is this function.** Everything constructed since `from` is destroyed,
+// last first, which is the order the standard fixes and the only order that
+// can be right when one object's destructor may read another that was built
+// before it.
+void Parser::emitDestructors(std::vector<StmtPtr> &into, std::size_t from,
+                             std::size_t pos) {
+    for (std::size_t i = alive_.size(); i > from; i--) {
+        const Alive &a = alive_[i - 1];
+        const Signature *dtor = destructorOf(a.cls);
+        if (dtor == nullptr) continue;
+
+        ExprPtr object(Var::local(a.name, a.offset));
+        object->setType(a.cls);
+        ExprPtr addr(new Unary('&', std::move(object)));
+        addr->setType(types_.pointerTo(a.cls));
+        into.push_back(StmtPtr(new ExprStmt(destructorCall(std::move(addr),
+                                                           *dtor, pos))));
+    }
 }
 
 // A constructor, read at the point its '(' was seen. It is a member function
@@ -2678,6 +2767,11 @@ ExprPtr Parser::newExpression(std::size_t pos) {
 
     // The initialiser, and only the forms that need no constructor. Anything
     // else is rung 3 and is refused by name rather than half-built.
+    // A class with constructors is built by calling one, here as much as on the
+    // stack - the only difference is where the object is.
+    const bool constructed = made->isStructOrUnion() && !made->tag().empty() &&
+                             overloadsOf(constructorKey(made->tag())) != nullptr;
+    std::vector<ExprPtr> ctorArgs;
     bool hasInit = false;
     ExprPtr init;
     if (peek().is("(")) {
@@ -2685,7 +2779,10 @@ ExprPtr Parser::newExpression(std::size_t pos) {
             src_.fail(peek().pos, "'new T[n](...)' cannot initialise an array");
         at_++;
         hasInit = true;
-        if (!consume(")")) {
+        if (constructed) {
+            if (!peek().is(")")) parseArguments(ctorArgs);
+            else at_++;
+        } else if (!consume(")")) {
             init = assign();
             if (peek().is(","))
                 src_.fail(peek().pos, "more than one value in a new-expression "
@@ -2694,6 +2791,9 @@ ExprPtr Parser::newExpression(std::size_t pos) {
             expect(")");
         }
     }
+    if (constructed && array)
+        src_.fail(pos, "'new T[n]' of a class with a constructor would have to "
+                       "run it once per element - not supported yet");
 
     const Type *sizeT = types_.get(target_.sizeType());
     ExprPtr bytes(new Num(static_cast<long long>(made->size(target_))));
@@ -2713,12 +2813,13 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     ExprPtr typed(new Cast(pointer, std::move(raw)));
     typed->setType(pointer);
 
-    if (!hasInit) return typed;
+    if (!hasInit && !constructed) return typed;
 
     // `new int(5)` is two things - an allocation and a store - and an
     // expression yields one value, so the pointer is kept in a temporary and
     // the comma operator sequences them. The same shape bindReference already
-    // uses for a temporary, and for the same reason.
+    // uses for a temporary, and for the same reason. A constructed object is
+    // the same shape with a call where the store is.
     int slot = allocateFrameSlot(pointer);
     std::string temp = ".new" + std::to_string(newTemps_++);
 
@@ -2726,6 +2827,34 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     held->setType(pointer);
     ExprPtr keep(new Assign(std::move(held), std::move(typed)));
     keep->setType(pointer);
+
+    if (constructed) {
+        const Signature &ctor = resolveOverload(constructorKey(made->tag()),
+                                                ctorArgs, pos);
+        std::vector<ExprPtr> all;
+        ExprPtr self(Var::local(temp, slot));
+        self->setType(pointer);
+        all.push_back(std::move(self));
+        for (std::size_t i = 0; i < ctorArgs.size(); i++)
+            all.push_back(std::move(ctorArgs[i]));
+
+        std::vector<const Type *> full;
+        full.push_back(pointer);
+        for (std::size_t i = 0; i < ctor.params.size(); i++)
+            full.push_back(ctor.params[i]);
+
+        ExprPtr build = completeCall(made->tag(), ctor.symbol, nullptr,
+                                     types_.get(Kind::Void), full, false, pos,
+                                     std::move(all));
+        ExprPtr made2(new Comma(std::move(keep), std::move(build)));
+        made2->setType(types_.get(Kind::Void));
+
+        ExprPtr answer(Var::local(temp, slot));
+        answer->setType(pointer);
+        ExprPtr whole(new Comma(std::move(made2), std::move(answer)));
+        whole->setType(pointer);
+        return whole;
+    }
 
     ExprPtr base(Var::local(temp, slot));
     base->setType(pointer);
@@ -2767,6 +2896,43 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
     if (t->pointee()->isVoid())
         src_.fail(pos, "'delete' of a 'void *' does not know what it is "
                        "freeing - give it the pointer's real type");
+
+    // **The destructor runs before the memory goes back**, which is the order
+    // clang emits and the only one that can work: the destructor reads the
+    // object. A class with no destructor skips straight to the free.
+    const Signature *dtor = destructorOf(t->pointee());
+    if (dtor != nullptr) {
+        if (array)
+            src_.fail(pos, "'delete[]' of a type with a destructor needs the "
+                           "count that 'new[]' recorded, and this compiler does "
+                           "not write one - not supported yet");
+        int slot = allocateFrameSlot(t);
+        std::string temp = ".del" + std::to_string(refTemps_++);
+
+        ExprPtr keep(Var::local(temp, slot));
+        keep->setType(t);
+        ExprPtr save(new Assign(std::move(keep), std::move(what)));
+        save->setType(t);
+
+        ExprPtr held(Var::local(temp, slot));
+        held->setType(t);
+        ExprPtr run = destructorCall(std::move(held), *dtor, pos);
+
+        ExprPtr both(new Comma(std::move(save), std::move(run)));
+        both->setType(types_.get(Kind::Void));
+
+        ExprPtr again(Var::local(temp, slot));
+        again->setType(t);
+        const Type *vp = types_.pointerTo(types_.get(Kind::Void));
+        ExprPtr freed(new Cast(vp, std::move(again)));
+        freed->setType(vp);
+        ExprPtr release = callAllocator("_ZdlPv", "??3@YAXPEAX@Z",
+                                        types_.get(Kind::Void),
+                                        std::move(freed), pos);
+        ExprPtr all(new Comma(std::move(both), std::move(release)));
+        all->setType(types_.get(Kind::Void));
+        return all;
+    }
 
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     ExprPtr raw(new Cast(voidPtr, std::move(what)));
@@ -3303,6 +3469,8 @@ StmtPtr Parser::declarationBody() {
 
             int off = declare(d.name, d.type, d.pos);
             inits.push_back(constructLocal(d, off, std::move(args)));
+            if (destructorOf(d.type) != nullptr)
+                alive_.push_back(Alive{ d.name, off, d.type->unqualified() });
             if (!consume(",")) break;
             continue;
         }
@@ -3633,6 +3801,7 @@ StmtPtr Parser::block() {
     std::size_t pos = peek().pos;
     expect("{");
     enterScope();
+    const std::size_t aliveAtEntry = alive_.size();
     bool isBody = atFunctionBody_;
     atFunctionBody_ = false;
     int scope = isBody ? 0 : enterBlock();
@@ -3642,6 +3811,12 @@ StmtPtr Parser::block() {
             src_.fail(peek().pos, "unclosed '{'");
         body.push_back(atDeclarationStart() ? declaration() : statement());
     }
+    // Everything this block constructed is destroyed here, last first. The
+    // objects are found by where they are in `alive_` rather than by walking
+    // the block again: what a scope built is exactly what it added.
+    emitDestructors(body, aliveAtEntry, peek().pos);
+    alive_.resize(aliveAtEntry);
+
     expect("}");
     if (!isBody) leaveBlock();
     leaveScope();
@@ -3667,6 +3842,12 @@ StmtPtr Parser::statementBody() {
                 src_.fail(pos, "this function returns '" + returnType_->describe() +
                                "', so 'return' needs a value - a bare 'return' is "
                                "only for a function returning 'void'");
+            if (!alive_.empty()) {
+                std::vector<StmtPtr> unwind;
+                emitDestructors(unwind, 0, pos);
+                unwind.push_back(StmtPtr(new Return(nullptr)));
+                return StmtPtr(new Block(std::move(unwind)));
+            }
             return StmtPtr(new Return(nullptr));
         }
         ExprPtr value = returnType_->isReference() ? expr() : decay(expr());
@@ -3682,6 +3863,31 @@ StmtPtr Parser::statementBody() {
             value = convert(std::move(value), returnType_);
         }
         expect(";");
+
+        // **A return runs every destructor the function still owes, and the
+        // value is computed first.** The order is not a detail: the expression
+        // may read an object that is about to be destroyed, so it goes into a
+        // slot of its own, then the destructors run, then the slot is
+        // returned. Without the temporary this would return a value read out
+        // of an object after its destructor had been told it was finished.
+        if (!alive_.empty()) {
+            std::vector<StmtPtr> unwind;
+            int slot = allocateFrameSlot(returnType_);
+            std::string temp = ".ret" + std::to_string(refTemps_++);
+
+            ExprPtr keep(Var::local(temp, slot));
+            keep->setType(returnType_);
+            ExprPtr save(new Assign(std::move(keep), std::move(value)));
+            save->setType(returnType_);
+            unwind.push_back(StmtPtr(new ExprStmt(std::move(save))));
+
+            emitDestructors(unwind, 0, pos);
+
+            ExprPtr give(Var::local(temp, slot));
+            give->setType(returnType_);
+            unwind.push_back(StmtPtr(new Return(std::move(give))));
+            return StmtPtr(new Block(std::move(unwind)));
+        }
         return StmtPtr(new Return(std::move(value)));
     }
     if (consume("if")) {
@@ -3729,6 +3935,22 @@ StmtPtr Parser::statementBody() {
     }
 
     if (peek().kind == TokenKind::Ident && peekAt(1).is(":")) return gotoLabel();
+
+    if (peek().is("break") || peek().is("continue") || peek().is("goto")) {
+        // A jump can leave a scope without falling off its end, and this
+        // compiler runs destructors at the end. Rather than skip them
+        // silently - which loses a release, a close, a free - the jump is
+        // refused while anything is alive. Conservative: it refuses some
+        // programs whose jump would not have crossed the object at all. The
+        // precise rule needs each jump to know which scopes it leaves, and
+        // that is a change to how jumps are built rather than an addition.
+        if (!alive_.empty())
+            src_.fail(peek().pos, "'" + peek().text + "' would leave a scope "
+                                  "holding '" + alive_.back().name + "', whose "
+                                  "destructor runs at the end of that scope - "
+                                  "jumping over a destructor is not supported "
+                                  "yet");
+    }
 
     if (consume("break")) {
         if (loopDepth_ == 0 && switchDepth_ == 0)
@@ -4028,7 +4250,7 @@ void Parser::topLevel(Program &program) {
 
     const Signature *member = nullptr;
     if (memberOf != nullptr) {
-        std::string key = d.qualifier + "::" + d.name;
+        std::string key = d.qualifier + "::" + d.name;   // "Point::~Point" too
         if (const std::vector<std::size_t> *set = overloadsOf(key)) {
             for (std::size_t k = 0; k < set->size() && member == nullptr; k++) {
                 const Signature &f = functions_[(*set)[k]];
@@ -4111,6 +4333,11 @@ void Parser::topLevel(Program &program) {
         std::string c2, why;
         if (itaniumConstructorName(d.qualifier, fnType, false, &c2, &why))
             program.functions.back().setAlias(c2);
+    }
+    if (memberOf != nullptr && d.name == "~" + d.qualifier && !target_.microsoftNames()) {
+        std::string d2;
+        itaniumDestructorName(d.qualifier, false, &d2);
+        program.functions.back().setAlias(d2);
     }
     program.functions.back().setBlocks(std::move(blocks_));
 }

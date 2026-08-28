@@ -93,7 +93,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 0 | The fork: C90 through three backends | **done**, 2026-08-26 |
 | 1 | C++ as a better C: keywords, `bool`, tag names, `::` | **done**, 2026-08-26 |
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
-| 3 | `class`: members, access, ctors/dtors, `this`, RAII | in progress |
+| 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
@@ -290,6 +290,31 @@ constructor, a static local with a constructor (it would have to run before
 main), copy-initialisation `Point p = ...` (it needs a copy constructor), and
 `Point p();` - which declares a function, and a compiler that quietly built an
 object there would compile a program that means something else everywhere else.
+
+**RAII is one list read backwards at the right moments.** `alive_` holds what
+has been constructed and not yet destroyed, innermost last; a block destroys
+what it added, a `return` destroys everything the function still owes, and
+`delete` destroys before it frees - the order measured from clang, which calls
+D1 and then `_ZdlPv`.
+
+**A return computes its value before running destructors**, into a slot of its
+own. That is not a detail: the expression may read an object that is about to
+be destroyed, and without the temporary the function would return a value taken
+out of an object after its destructor had been told it was finished.
+
+**A jump out of a scope holding a live object is refused**, conservatively -
+`break`, `continue` and `goto` while anything is alive. It refuses some
+programs whose jump would not have crossed the object at all. The precise rule
+needs each jump to know which scopes it leaves, which is a change to how jumps
+are built rather than an addition, and skipping a destructor silently is the
+one outcome worth refusing loudly.
+
+**`tools/mangled-names` asks clang with `-fno-exceptions` now**, and that
+change is about the comparison rather than the code: a class with a destructor
+makes clang emit a cleanup path - the personality routine, `.gcc_except_table`,
+`_Unwind_Resume` - and this compiler has no exceptions until rung 6, so those
+symbols read as a disagreement about names when they are a difference in
+features. Mangling is unchanged by the flag.
 
 `docs/CONFORMANCE.md` records what compiles here and should not — currently
 that an enumeration is still `int`, and that a class name cannot be hidden by
