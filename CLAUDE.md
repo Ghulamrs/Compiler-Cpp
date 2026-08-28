@@ -78,9 +78,15 @@ lex → parse → check pipeline; lookup runs during parsing. cc1's parser alrea
 tracks typedefs for exactly this reason, which is the seam the C++ work grows
 from.
 
-**Two-phase name lookup is a day-one decision, not a template-era one.**
-Getting it wrong is the classic rewrite. Even before templates parse, the
-parser must distinguish dependent from non-dependent names.
+**Two-phase name lookup was a day-one decision, and it has been taken the
+other way.** This file used to say the parser must distinguish dependent from
+non-dependent names before templates parse, because getting it wrong is the
+classic rewrite. Rungs 1 to 4 shipped without doing so, and rung 5 is planned
+around instantiating a template by **replaying its tokens** rather than by
+building a dependent AST - which means every name in a template body is looked
+up at instantiation. The reasoning, and what it costs, is in the rung-5 section
+below; it is a decision rather than a drift, and it is the one to revisit first
+if templates ever feel wrong.
 
 ## The ladder
 
@@ -95,7 +101,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
-| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | |
+| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **planned**, below |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
@@ -807,10 +813,108 @@ backend already knows how to emit. This is the pattern to reach for again:
 where C++ adds a *conversion*, look for an existing operation to lower it to
 before adding a case to three code generators.
 
-Rung 5 is roughly half of what remains after rung 4. Rung 6 is where the three
+## Rung 5: templates, planned but not started
+
+**Nothing below is implemented.** It is the order the work is meant to happen
+in and the reasons for that order, written before any of it, the way rungs 2
+and 3 were. `template` is still refused by name.
+
+Rung 5 is larger than rungs 2, 3 and 4 together. Rung 6 is where the three
 targets stop being symmetric: Windows EH is SEH-based and needs unwind data,
 `ml64` cannot emit CodeView, and arm64-darwin objects here carry no unwind
 info. Expect Windows exceptions to lag, and do not promise otherwise.
+
+### The decision everything else follows from: replay, not a dependent AST
+
+A template is **instantiated by replaying its tokens with the parameters
+bound**. All tokens are already in one vector and `replayInlineBodies` already
+re-parses a body by moving `at_` - that is the same machinery, and it needs no
+second AST and no second lookup pass.
+
+**What it costs is two-phase lookup.** Every name in a template body is looked
+up at instantiation, which is MSVC's historical model rather than the
+standard's. The consequence is that **cxx1 accepts more than C++11 does**: a
+non-dependent name declared *after* the template will bind here and be refused
+by clang. That is over-acceptance, so it belongs in `docs/CONFORMANCE.md` when
+it lands, not in a refusal.
+
+The alternative - parsing each template body once into a dependent AST - is a
+different compiler, and it would stall the ladder for a long time. The rewrite
+risk that remains is confined to the template front end rather than the parser,
+which is what makes the trade worth taking. **If templates ever feel wrong,
+this is the decision to revisit first.**
+
+### The order, and why it is that order
+
+**5.1 - parameter lists, the `<` ambiguity, `>>`, and a template table. No
+instantiation at all.** This is the rung's `const`: it changes how every
+expression is parsed and everything else stands on it. `f<int>(x)` and
+`a<b>(c)` are told apart only by knowing that `f` names a template, so the
+table has to exist before anything reads a `<`. **Treat `<` as opening a
+template-id only when the name is in that table** - never on shape alone, which
+is the one mistake here that silently mis-parses code that used to work. `>>`
+arrives from the lexer as a single token and has to split inside an argument
+list without disturbing the shift operator.
+
+**5.2 - function templates, explicit arguments only.** `twice<int>(x)` is a
+complete and useful feature without deduction, and taking it first isolates the
+mangler on the smallest case. All the Itanium template work lands here.
+
+**5.3 - deduction.** `twice(1)`. Overload resolution then has to rank a
+specialization against ordinary functions - a non-template wins a tie,
+[over.match.best]. Kept separate from 5.2 so that when the matching algorithm
+is being debugged it is the only new thing in the room.
+
+**5.4 - class templates, explicit arguments.** One `Type` per argument list,
+tagged `Box<int,3>`. Nested classes made this cheap rather than hard: `tag()`
+is already an arbitrary qualified string with `localName()` and `enclosing()`
+beside it, and both manglers already walk a scope.
+
+**5.5 - out-of-line member definitions.** `template <class T, int N> int
+Box<T,N>::size()`. The declarator already reads a multi-`::` qualifier for
+nested classes; this is that path with a template-id in it.
+
+**5.6 - explicit specialization**, `template <> struct Box<int,3>`, which is
+simpler than partial specialization and which partial specialization needs.
+
+**5.7 - partial specialization, then SFINAE, then variadic.** Each is its own
+step and each is large. Not planned in detail until 5.6 lands.
+
+**5.1 to 5.3 is the first shippable milestone**: function templates that
+deduce, mangle correctly on all three targets, and link against clang's
+objects. Re-plan from there.
+
+### What both ABIs do, measured before any of it was written
+
+    Itanium   _Z5twiceIdET_S0_          I...E, and the return type IS encoded
+              _ZN3BoxIdLi2EE4sizeEv     Li2E for a non-type argument
+    Microsoft ??$twice@N@@YANN@Z        ?? $ name @ args @@
+              ?size@?$Box@N$01@@QEAAHXZ ?$Box@...@ is one scope component
+
+Two things to take from that. **Itanium encodes a function template's return
+type**, where an ordinary function's is absent - and it spells it `T_`, the
+template *parameter*, not the argument it was given. So **a specialization is
+mangled from the template's pattern plus its argument list, never from the
+substituted signature**: the substituted one cannot say where a type came from.
+And Microsoft's non-type argument `$01` is the `number()` helper already in
+`src/Mangle.cpp` - value minus one as a digit - so that half is reuse.
+
+### Refused by name until its own step
+
+Default template arguments, template template parameters, member templates,
+`typename` as a disambiguator, alias templates, explicit instantiation, and
+parameter packs. Each with its own message. That discipline is what kept rungs
+2 and 3 honest and there is more to refuse here than in either.
+
+### Two things that will go wrong if they are not planned for
+
+**An error inside a template body is reported at the instantiation**, which is
+a line the reader did not write. Every diagnostic from a replayed body needs to
+name both places, or the messages will be worse than useless.
+
+**The Itanium substitution table and `I...E` interact**, and the interaction is
+not guessable - the `S0_` in `_Z5twiceIdET_S0_` is a substitution of a template
+*parameter reference*. Measure every case; do not reason about this one.
 
 ## Decisions already taken
 
@@ -819,6 +923,12 @@ and macOS, Microsoft ABI on Windows. It costs more up front and it is what
 makes clang and cl usable as oracles at the object level — mangled names and
 vtable layouts can be diffed directly. An invented ABI links with nothing and
 can be checked against nothing.
+
+**Instantiate a template by replaying its tokens, and give up two-phase
+lookup for it.** The reasoning is in the rung-5 section; what it buys is that
+no second AST and no second lookup pass has to exist, and what it costs is that
+cxx1 will accept a program clang refuses. Recorded here because it reverses
+what this file used to say.
 
 **Build the constant evaluator early.** Array bounds, enumerator values,
 `static_assert` and every non-type template argument need it, and `constexpr`
