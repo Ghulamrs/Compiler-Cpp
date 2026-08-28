@@ -575,6 +575,162 @@ static bool qualificationConvertible(const Type *from, const Type *to) {
     }
 }
 
+// ------------------------------------------------------------------ overloading
+//
+// What follows is [over.match] reduced to what rung 2 needs, and the reduction
+// is deliberate: an implicit conversion sequence is ranked, the best viable
+// function is the one no other beats, and anything this cannot rank is not
+// viable rather than guessed at. A wrong overload compiles and runs and gives
+// the wrong answer, which is the one outcome worth refusing loudly.
+
+const Type *Parser::decayedType(const Type *t) {
+    if (t->isArray()) return types_.pointerTo(t->pointee());
+    if (t->isFunction()) return types_.pointerTo(t);
+    return t;
+}
+
+// The integral and floating promotions, [conv.prom] and [conv.fpprom], and
+// only those - every other arithmetic pairing is a conversion, which ranks
+// below. This is what makes f(int) beat f(double) for a char argument.
+static bool isPromotion(const Type *from, const Type *to) {
+    if (to->kind() == Kind::Int) {
+        switch (from->kind()) {
+            case Kind::Bool: case Kind::Char: case Kind::SChar: case Kind::UChar:
+            case Kind::Short: case Kind::UShort:
+                return true;
+            default:
+                return false;
+        }
+    }
+    return to->kind() == Kind::Double && from->kind() == Kind::Float;
+}
+
+Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
+    const Type *given = arg.type();
+
+    // A reference parameter binds or it does not; there is no conversion to
+    // rank. The referent types have to be the same one, and a non-const
+    // reference cannot bind a const object - that is not a worse match, it is
+    // not a match. Anything more (a const reference taking a temporary from a
+    // converted value) is a rung of its own and is left non-viable rather than
+    // half-ranked.
+    if (param->isReference()) {
+        const Type *want = param->pointee();
+        if (want->unqualified() != given->unqualified()) return Rank::None;
+        if (!want->isConst() && given->isConst()) return Rank::None;
+        return want->isConst() && !given->isConst() ? Rank::Qualification
+                                                    : Rank::Identity;
+    }
+
+    const Type *from = decayedType(given);
+    const Type *to = param;
+
+    if (from == to) return Rank::Identity;
+    // Top-level const on the parameter is not part of its type for this
+    // purpose: void f(int) and void f(const int) are one function, and an
+    // argument matches both the same way.
+    if (from->unqualified() == to->unqualified()) return Rank::Identity;
+
+    if (from->isArithmetic() && to->isArithmetic())
+        return isPromotion(from, to) ? Rank::Promotion : Rank::Conversion;
+
+    if (to->isPointer() && from->isPointer()) {
+        // A qualification conversion - char * to const char * - is an Exact
+        // Match, so it still beats a promotion. It loses to the identity
+        // conversion alone, which is the whole reason the two are separate.
+        if (qualificationConvertible(from, to)) return Rank::Qualification;
+        if (to->pointee()->isVoid() && !to->pointee()->isConst() &&
+            from->pointee()->isConst())
+            return Rank::None;
+        if (to->pointee()->isVoid() || from->pointee()->isVoid())
+            return Rank::Conversion;
+        return Rank::None;
+    }
+
+    if (to->isPointer() && from->isInteger())
+        return isNullConstant(arg) ? Rank::Conversion : Rank::None;
+
+    return Rank::None;
+}
+
+std::string Parser::describeSignature(const Signature &f) {
+    std::string out = f.name + "(";
+    for (std::size_t i = 0; i < f.params.size(); i++) {
+        if (i > 0) out += ", ";
+        out += f.params[i]->describe();
+    }
+    if (f.variadic) out += f.params.empty() ? "..." : ", ...";
+    return out + ")";
+}
+
+// The best viable function, or a refusal naming every candidate. "Best" is
+// [over.match.best] exactly: F beats G when it is no worse on every argument
+// and better on at least one. Two functions that each win an argument beat
+// each other, which is what an ambiguity IS - it is not a tie to be broken by
+// declaration order, and breaking it that way would compile a program whose
+// meaning depends on the order of its own prototypes.
+const Parser::Signature &Parser::resolveOverload(const std::string &name,
+                                                 const std::vector<ExprPtr> &args,
+                                                 std::size_t pos) {
+    const std::vector<std::size_t> *set = overloadsOf(name);
+    if (set == nullptr)
+        src_.fail(pos, "'" + name + "' was not declared - a prototype must come first");
+
+    std::vector<std::size_t> viable;
+    std::vector<std::vector<Rank> > ranks;
+
+    for (std::size_t k = 0; k < set->size(); k++) {
+        const Signature &f = functions_[(*set)[k]];
+        if (f.variadic ? args.size() < f.params.size()
+                       : args.size() != f.params.size()) continue;
+
+        std::vector<Rank> r(args.size(), Rank::Ellipsis);
+        bool ok = true;
+        for (std::size_t i = 0; i < args.size() && ok; i++) {
+            if (i >= f.params.size()) continue;      // reached by the ellipsis
+            r[i] = rankArgument(*args[i], f.params[i]);
+            if (r[i] == Rank::None) ok = false;
+        }
+        if (!ok) continue;
+        viable.push_back((*set)[k]);
+        ranks.push_back(r);
+    }
+
+    if (viable.empty()) {
+        std::string why = "no function called '" + name + "' takes these " +
+                          std::to_string(args.size()) + " argument(s)";
+        for (std::size_t k = 0; k < set->size(); k++)
+            why += "\n    candidate: " + describeSignature(functions_[(*set)[k]]);
+        src_.fail(pos, why);
+    }
+    if (viable.size() == 1) return functions_[viable[0]];
+
+    std::size_t best = 0;
+    for (std::size_t k = 1; k < viable.size(); k++) {
+        bool better = false, worse = false;
+        for (std::size_t i = 0; i < args.size(); i++) {
+            if (ranks[k][i] < ranks[best][i]) better = true;
+            if (ranks[k][i] > ranks[best][i]) worse = true;
+        }
+        if (better && !worse) best = k;
+    }
+    for (std::size_t k = 0; k < viable.size(); k++) {
+        if (k == best) continue;
+        bool bestWins = false, bestLoses = false;
+        for (std::size_t i = 0; i < args.size(); i++) {
+            if (ranks[best][i] < ranks[k][i]) bestWins = true;
+            if (ranks[best][i] > ranks[k][i]) bestLoses = true;
+        }
+        if (!(bestWins && !bestLoses)) {
+            std::string why = "this call to '" + name + "' is ambiguous";
+            for (std::size_t j = 0; j < viable.size(); j++)
+                why += "\n    candidate: " + describeSignature(functions_[viable[j]]);
+            src_.fail(pos, why);
+        }
+    }
+    return functions_[viable[best]];
+}
+
 void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
                              const std::string &what) const {
     const Type *ft = from.type();
@@ -757,42 +913,99 @@ std::string Parser::dataSymbol(const std::string &name, const Type *type,
     return out;
 }
 
+// **The parameter list is what identifies a function now, not the name.** In C
+// a second declaration of a name was always the same function and any
+// difference was an error; in C++ a difference in the parameters declares a
+// *second* function, and only an identical parameter list is a redeclaration.
+// So the same-parameters search comes first and everything the C version
+// checked is what happens when it finds one.
+//
+// The return type is deliberately not part of that search: two functions
+// differing only in return type are the same function declared twice and
+// disagreeing, which is the error the old code already worded well.
 void Parser::declareFunction(const std::string &name, const Type *returns,
                              const std::vector<const Type *> &params,
                              bool variadic, bool defining, std::size_t pos,
                              bool internal) {
-    auto known = functionIndex_.find(name);
-    if (known != functionIndex_.end()) {
-        Signature &f = functions_[known->second];
-        if (f.params.size() != params.size())
-            src_.fail(pos, "'" + name + "' was declared with " +
-                           std::to_string(f.params.size()) + " parameter(s), and this says " +
-                           std::to_string(params.size()));
+    const bool cName = cLinkage_ > 0 || name == "main";
+    std::vector<std::size_t> &set = functionIndex_[name];
+
+    for (std::size_t k = 0; k < set.size(); k++) {
+        Signature &f = functions_[set[k]];
+        if (f.params.size() != params.size() || f.variadic != variadic) continue;
+        bool same = true;
         for (std::size_t i = 0; i < params.size(); i++)
-            if (f.params[i] != params[i])
-                src_.fail(pos, "'" + name + "' parameter " + std::to_string(i + 1) +
-                               " was declared '" + f.params[i]->describe() +
-                               "' and this says '" + params[i]->describe() + "'");
+            if (f.params[i] != params[i]) { same = false; break; }
+        if (!same) continue;
+
         if (f.returns != returns)
             src_.fail(pos, "'" + name + "' was declared to return '" +
                            f.returns->describe() + "' and this says '" +
-                           returns->describe() + "'");
+                           returns->describe() + "' - two functions cannot "
+                           "differ in the return type alone");
         if (defining) {
             if (f.defined) src_.fail(pos, "'" + name + "' is defined twice");
             f.defined = true;
         }
         return;
     }
-    functionIndex_[name] = functions_.size();
+
+    // A new parameter list, so a new function - unless the name can only hold
+    // one. Both halves of that are refused here rather than at the link, where
+    // the report would be about a duplicate symbol in a file nobody wrote.
+    if (!set.empty()) {
+        const Signature &first = functions_[set[0]];
+        if (cName || first.cLinkage)
+            src_.fail(pos, "'" + name + "' cannot be overloaded - " +
+                           (name == "main" ? std::string("'main' is one function")
+                                           : std::string("a name with C linkage "
+                                             "carries one symbol")));
+    }
+
+    set.push_back(functions_.size());
     functions_.push_back(Signature{ name,
                                     functionSymbol(name, returns, params, variadic,
                                                    internal, pos),
-                                    returns, params, variadic, defining, pos });
+                                    returns, params, variadic, defining, pos,
+                                    cName });
 }
 
-const Parser::Signature *Parser::findFunction(const std::string &name) const {
+const std::vector<std::size_t> *
+Parser::overloadsOf(const std::string &name) const {
     auto it = functionIndex_.find(name);
-    return it != functionIndex_.end() ? &functions_[it->second] : nullptr;
+    if (it == functionIndex_.end() || it->second.empty()) return nullptr;
+    return &it->second;
+}
+
+// The sole function of that name, or nothing when the name is overloaded.
+// Every caller of this wants one function without having any arguments to
+// choose by, so "there are several" is not an answer it can use - each one
+// says so in its own words instead.
+const Parser::Signature *Parser::findFunction(const std::string &name) const {
+    const std::vector<std::size_t> *set = overloadsOf(name);
+    if (set == nullptr || set->size() != 1) return nullptr;
+    return &functions_[(*set)[0]];
+}
+
+// The one function of this name with these parameters - which is the only
+// question a definition can ask, since a definition IS a parameter list. Going
+// through lookupFunction instead is what broke the moment a name could hold
+// two functions: it answers "which one" and a definition already knows.
+const Parser::Signature &
+Parser::lookupSignature(const std::string &name,
+                        const std::vector<const Type *> &params,
+                        bool variadic, std::size_t pos) const {
+    if (const std::vector<std::size_t> *set = overloadsOf(name)) {
+        for (std::size_t k = 0; k < set->size(); k++) {
+            const Signature &f = functions_[(*set)[k]];
+            if (f.params.size() != params.size() || f.variadic != variadic) continue;
+            bool same = true;
+            for (std::size_t i = 0; i < params.size(); i++)
+                if (f.params[i] != params[i]) { same = false; break; }
+            if (same) return f;
+        }
+    }
+    src_.fail(pos, "'" + name + "' was not declared - a prototype must come first");
 }
 
 const Parser::Signature &Parser::lookupFunction(const std::string &name,
@@ -1104,9 +1317,13 @@ ExprPtr Parser::primary(Program *program) {
 
         if (peekAt(1).is("(") && !callsThroughObject) {
             at_ += 2;
-            const Signature &sig = lookupFunction(name, pos);
-            return finishCall(name, sig.symbol, nullptr, sig.returns, sig.params,
-                              sig.variadic, pos);
+            // The arguments first, then the function: with a set to choose
+            // from there is nothing to convert them to until one is chosen.
+            std::vector<ExprPtr> args;
+            parseArguments(args);
+            const Signature &sig = resolveOverload(name, args, pos);
+            return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params,
+                                sig.variadic, pos, std::move(args));
         }
 
         at_++;
@@ -1117,6 +1334,18 @@ ExprPtr Parser::primary(Program *program) {
         }
         if (ExprPtr v = objectRef(name)) return v;
 
+        // Taking the address of an overloaded name needs a target type to
+        // choose by - [over.over] - and there is none here. Refused by name
+        // rather than by silently taking the first, which would compile and
+        // call the wrong function.
+        if (const std::vector<std::size_t> *set = overloadsOf(name)) {
+            if (set->size() > 1)
+                src_.fail(pos, "'" + name + "' names " +
+                               std::to_string(set->size()) + " functions, and "
+                               "which one this is cannot be told from the use "
+                               "alone - choosing an overload by the type it is "
+                               "assigned to is not supported yet");
+        }
         if (const Signature *sig = findFunction(name)) {
             Var *v = Var::global(name);
             ExprPtr target(v);
@@ -1816,19 +2045,34 @@ ExprPtr Parser::objectRef(const std::string &name) {
     return nullptr;
 }
 
+void Parser::parseArguments(std::vector<ExprPtr> &args) {
+    if (consume(")")) return;
+    for (;;) {
+        args.push_back(assign());
+        if (consume(")")) break;
+        expect(",");
+    }
+}
+
+// **Split from completeCall so that overload resolution can stand between
+// them.** Choosing a function needs the arguments, and converting the
+// arguments needs the function, so the two cannot happen in one pass. A call
+// through a function pointer has nothing to choose and still comes here.
 ExprPtr Parser::finishCall(const std::string &name, const std::string &symbol,
                            ExprPtr callee, const Type *returns,
                            const std::vector<const Type *> &params,
                            bool variadic, std::size_t pos) {
     std::vector<ExprPtr> args;
-    if (!consume(")")) {
-        for (;;) {
-            args.push_back(assign());
-            if (consume(")")) break;
-            expect(",");
-        }
-    }
+    parseArguments(args);
+    return completeCall(name, symbol, std::move(callee), returns, params,
+                        variadic, pos, std::move(args));
+}
 
+ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
+                             ExprPtr callee, const Type *returns,
+                             const std::vector<const Type *> &params,
+                             bool variadic, std::size_t pos,
+                             std::vector<ExprPtr> args) {
     if (variadic ? args.size() < params.size() : args.size() != params.size())
         src_.fail(pos, "'" + name + "' takes " + (variadic ? "at least " : "") +
                        std::to_string(params.size()) + " argument(s), given " +
@@ -3210,7 +3454,7 @@ void Parser::topLevel(Program &program) {
     int frame = alignTo(frameSize_, 16);
     const Type *emittedReturn = d.type->isReference()
                               ? types_.pointerTo(d.type->referent()) : d.type;
-    const Signature &defined = lookupFunction(d.name, d.pos);
+    const Signature &defined = lookupSignature(d.name, params, variadic, d.pos);
     program.functions.push_back(Function(d.name, emittedReturn, std::move(paramSlots),
                                          std::move(body), frame,
                                          sc == StorageStatic, sretSlot,

@@ -50,7 +50,24 @@ private:
         bool variadic;
         bool defined;
         std::size_t pos;
+        // A name with C linkage, and `main`, carry one symbol and so can hold
+        // one function. Recorded rather than re-derived, because the second
+        // declaration is refused where it stands and the message wants to say
+        // which rule stopped it.
+        bool cLinkage;
     };
+
+    // How well one argument matches one parameter, in the order
+    // [over.ics.scs] ranks them. The values are compared, so the order of
+    // this enum is what the resolution means - do not reorder it.
+    // **Identity and Qualification are both "Exact Match" in [over.ics.scs],
+    // and they are still not equal.** [over.ics.rank]/3.2.1 ranks a sequence
+    // above another that has it as a proper subsequence, and the identity
+    // conversion is a subsequence of a qualification conversion - which is why
+    // f(char *) beats f(const char *) for a `char *` argument rather than
+    // tying with it. Collapsing the two makes that call ambiguous, which is
+    // what happened here before they were split.
+    enum class Rank { Identity, Qualification, Promotion, Conversion, Ellipsis, None };
 
     struct Declared {
         std::string name;
@@ -119,7 +136,11 @@ private:
     std::vector<std::string> staticSymbols_;
 
     std::vector<Signature> functions_;
-    std::unordered_map<std::string, std::size_t> functionIndex_;
+    // One name, every function declared under it. C had one; C++ has a set,
+    // and the set is ordered by declaration so a diagnostic can list the
+    // candidates in the order the reader wrote them.
+    std::vector<Signature> &functionTable() { return functions_; }
+    std::unordered_map<std::string, std::vector<std::size_t> > functionIndex_;
     std::vector<GlobalSym> globals_;
     std::unordered_map<std::string, std::size_t> globalIndex_;
     std::vector<TypedefName> typedefs_;
@@ -196,6 +217,23 @@ private:
     ExprPtr defaultPromote(ExprPtr e);
     const Signature &lookupFunction(const std::string &name, std::size_t pos) const;
     const Signature *findFunction(const std::string &name) const;
+    const std::vector<std::size_t> *overloadsOf(const std::string &name) const;
+    const Signature &lookupSignature(const std::string &name,
+                                     const std::vector<const Type *> &params,
+                                     bool variadic, std::size_t pos) const;
+
+    static std::string describeSignature(const Signature &f);
+    const Type *decayedType(const Type *t);
+    Rank rankArgument(const Expr &arg, const Type *param);
+    const Signature &resolveOverload(const std::string &name,
+                                     const std::vector<ExprPtr> &args,
+                                     std::size_t pos);
+
+    void parseArguments(std::vector<ExprPtr> &args);
+    ExprPtr completeCall(const std::string &name, const std::string &symbol,
+                         ExprPtr callee, const Type *returns,
+                         const std::vector<const Type *> &params, bool variadic,
+                         std::size_t pos, std::vector<ExprPtr> args);
 
     void parameterTypes(std::vector<const Type *> &params, bool &variadic);
     void blockFunctionDeclaration(const Declared &d);
