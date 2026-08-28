@@ -649,6 +649,52 @@ machinery a namespace-scope variable is:
 The last is the surprising one: `ccp` is a mutable pointer to const char and
 the qualifier after the type says `B` all the same.
 
+**A class written inside another one** takes no room in the enclosing object -
+`struct Inner { ... };` in a class body declares a type and no member - and
+what it gains is a name. `Type::tag()` becomes the *qualified* one,
+"Outer::Inner", because every table here is keyed by it and a nested class must
+not collide with a global of the same name; `localName()` is the single
+component, which is what both ABIs spell; and `enclosing()` is the class it was
+written in.
+
+**Both ABIs spell the whole scope, and both compress it**, measured with cl and
+confirmed with clang:
+
+    _ZN5Outer5Inner3getEv          ?get@Inner@Outer@@QEAAHXZ
+    _ZN5Outer5Inner6sharedE        ?shared@Inner@Outer@@2HA
+    _ZN5Outer3useENS_5InnerE       ?use@Outer@@QEAAHUInner@1@@Z
+
+The last line is the one to understand. Itanium makes **each enclosing class a
+substitution candidate of its own**, so inside a member of Outer the parameter
+type Outer::Inner is `N S_ 5Inner E` - Outer found in the table rather than
+spelled again. Microsoft lists the scopes innermost first and back-references
+them the same way, and `1` there is Outer. `Itanium::prefix` and
+`Microsoft::scopeOf` are the two functions that do it, and every name that
+names a class goes through one of them.
+
+**The scope is walked at lookup rather than kept as a stack of tables.** The
+one type-name table this parser has is flat and keyed by the qualified name;
+`findTypedef` falls back through `classStack_` - the classes whose bodies are
+being parsed - and then `currentClass_`, which is what makes `Inner` mean
+`Outer::Inner` inside the class body and inside any member function of it, and
+nowhere else.
+
+Three questions had to be re-asked once a name could have more than two
+components. `atUntypedMemberDefinition` walks every level to recognise
+`Outer::Inner::Inner(` and `Outer::Inner::~Inner(` - a definition whose name is
+its class's own and so has no type in front of it. `specifiers` takes the
+**longest prefix that names a type**, so `Outer::Inner x;` declares an x rather
+than leaving `::Inner` to the declarator. And `atDeclarationStart` answers yes
+only where the name *stops* at a type: `Outer::Inner x;` is a declaration where
+`Outer::Inner::shared = 1;` is a statement.
+
+`constructorKey` and `destructorKey` take the last component - `localOf` - so
+that "Outer::Inner" keys "Outer::Inner::Inner", which is what a definition
+outside the class spells.
+
+A nested class is a member, so `private:` reaches it, and the name is refused
+where it is written rather than at the first use of an object.
+
 **Two exclusion files, and the difference matters.** `<case>.notarget` says
 cxx1 cannot compile that case for that target at all - `emit.sh` and
 `mangled-names` both read it. `<case>.nonames` says it compiles fine and only

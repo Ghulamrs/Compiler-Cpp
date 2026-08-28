@@ -122,6 +122,30 @@ public:
     bool declaredClass() const { return unqual_ ? unqual_->declaredClass() : isClass_; }
     void setDeclaredClass(bool c) { isClass_ = c; }
 
+    // **A class written inside another one.** `tag()` is the qualified name -
+    // "Outer::Inner" - because every table in the parser is keyed by it and a
+    // nested class must not collide with a global of the same name.
+    // `localName()` is the single component, which is what both ABIs spell,
+    // and `enclosing()` is the class it was written in, which is what the
+    // Itanium substitution table has to be able to recognise: a parameter of
+    // type Outer::Inner inside a member of Outer is NS_5InnerE, and the S_ is
+    // Outer being found in that table rather than spelled again.
+    const std::string &localName() const {
+        if (unqual_) return unqual_->localName();
+        return local_.empty() ? tag_ : local_;
+    }
+    void setLocalName(std::string n) { local_ = std::move(n); }
+    const Type *enclosing() const {
+        return unqual_ ? unqual_->enclosing() : enclosing_;
+    }
+    void setEnclosing(const Type *e) { enclosing_ = e; }
+    // Who may name this class, when it is written inside another one. A
+    // nested class is a member like any other and `private:` reaches it.
+    Access nestedAccess() const {
+        return unqual_ ? unqual_->nestedAccess() : nestedAccess_;
+    }
+    void setNestedAccess(Access a) { nestedAccess_ = a; }
+
     // The one base class, or null. A base subobject sits at offset 0 - measured
     // - so a derived object's address IS its base's address and no adjustment
     // is needed anywhere. Multiple inheritance is what ends that, and it is a
@@ -239,6 +263,9 @@ private:
     bool variadic_ = false;
 
     std::string tag_;
+    std::string local_;
+    const Type *enclosing_ = nullptr;
+    Access nestedAccess_ = Access::Public;
     bool isClass_ = false;
     int dataSize_ = 0;
     bool polymorphic_ = false;

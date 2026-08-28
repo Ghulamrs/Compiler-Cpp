@@ -1,0 +1,1 @@
+x86_64-linux  Outer's implicit default constructor: cxx1 emits both of Itanium's forms and clang emits only the one a use needs - see docs/CONFORMANCE.md, "An inline member function is a strong symbol"

@@ -40,9 +40,41 @@ long long Parser::expectNumber(const char *what) {
     return v;
 }
 
+// A class's own nested types, and its bases'. The one table this parser has
+// for type names is flat and keyed by the *qualified* name, so the scope is
+// walked here rather than kept as a stack of tables.
+const Type *Parser::lookupInClass(const Type *cls, const std::string &name) const {
+    for (const Type *c = cls; c != nullptr; c = c->enclosing()) {
+        auto it = typedefIndex_.find(c->tag() + "::" + name);
+        if (it != typedefIndex_.end()) return typedefs_[it->second].type;
+        for (const Type::BaseSpec &b : c->bases())
+            if (const Type *t = lookupInClass(b.type, name)) return t;
+    }
+    return nullptr;
+}
+
+bool Parser::insideClass(const Type *cls) const {
+    for (std::size_t i = 0; i < classStack_.size(); i++)
+        for (const Type *c = classStack_[i]; c != nullptr; c = c->enclosing())
+            if (c == cls) return true;
+    for (const Type *c = currentClass_; c != nullptr; c = c->enclosing())
+        if (c == cls) return true;
+    return false;
+}
+
 const Type *Parser::findTypedef(const std::string &name) const {
     auto it = typedefIndex_.find(name);
-    return it == typedefIndex_.end() ? nullptr : typedefs_[it->second].type;
+    if (it != typedefIndex_.end()) return typedefs_[it->second].type;
+
+    // **Not found by its own name, so look in the classes this is inside.**
+    // Innermost first: a class body being parsed, then the class whose member
+    // function's body this is. A nested class is only visible from inside
+    // without its qualification, which is what these two answer.
+    for (std::size_t i = classStack_.size(); i-- > 0; )
+        if (const Type *t = lookupInClass(classStack_[i], name)) return t;
+    if (currentClass_ != nullptr)
+        if (const Type *t = lookupInClass(currentClass_, name)) return t;
+    return nullptr;
 }
 
 // A class or enum name is a type name in C++, with no typedef written. The
@@ -64,6 +96,29 @@ const Parser::EnumConst *Parser::findEnum(const std::string &name) const {
     return it == enumIndex_.end() ? nullptr : &enums_[it->second];
 }
 
+// `Point::Point(`, `Outer::Inner::Inner(` and `Outer::Inner::~Inner(` - a
+// member definition whose name is its class's own, and so has no type in
+// front of it. Every level is asked, because the class may itself be nested.
+bool Parser::atUntypedMemberDefinition() const {
+    if (peek().kind != TokenKind::Ident || !peekAt(1).is("::")) return false;
+    std::string q = peek().text;
+    for (std::size_t k = 1; peekAt(k).is("::"); ) {
+        std::size_t n = k + 1;
+        const bool destructor = peekAt(n).is("~");
+        if (destructor) n++;
+        if (peekAt(n).kind != TokenKind::Ident) return false;
+        const std::string component = peekAt(n).text;
+        const Type *cls = findTypedef(q);
+        if (cls != nullptr && cls->isStructOrUnion() &&
+            cls->localName() == component && peekAt(n + 1).is("("))
+            return true;
+        if (destructor) return false;
+        q += "::" + component;
+        k = n + 1;
+    }
+    return false;
+}
+
 bool Parser::atTypeName() const {
     static const char *const t[] = { "void", "bool", "char", "short", "int",
                                      "long", "signed", "unsigned", "wchar_t",
@@ -83,7 +138,24 @@ bool Parser::atDeclarationStart() const {
     // start of an expression here - a static member being read or written.
     if (peek().kind == TokenKind::Ident && peekAt(1).is("::")) {
         const Type *named = findTypedef(peek().text);
-        if (named != nullptr && named->isStructOrUnion()) return false;
+        if (named != nullptr && named->isStructOrUnion()) {
+            // ...**unless the qualified name is itself a type**, which makes
+            // it a declaration after all: `Outer::Inner x;` declares an x
+            // where `Counter::total = 1;` assigns to a static member. Whether
+            // the whole name reaches a type is the difference.
+            // The name is a declaration only where it *stops* at a type.
+            // `Outer::Inner x;` declares an x; `Outer::Inner::shared = 1;`
+            // goes on past the type to a member, and is a statement.
+            std::string q = peek().text;
+            std::size_t typeEnd = 0;
+            for (std::size_t k = 1; peekAt(k).is("::") &&
+                                    peekAt(k + 1).kind == TokenKind::Ident;
+                 k += 2) {
+                q += "::" + peekAt(k + 1).text;
+                if (findTypedef(q) != nullptr) typeEnd = k + 2;
+            }
+            return typeEnd != 0 && !peekAt(typeEnd).is("::");
+        }
     }
 
     return atTypeName() || peek().is("static") || peek().is("extern")
@@ -133,8 +205,31 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     std::string tag;
     if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
 
+    // **A class written inside another is named through it.** The tag every
+    // table here is keyed by becomes "Outer::Inner", so a nested class cannot
+    // collide with a global of the same name, and the single component is
+    // kept beside it because that is what both ABIs actually spell.
+    //
+    // A *mention* rather than a definition names whatever is already in
+    // scope - `struct Node *p;` inside a class is the global Node - so the
+    // qualification only happens where a body follows.
+    const Type *within = classStack_.empty() ? nullptr : classStack_.back();
+    const std::string local = tag;
+    const bool defining = peek().is("{") || peek().is(":");
+    if (within != nullptr && !tag.empty()) {
+        if (!defining) {
+            if (const Type *had = findTypedef(tag))
+                if (had->isStructOrUnion()) return had;
+        }
+        tag = within->tag() + "::" + tag;
+    }
+
     Type *type = tag.empty() ? types_.anonymousStruct(kind)
                              : types_.structType(kind, tag);
+    if (within != nullptr && !local.empty()) {
+        type->setLocalName(local);
+        type->setEnclosing(within);
+    }
     // Only a definition decides this. `class X;` followed by `struct X { };`
     // is one type written two ways - the standard allows the mix and says the
     // keywords are interchangeable here - so the body is what sets it and a
@@ -183,6 +278,10 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
     if (type->isComplete())
         src_.fail(pos, std::string(what) + " " + tag + " is defined twice");
+
+    // From here to the '}' this class is the innermost scope, which is what
+    // makes `Inner` inside it mean `Outer::Inner`.
+    classStack_.push_back(type);
 
     std::vector<Member> members;
     int widest = 1;
@@ -256,8 +355,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // A constructor has the class's own name and no return type, so it
         // has to be seen before specifiers() is asked for one - the name is a
         // registered type name by now and would be read as the type.
-        if (!tag.empty() && peek().kind == TokenKind::Ident && peek().text == tag &&
-            peekAt(1).is("(")) {
+        if (!tag.empty() && peek().kind == TokenKind::Ident &&
+            peek().text == local && peekAt(1).is("(")) {
             std::size_t cpos = peek().pos;
             at_++;
             declareConstructor(tag, cpos, access);
@@ -277,7 +376,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // reason as a constructor: it has no return type and its name is the
         // class, so specifiers() must not be asked for one.
         if (!tag.empty() && peek().is("~") && peekAt(1).kind == TokenKind::Ident &&
-            peekAt(1).text == tag && peekAt(2).is("(")) {
+            peekAt(1).text == local && peekAt(2).is("(")) {
             std::size_t dpos = peek().pos;
             at_ += 2;
             declareDestructor(tag, dpos, access, isVirtual);
@@ -304,6 +403,21 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         if (msc != StorageNone && msc != StorageStatic)
             src_.fail(peek().pos, "'static' is the only storage class a member "
                                   "may have");
+
+        // **`struct Inner { ... };` declares a type and no member.** A nested
+        // class takes no room in the enclosing object, so there is nothing to
+        // lay out and nothing to name - the specifier was the whole
+        // declaration.
+        if (peek().is(";")) {
+            if (!base->isStructOrUnion() || base->tag().empty())
+                src_.fail(peek().pos, "this declares nothing - a member needs a "
+                                      "name");
+            if (base->enclosing() != nullptr)
+                types_.structType(base->kind(), base->tag())
+                      ->setNestedAccess(access);
+            at_++;
+            continue;
+        }
         for (;;) {
             if (peek().is(":")) {
                 std::size_t cpos = peek().pos;
@@ -456,6 +570,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         if (!heldBody) expect(";");
     }
     expect("}");
+    classStack_.pop_back();
 
     // The class is polymorphic if it declared a virtual or inherited one, and
     // that is only knowable now - so the vptr is made room for here rather
@@ -581,10 +696,10 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // consumes nothing, which leaves `Point::Point` for the declarator's
     // qualified-name path to read exactly as it reads `Point::get`. Every
     // other route would have meant a second copy of the definition machinery.
-    if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
-        peekAt(2).kind == TokenKind::Ident && peekAt(2).text == peek().text &&
-        peekAt(3).is("(") && findTypedef(peek().text) != nullptr)
-        return types_.get(Kind::Void);
+    // The same question has to be asked at every level once a class can be
+    // written inside another - `Outer::Inner::Inner(` - which is the walk in
+    // atUntypedMemberDefinition.
+    if (atUntypedMemberDefinition()) return types_.get(Kind::Void);
 
     // Replaying an inline constructor or destructor: the tokens are `X(` or
     // `~X(` with no type in front, exactly as they were written in the class.
@@ -595,17 +710,42 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
           peekAt(1).text == inlineOwner_)))
         return types_.get(Kind::Void);
 
-    // The same for a destructor, `Point::~Point(`, whose name carries a '~'.
-    if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
-        peekAt(2).is("~") && peekAt(3).kind == TokenKind::Ident &&
-        peekAt(3).text == peek().text && findTypedef(peek().text) != nullptr)
-        return types_.get(Kind::Void);
-
     if (peek().is("struct")) { at_++; return structOrUnionSpecifier(Kind::Struct); }
     if (peek().is("class"))  { at_++; return structOrUnionSpecifier(Kind::Struct, true); }
     if (peek().is("union"))  { at_++; return structOrUnionSpecifier(Kind::Union); }
     if (peek().is("enum"))   { at_++; return enumSpecifier(); }
     if (peek().kind == TokenKind::Ident) {
+        // **`Outer::Inner x;` - a nested class named from outside.** Asked
+        // before the plain lookup, which would take only "Outer" and leave
+        // "::Inner" for the declarator to read as the name being declared.
+        // The longest prefix that names a type wins.
+        if (peekAt(1).is("::") && peekAt(2).kind == TokenKind::Ident) {
+            std::string q = peek().text;
+            const Type *found = nullptr;
+            std::size_t consumed = 0;
+            for (std::size_t k = 1; peekAt(k).is("::") &&
+                                    peekAt(k + 1).kind == TokenKind::Ident;
+                 k += 2) {
+                q += "::" + peekAt(k + 1).text;
+                if (const Type *n = findTypedef(q)) {
+                    found = n;
+                    consumed = k + 2;
+                }
+            }
+            if (found != nullptr) {
+                // A nested class is a member, and `private:` reaches it.
+                if (found->enclosing() != nullptr &&
+                    found->nestedAccess() != Access::Public &&
+                    !insideClass(found->enclosing()))
+                    src_.fail(peek().pos, "'" + found->localName() + "' is " +
+                                          (found->nestedAccess() == Access::Private
+                                               ? "private" : "protected") +
+                                          " in '" +
+                                          found->enclosing()->tag() + "'");
+                at_ += consumed;
+                return found;
+            }
+        }
         if (const Type *t = findTypedef(peek().text)) { at_++; return t; }
     }
 
@@ -794,15 +934,16 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
     // `int Point::get()` - the name before the '::' is the class, and what
     // follows is the member being defined. Only one level: a class inside a
     // class is not a thing this compiler has yet.
-    if (!name.empty() && peek().is("::")) {
+    // `int Point::get()` - the name before the '::' is the class and what
+    // follows is the member. It repeats for a nested class, so that
+    // `Outer::Inner::get` leaves the qualifier "Outer::Inner", which is the
+    // qualified tag every table here is keyed by.
+    while (!name.empty() && peek().is("::")) {
         at_++;
-        qualifier = name;
+        qualifier = qualifier.empty() ? name : qualifier + "::" + name;
         bool destructor = consume("~");
         name = expectIdent("a member name after '::'");
         if (destructor) name = "~" + name;
-        if (peek().is("::"))
-            src_.fail(peek().pos, "a nested class is not supported yet - only "
-                                  "'Class::member' names something here");
     }
 
     const Type *t = arraySuffix(base, pos);
@@ -1400,11 +1541,11 @@ void Parser::declareDestructor(const std::string &cls, std::size_t pos,
                     : access == Access::Protected ? 'I'
                                                   : 'A';
     std::string out;
-    if (target_.microsoftNames()) out = microsoftDestructorName(cls, code);
-    else                          itaniumDestructorName(cls, true, &out);
+    if (target_.microsoftNames()) out = microsoftDestructorName(cls, findTypedef(cls), code);
+    else                          itaniumDestructorName(cls, findTypedef(cls), true, &out);
 
     functionIndex_[key].push_back(functions_.size());
-    functions_.push_back(Signature{ "~" + cls, out, types_.get(Kind::Void),
+    functions_.push_back(Signature{ "~" + localOf(cls), out, types_.get(Kind::Void),
                                     params, false, false, pos, false, cls, false,
                                     access, isVirtual });
 
@@ -1867,7 +2008,7 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
                                                   : 'A';
     std::string out, why;
     bool ok = target_.microsoftNames()
-            ? microsoftConstructorName(cls, fn, code, &out, &why)
+            ? microsoftConstructorName(cls, findTypedef(cls), fn, code, &out, &why)
             : itaniumConstructorName(cls, findTypedef(cls), fn, true, &out, &why);
     if (!ok)
         src_.fail(pos, "'" + cls + "::" + cls + "' cannot be given a name the "
@@ -1972,7 +2113,7 @@ void Parser::declareImplicitSpecials(const std::string &tag, const Type *type,
     const Type *fn = types_.functionType(types_.get(Kind::Void), params, false);
     std::string out, why;
     const bool ok = target_.microsoftNames()
-            ? microsoftConstructorName(tag, fn, 'Q', &out, &why)
+            ? microsoftConstructorName(tag, type, fn, 'Q', &out, &why)
             : itaniumConstructorName(tag, type, fn, true, &out, &why);
     if (!ok)
         src_.fail(pos, "'" + tag + "' needs a default constructor the compiler "
@@ -2027,7 +2168,7 @@ void Parser::declareImplicitCopyAssign(const std::string &tag, const Type *type,
     const Type *fn = types_.functionType(self, params, false);
     std::string out, why;
     const bool ok = target_.microsoftNames()
-            ? microsoftCopyAssignName(tag, fn, 'Q', &out, &why)
+            ? microsoftCopyAssignName(tag, type, fn, 'Q', &out, &why)
             : itaniumCopyAssignName(tag, type, fn, &out, &why);
     if (!ok)
         src_.fail(pos, "'" + tag + "' needs a copy assignment the compiler would "
@@ -2069,7 +2210,7 @@ void Parser::declareImplicitCopyCtor(const std::string &tag, const Type *type,
     const Type *fn = types_.functionType(types_.get(Kind::Void), params, false);
     std::string out, why;
     const bool ok = target_.microsoftNames()
-            ? microsoftConstructorName(tag, fn, 'Q', &out, &why)
+            ? microsoftConstructorName(tag, type, fn, 'Q', &out, &why)
             : itaniumConstructorName(tag, type, fn, true, &out, &why);
     if (!ok)
         src_.fail(pos, "'" + tag + "' needs a copy constructor the compiler "
@@ -2509,7 +2650,7 @@ void Parser::defineImplicitFunctions() {
 std::string Parser::staticMemberSymbol(const std::string &cls,
                                        const std::string &name, const Type *t,
                                        Access access, std::size_t pos) {
-    if (!target_.microsoftNames()) return itaniumStaticMemberName(cls, name);
+    if (!target_.microsoftNames()) return itaniumStaticMemberName(cls, findTypedef(cls), name);
     // Microsoft writes the access as a digit where a member function writes a
     // letter, so a static member that changes from private to public changes
     // its symbol on Windows and keeps it on Linux - the same asymmetry member
@@ -2518,7 +2659,7 @@ std::string Parser::staticMemberSymbol(const std::string &cls,
                     : access == Access::Protected ? '1'
                                                   : '0';
     std::string out, why;
-    if (!microsoftStaticMemberName(cls, name, t, code, &out, &why))
+    if (!microsoftStaticMemberName(cls, findTypedef(cls), name, t, code, &out, &why))
         src_.fail(pos, "'" + cls + "::" + name + "' cannot be given a name the "
                        "linker can hold: " + why);
     return out;
@@ -2710,7 +2851,7 @@ std::string Parser::memberSymbol(const std::string &cls, const std::string &name
                                                   : 'A';
     std::string out, why;
     bool ok = target_.microsoftNames()
-            ? microsoftMemberName(cls, name, fn, code, constThis, &out, &why)
+            ? microsoftMemberName(cls, findTypedef(cls), name, fn, code, constThis, &out, &why)
             : itaniumMemberName(cls, findTypedef(cls), name, fn, constThis,
                                 &out, &why);
     if (!ok)
@@ -3153,16 +3294,30 @@ ExprPtr Parser::primary(Program *program) {
     // else spelled with a '::' falls through untouched.
     if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
         peekAt(2).kind == TokenKind::Ident) {
-        if (const Type *owner = findTypedef(peek().text)) {
-            if (owner->isStructOrUnion()) {
-                if (const Type::StaticMember *s =
-                        owner->findStaticMember(peekAt(2).text)) {
-                    const std::size_t qpos = peek().pos;
-                    const std::string cls = peek().text;
-                    at_ += 3;
-                    return staticMemberRef(owner, *s, cls, qpos);
+        // The longest prefix that names a class and has such a member wins, so
+        // that `Outer::Inner::shared` finds Inner's rather than stopping at
+        // Outer.
+        std::string q = peek().text;
+        const Type *owner = nullptr;
+        std::string member;
+        std::size_t consumed = 0;
+        for (std::size_t k = 1; peekAt(k).is("::") &&
+                                peekAt(k + 1).kind == TokenKind::Ident; k += 2) {
+            const std::string component = peekAt(k + 1).text;
+            if (const Type *cls = findTypedef(q))
+                if (cls->isStructOrUnion() &&
+                    cls->findStaticMember(component) != nullptr) {
+                    owner = cls;
+                    member = component;
+                    consumed = k + 2;
                 }
-            }
+            q += "::" + component;
+        }
+        if (owner != nullptr) {
+            const std::size_t qpos = peek().pos;
+            at_ += consumed;
+            return staticMemberRef(owner, *owner->findStaticMember(member),
+                                   owner->tag(), qpos);
         }
     }
 
@@ -5429,10 +5584,28 @@ StmtPtr Parser::declarationBody() {
             // machines, and why the suite's cases do not count them.
             Call *made = args.size() == 1 && d.type->nonTrivialCopy()
                        ? dynamic_cast<Call *>(args[0].get()) : nullptr;
+
+            // **A trivial copy, in a class that does have constructors.** No
+            // copy constructor was declared for it, because copying it is a
+            // move of bytes and cl and clang both emit no function for one -
+            // so there is nothing for overload resolution to find, and what
+            // the standard asks for here is those bytes.
+            const bool trivialCopy =
+                args.size() == 1 &&
+                copyConstructorOf(d.type->unqualified()) == nullptr &&
+                args[0]->type() != nullptr &&
+                args[0]->type()->unqualified() == d.type->unqualified();
+
             if (made != nullptr && made->type() == d.type &&
                 returnsIndirectly(d.type)) {
                 made->setResultSlot(off);
                 inits.push_back(StmtPtr(new ExprStmt(std::move(args[0]))));
+            } else if (trivialCopy) {
+                ExprPtr target(Var::local(d.name, off));
+                target->setType(d.type);
+                ExprPtr store(new Assign(std::move(target), std::move(args[0])));
+                store->setType(d.type);
+                inits.push_back(StmtPtr(new ExprStmt(std::move(store))));
             } else {
                 inits.push_back(constructLocal(d, off, std::move(args)));
             }
@@ -6341,7 +6514,7 @@ void Parser::topLevel(Program &program) {
     // something the standard says it does not.
     std::vector<StmtPtr> memberInits;
     std::map<std::string, std::vector<ExprPtr> > baseArgs;
-    const bool isCtor = memberOf != nullptr && d.name == d.qualifier;
+    const bool isCtor = memberOf != nullptr && d.name == localOf(d.qualifier);
     if (memberOf != nullptr && peek().is(":")) {
         if (!isCtor)
             src_.fail(peek().pos, "an initialiser list belongs to a "
@@ -6453,7 +6626,8 @@ void Parser::topLevel(Program &program) {
     // this class's during its own body even though the base already set the
     // pointer to its own table.
     //
-    if (memberOf != nullptr && d.name == d.qualifier && memberOf->polymorphic()) {
+    if (memberOf != nullptr && d.name == localOf(d.qualifier) &&
+        memberOf->polymorphic()) {
         std::vector<StmtPtr> withVptr = storeVptrs(d.qualifier, memberOf, thisOffset_);
         withVptr.push_back(std::move(body));
         body = StmtPtr(new Block(std::move(withVptr)));
@@ -6469,8 +6643,9 @@ void Parser::topLevel(Program &program) {
     // landed. On Windows there is one name for each and it is called directly.
     for (std::size_t bn = 0;
          memberOf != nullptr && bn < memberOf->bases().size() &&
-         (d.name == d.qualifier || d.name == "~" + d.qualifier); bn++) {
-        const bool building = d.name == d.qualifier;
+         (d.name == localOf(d.qualifier) ||
+          d.name == "~" + localOf(d.qualifier)); bn++) {
+        const bool building = d.name == localOf(d.qualifier);
         // Bases are built in the order they were written and destroyed in the
         // reverse - measured: A up, B up, C up, then C down, B down, A down.
         //
@@ -6516,7 +6691,7 @@ void Parser::topLevel(Program &program) {
                     itaniumConstructorName(base->tag(), base, fnType, false,
                                            &sub, &why);
                 } else {
-                    itaniumDestructorName(base->tag(), false, &sub);
+                    itaniumDestructorName(base->tag(), base, false, &sub);
                 }
                 symbol = sub;
             }
@@ -6569,21 +6744,24 @@ void Parser::topLevel(Program &program) {
     // A constructor is emitted under both of Itanium's names: C1 for a
     // complete object, C2 for a base subobject, the second as a label in front
     // of the first. The Microsoft ABI has one name and wants no alias.
-    if (memberOf != nullptr && d.name == d.qualifier && !target_.microsoftNames()) {
+    if (memberOf != nullptr && d.name == localOf(d.qualifier) &&
+        !target_.microsoftNames()) {
         const Type *fnType = types_.functionType(types_.get(Kind::Void), params, false);
         std::string c2, why;
         if (itaniumConstructorName(d.qualifier, findTypedef(d.qualifier),
                                    fnType, false, &c2, &why))
             program.functions.back().setAlias(c2);
     }
-    if (memberOf != nullptr && d.name == "~" + d.qualifier && !target_.microsoftNames()) {
+    if (memberOf != nullptr && d.name == "~" + localOf(d.qualifier) &&
+        !target_.microsoftNames()) {
         std::string d2;
-        itaniumDestructorName(d.qualifier, false, &d2);
+        itaniumDestructorName(d.qualifier, memberOf, false, &d2);
         program.functions.back().setAlias(d2);
     }
     // The deleting form is emitted beside the destructor that was just
     // defined, because that is where its body comes from.
-    if (memberOf != nullptr && d.name == "~" + d.qualifier && member != nullptr &&
+    if (memberOf != nullptr && d.name == "~" + localOf(d.qualifier) &&
+        member != nullptr &&
         member->isVirtual)
         synthesizeDeleting(d.qualifier, memberOf, member->access, d.pos);
     program.functions.back().setBlocks(std::move(blocks_));

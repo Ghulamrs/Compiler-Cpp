@@ -246,7 +246,15 @@ private:
     void checkAccessible(const Type *object, const Member &m, std::size_t pos) const;
     // A constructor is keyed in the function table under "Point::Point", so
     // resolving one is resolving an overload set like any other.
-    static std::string constructorKey(const std::string &cls) { return cls + "::" + cls; }
+    // The last component of a qualified tag: "Outer::Inner" is "Inner", which
+    // is what a constructor and a destructor are written as.
+    static std::string localOf(const std::string &qualified) {
+        const std::size_t at = qualified.rfind("::");
+        return at == std::string::npos ? qualified : qualified.substr(at + 2);
+    }
+    static std::string constructorKey(const std::string &cls) {
+        return cls + "::" + localOf(cls);
+    }
     void declareConstructor(const std::string &cls, std::size_t pos, Access access);
     void declareDestructor(const std::string &cls, std::size_t pos, Access access,
                            bool isVirtual);
@@ -255,7 +263,9 @@ private:
     // it is what a `delete` through a base pointer reaches.
     void synthesizeDeleting(const std::string &cls, const Type *type,
                             Access access, std::size_t pos);
-    static std::string destructorKey(const std::string &cls) { return cls + "::~" + cls; }
+    static std::string destructorKey(const std::string &cls) {
+        return cls + "::~" + localOf(cls);
+    }
     // A constructor of this class taking nothing, written or implicit.
     const Signature *defaultConstructorOf(const Type *cls) const;
     // What the class did not write, the compiler declares. Called once the
@@ -330,6 +340,17 @@ private:
     // The class whose member function is being parsed, and the frame offset of
     // its hidden `this` parameter. Empty and 0 outside one, which is what
     // makes "is this inside the class" a question with an answer.
+    // The classes whose bodies are being parsed, outermost first. It is what
+    // makes an unqualified name inside a class find that class's own nested
+    // types, and what gives a nested class its qualified tag.
+    std::vector<const Type *> classStack_;
+    const Type *lookupInClass(const Type *cls, const std::string &name) const;
+    // Whether the class being parsed, or the one whose member function is
+    // being parsed, is this class or something derived from it.
+    bool insideClass(const Type *cls) const;
+    // `Point::Point(` and `Outer::Inner::~Inner(` have no type before the
+    // name and the name IS a type, so the specifier list has to decline them.
+    bool atUntypedMemberDefinition() const;
     const Type *currentClass_ = nullptr;
     int thisOffset_ = 0;
     const Type *enumSpecifier();

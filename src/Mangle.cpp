@@ -87,14 +87,31 @@ public:
     // it: _ZNK5Point4cgetEv, measured.
     // The class named in the prefix is the first substitution candidate: a
     // parameter mentioning it again is S_, not the name spelled twice.
+    // **The prefix of a nested-name: every enclosing class, outermost first,
+    // and each one a substitution candidate of its own.** That is what makes a
+    // parameter of type Outer::Inner read `NS_5InnerE` inside a member of
+    // Outer - Outer is candidate zero there, so its name is not spelled twice.
+    // Measured: clang writes _ZN5Outer3useENS_5InnerE.
+    void prefix(const Type *cls, const std::string &fallback) {
+        if (cls == nullptr) {
+            out += std::to_string(fallback.size());
+            out += fallback;
+            return;
+        }
+        if (substituted(cls)) return;
+        if (cls->enclosing() != nullptr) prefix(cls->enclosing(), std::string());
+        const std::string &one = cls->localName();
+        out += std::to_string(one.size());
+        out += one;
+        subs_.push_back(cls);
+    }
+
     void memberFunction(const std::string &cls, const Type *clsType,
                         const std::string &name,
                         const Type *fn, bool constThis) {
         out = "_ZN";
         if (constThis) out += "K";
-        out += std::to_string(cls.size());
-        out += cls;
-        if (clsType != nullptr) subs_.push_back(clsType);
+        prefix(clsType, cls);
         out += std::to_string(name.size());
         out += name;
         out += "E";
@@ -110,9 +127,7 @@ public:
     // zero in the substitution table, which is what makes the parameter S_.
     void copyAssign(const std::string &cls, const Type *clsType, const Type *fn) {
         out = "_ZN";
-        out += std::to_string(cls.size());
-        out += cls;
-        if (clsType != nullptr) subs_.push_back(clsType);
+        prefix(clsType, cls);
         out += "aSE";
         const std::vector<const Type *> &params = fn->params();
         if (params.empty()) { out += "v"; return; }
@@ -127,14 +142,27 @@ public:
     void constructor(const std::string &cls, const Type *clsType,
                      const Type *fn, bool complete) {
         out = "_ZN";
-        out += std::to_string(cls.size());
-        out += cls;
-        if (clsType != nullptr) subs_.push_back(clsType);
+        prefix(clsType, cls);
         out += complete ? "C1E" : "C2E";
         const std::vector<const Type *> &params = fn->params();
         if (params.empty() && !fn->isVariadicFn()) { out += "v"; return; }
         for (const Type *p : params) type(p);
         if (fn->isVariadicFn()) out += "z";
+    }
+
+    void destructor(const std::string &cls, const Type *clsType, bool complete) {
+        out = "_ZN";
+        prefix(clsType, cls);
+        out += complete ? "D1Ev" : "D2Ev";
+    }
+
+    void staticMember(const std::string &cls, const Type *clsType,
+                      const std::string &name) {
+        out = "_ZN";
+        prefix(clsType, cls);
+        out += std::to_string(name.size());
+        out += name;
+        out += "E";
     }
 
     void function(const std::string &name, const Type *fn, bool internal) {
@@ -200,6 +228,15 @@ private:
             if (t->isVariadicFn()) out += 'z';
             out += 'E';
         } else if (t->isStructOrUnion()) {
+            // A class inside another is a nested-name here too, and prefix()
+            // is what consults the substitution table on the way down.
+            if (t->enclosing() != nullptr) {
+                if (tagOf(t) == nullptr) return;
+                out += 'N';
+                prefix(t, std::string());
+                out += 'E';
+                return;                       // prefix() pushed it already
+            }
             const std::string *tag = tagOf(t);
             if (tag == nullptr) return;
             out += std::to_string(tag->size());
@@ -220,12 +257,24 @@ public:
     // this, and the calling convention. ?get@Point@@QEAAHXZ is public and
     // non-const; ?cget@Point@@QEBAHXZ is public and const; ?priv@C@@AEAAHXZ
     // is private. All measured.
-    void memberFunction(const std::string &cls, const std::string &name,
+    // **Every enclosing class, innermost first, and then the '@' that closes
+    // the list.** `?get@Inner@Outer@@QEAAHXZ` - measured with cl. Each
+    // component goes through pushName, so a scope mentioned again later is a
+    // back-reference digit: `?use@Outer@@QEAAHUInner@1@@Z` for a parameter of
+    // type Outer::Inner, where the 1 is Outer.
+    void scopeOf(const Type *cls, const std::string &fallback) {
+        if (cls == nullptr) pushName(fallback);
+        else for (const Type *c = cls; c != nullptr; c = c->enclosing())
+            pushName(c->localName());
+        out += '@';               // closes the scope list
+    }
+
+    void memberFunction(const std::string &cls, const Type *clsType,
+                        const std::string &name,
                         const Type *fn, char access, bool constThis) {
         out = "?";
         pushName(name);
-        pushName(cls);
-        out += '@';               // closes the scope list
+        scopeOf(clsType, cls);
         out += access;            // Q public, I protected, A private
         out += 'E';               // this is __ptr64
         out += constThis ? 'B' : 'A';
@@ -240,10 +289,10 @@ public:
     // ??4X@@QEAAAEAU0@AEBU0@@Z - ??4 says operator=, and unlike ??0 it does
     // write the return type. Only the class is pushed as a name, so it is the
     // back-reference 0 rather than the 1 a named member function leaves it.
-    void copyAssign(const std::string &cls, const Type *fn, char access) {
+    void copyAssign(const std::string &cls, const Type *clsType, const Type *fn,
+                    char access) {
         out = "??4";
-        pushName(cls);
-        out += '@';
+        scopeOf(clsType, cls);
         out += access;
         out += "EAA";
         returnType(fn->returns());
@@ -255,10 +304,10 @@ public:
 
     // ??0Point@@QEAA@HH@Z - ??0 says constructor, and the '@' after QEAA sits
     // where a member function writes its return type.
-    void constructor(const std::string &cls, const Type *fn, char access) {
+    void constructor(const std::string &cls, const Type *clsType, const Type *fn,
+                     char access) {
         out = "??0";
-        pushName(cls);
-        out += '@';
+        scopeOf(clsType, cls);
         out += access;
         out += "EAA";
         out += '@';               // a constructor returns nothing to say
@@ -266,6 +315,14 @@ public:
         if (params.empty() && !fn->isVariadicFn()) { out += "XZ"; return; }
         for (const Type *p : params) argument(p);
         out += fn->isVariadicFn() ? "ZZ" : "@Z";
+    }
+
+    void destructor(const std::string &cls, const Type *clsType, char access) {
+        out = "??1";
+        scopeOf(clsType, cls);
+        out += access;
+        out += "EAA";
+        out += "@XZ";
     }
 
     void function(const std::string &name, const Type *fn) {
@@ -281,12 +338,11 @@ public:
 
     // ?pub@C@@2HA - the name, the class, then the access as a digit and the
     // type spelled the way a data symbol spells it. Measured with cl.
-    void staticMember(const std::string &cls, const std::string &name,
-                      const Type *t, char access) {
+    void staticMember(const std::string &cls, const Type *clsType,
+                      const std::string &name, const Type *t, char access) {
         out = "?";
         pushName(name);
-        pushName(cls);
-        out += '@';
+        scopeOf(clsType, cls);
         out += access;            // '2' public, '1' protected, '0' private
         dataType(t);
     }
@@ -438,6 +494,7 @@ private:
             out += t->kind() == Kind::Union ? 'T'
                  : t->declaredClass()       ? 'V'
                                             : 'U';
+            if (t->enclosing() != nullptr) { scopeOf(t, std::string()); return; }
             nameComponent(*tag);
             return;
         }
@@ -477,11 +534,12 @@ bool itaniumMemberName(const std::string &cls, const Type *clsType,
     return true;
 }
 
-bool microsoftMemberName(const std::string &cls, const std::string &name,
+bool microsoftMemberName(const std::string &cls, const Type *clsType,
+                         const std::string &name,
                          const Type *fn, char access, bool constThis,
                          std::string *out, std::string *problem) {
     Microsoft m;
-    m.memberFunction(cls, name, fn, access, constThis);
+    m.memberFunction(cls, clsType, name, fn, access, constThis);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;
@@ -496,32 +554,32 @@ bool itaniumCopyAssignName(const std::string &cls, const Type *clsType,
     return true;
 }
 
-bool microsoftCopyAssignName(const std::string &cls, const Type *fn, char access,
+bool microsoftCopyAssignName(const std::string &cls, const Type *clsType,
+                             const Type *fn, char access,
                              std::string *out, std::string *problem) {
     Microsoft m;
-    m.copyAssign(cls, fn, access);
+    m.copyAssign(cls, clsType, fn, access);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;
 }
 
-bool itaniumDestructorName(const std::string &cls, bool complete,
-                           std::string *out) {
-    // A destructor takes nothing and returns nothing, so there is no type to
-    // spell and no table to consult - the name is the whole of it.
-    *out = "_ZN" + std::to_string(cls.size()) + cls +
-           (complete ? "D1Ev" : "D2Ev");
+bool itaniumDestructorName(const std::string &cls, const Type *clsType,
+                           bool complete, std::string *out) {
+    // A destructor takes nothing and returns nothing, so there is nothing to
+    // spell but the class - which is a whole nested-name once a class can be
+    // written inside another.
+    Itanium m;
+    m.destructor(cls, clsType, complete);
+    *out = m.out;
     return true;
 }
 
-std::string microsoftDestructorName(const std::string &cls, char access) {
-    std::string out = "??1";
-    out += cls;
-    out += "@@";
-    out += access;
-    out += "EAA";
-    out += "@XZ";
-    return out;
+std::string microsoftDestructorName(const std::string &cls, const Type *clsType,
+                                    char access) {
+    Microsoft m;
+    m.destructor(cls, clsType, access);
+    return m.out;
 }
 
 bool itaniumConstructorName(const std::string &cls, const Type *clsType,
@@ -534,10 +592,11 @@ bool itaniumConstructorName(const std::string &cls, const Type *clsType,
     return true;
 }
 
-bool microsoftConstructorName(const std::string &cls, const Type *fn,
-                              char access, std::string *out, std::string *problem) {
+bool microsoftConstructorName(const std::string &cls, const Type *clsType,
+                              const Type *fn, char access,
+                              std::string *out, std::string *problem) {
     Microsoft m;
-    m.constructor(cls, fn, access);
+    m.constructor(cls, clsType, fn, access);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;
@@ -548,19 +607,19 @@ std::string itaniumDataName(const std::string &name, bool internal) {
     return "_ZL" + std::to_string(name.size()) + name;
 }
 
-std::string itaniumStaticMemberName(const std::string &cls,
+std::string itaniumStaticMemberName(const std::string &cls, const Type *clsType,
                                     const std::string &name) {
-    // No parameters to spell and no access to record, so there is no table to
-    // consult and the name is the whole of it.
-    return "_ZN" + std::to_string(cls.size()) + cls +
-           std::to_string(name.size()) + name + "E";
+    Itanium m;
+    m.staticMember(cls, clsType, name);
+    return m.out;
 }
 
-bool microsoftStaticMemberName(const std::string &cls, const std::string &name,
+bool microsoftStaticMemberName(const std::string &cls, const Type *clsType,
+                               const std::string &name,
                                const Type *t, char access,
                                std::string *out, std::string *problem) {
     Microsoft m;
-    m.staticMember(cls, name, t, access);
+    m.staticMember(cls, clsType, name, t, access);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;

@@ -47,7 +47,8 @@ bool itaniumMemberName(const std::string &cls, const Type *clsType,
                        const Type *fn, bool constThis,
                        std::string *out, std::string *problem);
 
-bool microsoftMemberName(const std::string &cls, const std::string &name,
+bool microsoftMemberName(const std::string &cls, const Type *clsType,
+                         const std::string &name,
                          const Type *fn, char access, bool constThis,
                          std::string *out, std::string *problem);
 
@@ -63,17 +64,19 @@ bool itaniumConstructorName(const std::string &cls, const Type *clsType,
                             const Type *fn,
                             bool complete, std::string *out, std::string *problem);
 
-bool microsoftConstructorName(const std::string &cls, const Type *fn,
-                              char access, std::string *out, std::string *problem);
+bool microsoftConstructorName(const std::string &cls, const Type *clsType,
+                              const Type *fn, char access,
+                              std::string *out, std::string *problem);
 
 // A destructor. The same two-name split as a constructor - D1 complete, D2
 // base - and the same reason for emitting both. Microsoft writes ??1. There is
 // also a D0, the deleting destructor, which belongs to polymorphic delete and
 // so to rung 4; clang emits none here.
-bool itaniumDestructorName(const std::string &cls, bool complete,
-                           std::string *out);
+bool itaniumDestructorName(const std::string &cls, const Type *clsType,
+                           bool complete, std::string *out);
 
-std::string microsoftDestructorName(const std::string &cls, char access);
+std::string microsoftDestructorName(const std::string &cls, const Type *clsType,
+                                    char access);
 
 // The copy assignment operator, the one operator this compiler names so far.
 // Itanium spells `operator=` as the two-letter code `aS` where a member
@@ -87,7 +90,8 @@ std::string microsoftDestructorName(const std::string &cls, char access);
 bool itaniumCopyAssignName(const std::string &cls, const Type *clsType,
                            const Type *fn, std::string *out, std::string *problem);
 
-bool microsoftCopyAssignName(const std::string &cls, const Type *fn, char access,
+bool microsoftCopyAssignName(const std::string &cls, const Type *clsType,
+                             const Type *fn, char access,
                              std::string *out, std::string *problem);
 
 // A static data member: one object shared by the class rather than one per
@@ -98,10 +102,11 @@ bool microsoftCopyAssignName(const std::string &cls, const Type *fn, char access
 // cl: 2 public, 1 protected, 0 private, and then the type exactly as a
 // namespace-scope variable has it - `?pub@C@@2HA`, `?priv@C@@0HA`,
 // `?k@S@@2HB` for a const one.
-std::string itaniumStaticMemberName(const std::string &cls,
+std::string itaniumStaticMemberName(const std::string &cls, const Type *clsType,
                                     const std::string &name);
 
-bool microsoftStaticMemberName(const std::string &cls, const std::string &name,
+bool microsoftStaticMemberName(const std::string &cls, const Type *clsType,
+                               const std::string &name,
                                const Type *t, char access,
                                std::string *out, std::string *problem);
 
