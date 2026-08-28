@@ -35,12 +35,18 @@ void x87Parts(long double v, unsigned long long *significand, unsigned int *sign
 
 int objectAlign(const Type *t, const Target &target);
 
+// Who may name a member. `protected` is not `private` even with no derived
+// class to tell them apart yet - recording which one was written is what lets
+// inheritance mean something later without revisiting every declaration.
+enum class Access { Public, Protected, Private };
+
 struct Member {
     std::string name;
     const Type *type;
     int offset;
     int width = 0;
     int bitOffset = 0;
+    Access access = Access::Public;
 
     bool isBitField() const { return width != 0; }
 };
@@ -108,6 +114,13 @@ public:
     std::string describe() const;
 
     const std::string &tag() const { return unqual_ ? unqual_->tag() : tag_; }
+
+    // `class X` and `struct X` build the same kind of type and differ only in
+    // the default access - and in what a diagnostic should call it. A message
+    // that says "struct Account" about something the program wrote as a class
+    // sends the reader looking for a declaration that is not there.
+    bool declaredClass() const { return unqual_ ? unqual_->declaredClass() : isClass_; }
+    void setDeclaredClass(bool c) { isClass_ = c; }
     const std::vector<Member> &members() const {
         return unqual_ ? unqual_->members() : members_;
     }
@@ -142,6 +155,7 @@ private:
     bool variadic_ = false;
 
     std::string tag_;
+    bool isClass_ = false;
     std::vector<Member> members_;
     int size_ = 0;
     int align_ = 1;

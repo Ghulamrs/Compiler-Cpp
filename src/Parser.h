@@ -174,7 +174,8 @@ private:
     const Type *findTypedef(const std::string &name) const;
     void declareTypeName(const std::string &name, const Type *type);
     const EnumConst *findEnum(const std::string &name) const;
-    const Type *structOrUnionSpecifier(Kind kind);
+    const Type *structOrUnionSpecifier(Kind kind, bool isClass = false);
+    void checkAccessible(const Type *object, const Member &m, std::size_t pos) const;
     const Type *enumSpecifier();
     bool atDeclarationStart() const;
     const Type *specifiers(StorageClass *storage, Qualifiers *quals = nullptr);

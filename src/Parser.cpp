@@ -81,8 +81,8 @@ bool Parser::atDeclarationStart() const {
         || peek().is("register") || peek().is("auto") || peek().is("typedef");
 }
 
-const Type *Parser::structOrUnionSpecifier(Kind kind) {
-    const char *what = kind == Kind::Struct ? "struct" : "union";
+const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
+    const char *what = isClass ? "class" : (kind == Kind::Struct ? "struct" : "union");
     std::size_t pos = peek().pos;
 
     std::string tag;
@@ -90,6 +90,11 @@ const Type *Parser::structOrUnionSpecifier(Kind kind) {
 
     Type *type = tag.empty() ? types_.anonymousStruct(kind)
                              : types_.structType(kind, tag);
+    // Only a definition decides this. `class X;` followed by `struct X { };`
+    // is one type written two ways - the standard allows the mix and says the
+    // keywords are interchangeable here - so the body is what sets it and a
+    // mere mention never unsets it.
+    if (peek().is("{")) type->setDeclaredClass(isClass);
     if (!tag.empty()) declareTypeName(tag, type);
 
     if (!peek().is("{")) {
@@ -106,8 +111,24 @@ const Type *Parser::structOrUnionSpecifier(Kind kind) {
     long long bitCursor = 0;
     long long widestBits = 0;
 
+    // **The one difference between the two keywords.** [class.access]: a class
+    // starts private and a struct starts public, and everything else about
+    // them is the same - which is why they share this function rather than
+    // having one each.
+    Access access = isClass ? Access::Private : Access::Public;
+
     while (!peek().is("}")) {
         if (peek().kind == TokenKind::End) src_.fail(pos, "unclosed '{'");
+
+        if ((peek().is("public") || peek().is("private") || peek().is("protected")) &&
+            peekAt(1).is(":")) {
+            access = peek().is("public")  ? Access::Public
+                   : peek().is("private") ? Access::Private
+                                          : Access::Protected;
+            at_ += 2;
+            continue;
+        }
+
         StorageClass msc;
         const Type *base = specifiers(&msc);
         if (msc != StorageNone)
@@ -187,7 +208,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind) {
                 }
                 members.push_back(Member{ d.name, d.type, static_cast<int>(at),
                                           static_cast<int>(w),
-                                          static_cast<int>(bitOff) });
+                                          static_cast<int>(bitOff), access });
                 if (!consume(",")) break;
                 continue;
             }
@@ -198,7 +219,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind) {
             if (a > widest) widest = a;
             long long byteCursor = (bitCursor + 7) / 8;
             long long at = (kind == Kind::Union) ? 0 : alignTo(byteCursor, a);
-            members.push_back(Member{ d.name, d.type, static_cast<int>(at) });
+            members.push_back(Member{ d.name, d.type, static_cast<int>(at), 0, 0,
+                                      access });
             long long endBits = (at + d.type->size(target_)) * 8;
             if (kind == Kind::Union) { if (endBits > widestBits) widestBits = endBits; }
             else bitCursor = endBits;
@@ -278,6 +300,7 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // name is a keyword, and a keyword is not something a typedef can name.
     if (consume("wchar_t")) return types_.get(target_.wcharType());
     if (peek().is("struct")) { at_++; return structOrUnionSpecifier(Kind::Struct); }
+    if (peek().is("class"))  { at_++; return structOrUnionSpecifier(Kind::Struct, true); }
     if (peek().is("union"))  { at_++; return structOrUnionSpecifier(Kind::Union); }
     if (peek().is("enum"))   { at_++; return enumSpecifier(); }
     if (peek().kind == TokenKind::Ident) {
@@ -1129,11 +1152,11 @@ ExprPtr Parser::comparison(BinOp op, ExprPtr lhs, ExprPtr rhs) {
 static const char *notYetSupported(const std::string &word) {
     static const char *const pending[] = {
         "alignas", "alignof", "and", "and_eq", "asm",
-        "bitand", "bitor", "catch", "char16_t", "char32_t", "class", "compl",
+        "bitand", "bitor", "catch", "char16_t", "char32_t", "compl",
         "constexpr", "const_cast", "decltype", "dynamic_cast",
         "explicit", "export", "friend", "inline", "mutable", "namespace",
         "noexcept", "not", "not_eq", "nullptr", "operator", "or",
-        "or_eq", "private", "protected", "public", "reinterpret_cast",
+        "or_eq", "reinterpret_cast",
         "static_assert", "static_cast", "template", "this", "thread_local",
         "throw", "try", "typeid", "typename", "using", "virtual",
         "xor", "xor_eq"
@@ -2152,6 +2175,7 @@ ExprPtr Parser::postfix() {
             std::string name = expectIdent("a member name");
             const Member *m = obj->findMember(name);
             if (!m) src_.fail(pos, "'" + obj->describe() + "' has no member '" + name + "'");
+            checkAccessible(obj, *m, pos);
             ExprPtr acc(new MemberAccess(std::move(n), name, m->offset,
                                          m->width, m->bitOffset));
             // A member reached through a const object is itself const:
@@ -2178,6 +2202,7 @@ ExprPtr Parser::postfix() {
             std::string name = expectIdent("a member name");
             const Member *m = obj->findMember(name);
             if (!m) src_.fail(pos, "'" + obj->describe() + "' has no member '" + name + "'");
+            checkAccessible(obj, *m, pos);
             ExprPtr acc(new MemberAccess(std::move(n), name, m->offset,
                                          m->width, m->bitOffset));
             // A member reached through a const object is itself const:
@@ -2480,6 +2505,19 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
     return callAllocator(array ? "_ZdaPv" : "_ZdlPv",
                          array ? "??_V@YAXPEAX@Z" : "??3@YAXPEAX@Z",
                          types_.get(Kind::Void), std::move(raw), pos);
+}
+
+// [class.access]: a member that is not public may be named only from inside the
+// class. There is no inside yet - member functions are the next step of this
+// rung - so from here every non-public member is out of reach, which is exactly
+// what a class with private data and no member functions means.
+void Parser::checkAccessible(const Type *object, const Member &m,
+                             std::size_t pos) const {
+    if (m.access == Access::Public) return;
+    const char *how = m.access == Access::Private ? "private" : "protected";
+    src_.fail(pos, "'" + m.name + "' is " + how + " in '" + object->describe() +
+                   "' - it can be named only from inside the class, and this "
+                   "is outside it");
 }
 
 ExprPtr Parser::castExpr() {

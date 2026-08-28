@@ -93,7 +93,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 0 | The fork: C90 through three backends | **done**, 2026-08-26 |
 | 1 | C++ as a better C: keywords, `bool`, tag names, `::` | **done**, 2026-08-26 |
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
-| 3 | `class`: members, access, ctors/dtors, `this`, RAII | |
+| 3 | `class`: members, access, ctors/dtors, `this`, RAII | in progress |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
@@ -214,6 +214,23 @@ such pointer in the file read-only.
 **Not in rung 1, and deliberately**: a declaration in an `if` or `while`
 condition. It needs the condition's scope to wrap both branches, which is a
 change to how `If` is built rather than an addition to it.
+
+**Rung 3 is done in dependency order too, and `class` with access control
+comes first**, for the same reason `const` did: the member table has to carry
+who may name a member before anything can decide whether a use is allowed. A
+class and a struct build the same type through the same function and differ in
+one thing - where access starts, private or public - which is what
+[class.access] says they differ in. `protected` is recorded distinctly even
+though nothing can yet tell it from `private`, because inheritance is what
+tells them apart and revisiting every declaration then would be the more
+expensive order.
+
+**There is no "inside" yet**, so from anywhere a non-public member is out of
+reach. That is not a half-check: a class with private data and no member
+functions is closed, and member functions are the next step. `Type` records
+which keyword defined it so a diagnostic says "class Account" about something
+written as a class - only a *definition* sets that, since `class X;` followed
+by `struct X { }` is one type written two ways and the standard allows the mix.
 
 `docs/CONFORMANCE.md` records what compiles here and should not — currently
 that an enumeration is still `int`, and that a class name cannot be hidden by

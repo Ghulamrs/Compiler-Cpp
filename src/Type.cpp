@@ -59,7 +59,9 @@ std::string Type::describe() const {
     if (kind_ == Kind::LValueRef) return pointee_->describe() + " &";
     if (kind_ == Kind::Array)
         return pointee_->describe() + " [" + std::to_string(length_) + "]";
-    if (kind_ == Kind::Struct) return "struct " + (tag_.empty() ? "<anonymous>" : tag_);
+    if (kind_ == Kind::Struct)
+        return std::string(isClass_ ? "class " : "struct ") +
+               (tag_.empty() ? "<anonymous>" : tag_);
     if (kind_ == Kind::Union)  return "union "  + (tag_.empty() ? "<anonymous>" : tag_);
     return name();
 }
