@@ -81,6 +81,42 @@ bool Parser::atDeclarationStart() const {
         || peek().is("register") || peek().is("auto") || peek().is("typedef");
 }
 
+// From the '{' to the '}' that closes it, counting depth. The body is not
+// looked at here at all - only found and stepped over.
+void Parser::skipBracedBlock() {
+    // A constructor's body may be preceded by its mem-initializer list, so
+    // what is skipped starts at the ':' and the '{' is found from there.
+    while (!peek().is("{")) {
+        if (peek().kind == TokenKind::End)
+            src_.fail(peek().pos, "this member function has no body after all");
+        at_++;
+    }
+    int depth = 0;
+    for (;;) {
+        if (peek().kind == TokenKind::End)
+            src_.fail(peek().pos, "this member function's body is never closed");
+        if (peek().is("{")) depth++;
+        else if (peek().is("}")) { depth--; at_++; if (depth == 0) return; continue; }
+        at_++;
+    }
+}
+
+// Each held body re-read as though it had been written outside the class. The
+// tokens are the ones already there - return type, name, parameters, body - so
+// the whole ordinary definition path runs over them, and `inlineOwner_` is
+// what supplies the `Class::` the source does not have.
+void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
+    if (mine.empty()) return;
+    const std::size_t resume = at_;
+    for (std::size_t i = 0; i < mine.size(); i++) {
+        at_ = mine[i].start;
+        inlineOwner_ = mine[i].tag;
+        topLevel(*current_);
+        inlineOwner_.clear();
+    }
+    at_ = resume;
+}
+
 const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     const char *what = isClass ? "class" : (kind == Kind::Struct ? "struct" : "union");
     std::size_t pos = peek().pos;
@@ -199,6 +235,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     while (!peek().is("}")) {
         if (peek().kind == TokenKind::End) src_.fail(pos, "unclosed '{'");
 
+        // Where this member's declaration begins. A body written here is
+        // replayed from exactly this token, so the replay re-reads the return
+        // type and parameters rather than trying to rebuild them.
+        const std::size_t itemStart = at_;
+
+        // Set when a body was held and stepped over: a definition ends at its
+        // '}' and has no ';' to consume, unlike every other member.
+        bool heldBody = false;
+
         // A constructor has the class's own name and no return type, so it
         // has to be seen before specifiers() is asked for one - the name is a
         // registered type name by now and would be read as the type.
@@ -207,10 +252,11 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             std::size_t cpos = peek().pos;
             at_++;
             declareConstructor(tag, cpos, access);
-            if (peek().is("{"))
-                src_.fail(peek().pos, "a constructor defined inside the class "
-                                      "is not supported yet - define it outside "
-                                      "with '" + tag + "::" + tag + "'");
+            if (peek().is("{") || peek().is(":")) {
+                pendingBodies_.push_back(PendingBody{ tag, itemStart });
+                skipBracedBlock();
+                continue;
+            }
             expect(";");
             continue;
         }
@@ -226,10 +272,11 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             std::size_t dpos = peek().pos;
             at_ += 2;
             declareDestructor(tag, dpos, access, isVirtual);
-            if (peek().is("{"))
-                src_.fail(peek().pos, "a destructor defined inside the class is "
-                                      "not supported yet - define it outside "
-                                      "with '" + tag + "::~" + tag + "'");
+            if (peek().is("{")) {
+                pendingBodies_.push_back(PendingBody{ tag, itemStart });
+                skipBracedBlock();
+                continue;
+            }
             expect(";");
             continue;
         }
@@ -342,15 +389,22 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 d.type = types_.functionType(d.type, std::move(mparams), mvariadic);
                 bool constThis = false;
                 if (consume("const")) constThis = true;
-                if (peek().is("{"))
-                    src_.fail(peek().pos,
-                              "a member function defined inside the class is "
-                              "not supported yet - the body would have to see "
-                              "members declared after it, which means holding "
-                              "it until the class is closed. Define it outside "
-                              "with '" + (tag.empty() ? std::string("Class")
-                                                      : tag) + "::" + d.name +
-                              "'");
+
+                // **The body is held, not parsed.** It has to be able to see
+                // members declared after it, so nothing in it can be read
+                // until the class is closed - which is why this is a delayed
+                // parse rather than a recursion.
+                if (peek().is("{")) {
+                    if (tag.empty())
+                        src_.fail(d.pos, "a member function needs a class with "
+                                         "a name - this one is anonymous");
+                    declareMember(tag, d, constThis, access,
+                                  kind == Kind::Union, isVirtual);
+                    pendingBodies_.push_back(PendingBody{ tag, itemStart });
+                    skipBracedBlock();
+                    heldBody = true;
+                    break;
+                }
                 if (tag.empty())
                     src_.fail(d.pos, "a member function needs a class with a "
                                      "name - this one is anonymous");
@@ -377,7 +431,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             else bitCursor = endBits;
             if (!consume(",")) break;
         }
-        expect(";");
+        if (!heldBody) expect(";");
     }
     expect("}");
 
@@ -415,6 +469,19 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     int size = static_cast<int>(alignTo((totalBits + 7) / 8, widest));
     type->setDataSize(static_cast<int>((totalBits + 7) / 8));
     type->complete(members, size, widest);
+    // Held bodies are read now, with the class complete: every member exists,
+    // so a body may name one declared below it. Taken out of the vector first,
+    // because a body may itself define a class with held bodies of its own.
+    std::vector<PendingBody> mine;
+    for (std::size_t i = 0; i < pendingBodies_.size(); i++)
+        if (pendingBodies_[i].tag == tag) mine.push_back(pendingBodies_[i]);
+    if (!mine.empty()) {
+        std::vector<PendingBody> rest;
+        for (std::size_t i = 0; i < pendingBodies_.size(); i++)
+            if (pendingBodies_[i].tag != tag) rest.push_back(pendingBodies_[i]);
+        pendingBodies_.swap(rest);
+    }
+
     if (type->polymorphic()) {
         // Nothing else sets the vptr, and an implicit default constructor is
         // not written yet - so a polymorphic class without one would hand out
@@ -425,6 +492,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                            "implicit default constructor is not supported yet");
         emitVtable(type, tag, pos);
     }
+    replayInlineBodies(std::move(mine));
     return type;
 }
 
@@ -496,6 +564,15 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
         peekAt(2).kind == TokenKind::Ident && peekAt(2).text == peek().text &&
         peekAt(3).is("(") && findTypedef(peek().text) != nullptr)
+        return types_.get(Kind::Void);
+
+    // Replaying an inline constructor or destructor: the tokens are `X(` or
+    // `~X(` with no type in front, exactly as they were written in the class.
+    if (!inlineOwner_.empty() &&
+        ((peek().kind == TokenKind::Ident && peek().text == inlineOwner_ &&
+          peekAt(1).is("(")) ||
+         (peek().is("~") && peekAt(1).kind == TokenKind::Ident &&
+          peekAt(1).text == inlineOwner_)))
         return types_.get(Kind::Void);
 
     // The same for a destructor, `Point::~Point(`, whose name carries a '~'.
@@ -678,8 +755,21 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
     std::size_t pos = peek().pos;
     std::string name;
     std::string qualifier;
+
+    // Replaying `~X() { ... }` from inside the class: the '~' belongs to the
+    // name, and there is no '::' to hang it off.
+    bool inlineDtor = false;
+    if (!inlineOwner_.empty() && peek().is("~")) { at_++; inlineDtor = true; }
+
     if (nameOptional && peek().kind != TokenKind::Ident) name.clear();
     else name = expectIdent("a name");
+
+    if (!inlineOwner_.empty() && !name.empty() && !peek().is("::")) {
+        qualifier = inlineOwner_;
+        if (inlineDtor) name = "~" + name;
+        inlineOwner_.clear();     // one-shot: the body's own declarations are
+                                  // ordinary locals, not members
+    }
 
     // `int Point::get()` - the name before the '::' is the class, and what
     // follows is the member being defined. Only one level: a class inside a

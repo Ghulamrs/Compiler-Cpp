@@ -462,6 +462,24 @@ declared with `class` had its type reach a name, so U covered both; clang and
 cl both write `?viaPointer@@YAHPEAVShape@@@Z` where cxx1 wrote `...PEAUShape...`.
 Itanium spells all three by tag and does not care.
 
+**A member function defined inside its class is held, not parsed where it is
+met.** Its body may name members declared below it, so nothing in it can be
+read until the class is closed. The class body records the token the whole
+declaration starts at, steps over the braces, and `replayInlineBodies` re-reads
+those tokens once the class is complete - through the ordinary out-of-line
+definition path, so constructors, `this`, init lists, destructors and virtuals
+needed no second implementation. `inlineOwner_` supplies the `Class::` the
+source does not have and is **one-shot**, cleared by the first declarator that
+uses it, so declarations inside the body stay ordinary locals.
+
+**Two exclusion files, and the difference matters.** `<case>.notarget` says
+cxx1 cannot compile that case for that target at all - `emit.sh` and
+`mangled-names` both read it. `<case>.nonames` says it compiles fine and only
+the symbol lists differ for a recorded reason, so emission stays covered and
+just the comparison steps aside. Using the first for the second quietly stops
+compiling a case that compiles, which is how a suite loses coverage without
+anyone noticing.
+
 `docs/CONFORMANCE.md` records what compiles here and should not — currently
 that an enumeration is still `int`, and that a class name cannot be hidden by
 an object of the same name.

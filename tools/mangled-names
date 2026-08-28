@@ -68,11 +68,19 @@ for pair in "x86_64-linux:x86_64-linux-gnu" \
     # The same <case>.notarget tests/emit.sh reads: a case may name a target it
     # does not compile for yet, with the reason on the line. Printed every run,
     # because an exclusion nobody sees is an exclusion nobody removes.
-    notarget="${SRC%.cpp}.notarget"
-    if [ -f "$notarget" ] && grep -q "^$mine\b" "$notarget"; then
-        echo "$mine: skipped - $(grep "^$mine\b" "$notarget" | sed "s/^$mine[[:space:]]*//")"
-        continue
-    fi
+    # Two different claims, two different files. **.notarget** says cxx1
+    # cannot compile this case for that target at all - emit.sh reads it too.
+    # **.nonames** says it compiles fine and only the symbol lists differ for a
+    # recorded reason, so the emission stays covered and just this comparison
+    # steps aside. Using the first for the second would quietly stop compiling
+    # a case that compiles.
+    for excuse in "${SRC%.cpp}.notarget" "${SRC%.cpp}.nonames"; do
+        [ -f "$excuse" ] || continue
+        grep -q "^$mine\b" "$excuse" || continue
+        echo "$mine: skipped - $(grep "^$mine\b" "$excuse" | sed "s/^$mine[[:space:]]*//")"
+        skip=yes
+    done
+    if [ "${skip:-}" = yes ]; then skip=; continue; fi
 
     if ! "$ROOT/cxx1.exe" -S -arch "$mine" "$SRC" -o "$OUT/mine.s" 2>"$OUT/mine.err"; then
         echo "$mine: cxx1 refused it"

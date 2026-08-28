@@ -112,3 +112,30 @@ say, in a program that could then be compiled by clang and mean the other thing.
 
 Worth knowing because it decides what a program may rely on: `new` here either
 returns memory or ends the program. It never returns null.
+
+## An inline member function is a strong symbol
+
+A member function defined inside its class is *implicitly inline*, and an
+inline function may be defined in several translation units - so the linker has
+to fold the copies rather than reject them. clang says so in the object:
+
+```
+.weak    _ZN7CounterC2Ev              # Linux
+.weak_def_can_be_hidden __ZN7CounterC1Ev   # Darwin
+```
+
+cxx1 emits an ordinary strong global instead. In one translation unit that is
+invisible and everything links; two units that both include such a class would
+collide on every inline member.
+
+There is a second half to it on Linux: for an inline constructor clang emits
+only `C2` and no `C1` at all, where the out-of-line case emits both. cxx1 emits
+both in either case, which is why `tests/cases/inline-body` is compared for
+Darwin and Windows and skipped for Linux - Darwin's spelling keeps `.globl`
+beside the weak marker and so still agrees name for name.
+
+Fixing it is backend work in three places - `.weak` in the GNU spelling,
+`.weak_def_can_be_hidden` on Darwin, a COMDAT section on Windows - plus knowing
+at emission time that a function came from inside a class. Recorded rather than
+half-done, because a program built the way this compiler is used today, one
+translation unit at a time, cannot see it.

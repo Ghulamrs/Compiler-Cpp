@@ -1,0 +1,1 @@
+x86_64-linux  clang emits inline members as .weak and only C2 for the constructor; cxx1 emits strong globals - see docs/CONFORMANCE.md, "An inline member function is a strong symbol"

@@ -80,6 +80,24 @@ private:
     // keyed "Derived::Base". Filled while the table is laid out, read by the
     // constructor that has to store it.
     std::map<std::string, int> secondaryVptr_;
+    // A member function body written inside the class, held until the class
+    // closes. `start` is the token the whole declaration begins at, so the
+    // replay re-reads the return type and parameters too rather than trying to
+    // reconstruct them.
+    struct PendingBody {
+        std::string tag;
+        std::size_t start;
+    };
+    std::vector<PendingBody> pendingBodies_;
+    void replayInlineBodies(std::vector<PendingBody> mine);
+    void skipBracedBlock();
+
+    // Set only while an inline body is being replayed. It makes an unqualified
+    // name in a declarator mean a member of that class - and it is one-shot,
+    // cleared by the first declarator that uses it, so nothing inside the body
+    // picks it up.
+    std::string inlineOwner_;
+
     void emitVtable(const Type *cls, const std::string &tag, std::size_t pos);
     // A thunk: the entry a secondary table holds for a function this class
     // overrides. It moves `this` back to the complete object and calls the
