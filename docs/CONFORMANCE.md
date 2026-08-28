@@ -96,3 +96,19 @@ cxx1 registers a class or enum tag as a type name in the one table it has for
 type names, so the declaration of `stat` as an object collides with it. This is
 the C compatibility rule, it exists for headers written before C++ did, and no
 program here wants it. It costs a second lookup table to fix.
+
+## A failed `new` terminates rather than throwing
+
+`new` here calls the platform's own `operator new`, which throws `std::bad_alloc`
+when it cannot allocate. cxx1 has no exceptions until rung 6, so nothing catches
+it and the program terminates.
+
+That is not a compiler this page can excuse into correctness, and it is also not
+a thing to fix twice: an allocation that cannot fail is the only one this
+compiler can currently promise, and the honest fix arrives with exceptions
+rather than before them. The alternative - calling the `nothrow` operator and
+answering a null pointer - would make `new` mean something the standard does not
+say, in a program that could then be compiled by clang and mean the other thing.
+
+Worth knowing because it decides what a program may rely on: `new` here either
+returns memory or ends the program. It never returns null.

@@ -222,9 +222,18 @@ static void noteWindowsToolchain() {
                          "Command Prompt is that same environment.\n");
 }
 
+// **`c++` and not `cc`, because operator new lives in the C++ runtime.** The
+// four allocation operators a new-expression calls are in libc++ or libstdc++,
+// and the C driver does not link either - so `new int` compiled, assembled and
+// then failed at the link with four undefined symbols that the linker helpfully
+// demangled back into 'operator new(unsigned long)'. Which driver is used is
+// the whole of the difference; `c++` assembles a .s exactly as `cc` does.
+//
+// Rung 6 will want this too: the unwinder and the personality routine come from
+// the same place.
 const char *Driver::hostCompiler() {
     const char *env = std::getenv("CXX1_CC");
-    return (env != nullptr && env[0] != '\0') ? env : "cc";
+    return (env != nullptr && env[0] != '\0') ? env : "c++";
 }
 
 const char *Driver::hostAssembler() {

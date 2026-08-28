@@ -229,6 +229,12 @@ private:
                                      const std::vector<ExprPtr> &args,
                                      std::size_t pos);
 
+    ExprPtr newExpression(std::size_t pos);
+    ExprPtr deleteExpression(std::size_t pos);
+    ExprPtr callAllocator(const char *itanium, const char *microsoft,
+                          const Type *returns, ExprPtr arg, std::size_t pos);
+    int newTemps_ = 0;
+
     void parseArguments(std::vector<ExprPtr> &args);
     ExprPtr completeCall(const std::string &name, const std::string &symbol,
                          ExprPtr callee, const Type *returns,

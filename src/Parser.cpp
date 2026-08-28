@@ -1130,9 +1130,9 @@ static const char *notYetSupported(const std::string &word) {
     static const char *const pending[] = {
         "alignas", "alignof", "and", "and_eq", "asm",
         "bitand", "bitor", "catch", "char16_t", "char32_t", "class", "compl",
-        "constexpr", "const_cast", "decltype", "delete", "dynamic_cast",
+        "constexpr", "const_cast", "decltype", "dynamic_cast",
         "explicit", "export", "friend", "inline", "mutable", "namespace",
-        "new", "noexcept", "not", "not_eq", "nullptr", "operator", "or",
+        "noexcept", "not", "not_eq", "nullptr", "operator", "or",
         "or_eq", "private", "protected", "public", "reinterpret_cast",
         "static_assert", "static_cast", "template", "this", "thread_local",
         "throw", "try", "typeid", "typename", "using", "virtual",
@@ -2262,6 +2262,17 @@ ExprPtr Parser::unary() {
         n->setType(elem);
         return n;
     }
+    if (peek().is("new")) {
+        std::size_t pos = peek().pos;
+        at_++;
+        return newExpression(pos);
+    }
+    if (peek().is("delete")) {
+        std::size_t pos = peek().pos;
+        at_++;
+        return deleteExpression(pos);
+    }
+
     if (peek().is("sizeof")) {
         at_++;
         const Type *measured = nullptr;
@@ -2288,6 +2299,187 @@ ExprPtr Parser::unary() {
         return n;
     }
     return postfix();
+}
+
+// ---------------------------------------------------------------- new and delete
+//
+// **The four operator functions are called by name, and the names were
+// measured rather than read** - `clang++ -target ... -S -O0` over a file that
+// news and deletes, on all three targets. -O0 matters: at -O1 clang elides the
+// allocation entirely, which it is allowed to do, and the assembly comes back
+// with nothing to read.
+//
+//     operator new(size_t)     _Znwm    ??2@YAPEAX_K@Z
+//     operator new[](size_t)   _Znam    ??_U@YAPEAX_K@Z
+//     operator delete(void *)  _ZdlPv   ??3@YAXPEAX@Z
+//     operator delete[](void *) _ZdaPv  ??_V@YAXPEAX@Z
+//
+// Darwin writes the Itanium name with a leading underscore, and the backend
+// already does that to every symbol, so what is emitted here is the plain one.
+//
+// **These are calls to the platform's own operators, not to an allocator this
+// compiler ships**, which is what makes `new` here interoperate with a `delete`
+// in a translation unit built by clang. It also means allocation failure does
+// what the platform does - the real operator new throws - and this compiler has
+// no exceptions until rung 6. docs/CONFORMANCE.md records that.
+ExprPtr Parser::callAllocator(const char *itanium, const char *microsoft,
+                              const Type *returns, ExprPtr arg,
+                              std::size_t pos) {
+    (void)pos;
+    std::vector<ExprPtr> args;
+    args.push_back(std::move(arg));
+    std::vector<int> argSlots(args.size(), 0);
+
+    Call *call = new Call(target_.microsoftNames() ? microsoft : itanium,
+                          nullptr, std::move(args), false, 0, 1,
+                          std::move(argSlots));
+    call->setSymbol(target_.microsoftNames() ? microsoft : itanium);
+    ExprPtr n(call);
+    n->setType(returns);
+    return n;
+}
+
+ExprPtr Parser::newExpression(std::size_t pos) {
+    if (peek().is("("))
+        src_.fail(peek().pos, "placement new is not supported yet - and a "
+                              "parenthesised type after 'new' is read the same "
+                              "way, so write 'new int' rather than 'new (int)'");
+
+    StorageClass sc = StorageNone;
+    const Type *made = specifiers(&sc);
+    if (sc != StorageNone)
+        src_.fail(pos, "a storage class has no meaning in a new-expression");
+
+    // The pointer part of the new-type-id, by hand: `declarator` reads an array
+    // bound with constantExpression, and the whole point of `new T[n]` is that
+    // n need not be one.
+    for (;;) {
+        if (consume("*")) {
+            made = types_.pointerTo(made);
+            while (peek().is("const")) { at_++; made = types_.withConst(made); }
+            continue;
+        }
+        break;
+    }
+
+    ExprPtr count;
+    bool array = false;
+    if (consume("[")) {
+        array = true;
+        count = expr();
+        expect("]");
+        if (peek().is("["))
+            src_.fail(peek().pos, "an array of arrays from 'new' is not "
+                                  "supported yet - only the first dimension "
+                                  "may be given here");
+    }
+
+    if (!made->isComplete())
+        src_.fail(pos, "'new' needs a complete type, and '" + made->describe() +
+                       "' is not one here");
+    if (made->isReference())
+        src_.fail(pos, "'new' cannot make a reference - a reference is a name "
+                       "for something that already exists");
+
+    // The initialiser, and only the forms that need no constructor. Anything
+    // else is rung 3 and is refused by name rather than half-built.
+    bool hasInit = false;
+    ExprPtr init;
+    if (peek().is("(")) {
+        if (array)
+            src_.fail(peek().pos, "'new T[n](...)' cannot initialise an array");
+        at_++;
+        hasInit = true;
+        if (!consume(")")) {
+            init = assign();
+            if (peek().is(","))
+                src_.fail(peek().pos, "more than one value in a new-expression "
+                                      "needs a constructor, which is not "
+                                      "supported yet");
+            expect(")");
+        }
+    }
+
+    const Type *sizeT = types_.get(target_.sizeType());
+    ExprPtr bytes(new Num(static_cast<long long>(made->size(target_))));
+    bytes->setType(sizeT);
+    if (array) {
+        ExprPtr n = convert(decay(std::move(count)), sizeT);
+        ExprPtr total(new Binary(BinOp::Mul, std::move(n), std::move(bytes)));
+        total->setType(sizeT);
+        bytes = std::move(total);
+    }
+
+    const Type *pointer = types_.pointerTo(made);
+    ExprPtr raw = callAllocator(array ? "_Znam" : "_Znwm",
+                                array ? "??_U@YAPEAX_K@Z" : "??2@YAPEAX_K@Z",
+                                types_.pointerTo(types_.get(Kind::Void)),
+                                std::move(bytes), pos);
+    ExprPtr typed(new Cast(pointer, std::move(raw)));
+    typed->setType(pointer);
+
+    if (!hasInit) return typed;
+
+    // `new int(5)` is two things - an allocation and a store - and an
+    // expression yields one value, so the pointer is kept in a temporary and
+    // the comma operator sequences them. The same shape bindReference already
+    // uses for a temporary, and for the same reason.
+    int slot = allocateFrameSlot(pointer);
+    std::string temp = ".new" + std::to_string(newTemps_++);
+
+    ExprPtr held(Var::local(temp, slot));
+    held->setType(pointer);
+    ExprPtr keep(new Assign(std::move(held), std::move(typed)));
+    keep->setType(pointer);
+
+    ExprPtr base(Var::local(temp, slot));
+    base->setType(pointer);
+    ExprPtr where(new Unary('*', std::move(base)));
+    where->setType(made);
+
+    // `new int()` is value-initialisation, which for these types is a zero.
+    ExprPtr value;
+    if (init) {
+        checkAssignable(*init, made, pos, "the value in a new-expression");
+        value = convert(decay(std::move(init)), made);
+    } else {
+        value.reset(new Num(0LL));
+        value->setType(types_.intType());
+        value = convert(std::move(value), made);
+    }
+    ExprPtr store(new Assign(std::move(where), std::move(value)));
+    store->setType(made);
+
+    ExprPtr result(Var::local(temp, slot));
+    result->setType(pointer);
+
+    ExprPtr both(new Comma(std::move(keep), std::move(store)));
+    both->setType(made);
+    ExprPtr all(new Comma(std::move(both), std::move(result)));
+    all->setType(pointer);
+    return all;
+}
+
+ExprPtr Parser::deleteExpression(std::size_t pos) {
+    bool array = false;
+    if (consume("[")) { expect("]"); array = true; }
+
+    ExprPtr what = decay(unary());
+    const Type *t = what->type();
+    if (!t->isPointer())
+        src_.fail(pos, "'delete' needs a pointer, and this is '" +
+                       t->describe() + "'");
+    if (t->pointee()->isVoid())
+        src_.fail(pos, "'delete' of a 'void *' does not know what it is "
+                       "freeing - give it the pointer's real type");
+
+    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+    ExprPtr raw(new Cast(voidPtr, std::move(what)));
+    raw->setType(voidPtr);
+
+    return callAllocator(array ? "_ZdaPv" : "_ZdlPv",
+                         array ? "??_V@YAXPEAX@Z" : "??3@YAXPEAX@Z",
+                         types_.get(Kind::Void), std::move(raw), pos);
 }
 
 ExprPtr Parser::castExpr() {

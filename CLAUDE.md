@@ -92,7 +92,7 @@ starts. No half-built pipelines waiting on a later phase.
 | --- | --- | --- |
 | 0 | The fork: C90 through three backends | **done**, 2026-08-26 |
 | 1 | C++ as a better C: keywords, `bool`, tag names, `::` | **done**, 2026-08-26 |
-| 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | in progress |
+| 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | |
@@ -115,7 +115,39 @@ matching clang's mangled names is the whole reason for having the oracle;
 overload resolution cannot rank `f(char *)` against `f(const char *)` if they
 are one function. So the order is: `const` in the type system, then
 references, then `extern "C"` and mangling, then overloading, then
-`new`/`delete`. `const`, references, `extern "C"` and mangling are done.
+`new`/`delete`. All five are done, and the order was the right one twice over:
+overload resolution could not have ranked `f(char *)` against
+`f(const char *)` before `const` was a property of the type, and the two
+overloads could not have reached the linker as different functions before the
+mangler existed.
+
+**`new` and `delete` call the platform's four operator functions by name, and
+those names were measured rather than read** - `clang++ -target ... -S -O0`
+over a file that allocates, for each target. At `-O1` clang elides the
+allocation, which it is allowed to do, and the assembly comes back with
+nothing in it to read.
+
+    operator new(size_t)      _Znwm    ??2@YAPEAX_K@Z
+    operator new[](size_t)    _Znam    ??_U@YAPEAX_K@Z
+    operator delete(void *)   _ZdlPv   ??3@YAXPEAX@Z
+    operator delete[](void *) _ZdaPv   ??_V@YAXPEAX@Z
+
+Calling the platform's operators rather than shipping an allocator is what
+makes a `new` here and a `delete` in an object built by clang the same
+allocation. It also decided the link line: **the driver links with `c++`, not
+`cc`**, because those four live in libc++ or libstdc++ and the C driver links
+neither - `new int` compiled and assembled and then failed with four undefined
+symbols the linker had helpfully demangled. On Windows they are already in
+`libcmt.lib`, which was measured on the box with `dumpbin /linkermember`
+rather than assumed.
+
+Refused by name rather than half-built: placement new and a parenthesised
+type-id after `new` (both need rung 3 to be worth having, and they read the
+same way to the parser, so one message says how to write the other), more than
+one value in a new-expression, `new T[n][m]`, `new T[n](...)`, and `delete` of
+a `void *`. `docs/CONFORMANCE.md` records the one thing that compiles and is
+not the standard's answer: a failed allocation terminates rather than throwing,
+because the platform's operator throws and there is no handler until rung 6.
 
 **The linkage name is computed in the parser and carried beside the source
 name.** `Var`, `Call` and `Function` each answer `name()` for people and
