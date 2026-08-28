@@ -4,6 +4,7 @@
 #include "Lexer.h"
 #include "Type.h"
 
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -61,7 +62,21 @@ private:
         std::string owner;
         bool constThis = false;
         Access access = Access::Public;
+        bool isVirtual = false;
     };
+
+    // One vtable slot: the function it currently points at, and enough of the
+    // declaration to tell an override from an unrelated function of the same
+    // name. Slots keep the order the base first declared them in - that is
+    // what lets a Base * and a Derived * agree on where to look.
+    struct VSlot {
+        std::string name;
+        std::string symbol;
+        std::vector<const Type *> params;
+        bool constThis;
+    };
+    std::map<std::string, std::vector<VSlot> > vtables_;
+    void emitVtable(const Type *cls, const std::string &tag, std::size_t pos);
 
     // How well one argument matches one parameter, in the order
     // [over.ics.scs] ranks them. The values are compared, so the order of
@@ -209,10 +224,10 @@ private:
                            std::vector<ExprPtr> args);
 
     void declareMember(const std::string &cls, const Declared &d, bool constThis,
-                       Access access, bool inUnion);
+                       Access access, bool inUnion, bool isVirtual);
     std::string memberSymbol(const std::string &cls, const std::string &name,
                              const Type *fn, Access access, bool constThis,
-                             std::size_t pos);
+                             std::size_t pos, bool isVirtual = false);
     ExprPtr memberCall(ExprPtr object, const Type *cls, const std::string &name,
                        std::size_t pos);
 

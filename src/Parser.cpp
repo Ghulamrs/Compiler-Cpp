@@ -159,9 +159,22 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             else if (baseAccess == Access::Protected) m.access = Access::Protected;
             members.push_back(m);
         }
-        bitCursor = static_cast<long long>(base->size(target_)) * 8;
+        // The base's DATA size, not its sizeof - see Type::dataSize.
+        bitCursor = static_cast<long long>(base->dataSize()) * 8;
         if (base->align(target_) > widest) widest = base->align(target_);
+        // The base's slots come down in order, and an override in this class
+        // replaces one rather than appending - declareMember does that part.
+        if (!tag.empty() && base->polymorphic())
+            vtables_[tag] = vtables_[base->tag()];
     }
+
+    // **A polymorphic object carries a vptr at offset 0**, so its members
+    // start after it - measured: a class with one int and one virtual is 16
+    // bytes with the int at 8. The pointer is reserved before any member is
+    // placed, and a derived class inherits the base's rather than adding a
+    // second: one class, one vptr, however deep the chain.
+    const bool inheritsVptr = base != nullptr && base->polymorphic();
+    const std::size_t firstOwnMember = members.size();
 
     // **The one difference between the two keywords.** [class.access]: a class
     // starts private and a struct starts public, and everything else about
@@ -212,6 +225,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             at_ += 2;
             continue;
         }
+
+        bool isVirtual = false;
+        if (peek().is("virtual")) { isVirtual = true; at_++; }
 
         StorageClass msc;
         const Type *base = specifiers(&msc);
@@ -324,10 +340,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 if (tag.empty())
                     src_.fail(d.pos, "a member function needs a class with a "
                                      "name - this one is anonymous");
-                declareMember(tag, d, constThis, access, kind == Kind::Union);
+                declareMember(tag, d, constThis, access, kind == Kind::Union,
+                              isVirtual);
                 if (!consume(",")) break;
                 continue;
             }
+
+            if (isVirtual)
+                src_.fail(d.pos, "'virtual' describes a function, and '" +
+                                 d.name + "' is a data member");
 
             if (!d.type->isComplete())
                 src_.fail(d.pos, "'" + d.name + "' has an incomplete type");
@@ -346,6 +367,22 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     }
     expect("}");
 
+    // The class is polymorphic if it declared a virtual or inherited one, and
+    // that is only knowable now - so the vptr is made room for here rather
+    // than before the body, by moving this class's own members up by a
+    // pointer. Inherited members are already where the base put them, and a
+    // base that was polymorphic already counted its own vptr in its size.
+    const bool anyVirtual = !tag.empty() && !vtables_[tag].empty();
+    if (anyVirtual || inheritsVptr) type->setPolymorphic(true);
+
+    if (anyVirtual && !inheritsVptr && kind != Kind::Union) {
+        const int slot = 8;
+        for (std::size_t i = firstOwnMember; i < members.size(); i++)
+            members[i].offset += slot;
+        bitCursor += static_cast<long long>(slot) * 8;
+        if (widest < slot) widest = slot;
+    }
+
     long long totalBits = (kind == Kind::Union) ? widestBits : bitCursor;
 
     // **An empty class is legal in C++ and has size 1**, where C required at
@@ -356,12 +393,24 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // objects of it have different addresses, which is what the standard asks
     // for and not an arbitrary choice.
     if (members.empty() && totalBits == 0) {
+        type->setDataSize(1);
         type->complete(members, 1, 1);
         return type;
     }
 
     int size = static_cast<int>(alignTo((totalBits + 7) / 8, widest));
+    type->setDataSize(static_cast<int>((totalBits + 7) / 8));
     type->complete(members, size, widest);
+    if (type->polymorphic()) {
+        // Nothing else sets the vptr, and an implicit default constructor is
+        // not written yet - so a polymorphic class without one would hand out
+        // objects whose vptr is whatever the frame held.
+        if (!tag.empty() && overloadsOf(constructorKey(tag)) == nullptr)
+            src_.fail(pos, "'" + tag + "' has a virtual function and no "
+                           "constructor - the vptr is set by one, and an "
+                           "implicit default constructor is not supported yet");
+        emitVtable(type, tag, pos);
+    }
     return type;
 }
 
@@ -1174,6 +1223,53 @@ void Parser::emitDestructors(std::vector<StmtPtr> &into, std::size_t from,
     }
 }
 
+// The vtable: one pointer per virtual function, in the order the base first
+// declared them, an override replacing an entry rather than adding one.
+//
+// It is emitted as an ordinary global whose initialiser pieces are symbol
+// addresses, which is machinery that already existed - no backend was told
+// about vtables at all.
+//
+// **The two ABIs differ in the header and so in what the vptr holds.** Itanium
+// writes offset-to-top and a typeinfo pointer before the functions, and the
+// vptr points past them - table + 16, measured from the addq in clang's own
+// constructor. The typeinfo slot is a plain 0 here: this compiler has no RTTI
+// and refuses `typeid` by name, and clang under -fno-rtti writes 0 too.
+// Microsoft has no header, so the vptr is the table's own address.
+void Parser::emitVtable(const Type *cls, const std::string &tag,
+                        std::size_t pos) {
+    (void)cls;
+    if (tag.empty())
+        src_.fail(pos, "a class with a virtual function needs a name - its "
+                       "vtable is a symbol, and an anonymous class has none");
+
+    const std::vector<VSlot> &slots = vtables_[tag];
+    const bool ms = target_.microsoftNames();
+    const std::string symbol = ms ? "??_7" + tag + "@@6B@"
+                                  : "_ZTV" + std::to_string(tag.size()) + tag;
+
+    for (std::size_t i = 0; i < current_->globals.size(); i++)
+        if (current_->globals[i].symbol == symbol) return;   // one per class
+
+    std::vector<GlobalPiece> pieces;
+    int at = 0;
+    if (!ms) {
+        pieces.push_back(GlobalPiece{ at, 8, 0, std::string() });  // offset-to-top
+        at += 8;
+        pieces.push_back(GlobalPiece{ at, 8, 0, std::string() });  // typeinfo
+        at += 8;
+    }
+    for (std::size_t i = 0; i < slots.size(); i++) {
+        pieces.push_back(GlobalPiece{ at, 8, 0, slots[i].symbol });
+        at += 8;
+    }
+
+    const Type *entry = types_.pointerTo(types_.get(Kind::Void));
+    const Type *table = types_.arrayOf(entry, static_cast<long long>(pieces.size()));
+    current_->globals.push_back(Global{ symbol, symbol, table, std::move(pieces),
+                                        true, false, true });
+}
+
 // A constructor, read at the point its '(' was seen. It is a member function
 // whose name is the class and whose return type is nothing at all - so it is
 // keyed under "Point::Point" and every piece of overload machinery applies to
@@ -1223,7 +1319,8 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
 // that members exist: two members of one class with different parameters are
 // two entries under that key, exactly as two free functions would be.
 void Parser::declareMember(const std::string &cls, const Declared &d,
-                           bool constThis, Access access, bool inUnion) {
+                           bool constThis, Access access, bool inUnion,
+                           bool isVirtual) {
     if (inUnion)
         src_.fail(d.pos, "a member function of a union is not supported yet");
 
@@ -1242,12 +1339,35 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
             src_.fail(d.pos, "'" + key + "' is declared twice");
     }
 
+    if (inUnion && isVirtual)
+        src_.fail(d.pos, "a union cannot have a virtual function");
+
+    const std::string symbol = memberSymbol(cls, d.name, fn, access, constThis,
+                                            d.pos, isVirtual);
     set.push_back(functions_.size());
     functions_.push_back(Signature{
-        d.name,
-        memberSymbol(cls, d.name, fn, access, constThis, d.pos),
+        d.name, symbol,
         fn->returns(), params, fn->isVariadicFn(), false, d.pos, false,
-        cls, constThis, access });
+        cls, constThis, access, isVirtual });
+
+    // **A slot is taken once and then kept.** An override replaces the entry
+    // the base put there rather than adding one, which is what makes a
+    // Base * and a Derived * agree about where to look. Matching is by name,
+    // parameters and constness - the signature, minus the return type, which
+    // is what [class.virtual] calls overriding.
+    if (!isVirtual) return;
+    std::vector<VSlot> &slots = vtables_[cls];
+    for (std::size_t i = 0; i < slots.size(); i++) {
+        if (slots[i].name != d.name || slots[i].constThis != constThis) continue;
+        if (slots[i].params.size() != params.size()) continue;
+        bool same = true;
+        for (std::size_t k = 0; k < params.size(); k++)
+            if (slots[i].params[k] != params[k]) { same = false; break; }
+        if (!same) continue;
+        slots[i].symbol = symbol;
+        return;
+    }
+    slots.push_back(VSlot{ d.name, symbol, params, constThis });
 }
 
 // A member function's linkage name. Never plain, and never affected by
@@ -1255,10 +1375,15 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
 // choice here.
 std::string Parser::memberSymbol(const std::string &cls, const std::string &name,
                                  const Type *fn, Access access, bool constThis,
-                                 std::size_t pos) {
+                                 std::size_t pos, bool isVirtual) {
     // Q public, I protected, A private - the Microsoft ABI puts access in the
     // name and Itanium does not, both measured against clang.
-    const char code = access == Access::Public    ? 'Q'
+    //
+    // **A virtual member is U on Microsoft whatever its access**, measured:
+    // ?who@Base@@UEAAHXZ where the non-virtual ?plain@Base@@QEAAHXZ. Itanium
+    // spells a virtual function exactly like any other.
+    const char code = isVirtual        ? 'U'
+                    : access == Access::Public    ? 'Q'
                     : access == Access::Protected ? 'I'
                                                   : 'A';
     std::string out, why;
@@ -3032,6 +3157,15 @@ ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
         src_.fail(pos, "'" + name + "' is " + how + " in '" + plain->describe() +
                        "' - it can be called only from inside the class");
     }
+    // Slice one of this step emits the table and sets the vptr; nothing reads
+    // it yet. A static call to a virtual function would be right whenever the
+    // static type happened to be the dynamic one and silently wrong otherwise,
+    // which is the one outcome worth refusing loudly.
+    if (sig.isVirtual)
+        src_.fail(pos, "'" + name + "' is virtual, and dispatching through the "
+                       "vtable is not supported yet - the table is emitted and "
+                       "the vptr is set, but nothing reads it");
+
     if (cls->isConst() && !sig.constThis)
         src_.fail(pos, "'" + name + "' is not a const member function, and this "
                        "object is const - calling it could change what the "
@@ -4384,6 +4518,50 @@ void Parser::topLevel(Program &program) {
     StmtPtr body = block();
     resolveGotos();
     variadicBody_ = false;
+
+    // **A polymorphic object's vptr is set by its constructor**, before the
+    // body and after the base's constructor - which is what makes the object
+    // this class's during its own body even though the base already set the
+    // pointer to its own table.
+    //
+    // What is stored is the table's address plus the header: Itanium writes
+    // offset-to-top and typeinfo first, so the vptr points at table + 16
+    // (measured from clang's own `addq $16`), and Microsoft has no header so
+    // the address is the table's own.
+    if (memberOf != nullptr && d.name == d.qualifier && memberOf->polymorphic()) {
+        const bool ms = target_.microsoftNames();
+        const std::string table = ms ? "??_7" + d.qualifier + "@@6B@"
+                                     : "_ZTV" + std::to_string(d.qualifier.size()) +
+                                       d.qualifier;
+        const Type *entry = types_.pointerTo(types_.get(Kind::Void));
+        const Type *entries = types_.pointerTo(entry);
+
+        ExprPtr base(Var::global(table));
+        base->setType(entries);
+        ExprPtr value = std::move(base);
+        if (!ms) {
+            ExprPtr two(new Num(2LL));                 // past the two header words
+            two->setType(types_.intType());
+            ExprPtr past(new Binary(BinOp::Add, std::move(value), std::move(two)));
+            past->setType(entries);
+            value = std::move(past);
+        }
+        ExprPtr asVoid(new Cast(entry, std::move(value)));
+        asVoid->setType(entry);
+
+        ExprPtr self(Var::local("this", thisOffset_));
+        self->setType(entries);                        // the vptr lives at offset 0
+        ExprPtr where(new Unary('*', std::move(self)));
+        where->setType(entry);
+
+        ExprPtr store(new Assign(std::move(where), std::move(asVoid)));
+        store->setType(entry);
+
+        std::vector<StmtPtr> withVptr;
+        withVptr.push_back(StmtPtr(new ExprStmt(std::move(store))));
+        withVptr.push_back(std::move(body));
+        body = StmtPtr(new Block(std::move(withVptr)));
+    }
 
     // **A constructor runs the base's first and a destructor runs it last**,
     // which is the order the standard fixes and the order clang emits: the

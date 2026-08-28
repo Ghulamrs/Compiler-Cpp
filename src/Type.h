@@ -126,6 +126,13 @@ public:
     // - so a derived object's address IS its base's address and no adjustment
     // is needed anywhere. Multiple inheritance is what ends that, and it is a
     // later step for exactly that reason.
+    // Whether this class has any virtual function, its bases' included. It
+    // decides the layout - a polymorphic object carries a vptr at offset 0 and
+    // its members start after it - so it has to be answerable before the
+    // members are placed.
+    bool polymorphic() const { return unqual_ ? unqual_->polymorphic() : polymorphic_; }
+    void setPolymorphic(bool p) { polymorphic_ = p; }
+
     const Type *base() const { return unqual_ ? unqual_->base() : base_; }
     Access baseAccess() const { return unqual_ ? unqual_->baseAccess() : baseAccess_; }
     void setBase(const Type *b, Access how) { base_ = b; baseAccess_ = how; }
@@ -135,6 +142,16 @@ public:
     const Member *findMember(const std::string &name) const;
 
     void complete(std::vector<Member> members, int size, int align);
+
+    // **Where this class's data actually ends, before the padding.** A base
+    // subobject occupies this rather than sizeof, so a derived class may put
+    // its first member in the base's tail padding - which is what the Itanium
+    // ABI says and what clang does: a base of {vptr, int} ends at 12 and pads
+    // to 16, and a derived int lands at 12, making the whole thing 16 rather
+    // than 24. Equal to size() for anything with no tail padding, which is why
+    // this stayed invisible until a class had some.
+    int dataSize() const { return unqual_ ? unqual_->dataSize() : dataSize_; }
+    void setDataSize(int d) { dataSize_ = d; }
 
     const Type *returns() const { return pointee_; }
     const std::vector<const Type *> &params() const { return params_; }
@@ -164,6 +181,8 @@ private:
 
     std::string tag_;
     bool isClass_ = false;
+    int dataSize_ = 0;
+    bool polymorphic_ = false;
     const Type *base_ = nullptr;
     Access baseAccess_ = Access::Public;
     std::vector<Member> members_;

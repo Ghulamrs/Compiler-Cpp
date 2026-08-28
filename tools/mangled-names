@@ -68,7 +68,13 @@ for pair in "x86_64-linux:x86_64-linux-gnu" \
     # about names when they are a difference in features. Turning them off asks
     # clang the question this tool is actually asking. Mangling is unchanged by
     # the flag; only the cleanup machinery goes.
-    if ! clang++ -x c++ -std=c++11 -fno-exceptions -w -target "$theirs" -S "$SRC" -o "$OUT/theirs.s" \
+    #
+    # **-fno-rtti is the same argument again**, and it arrived with vtables: a
+    # polymorphic class makes clang emit _ZTI and _ZTS - the typeinfo object
+    # and its name string - and cxx1 has no RTTI at all, refusing `typeid` by
+    # name. Under -fno-rtti clang writes a plain 0 in the vtable's typeinfo
+    # slot, which is exactly what cxx1 writes.
+    if ! clang++ -x c++ -std=c++11 -fno-exceptions -fno-rtti -w -target "$theirs" -S "$SRC" -o "$OUT/theirs.s" \
                  2>"$OUT/theirs.err"; then
         echo "$mine: clang refused it, so there is nothing to compare against"
         sed 's/^/    /' "$OUT/theirs.err" | head -3

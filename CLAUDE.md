@@ -337,6 +337,38 @@ Windows there is one name for each and it is called directly.
 Naming a base's constructor needs a mem-initializer list, which does not exist
 yet, so a base with no default constructor is refused by name.
 
+**Virtual functions land in two slices: the table, then dispatch.** The first
+emits the vtable and sets the vptr and **refuses a call to a virtual function
+by name**. A static call would be right whenever the static type happened to
+be the dynamic one and silently wrong otherwise, which is the outcome this
+project refuses loudest.
+
+A vtable holds **one pointer per virtual function, in the order the base first
+declared them**, an override replacing an entry rather than appending - which
+is what lets a `Base *` and a `Derived *` agree on where to look. It is emitted
+as an ordinary global whose initialiser pieces are symbol addresses, so no
+backend was told about vtables at all.
+
+The two ABIs differ in the header, and so in what the vptr holds. Itanium
+writes offset-to-top and a typeinfo pointer first and the vptr points at
+**table + 16** - measured from the `addq $16` in clang's own constructor. The
+typeinfo slot is a plain 0: there is no RTTI here and `typeid` is refused by
+name, which is also why `tools/mangled-names` now asks clang with `-fno-rtti`
+as well as `-fno-exceptions`. Microsoft has no header, so the vptr is the
+table's own address, and it spells a virtual member **U** where a non-virtual
+public one is Q.
+
+**A base subobject occupies its data size, not its sizeof**, and that bug was
+found here rather than reasoned about: a derived class may put its first
+member in the base's tail padding. `Base {vptr, int}` ends at twelve and pads
+to sixteen, so `Derived`'s int lands at twelve and the whole is sixteen, where
+laying it out after `sizeof` gave twenty-four. `Type::dataSize` is the
+distinction; it equals `size()` for anything without tail padding, which is why
+single inheritance passed without it.
+
+A polymorphic class with no constructor is refused: nothing else sets the vptr,
+and an implicit default constructor is not written yet.
+
 `docs/CONFORMANCE.md` records what compiles here and should not — currently
 that an enumeration is still `int`, and that a class name cannot be hidden by
 an object of the same name.
