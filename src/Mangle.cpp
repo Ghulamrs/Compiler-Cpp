@@ -279,11 +279,52 @@ public:
         out += fn->isVariadicFn() ? "ZZ" : "@Z";
     }
 
+    // ?pub@C@@2HA - the name, the class, then the access as a digit and the
+    // type spelled the way a data symbol spells it. Measured with cl.
+    void staticMember(const std::string &cls, const std::string &name,
+                      const Type *t, char access) {
+        out = "?";
+        pushName(name);
+        pushName(cls);
+        out += '@';
+        out += access;            // '2' public, '1' protected, '0' private
+        dataType(t);
+    }
+
     void data(const std::string &name, const Type *t) {
         out = "?";
         nameComponent(name);
         out += "3";               // a variable at namespace scope
-        type(t->unqualified());
+        dataType(t);
+    }
+
+    // **A data symbol's type is not spelled the way a parameter's is**, and
+    // the three differences were all measured with cl:
+    //
+    //   int arr[3]        ?arr@@3PAHA        not Y02H - an array decays here
+    //   int m2[2][3]      ?m2@@3PAY02HA      to a pointer to its element
+    //   S *self           ?self@@3PEAUS@@EA  the qualifier carries E as well
+    //   const char *ccp   ?ccp@@3PEBDEB      and repeats the POINTEE's const
+    //
+    // The last is the surprising one: `ccp` is a mutable pointer to const
+    // char, and the qualifier after the type says B all the same. It is the
+    // pointee being const that is written there, not the variable - a const
+    // variable at namespace scope has internal linkage and no symbol to
+    // disagree about.
+    void dataType(const Type *t) {
+        const Type *u = t->unqualified();
+        if (u->isArray()) {
+            out += "PA";
+            type(u->pointee());
+            out += t->isConst() ? "B" : "A";
+            return;
+        }
+        type(u);
+        if (u->isPointer()) {
+            out += 'E';
+            out += u->pointee()->isConst() ? 'B' : 'A';
+            return;
+        }
         out += t->isConst() ? "B" : "A";
     }
 
@@ -505,6 +546,24 @@ bool microsoftConstructorName(const std::string &cls, const Type *fn,
 std::string itaniumDataName(const std::string &name, bool internal) {
     if (!internal) return name;
     return "_ZL" + std::to_string(name.size()) + name;
+}
+
+std::string itaniumStaticMemberName(const std::string &cls,
+                                    const std::string &name) {
+    // No parameters to spell and no access to record, so there is no table to
+    // consult and the name is the whole of it.
+    return "_ZN" + std::to_string(cls.size()) + cls +
+           std::to_string(name.size()) + name + "E";
+}
+
+bool microsoftStaticMemberName(const std::string &cls, const std::string &name,
+                               const Type *t, char access,
+                               std::string *out, std::string *problem) {
+    Microsoft m;
+    m.staticMember(cls, name, t, access);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
 }
 
 bool microsoftDataName(const std::string &name, const Type *t,
