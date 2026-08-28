@@ -85,12 +85,16 @@ public:
     // <nested-name> ::= N [<CV-qualifiers>] <prefix> <unqualified-name> E
     // The K is the const on `this` and it comes before the class, not after
     // it: _ZNK5Point4cgetEv, measured.
-    void memberFunction(const std::string &cls, const std::string &name,
+    // The class named in the prefix is the first substitution candidate: a
+    // parameter mentioning it again is S_, not the name spelled twice.
+    void memberFunction(const std::string &cls, const Type *clsType,
+                        const std::string &name,
                         const Type *fn, bool constThis) {
         out = "_ZN";
         if (constThis) out += "K";
         out += std::to_string(cls.size());
         out += cls;
+        if (clsType != nullptr) subs_.push_back(clsType);
         out += std::to_string(name.size());
         out += name;
         out += "E";
@@ -105,10 +109,12 @@ public:
     // base subobject, and clang emits the two of them. Nothing calls C2 until
     // a derived class does, but the object file is not the same object file
     // without it - so both are emitted, C2 as a label in front of C1's body.
-    void constructor(const std::string &cls, const Type *fn, bool complete) {
+    void constructor(const std::string &cls, const Type *clsType,
+                     const Type *fn, bool complete) {
         out = "_ZN";
         out += std::to_string(cls.size());
         out += cls;
+        if (clsType != nullptr) subs_.push_back(clsType);
         out += complete ? "C1E" : "C2E";
         const std::vector<const Type *> &params = fn->params();
         if (params.empty() && !fn->isVariadicFn()) { out += "v"; return; }
@@ -259,9 +265,15 @@ private:
     // spelled out.
     // One component and the '@' that ends it. A free function has exactly one
     // and then an empty scope list; a member has two, its own and its class.
+    // **A backreference digit replaces the whole component, its '@'
+    // included.** clang writes AEBV1@@Z for a parameter repeating the class -
+    // V, the digit, then only the scope-list terminator - where digit-plus-'@'
+    // would give V1@@. Measured on the first case whose names actually repeat;
+    // every earlier one mentioned each name once, which is why the extra '@'
+    // never showed.
     void pushName(const std::string &n) {
         for (std::size_t i = 0; i < names_.size(); i++)
-            if (names_[i] == n) { out += static_cast<char>('0' + i); out += '@'; return; }
+            if (names_[i] == n) { out += static_cast<char>('0' + i); return; }
         if (names_.size() < 10) names_.push_back(n);
         out += n;
         out += '@';
@@ -382,11 +394,12 @@ bool microsoftFunctionName(const std::string &name, const Type *fn, bool interna
     return true;
 }
 
-bool itaniumMemberName(const std::string &cls, const std::string &name,
+bool itaniumMemberName(const std::string &cls, const Type *clsType,
+                       const std::string &name,
                        const Type *fn, bool constThis,
                        std::string *out, std::string *problem) {
     Itanium m;
-    m.memberFunction(cls, name, fn, constThis);
+    m.memberFunction(cls, clsType, name, fn, constThis);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;
@@ -421,10 +434,11 @@ std::string microsoftDestructorName(const std::string &cls, char access) {
     return out;
 }
 
-bool itaniumConstructorName(const std::string &cls, const Type *fn,
+bool itaniumConstructorName(const std::string &cls, const Type *clsType,
+                            const Type *fn,
                             bool complete, std::string *out, std::string *problem) {
     Itanium m;
-    m.constructor(cls, fn, complete);
+    m.constructor(cls, clsType, fn, complete);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;

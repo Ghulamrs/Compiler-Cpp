@@ -1644,7 +1644,7 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
     std::string out, why;
     bool ok = target_.microsoftNames()
             ? microsoftConstructorName(cls, fn, code, &out, &why)
-            : itaniumConstructorName(cls, fn, true, &out, &why);
+            : itaniumConstructorName(cls, findTypedef(cls), fn, true, &out, &why);
     if (!ok)
         src_.fail(pos, "'" + cls + "::" + cls + "' cannot be given a name the "
                        "linker can hold: " + why);
@@ -1729,7 +1729,8 @@ std::string Parser::memberSymbol(const std::string &cls, const std::string &name
     std::string out, why;
     bool ok = target_.microsoftNames()
             ? microsoftMemberName(cls, name, fn, code, constThis, &out, &why)
-            : itaniumMemberName(cls, name, fn, constThis, &out, &why);
+            : itaniumMemberName(cls, findTypedef(cls), name, fn, constThis,
+                                &out, &why);
     if (!ok)
         src_.fail(pos, "'" + cls + "::" + name + "' cannot be given a name the "
                        "linker can hold: " + why);
@@ -5146,7 +5147,8 @@ void Parser::topLevel(Program &program) {
                                                              std::vector<const Type *>(),
                                                              false);
                     std::string why;
-                    itaniumConstructorName(base->tag(), fnType, false, &sub, &why);
+                    itaniumConstructorName(base->tag(), base, fnType, false,
+                                           &sub, &why);
                 } else {
                     itaniumDestructorName(base->tag(), false, &sub);
                 }
@@ -5200,7 +5202,8 @@ void Parser::topLevel(Program &program) {
     if (memberOf != nullptr && d.name == d.qualifier && !target_.microsoftNames()) {
         const Type *fnType = types_.functionType(types_.get(Kind::Void), params, false);
         std::string c2, why;
-        if (itaniumConstructorName(d.qualifier, fnType, false, &c2, &why))
+        if (itaniumConstructorName(d.qualifier, findTypedef(d.qualifier),
+                                   fnType, false, &c2, &why))
             program.functions.back().setAlias(c2);
     }
     if (memberOf != nullptr && d.name == "~" + d.qualifier && !target_.microsoftNames()) {

@@ -140,7 +140,14 @@ const Type *TypeTable::arrayOf(const Type *t, long long length) {
 }
 
 const Member *Type::findMember(const std::string &name) const {
-    for (const Member &m : members_)
+    // **members(), not members_** - the qualified copy has none of its own.
+    // A `const X` interned before X was completed carries an empty members_
+    // forever, and every question about what a struct gained later has to go
+    // to the unqualified one. This read did not, so a member function taking
+    // `const X &` could not see a member of it while a free function could:
+    // the free function's parameter type was interned after the class closed,
+    // the member function's while it was still open.
+    for (const Member &m : members())
         if (m.name == name) return &m;
     return nullptr;
 }

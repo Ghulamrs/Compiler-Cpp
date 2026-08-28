@@ -37,7 +37,13 @@ bool microsoftFunctionName(const std::string &name, const Type *fn, bool interna
 // and clang writes ?priv@C@@AEAAHXZ for a private member of C. So a member
 // that changes from private to public changes its symbol on Windows and keeps
 // it on Linux.
-bool itaniumMemberName(const std::string &cls, const std::string &name,
+// `clsType` is the class's own Type, and the Itanium mangler needs it for the
+// substitution table: the class spelled in the nested-name prefix is candidate
+// zero, so a parameter that mentions the class again is S_ - measured,
+// _ZN1X1mERKS_ where spelling it out gives _ZN1X1mERK1X, which clang does not
+// write. The Microsoft mangler repeats names by index and needs nothing.
+bool itaniumMemberName(const std::string &cls, const Type *clsType,
+                       const std::string &name,
                        const Type *fn, bool constThis,
                        std::string *out, std::string *problem);
 
@@ -53,7 +59,8 @@ bool microsoftMemberName(const std::string &cls, const std::string &name,
 // object file clang produces. Which one a construction *calls* was measured by
 // reading the call: C1. The Microsoft ABI has one name, ??0, and writes '@' where a
 // member function writes its return type.
-bool itaniumConstructorName(const std::string &cls, const Type *fn,
+bool itaniumConstructorName(const std::string &cls, const Type *clsType,
+                            const Type *fn,
                             bool complete, std::string *out, std::string *problem);
 
 bool microsoftConstructorName(const std::string &cls, const Type *fn,
