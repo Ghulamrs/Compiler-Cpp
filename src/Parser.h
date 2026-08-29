@@ -71,6 +71,11 @@ private:
         // implicit special member on use and not on declaration - measured.
         bool implicit = false;
         bool used = false;
+        // **A specialization is a candidate like any other, and loses a tie.**
+        // [over.match.best]: where a template specialization and an ordinary
+        // function are equally good, the ordinary one wins. It is also never
+        // a redeclaration of one, which is the other thing this flag is asked.
+        bool fromTemplate = false;
     };
 
     // One vtable slot: the function it currently points at, and enough of the
@@ -185,6 +190,18 @@ private:
                                 const std::vector<long long> &values,
                                 std::vector<Shadow> *undo);
     void unbindTemplateParameters(const std::vector<Shadow> &undo);
+    // Deduction: the arguments worked out from the call rather than written.
+    // Answers false and fills `why` when some parameter cannot be deduced.
+    bool deduceTemplateArguments(const TemplateDecl &decl,
+                                 const std::vector<ExprPtr> &args,
+                                 std::vector<const Type *> *binding,
+                                 std::string *why);
+    bool deduceOne(const Type *pattern, const Type *arg,
+                   std::vector<const Type *> *binding, std::string *why) const;
+    // An argument's type as a parameter sees it: an array or function becomes
+    // a pointer and the top-level qualifier goes, which is [temp.deduct.call]
+    // and also just what passing something does.
+    const Type *decayedType(const Type *a) const;
     // The argument list at a use: `<int, 3>` read into types and values.
     void templateArguments(const TemplateDecl &decl,
                            std::vector<const Type *> *binding,
@@ -244,6 +261,8 @@ private:
     // tying with it. Collapsing the two makes that call ambiguous, which is
     // what happened here before they were split.
     enum class Rank { Identity, Qualification, Promotion, Conversion, Ellipsis, None };
+    bool betterCandidate(const std::vector<Rank> &a, const std::vector<Rank> &b,
+                         const Signature &fa, const Signature &fb) const;
 
     struct Declared {
         std::string name;

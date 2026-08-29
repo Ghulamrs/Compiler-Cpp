@@ -101,7 +101,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
-| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1 and 5.2 **done**, 2026-08-29 |
+| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1-5.3 **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
@@ -832,10 +832,11 @@ backend already knows how to emit. This is the pattern to reach for again:
 where C++ adds a *conversion*, look for an existing operation to lower it to
 before adding a case to three code generators.
 
-## Rung 5: templates, 5.1 and 5.2 done and the rest planned
+## Rung 5: templates, 5.1 to 5.3 done and the rest planned
 
-**5.1 and 5.2 landed 2026-08-29 and each has its own section at the end of
-this one.** Everything from 5.3 on is still unwritten: what follows is the
+**5.1, 5.2 and 5.3 landed 2026-08-29 and each has its own section at the end
+of this one - 5.1 to 5.3 was the first shippable milestone and it is
+reached.** Everything from 5.4 on is still unwritten: what follows is the
 order the work is meant to happen in and the reasons for that order, written
 before any of it, the way rungs 2 and 3 were.
 
@@ -902,7 +903,8 @@ step and each is large. Not planned in detail until 5.6 lands.
 
 **5.1 to 5.3 is the first shippable milestone**: function templates that
 deduce, mangle correctly on all three targets, and link against clang's
-objects. Re-plan from there.
+objects. Re-plan from there. **Reached 2026-08-29** - see the three sections
+at the end of this chapter for what each step turned out to mean.
 
 ### What both ABIs do, measured before any of it was written
 
@@ -1035,6 +1037,62 @@ templates**: `int()` as a value-initialised expression is not parsed at all,
 and a definition may not leave a parameter unnamed. Both refuse by name.
 
 Suites 63 / 98 / 33; the C corpus is unchanged.
+
+### 5.3 as it actually landed
+
+**Deduction reads the pattern, which 5.2 already had to build.** The
+template's signature with `Kind::TemplateParam` still in it is walked beside
+the argument types: a parameter reached in that walk binds, and anything else
+has to be matched structurally. There is no table of "which positions are
+dependent" because the type says so.
+
+**A reference parameter looks through itself; everything else decays.**
+`const T &` given an `int` deduces T as int, the const belonging to the
+parameter and not to T. A non-reference parameter sees the argument decayed -
+array to pointer, function to pointer, top-level qualifier gone - which is not
+a rule deduction invented but what passing something already does.
+
+**A parameter written out in full is not checked here.** Deduction only binds;
+whether the argument can actually get there is overload resolution's question,
+asked afterwards. Answering it twice would refuse conversions that are legal.
+
+**Deduction failing is not an error.** A name may be both a template and an
+ordinary function, and then a template that cannot be deduced is simply one
+fewer candidate. It becomes the whole answer only where there is no ordinary
+function of that name, and there the reason is worth printing - `'T' cannot be
+worked out from this call: it is 'int' in one argument and 'double' in
+another`, where clang needs two lines to say the same.
+
+**A specialization is a candidate like any other and loses a tie.**
+[over.match.best]. `resolveOverload` gained `betterCandidate`, which is the
+comparison it already made plus one line: all conversions being equal, the
+function that is not a specialization wins. Without it every call to a name
+that is both is ambiguous, and deduction is what makes that the ordinary case
+rather than a corner.
+
+**So a specialization is registered under two keys** - `twice<int>`, which is
+what the replayed definition declares, and `twice`, which is what resolution
+has to see. And `declareFunction` skips a `fromTemplate` entry when matching,
+since a specialization is never a redeclaration of an ordinary function.
+
+**A candidate that loses gets no body.** It had to be instantiated before it
+could be ranked, but only a specialization something *chose* is defined -
+`Signature::used`, the same gate the implicit special members use. That is
+what keeps the symbol list level with clang's, where a losing candidate was
+never instantiated at all. Measured: a file where the ordinary function wins
+has exactly clang's names, and the explicit-argument path had to be taught to
+set `used` itself, since no ranking runs there.
+
+**The milestone's own criterion was checked as a link, not a diff.** Two
+files including one header of templates, one compiled by cxx1 and one by
+clang, linked both ways round, print what the all-clang build prints. A
+mangled name can be diffed; that a specialization is *called* correctly has to
+be run. Note what makes it link at all: cxx1 emits a specialization as a
+strong symbol where clang's is a comdat, so the linker keeps cxx1's and there
+is no duplicate - the same divergence `docs/CONFORMANCE.md` records for inline
+members, working in this direction by luck rather than by design.
+
+Suites 66 / 104 / 35; the C corpus is unchanged.
 
 ## Decisions already taken
 

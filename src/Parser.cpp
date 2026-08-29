@@ -594,10 +594,18 @@ Parser::instantiate(const TemplateDecl &decl,
     sp.pos = pos;
     specializations_.push_back(sp);
 
-    functionIndex_[key].push_back(functions_.size());
+    // **Under two keys, on purpose.** "twice<int>" is what the replayed
+    // definition declares and what a repeat of the same arguments finds;
+    // "twice" is what overload resolution has to see, because a
+    // specialization competes with the ordinary functions of that name and
+    // [over.match.best] only gets to break the tie if both are candidates.
+    const std::size_t at = functions_.size();
+    functionIndex_[key].push_back(at);
+    functionIndex_[decl.name].push_back(at);
     functions_.push_back(Signature{ key, symbol, fn->returns(), fn->params(),
                                     fn->isVariadicFn(), false, pos, false,
                                     std::string(), false, Access::Public });
+    functions_.back().fromTemplate = true;
     return functions_.back();
 }
 
@@ -611,6 +619,14 @@ void Parser::instantiatePending() {
         again = false;
         for (std::size_t i = 0; i < specializations_.size(); i++) {
             if (specializations_[i].emitted) continue;
+            // **Made where it was asked for, defined only where it was
+            // chosen.** Deduction has to instantiate a candidate before it
+            // can rank one, and an ordinary function may then win the tie -
+            // in which case clang emits no specialization and neither does
+            // this. The same rule the implicit special members follow.
+            const std::vector<std::size_t> *had =
+                overloadsOf(specializations_[i].key);
+            if (had == nullptr || !functions_[(*had)[0]].used) continue;
             specializations_[i].emitted = true;
             again = true;
 
@@ -638,6 +654,110 @@ void Parser::instantiatePending() {
     }
 }
 
+// **What a parameter sees of an argument.** [temp.deduct.call]: an array
+// becomes a pointer to its first element, a function a pointer to itself, and
+// the top-level qualifier goes - which is also just what passing something
+// does, so this is not a rule deduction invented.
+const Type *Parser::decayedType(const Type *a) const {
+    if (a->isReference()) a = a->referent();
+    if (a->isArray()) return types_.pointerTo(a->pointee());
+    if (a->isFunction()) return types_.pointerTo(a);
+    return a->unqualified();
+}
+
+// One parameter of the pattern against one argument's type.
+//
+// The pattern still has Kind::TemplateParam in it, so "does this position
+// deduce anything" is a question about the type and not about a table: a
+// parameter reached here binds, and a type that is not one has to match.
+bool Parser::deduceOne(const Type *pattern, const Type *arg,
+                       std::vector<const Type *> *binding,
+                       std::string *why) const {
+    // **A reference parameter looks *through* itself and keeps the argument's
+    // qualifier; everything else decays.** `const T &` binding an `int`
+    // deduces T as int, and the const on the parameter is not part of T.
+    if (pattern->isReference()) {
+        pattern = pattern->referent();
+        if (arg->isReference()) arg = arg->referent();
+        if (pattern->unqualified() != pattern) {
+            pattern = pattern->unqualified();
+            arg = arg->unqualified();
+        }
+    } else {
+        arg = decayedType(arg);
+        if (pattern->unqualified() != pattern) pattern = pattern->unqualified();
+    }
+
+    if (pattern->kind() == Kind::TemplateParam) {
+        const std::size_t i = static_cast<std::size_t>(pattern->length());
+        const Type *deduced = arg->unqualified();
+        if ((*binding)[i] == nullptr) { (*binding)[i] = deduced; return true; }
+        if ((*binding)[i] != deduced) {
+            *why = "it is '" + (*binding)[i]->describe() + "' in one argument "
+                   "and '" + deduced->describe() + "' in another";
+            return false;
+        }
+        return true;
+    }
+
+    if (pattern->isPointer() && arg->isPointer())
+        return deduceOne(pattern->pointee(), arg->pointee(), binding, why);
+    if (pattern->isArray() && arg->isArray())
+        return deduceOne(pattern->pointee(), arg->pointee(), binding, why);
+
+    // Nothing to deduce here. A parameter written out in full does not have to
+    // match exactly - an ordinary conversion may still get the argument
+    // there - so this is not where a mismatch is reported. Overload
+    // resolution ranks the specialization afterwards and refuses it then.
+    return true;
+}
+
+// The whole call. Answers false with a reason rather than failing, because a
+// name may be both a template and an ordinary function: deduction not
+// working is then not an error, it is one fewer candidate.
+bool Parser::deduceTemplateArguments(const TemplateDecl &decl,
+                                     const std::vector<ExprPtr> &args,
+                                     std::vector<const Type *> *binding,
+                                     std::string *why) {
+    for (std::size_t i = 0; i < decl.params.size(); i++)
+        if (decl.params[i].type != nullptr) {
+            *why = "'" + decl.params[i].name + "' is a non-type parameter, "
+                   "and only a type is deduced from a call - write the "
+                   "arguments out";
+            return false;
+        }
+
+    std::vector<const Type *> pattern(decl.params.size());
+    for (std::size_t i = 0; i < decl.params.size(); i++)
+        pattern[i] = types_.templateParam(static_cast<int>(i));
+    const std::vector<long long> none(decl.params.size(), 0);
+    std::string ignored;
+    const Type *fn = readTemplateDeclaration(decl, pattern, none, &ignored);
+
+    if (fn->params().size() != args.size()) {
+        *why = "it takes " + std::to_string(fn->params().size()) +
+               " argument(s) and this call gives " +
+               std::to_string(args.size());
+        return false;
+    }
+
+    binding->assign(decl.params.size(), nullptr);
+    for (std::size_t i = 0; i < args.size(); i++)
+        if (!deduceOne(fn->params()[i], args[i]->type(), binding, why)) {
+            *why = "'" + decl.params[i < decl.params.size() ? i : 0].name +
+                   "' cannot be worked out from this call: " + *why;
+            return false;
+        }
+    for (std::size_t i = 0; i < binding->size(); i++)
+        if ((*binding)[i] == nullptr) {
+            *why = "'" + decl.params[i].name + "' appears in no parameter, so "
+                   "there is nothing in the call to work it out from - write "
+                   "the arguments out";
+            return false;
+        }
+    return true;
+}
+
 // A template named in an expression. 5.2 wants the arguments written out:
 // deducing them from the call is 5.3, and a class template is 5.4.
 ExprPtr Parser::templateCall(Program *program) {
@@ -646,10 +766,45 @@ ExprPtr Parser::templateCall(Program *program) {
     const TemplateDecl decl = templates_[name];
     if (decl.isClass) refuseTemplateId();
     at_++;
-    if (!peek().is("<"))
-        src_.fail(pos, "'" + name + "' is a function template and its "
-                       "arguments have to be written - deducing them from the "
-                       "call is not supported yet");
+
+    // **No argument list, so they come from the call.** The arguments have to
+    // be parsed before anything can be deduced from them, which is the other
+    // way round from the written case - and it is also the order overload
+    // resolution wants, since the specialization competes with every ordinary
+    // function of the same name.
+    if (!peek().is("<")) {
+        if (!peek().is("("))
+            src_.fail(pos, "'" + name + "' is a function template, and naming "
+                           "one without calling it is not supported yet");
+        at_++;
+        std::vector<ExprPtr> callArgs;
+        parseArguments(callArgs);
+
+        std::vector<const Type *> deduced;
+        std::string why;
+        if (!deduceTemplateArguments(decl, callArgs, &deduced, &why)) {
+            // Not an error while an ordinary function of this name might
+            // still take the call - it is one fewer candidate. With no such
+            // function it is the whole answer, and saying why beats "not
+            // declared".
+            if (overloadsOf(name) == nullptr)
+                src_.fail(pos, "'" + name + "' is a function template and " + why);
+        } else {
+            std::vector<long long> values(decl.params.size(), 0);
+            std::vector<TemplateArg> args;
+            for (std::size_t i = 0; i < deduced.size(); i++) {
+                TemplateArg a;
+                a.isType = true;
+                a.type = deduced[i];
+                args.push_back(a);
+            }
+            instantiate(decl, deduced, values, args, pos);
+        }
+
+        const Signature &sig = resolveOverload(name, callArgs, pos);
+        return completeCall(sig.name, sig.symbol, nullptr, sig.returns,
+                            sig.params, sig.variadic, pos, std::move(callArgs));
+    }
 
     std::vector<const Type *> binding;
     std::vector<long long> values;
@@ -670,7 +825,12 @@ ExprPtr Parser::templateCall(Program *program) {
     // itself be a call that instantiates something, and a reference into
     // functions_ does not survive the vector growing.
     const std::string key = specializationKey(decl.name, args);
-    const Signature &sig = functions_[(*overloadsOf(key))[0]];
+    const std::size_t which = (*overloadsOf(key))[0];
+    // Written out rather than deduced, so no ranking chose it and nothing
+    // else will mark it - and a specialization is defined only where it was
+    // chosen. Saying so here is what makes this call get a body.
+    functions_[which].used = true;
+    const Signature &sig = functions_[which];
     return completeCall(sig.name, sig.symbol, nullptr, sig.returns, sig.params,
                         sig.variadic, pos, std::move(callArgs));
 }
@@ -1749,6 +1909,26 @@ std::string Parser::describeSignature(const Signature &f) {
 // each other, which is what an ambiguity IS - it is not a tie to be broken by
 // declaration order, and breaking it that way would compile a program whose
 // meaning depends on the order of its own prototypes.
+// One candidate beats another when no conversion is worse and at least one is
+// better. **And, all conversions being equal, when it is not a
+// specialization** - [over.match.best]. That last line is not a tiebreak of
+// convenience: deduction makes twice<int> match `twice(1)` exactly, and so
+// does an ordinary `int twice(int)`, so without it every such call is
+// ambiguous.
+bool Parser::betterCandidate(const std::vector<Rank> &a,
+                             const std::vector<Rank> &b,
+                             const Signature &fa, const Signature &fb) const {
+    bool better = false, worse = false;
+    for (std::size_t i = 0; i < a.size() && i < b.size(); i++) {
+        if (a[i] < b[i]) better = true;
+        if (a[i] > b[i]) worse = true;
+    }
+    if (better && worse) return false;
+    if (better) return true;
+    if (worse) return false;
+    return !fa.fromTemplate && fb.fromTemplate;
+}
+
 const Parser::Signature &Parser::resolveOverload(const std::string &name,
                                                  const std::vector<ExprPtr> &args,
                                                  std::size_t pos,
@@ -1824,22 +2004,14 @@ const Parser::Signature &Parser::resolveOverload(const std::string &name,
     }
 
     std::size_t best = 0;
-    for (std::size_t k = 1; k < viable.size(); k++) {
-        bool better = false, worse = false;
-        for (std::size_t i = 0; i < ranks[k].size(); i++) {
-            if (ranks[k][i] < ranks[best][i]) better = true;
-            if (ranks[k][i] > ranks[best][i]) worse = true;
-        }
-        if (better && !worse) best = k;
-    }
+    for (std::size_t k = 1; k < viable.size(); k++)
+        if (betterCandidate(ranks[k], ranks[best],
+                            functions_[viable[k]], functions_[viable[best]]))
+            best = k;
     for (std::size_t k = 0; k < viable.size(); k++) {
         if (k == best) continue;
-        bool bestWins = false, bestLoses = false;
-        for (std::size_t i = 0; i < ranks[k].size(); i++) {
-            if (ranks[best][i] < ranks[k][i]) bestWins = true;
-            if (ranks[best][i] > ranks[k][i]) bestLoses = true;
-        }
-        if (!(bestWins && !bestLoses)) {
+        if (!betterCandidate(ranks[best], ranks[k],
+                             functions_[viable[best]], functions_[viable[k]])) {
             std::string why = "this call to '" + name + "' is ambiguous";
             for (std::size_t j = 0; j < viable.size(); j++)
                 why += "\n    candidate: " + describeSignature(functions_[viable[j]]);
@@ -3679,6 +3851,10 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
 
     for (std::size_t k = 0; k < set.size(); k++) {
         Signature &f = functions_[set[k]];
+        // A specialization sits in this list under the template's plain name
+        // so that resolution can see it. It is not a declaration of that
+        // name, so a function written with the same parameters is a new one.
+        if (f.fromTemplate && instantiationKey_.empty()) continue;
         if (f.params.size() != params.size() || f.variadic != variadic) continue;
         bool same = true;
         for (std::size_t i = 0; i < params.size(); i++)
