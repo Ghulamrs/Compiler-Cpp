@@ -100,10 +100,10 @@ starts. No half-built pipelines waiting on a later phase.
 | 1 | C++ as a better C: keywords, `bool`, tag names, `::` | **done**, 2026-08-26 |
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
-| 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
+| 4 | Inheritance → virtual functions and vtables → multiple inheritance | **done**, 2026-08-29 |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.4 and Windows `throw` **done**, 2026-08-29 |
-| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
+| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1 **done**, 2026-08-29 |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
 punctuators, `__cplusplus`, `bool`/`true`/`false`, class and enum tags as type
@@ -1676,6 +1676,61 @@ exception to cross it.
 
 Suites 88 / 137 / 46 after 6.2, which adds only a refusal - what `throw`
 actually does needs a handler, and the tool is where that lives.
+
+## Rung 7: the C++11 layer, planned
+
+**The last rung, and the widest.** Six features that mostly do not depend on
+each other, so this splits where templates and exceptions had to be pushed
+through in one piece. The order below is by what each one needs from the
+others, and nothing after 7.1 is written.
+
+**7.1 has landed.** [dcl.spec.auto] says a variable's `auto` is deduced *as
+if by template argument deduction from a function call*, which is not a
+similarity to reuse but the rule itself - so `deduceOne` did the work
+unchanged, decay and all, and `Kind::Deduced` stands where a type will be the
+way `Kind::TemplateParam` stands in a pattern. Everything followed from that:
+an array decays, a top-level const goes, `auto &` looks through itself and
+keeps what it found, `auto *` deduces through a pointer.
+
+**The initialiser is read twice** - once to learn its type, once to build it -
+with the tokens put back in between. Reading it once would mean threading the
+expression through every branch of the declaration path, the
+class-with-constructors one included, to save a parse that costs nothing.
+
+**Refused by name where C++14 begins**: a parameter's type and a function's
+return type. Both said so with the standard named, because the answer to "why
+not" is a version number rather than a gap.
+
+**7.2 - `decltype`.** The type of an expression without evaluating it. The
+parser already types every expression, so the work is the *rules*, which are
+where the surprises are: `decltype(x)` is the declared type of `x` while
+`decltype((x))` is a reference, and an rvalue gives a plain type where an
+lvalue gives `T &`. It wants 7.4's references to say the second half at all.
+
+**7.3 - range-for**, which lowers to an ordinary `for` over `begin`/`end` or
+over an array's bounds, and is mostly reuse once `auto` names the loop
+variable. Worth taking early because it is the one that makes the others
+feel like C++.
+
+**7.4 - move semantics**, and this is the large one. `&&` as a type, the
+value categories that decide when one binds, an extra rank in overload
+resolution, and the implicit move constructor and move assignment beside the
+four special members rung 3 already writes. It changes overload resolution,
+which is why nothing else in the rung should be waiting on it.
+
+**7.5 - `constexpr`.** The constant evaluator has been here since rung 1 -
+`fold` is what array bounds and enumerators use - so `constexpr` on a
+*variable* is close to `const` with a required constant initialiser. A
+`constexpr` *function* is the real work: evaluating a call at compile time
+means an interpreter over the AST, which is a second execution model beside
+the backends.
+
+**7.6 - lambdas**, last because they need the most from the rest: a closure is
+a class with a call operator, generated where the lambda is written, holding
+its captures as members. cxx1 has no local classes at all, so that comes
+first; captures by reference need 7.4's story about lifetime; and a generic
+lambda would need 7.1's `auto` in a parameter, which is C++14 and out of
+scope.
 
 ## Decisions already taken
 

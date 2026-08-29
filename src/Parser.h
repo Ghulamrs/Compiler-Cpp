@@ -374,6 +374,18 @@ private:
     // a pointer and the top-level qualifier goes, which is [temp.deduct.call]
     // and also just what passing something does.
     const Type *decayedType(const Type *a) const;
+    // ---- Rung 7.1: `auto` ----
+    //
+    // [dcl.spec.auto] deduces a variable's `auto` **as if by template
+    // argument deduction from a function call**, which is not an analogy to
+    // borrow but the rule itself - so deduceOne does the work, decay and all,
+    // and Kind::Deduced stands where Kind::TemplateParam would.
+    static bool mentionsDeduced(const Type *t);
+    const Type *substituteDeduced(const Type *t, const Type *with);
+    // Reads the initialiser to learn its type, puts the tokens back, and
+    // answers the declared type with `auto` replaced.
+    const Type *deduceAuto(const Type *declared, const std::string &name,
+                           std::size_t pos);
     // The argument list at a use: `<int, 3>` read into types and values.
     void templateArguments(const TemplateDecl &decl,
                            std::vector<const Type *> *binding,

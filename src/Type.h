@@ -27,6 +27,11 @@ enum class Kind {
     // says the same thing however many members the pack has, which is what
     // makes one pattern serve every specialization.
     PackExpansion,
+    // **`auto`, standing where a type will be.** [dcl.spec.auto] deduces it
+    // as if by template argument deduction from a function call, so it is the
+    // same kind of stand-in `TemplateParam` is and is replaced the same way -
+    // before anything but the deduction has looked at it.
+    Deduced,
     // **A template parameter, and it is not a type anything is made of.** It
     // exists so that a template's signature can be written down as the
     // *pattern* it was declared as - `T twice(T)` rather than
@@ -362,6 +367,8 @@ public:
     // other derived type, so two mentions of T in one signature are one
     // pointer and the substitution table sees them as the repeat they are.
     const Type *templateParam(int index);
+    // `auto`, before deduction has replaced it.
+    const Type *deducedType();
     // `owner::name`, where owner is a pattern. Interned on the pair.
     const Type *dependentMember(const Type *owner, const std::string &name);
     const Type *packExpansion(const Type *of);

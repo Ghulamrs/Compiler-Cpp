@@ -164,6 +164,13 @@ const Type *TypeTable::packExpansion(const Type *of) {
     return derived_.back();
 }
 
+const Type *TypeTable::deducedType() {
+    for (Type *d : derived_)
+        if (!d->isConst() && d->kind() == Kind::Deduced) return d;
+    derived_.push_back(new Type(Kind::Deduced, nullptr, -1));
+    return derived_.back();
+}
+
 const Type *TypeTable::arrayOf(const Type *t, long long length) {
     for (Type *d : derived_)
         if (!d->const_ && d->kind() == Kind::Array && d->pointee() == t &&
@@ -318,6 +325,7 @@ const char *Type::name() const {
     case Kind::Array:     return "array";
     case Kind::Function:  return "function";
     case Kind::LValueRef: return "reference";
+    case Kind::Deduced:       return "auto";
     case Kind::TemplateParam: return "template parameter";
     case Kind::DependentMember: return "dependent member type";
     case Kind::PackExpansion: return "parameter pack expansion";

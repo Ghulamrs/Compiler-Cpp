@@ -1047,6 +1047,61 @@ void Parser::instantiatePending() {
     }
 }
 
+bool Parser::mentionsDeduced(const Type *t) {
+    if (t == nullptr) return false;
+    if (t->kind() == Kind::Deduced) return true;
+    if (t->unqualified() != t) return mentionsDeduced(t->unqualified());
+    if (t->isPointer() || t->isArray()) return mentionsDeduced(t->pointee());
+    if (t->isReference()) return mentionsDeduced(t->referent());
+    return false;
+}
+
+// The declared type with `auto` replaced, keeping everything written around
+// it: `const auto &` deduced as int is `const int &`.
+const Type *Parser::substituteDeduced(const Type *t, const Type *with) {
+    if (t->kind() == Kind::Deduced) return with;
+    if (t->unqualified() != t)
+        return types_.withConst(substituteDeduced(t->unqualified(), with));
+    if (t->isPointer()) return types_.pointerTo(substituteDeduced(t->pointee(), with));
+    if (t->isReference()) return types_.referenceTo(substituteDeduced(t->referent(), with));
+    if (t->isArray())
+        return types_.arrayOf(substituteDeduced(t->pointee(), with), t->length());
+    return t;
+}
+
+// **The initialiser is read twice: once to learn its type, once to build it.**
+// The tokens are put back in between, so the ordinary declaration path that
+// follows sees exactly what it would have seen with the type written out.
+// Reading it once and handing the expression on would mean threading it
+// through every branch of that path - the class-with-constructors one
+// included - to save a parse that costs nothing.
+const Type *Parser::deduceAuto(const Type *declared, const std::string &name,
+                               std::size_t pos) {
+    if (!peek().is("="))
+        src_.fail(pos, "'" + name + "' is declared 'auto' and has no "
+                       "initialiser, so there is nothing to deduce its type "
+                       "from");
+
+    const std::size_t resume = at_;
+    at_++;                                   // the '='
+    if (peek().is("{"))
+        src_.fail(peek().pos, "'auto' from a braced initialiser is not "
+                              "supported yet - it deduces an "
+                              "initializer_list, which this compiler has no "
+                              "library for");
+    ExprPtr init = assign();
+    const Type *from = init->type();
+    at_ = resume;
+
+    std::vector<const Type *> binding(1, static_cast<const Type *>(nullptr));
+    std::string why;
+    if (!deduceOne(declared, from, &binding, &why) || binding[0] == nullptr)
+        src_.fail(pos, "'" + name + "' is declared '" + declared->describe() +
+                       "' and its initialiser is '" + from->describe() +
+                       "', which does not fit: " + why);
+    return substituteDeduced(declared, binding[0]);
+}
+
 // **What a parameter sees of an argument.** [temp.deduct.call]: an array
 // becomes a pointer to its first element, a function a pointer to itself, and
 // the top-level qualifier goes - which is also just what passing something
@@ -1081,8 +1136,13 @@ bool Parser::deduceOne(const Type *pattern, const Type *arg,
         if (pattern->unqualified() != pattern) pattern = pattern->unqualified();
     }
 
-    if (pattern->kind() == Kind::TemplateParam) {
-        const std::size_t i = static_cast<std::size_t>(pattern->length());
+    // Kind::Deduced is `auto`, and it is parameter zero of a deduction with
+    // one parameter - which is what [dcl.spec.auto] says it is.
+    if (pattern->kind() == Kind::TemplateParam ||
+        pattern->kind() == Kind::Deduced) {
+        const std::size_t i = pattern->kind() == Kind::Deduced
+                                  ? 0
+                                  : static_cast<std::size_t>(pattern->length());
         const Type *deduced = arg->unqualified();
         if ((*binding)[i] == nullptr) { (*binding)[i] = deduced; return true; }
         if ((*binding)[i] != deduced) {
@@ -2388,9 +2448,15 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // In C++11 'auto' is a type specifier, not the storage class C90 made it.
     // This parser still reads it as one, so reaching here having consumed it
     // is exactly the case where a type was meant to be deduced.
-    if (*storage == StorageAuto)
-        src_.fail(start, "'auto' as a deduced type is not supported yet - "
-                         "write the type");
+    // **In C++11 `auto` is a type specifier, not the storage class C90 made
+    // it.** This parser still reads it as one, so reaching here having
+    // consumed it is exactly the case where a type was meant to be deduced -
+    // and now it is: the storage class is dropped and a stand-in returned.
+    if (*storage == StorageAuto) {
+        *storage = StorageNone;
+        const Type *deduced = types_.deducedType();
+        return quals->isConst ? types_.withConst(deduced) : deduced;
+    }
     if (*storage != StorageNone || quals->isConst || quals->isVolatile)
         src_.fail(start, "this declaration has no type; write one");
     src_.fail(start, "expected a type");
@@ -5013,6 +5079,9 @@ void Parser::parameterTypes(std::vector<const Type *> &params, bool &variadic) {
         Qualifiers pquals;
         const Type *pt = specifiers(&psc, &pquals);
         Declared pd = declarator(pt, true);
+        if (mentionsDeduced(pd.type))
+            src_.fail(pd.pos, "a parameter's type cannot be deduced - `auto` "
+                              "there is C++14, and this compiler is C++11");
         if (pd.type->isArray()) pd.type = types_.pointerTo(pd.type->pointee());
         if (pd.type->isVoid())
             src_.fail(pd.pos, "'void' is only a parameter list on its own");
@@ -7799,6 +7868,7 @@ StmtPtr Parser::declarationBody() {
     std::vector<StmtPtr> inits;
     do {
         Declared d = declarator(base);
+        if (mentionsDeduced(d.type)) d.type = deduceAuto(d.type, d.name, d.pos);
 
         // An object of a class that declares constructors is built by calling
         // one, and that has to be asked before the branch below - `Point p(1)`
@@ -8742,6 +8812,8 @@ void Parser::topLevel(Program &program) {
 
     if (!peek().is("(") && d.paramsAt == 0) {
         for (;;) {
+            if (mentionsDeduced(d.type))
+                d.type = deduceAuto(d.type, d.name, d.pos);
             if (d.type->isVoid()) src_.fail(d.pos, "'" + d.name + "' cannot have type void");
             // A reference at file scope has to be bound before main runs,
             // which is a whole mechanism - the same one static objects with
@@ -8823,6 +8895,10 @@ void Parser::topLevel(Program &program) {
         return;
     }
 
+    if (mentionsDeduced(d.type))
+        src_.fail(d.pos, "a function's return type cannot be deduced - `auto` "
+                         "there is C++14, and this compiler is C++11");
+
     std::size_t resumeAt = 0;
     if (d.paramsAt != 0) {
         resumeAt = at_;
@@ -8887,6 +8963,10 @@ void Parser::topLevel(Program &program) {
                     src_.fail(pscPos, "'register' is the only storage class a "
                                       "parameter may have");
                 Declared pd = declarator(pt, true);
+                if (mentionsDeduced(pd.type))
+                    src_.fail(pd.pos, "a parameter's type cannot be deduced - "
+                                      "`auto` there is C++14, and this "
+                                      "compiler is C++11");
                 if (pd.type->isArray())
                     pd.type = types_.pointerTo(pd.type->pointee());
 
