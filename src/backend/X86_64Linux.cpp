@@ -167,7 +167,7 @@ void X86_64Linux::msAggregateToRax(const Type *t, int slot) {
         return;
     }
     msCopyToSlot(t, slot, "%rax");
-    a_->ins("lea", mem(-(slot), "%rbp"), reg("%rax"));
+    a_->ins("lea", local(slot), reg("%rax"));
 }
 
 void X86_64Linux::msCopyToSlot(const Type *t, int slot, const char *from) {
@@ -219,7 +219,7 @@ void X86_64Linux::canonicalise(const Type *t) {
 
 void X86_64Linux::genAddr(const Expr &e) {
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
-        if (v->isLocal()) a_->ins("lea", mem(-(v->offset()), "%rbp"), reg("%rax"));
+        if (v->isLocal()) a_->ins("lea", local(v->offset()), reg("%rax"));
         else              a_->ins("lea", rip(v->symbol()), reg("%rax"));
         return;
     }
@@ -280,14 +280,14 @@ void X86_64Linux::store(const Type *t) {
 }
 
 void X86_64Linux::storeAt(const Type *t, int offset) {
-    if (isX87(t))                   { a_->ins("fstpt", mem(-(offset), "%rbp")); return; }
-    if (genKind(t) == Kind::Float)  { a_->ins("movss", reg("%xmm0"), mem(-(offset), "%rbp")); return; }
-    if (genKind(t) == Kind::Double) { a_->ins("movsd", reg("%xmm0"), mem(-(offset), "%rbp")); return; }
+    if (isX87(t))                   { a_->ins("fstpt", local(offset)); return; }
+    if (genKind(t) == Kind::Float)  { a_->ins("movss", reg("%xmm0"), local(offset)); return; }
+    if (genKind(t) == Kind::Double) { a_->ins("movsd", reg("%xmm0"), local(offset)); return; }
     switch (t->size(target_)) {
-    case 1: a_->ins("movb", reg("%al"), mem(-(offset), "%rbp")); return;
-    case 2: a_->ins("movw", reg("%ax"), mem(-(offset), "%rbp")); return;
-    case 4: a_->ins("movl", reg("%eax"), mem(-(offset), "%rbp")); return;
-    default: a_->ins("movq", reg("%rax"), mem(-(offset), "%rbp")); return;
+    case 1: a_->ins("movb", reg("%al"), local(offset)); return;
+    case 2: a_->ins("movw", reg("%ax"), local(offset)); return;
+    case 4: a_->ins("movl", reg("%eax"), local(offset)); return;
+    default: a_->ins("movq", reg("%rax"), local(offset)); return;
     }
 }
 
@@ -1151,9 +1151,9 @@ void X86_64Linux::visit(const Return &n) {
     n.value().accept(*this);
 
     if (sretSlot_ != 0) {
-        a_->ins("mov", mem(-(sretSlot_), "%rbp"), reg(abi_.scratch));
+        a_->ins("mov", local(sretSlot_), reg(abi_.scratch));
         copyBlock(n.value().type()->size(target_));
-        a_->ins("mov", mem(-(sretSlot_), "%rbp"), reg("%rax"));
+        a_->ins("mov", local(sretSlot_), reg("%rax"));
         a_->ins("jmp", lbl(returnLabel_));
         return;
     }
@@ -1203,8 +1203,8 @@ std::string X86_64Linux::label(const char *kind, int id) const {
 // The SysV pair: %rax holds the exception object and %rdx the selector, and
 // both go into frame slots the parser already knows the numbers of.
 void X86_64Linux::landingPad(int pointerSlot, int selectorSlot) {
-    a_->ins("mov", reg("%rax"), mem(-(pointerSlot), "%rbp"));
-    a_->ins("movl", reg("%edx"), mem(-(selectorSlot), "%rbp"));
+    a_->ins("mov", reg("%rax"), local(pointerSlot));
+    a_->ins("movl", reg("%edx"), local(selectorSlot));
 }
 
 // The same table the arm64 backend writes, in this assembler's spelling. The
@@ -1362,6 +1362,7 @@ void X86_64Linux::emit(const Function &fn) {
     clearCallSites();
     clearMsTries();
 
+    frameSize_ = fn.frameSize();
     markLine(fn.pos());
     a_->prologue(fn.frameSize(),
                  fn.hasLandingPads() ? ".Lexception." + fn.symbol()
@@ -1369,7 +1370,7 @@ void X86_64Linux::emit(const Function &fn) {
 
     sretSlot_ = fn.sretSlot();
     if (sretSlot_ != 0)
-        a_->ins("mov", reg(abi_.intRegs[0]), mem(-(sretSlot_), "%rbp"));
+        a_->ins("mov", reg(abi_.intRegs[0]), local(sretSlot_));
 
     regSave_ = fn.regSaveSlot();
     if (fn.isVariadic() && abi_.positional) {
@@ -1490,12 +1491,18 @@ void X86_64Linux::emit(const Function &fn) {
 
     fn.body().accept(*this);
 
-    if (sretSlot_ != 0)                     a_->ins("mov", mem(-(sretSlot_), "%rbp"), reg("%rax"));
+    if (sretSlot_ != 0)                     a_->ins("mov", local(sretSlot_), reg("%rax"));
     else if (isX87(fn.returns()))           a_->ins("fldz");
     else if (fn.returns()->isFloating())    a_->ins("pxor", reg("%xmm0"), reg("%xmm0"));
     else                                    a_->ins("mov", immText("0"), reg("%rax"));
     a_->defLabel(returnLabel_);
-    a_->ins("mov", reg("%rbp"), reg("%rsp"));
+    // rbp *is* rsp where the locals are above it, so there is nothing to
+    // restore - the allocation is given back by hand instead.
+    if (localsAboveFrameBase()) {
+        if (frameSize_ > 0) a_->ins("add", imm(frameSize_), reg("%rsp"));
+    } else {
+        a_->ins("mov", reg("%rbp"), reg("%rsp"));
+    }
     a_->ins("pop", reg("%rbp"));
     a_->ins("ret");
     // Before .cfi_endproc, because the last call-site range measures to it.

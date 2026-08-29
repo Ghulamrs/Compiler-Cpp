@@ -180,9 +180,24 @@ MasmSpelling::Rendered MasmSpelling::render(const Op &x) {
     case Op::Mem: {
 
         std::string t = "[" + std::string(x.text.substr(1));
-        if (x.hasDisp && x.disp != 0) {
-            if (x.disp < 0) t += std::to_string(x.disp);
-            else            t += "+" + std::to_string(x.disp);
+        long long d = x.hasDisp ? x.disp : 0;
+        // **The whole frame moved, so every offset into it moves with it.**
+        // The code generator writes frame operands against rbp as Itanium
+        // establishes it - taken before the allocation, with the locals below
+        // it - and this target takes rbp after the allocation instead, so its
+        // rbp is exactly frameSize lower. Every `[rbp + d]` therefore becomes
+        // `[rbp + d + frameSize]`, and that is true of the positive ones as
+        // well: an incoming stack argument is above the old rbp and is above
+        // the new one by the same amount plus the frame.
+        //
+        // Done here rather than where operands are built because there are
+        // several dozen of those and they compute their displacements in
+        // half a dozen different shapes - one of which is all it takes to
+        // miss, and the miss is a program that reads the wrong stack slot.
+        if (std::string(x.text.substr(1)) == "rbp") d += frameSize_;
+        if (d != 0) {
+            if (d < 0) t += std::to_string(d);
+            else       t += "+" + std::to_string(d);
         }
         t += "]";
         return { t, true, false, false };
@@ -291,22 +306,37 @@ void MasmSpelling::prologue(int frameSize, const std::string &lsda) {
     frameSize_ = frameSize;
     const std::string m = mangle(fnName_);
 
+    // **The frame pointer is taken *after* the allocation on this target**,
+    // which is the whole difference from the Itanium prologue and is not a
+    // preference. The Microsoft runtime hands a handler the "establisher
+    // frame", computed as rbp minus the frame offset in the unwind header,
+    // and every displacement in an FH3 table is an unsigned offset *up* from
+    // it. Taking rbp first, as Itanium does, puts every local below that
+    // point where no table can name it - measured against cl, which writes
+    // `sub rsp,N` and only then establishes its frame pointer.
     o_ += "  push rbp\n";
     o_ += "$LNpush$" + m + ":\n";
-    o_ += "  mov rbp, rsp\n";
-    o_ += "$LNset$" + m + ":\n";
     if (frameSize > 0) {
         o_ += "  sub rsp, "; appendNum(o_, frameSize); o_ += '\n';
     }
+    o_ += "$LNalloc$" + m + ":\n";
+    o_ += "  mov rbp, rsp\n";
     o_ += "$LNprolog$" + m + ":\n";
 
-    // Last first. UWOP_ALLOC_SMALL is 2, with (size/8 - 1) in the high
-    // nibble, and reaches 128 bytes; past that UWOP_ALLOC_LARGE is 1 with a
-    // slot of its own holding size/8.
+    // Last instruction first, which is the order an unwinder undoes them in.
+    // That is now SET_FPREG, then the allocation, then the push.
     unwindCodes_ = 0;
     unwindData_.clear();
+    // UWOP_SET_FPREG is 3; the frame offset lives in the header, and it is
+    // zero because rbp is set to rsp exactly.
+    unwindData_ += "  DB $LNprolog$" + m + "-$LNbeg$" + m + "\n";
+    unwindData_ += "  DB 03H\n";
+    unwindCodes_ += 1;
+    // UWOP_ALLOC_SMALL is 2, with (size/8 - 1) in the high nibble, and
+    // reaches 128 bytes; past that UWOP_ALLOC_LARGE is 1 with a slot of its
+    // own holding size/8.
     if (frameSize > 0) {
-        unwindData_ += "  DB $LNprolog$" + m + "-$LNbeg$" + m + "\n";
+        unwindData_ += "  DB $LNalloc$" + m + "-$LNbeg$" + m + "\n";
         if (frameSize <= 128 && frameSize % 8 == 0) {
             char buf[8];
             std::snprintf(buf, sizeof buf, "%02XH",
@@ -319,10 +349,6 @@ void MasmSpelling::prologue(int frameSize, const std::string &lsda) {
             unwindCodes_ += 2;
         }
     }
-    // UWOP_SET_FPREG is 3; the frame offset lives in the header.
-    unwindData_ += "  DB $LNset$" + m + "-$LNbeg$" + m + "\n";
-    unwindData_ += "  DB 03H\n";
-    unwindCodes_ += 1;
     // UWOP_PUSH_NONVOL is 0 with the register in the high nibble - rbp is 5.
     unwindData_ += "  DB $LNpush$" + m + "-$LNbeg$" + m + "\n";
     unwindData_ += "  DB 050H\n";
@@ -529,7 +555,8 @@ void MasmSpelling::postamble(std::ostream &sink) {
 // is the same thing for as long as the range it protects is the only one that
 // reads it.
 void MasmCodeGen::storeUnwindHelp(int slot) {
-    masm_.raw("  mov QWORD PTR [rbp-" + std::to_string(slot) + "], -2\n");
+    masm_.raw("  mov QWORD PTR [rbp+" +
+              std::to_string(masm_.frameSize_ - slot) + "], -2\n");
 }
 
 // **A funclet is a slice of the ordinary output, lifted.** Walking the handler
@@ -564,7 +591,11 @@ void MasmCodeGen::endFunclet(const std::string &resume) {
     f += "$LNpush$" + sym + ":\n";
     f += "  sub rsp, 32\n";
     f += "$LNprolog$" + sym + ":\n";
-    f += "  lea rbp, QWORD PTR [rdx+" + std::to_string(masm_.frameSize_) + "]\n";
+    // **rdx is the establisher frame, and that is now exactly the parent's
+    // rbp** - the two became the same thing when the frame pointer moved to
+    // the bottom of the allocation, so the handler body addresses the
+    // parent's locals with no adjustment at all.
+    f += "  mov rbp, rdx\n";
     f += body;
     f += "  lea rax, " + masm_.labelName(resume) + "\n";
     f += "  add rsp, 32\n";
@@ -662,6 +693,10 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
         o += "  DD " + std::to_string(h.objectSlot == 0
                                           ? 0 : frame - h.objectSlot) + "\n";
         o += "  DD imagerel " + h.funclet + "\n";
+        // dispFrame, left at the frame size because that is what cl writes -
+        // measured on a function with no frame pointer, where its frame was
+        // 56 and this field was 56. Zero was tried, on the reasoning that rbp
+        // is now the establisher, and changed nothing.
         o += "  DD " + std::to_string(frame) + "\n";
     }
 

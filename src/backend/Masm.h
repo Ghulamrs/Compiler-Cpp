@@ -86,6 +86,7 @@ public:
 
 private:
     bool usesFunclets() const override { return true; }
+    bool localsAboveFrameBase() const override { return true; }
     std::string beginFunclet() override;
     void endFunclet(const std::string &resume) override;
     void storeUnwindHelp(int slot) override;

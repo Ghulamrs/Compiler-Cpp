@@ -1706,7 +1706,52 @@ in `rax`. Because cxx1 addresses every local as `[rbp-N]`, a handler body
 compiles inside a funclet exactly as it would inline, which is the one thing
 about this that is easier here than it looks.
 
-### 6.5b steps 2 and 3 as they stand: emitted, and the frame is wrong
+### 6.5b: the Windows frame now has its base at the bottom
+
+**Done, and it stands on its own.** The prologue on this target is
+`push rbp; sub rsp,N; mov rbp,rsp` rather than Itanium's
+`push rbp; mov rbp,rsp; sub rsp,N`, so **rbp is the establisher frame** the
+Microsoft runtime hands a handler, and every local is a *positive*
+displacement from it - which is the only thing an FH3 table can express. The
+epilogue gives the allocation back by hand, since there is no longer a saved
+rsp in rbp to restore from.
+
+**The whole frame moved by one constant, so the translation is one line, in
+one place.** Every frame operand in the code generator is written against rbp
+as Itanium establishes it, and this target's rbp is exactly `frameSize` lower
+- so `[rbp + d]` becomes `[rbp + d + frameSize]` when an operand is
+*rendered*, positive displacements included: an incoming stack argument is
+above the old rbp and above the new one by the same amount plus the frame.
+
+**That is not where it was tried first.** Rewriting the call sites looked
+tidier and was wrong: `mem(-(slot), "%rbp")` is one of at least half a dozen
+shapes the generator builds a frame operand in - `mem(off - slot, ...)`,
+`mem(-n.resultSlot(), ...)`, `mem(to, ...)` with `to` precomputed - and
+catching fifteen of them left the rest addressing a frame that had moved. The
+suite said so immediately: **eight Windows cases failed with wrong values and
+no crash**, which is what a stack slot read one frame away looks like. One
+choke point at the renderer catches every shape by construction.
+
+### 6.5b steps 2 and 3 as they stand: emitted, and the runtime will not arrive
+
+**Superseded in part** - the frame fault described below is fixed; what
+follows is what has been eliminated since, and what has not.
+
+**Still failing:** a throw dies at **0xC0000005** rather than reaching the
+handler. It faults with an *empty* handler too, so it is dispatch and not the
+handler's body. What has been ruled out: the frame shape (above); the funclet
+prologue, which is now byte-for-byte cl's shape - `mov [rsp+16],rdx; push rbp;
+sub rsp,32; mov rbp,rdx`, cl included; the funclet's own unwind codes, where
+`032H` for a 32-byte allocation had been written `042H`; and `dispFrame`,
+tried at both `frameSize` and 0 with no change.
+
+**What has not been examined** is the ip2state map, which is where the next
+attempt should start: cl writes **six** entries for one try where this writes
+four, and three of cl's six describe the funclet at states 0, 1, 0 rather than
+the single row this writes. A debugger on the box is the way in - reasoning
+from listings has now returned four wrong answers in a row.
+
+
 
 **What works on the Windows box.** Handler funclets are emitted in `text$x`
 with unwind data of their own naming `__CxxFrameHandler3` and the parent's

@@ -71,6 +71,23 @@ protected:
     // documented beside the arm64 one; only the spelling differs here.
     void emitLsda(const std::string &symbol);
 
+    // **Where the frame base sits, relative to the locals.** Itanium takes rbp
+    // before allocating, so every local is below it and written [rbp-slot].
+    // The Microsoft ABI wants the frame base at the *bottom* of the fixed
+    // allocation - it is the "establisher frame" the runtime hands a handler,
+    // and every offset in an FH3 table is an unsigned displacement up from
+    // it, so a local below it cannot be described at all. There rbp is taken
+    // after the allocation and a local is [rbp + (frameSize - slot)].
+    virtual bool localsAboveFrameBase() const { return false; }
+
+    // One local. Every frame-relative operand in this file is written
+    // against rbp as Itanium establishes it - above the allocation - and a
+    // target whose frame base is elsewhere moves *all* of them by one
+    // constant, which is done once where operands are rendered rather than
+    // at each of the several dozen places one is built.
+    Op local(long long slot) const { return mem(-slot, "%rbp"); }
+    int frameSize_ = 0;
+
     // Whatever this target writes after a function to describe its handlers.
     // Itanium writes one .gcc_except_table; the Microsoft ABI writes funclets
     // and four tables, so the hook is the shape rather than the table.

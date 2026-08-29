@@ -876,18 +876,15 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     // handlers are kept whole and none of __cxa_begin_catch, the selector or
     // _Unwind_Resume is built at all.
     const bool microsoft = target_.microsoftNames();
-    // **Refused until the frame is the right shape, and that is measured.**
-    // Everything below builds, and on Windows it emits funclets, the FH3
-    // tables and unwind data the assembler and linker accept - a `try` that
-    // does not throw runs correctly there. A throw dies at 0xC0000409,
-    // because the FuncInfo's offsets cannot describe this frame: see the
-    // rung 6.5b section in CLAUDE.md. Letting it through would compile a
-    // program that ends itself the first time it is right about anything.
+    // **Refused still, and the frame is no longer the reason.** rbp is the
+    // establisher frame now and every displacement in the tables is a
+    // positive offset from it, which was the fault this rung was stuck on.
+    // What remains is that the runtime does not arrive in a handler
+    // correctly - see rung 6.5b in CLAUDE.md for what has been eliminated.
     if (microsoft)
         src_.fail(pos, "'try' is not supported yet for x86_64-windows - the "
-                       "handler funclets and their tables are emitted, and "
-                       "the frame they describe is not the one this target "
-                       "builds yet; see rung 6.5b");
+                       "funclets and tables are emitted and the runtime does "
+                       "not yet arrive in them correctly; see rung 6.5b");
     functionHasTry_ = true;
     if (inTryBody_)
         src_.fail(pos, "a 'try' inside another one is not supported yet - the "
