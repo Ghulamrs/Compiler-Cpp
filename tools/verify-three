@@ -80,6 +80,29 @@ if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then
             fail=$((fail + 1))
         fi
     done
+    # The refusals. What is checked is the same thing tests/run.sh checks -
+    # that the compiler stopped, and that its message contains the recorded
+    # text - because a refusal that stops for the wrong reason is not the one
+    # the case is about.
+    for e in "$ROOT"/tests/cases/*.error; do
+        n=$(basename "$e" .error)
+        nt="$ROOT/tests/cases/$n.notarget"
+        if [ -f "$nt" ] && grep -q x86_64-windows "$nt"; then
+            echo "  skip $n: $(grep x86_64-windows "$nt")"
+            continue
+        fi
+        got="$OUT/winout/$n.err"
+        if [ ! -f "$got" ]; then
+            echo "  $n: did not run"; fail=$((fail + 1)); continue
+        fi
+        if tr -d '\r' < "$got" | grep -qF "$(cat "$e")"; then
+            pass=$((pass + 1))
+        else
+            echo "  $n: wanted \"$(cat "$e")\", got:"
+            tr -d '\r' < "$got" | sed 's/^/      /' | head -4
+            fail=$((fail + 1))
+        fi
+    done
     echo "windows cases: $pass passed, $fail failed"
     [ "$fail" -eq 0 ] || STATUS=1
     rm -rf "$OUT"

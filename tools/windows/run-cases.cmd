@@ -1,12 +1,21 @@
 @echo off
-rem  Build cxx1 with cl and run every case that has recorded output.
+rem  Build cxx1 with cl and put every case through it - the ones with recorded
+rem  output and the ones that must be refused.
 rem
 rem  Usage:  run-cases.cmd <root>
-rem  Writes  <root>\winout\<case>.out for each case, and nothing else. The
-rem  comparison is deliberately NOT done here: a .expected file arrives with
-rem  Unix line endings and a program's own output leaves through the CRT with
-rem  Windows ones, so `fc` reports every case as different. tools/verify-three
-rem  pulls these back and diffs them on the Mac, where one `tr -d` settles it.
+rem  Writes  <root>\winout\<case>.out for a case that runs and
+rem          <root>\winout\<case>.err for one that must not compile, and
+rem  nothing else. The comparison is deliberately NOT done here: a .expected
+rem  file arrives with Unix line endings and a program's own output leaves
+rem  through the CRT with Windows ones, so `fc` reports every case as
+rem  different. tools/verify-three pulls these back and diffs them on the Mac,
+rem  where one `tr -d` settles it.
+rem
+rem  **The refusals matter most on this target and were untested longest.**
+rem  The parser is shared, so a diagnostic here usually repeats what the other
+rem  two boxes proved - except where it does not: `throw`, `try` and a class
+rem  with a destructor are refused *only* for x86_64-windows, and until this
+rem  loop existed no box checked those at all.
 setlocal enabledelayedexpansion
 if "%~1"=="" (echo run-cases.cmd: needs the tree root & exit /b 2)
 set ROOT=%~1
@@ -39,5 +48,23 @@ for %%f in (%ROOT%\tests\cases\*.expected) do (
         )
     )
 )
+rem  The refusal cases. Only the compile is asked for - -S stops before the
+rem  assembler, which this box has for MASM but which is beside the point when
+rem  what is being checked is that the compiler said no.
+for %%f in (%ROOT%\tests\cases\*.error) do (
+    set NAME=%%~nf
+    set SKIP=
+    if exist %ROOT%\tests\cases\!NAME!.notarget (
+        findstr /C:"x86_64-windows" %ROOT%\tests\cases\!NAME!.notarget >nul 2>&1 && set SKIP=1
+    )
+    if defined SKIP (
+        echo   skip !NAME! for x86_64-windows:
+        findstr /C:"x86_64-windows" %ROOT%\tests\cases\!NAME!.notarget
+    ) else (
+        %ROOT%\cxx1-msvc.exe -S %ROOT%\tests\cases\!NAME!.cpp -o nul >%ROOT%\winout\!NAME!.err 2>&1
+        if not errorlevel 1 echo COMPILED-AND-SHOULD-NOT-HAVE !NAME!
+    )
+)
+
 echo run-cases.cmd: done
 endlocal

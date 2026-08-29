@@ -1642,6 +1642,21 @@ targets have no other oracle at all.
 deliberate: scaffold kept only on the box comes back after a rebuild as what
 looks like a network fault.
 
+**The Windows runner checks the refusals too**, and did not until 2026-08-29.
+It looped over `*.expected` alone - "every case that has recorded output" -
+so 45 of 90 cases were checked there while the other two boxes ran all 90.
+Mostly that repeated what they had already proved, since the parser is shared;
+but not entirely, and the exception is the part that mattered. `throw`, `try`
+and a local with a destructor are refused *only* for x86_64-windows, and
+until the loop existed **no box checked those refusals at all**. It now runs
+86 of 90 with four named skips - and the first thing it found was that
+`throw-refused` stops for a different reason on that target, which is correct
+and is why the case is skipped there rather than argued with.
+
+The lesson is worth more than the fix: **a runner that iterates one kind of
+file will quietly check one kind of thing**, and the count is the only place
+it shows.
+
 ## Build
 
 ```
