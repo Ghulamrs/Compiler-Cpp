@@ -62,8 +62,12 @@ void GnuSpelling::functionBegin(const std::string &name, bool exported) {
 // The MASM spelling has said all of this in Microsoft's own way since the
 // Windows backend was written, with PROC FRAME and .PUSHREG, so Windows
 // frames were already unwindable and only the two Itanium targets were not.
-void GnuSpelling::prologue(int frameSize) {
+void GnuSpelling::prologue(int frameSize, const std::string &lsda) {
     o_ += "  .cfi_startproc\n";
+    if (!lsda.empty()) {
+        o_ += "  .cfi_personality 155, DW.ref.__gxx_personality_v0\n";
+        o_ += "  .cfi_lsda 27, " + lsda + "\n";
+    }
     ins("push", reg("%rbp"));
     o_ += "  .cfi_def_cfa_offset 16\n";
     o_ += "  .cfi_offset %rbp, -16\n";

@@ -1,0 +1,1 @@
+x86_64-windows  the Microsoft ABI's exception tables are a different design rather than a different spelling of the Itanium one - see CLAUDE.md, rung 6.5

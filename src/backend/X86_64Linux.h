@@ -64,6 +64,16 @@ protected:
     std::size_t emittedSize() override { return out_.size(); }
     Spelling *a_ = &gnu_;
 
+    void landingPad(int pointerSlot, int selectorSlot) override;
+
+protected:
+    // The `.gcc_except_table` for the function just emitted. Its shape is
+    // documented beside the arm64 one; only the spelling differs here.
+    void emitLsda(const std::string &symbol);
+    std::vector<std::string> lsdaTypes_;
+    std::vector<std::string> lsdaStubs_;
+    bool lsdaPersonality_ = false;
+
 private:
     std::vector<std::string> chunks_;
     std::vector<DwarfFunction> dwarfFns_;

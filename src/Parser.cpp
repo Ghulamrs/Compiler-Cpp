@@ -5050,7 +5050,7 @@ static const char *notYetSupported(const std::string &word) {
         "noexcept", "not", "not_eq", "nullptr", "operator", "or",
         "or_eq", "reinterpret_cast",
         "static_assert", "static_cast", "template", "thread_local",
-        "try", "typeid", "using", "virtual",
+        "typeid", "using", "virtual",
         "xor", "xor_eq"
     };
     for (const char *k : pending)
@@ -8165,7 +8165,163 @@ StmtPtr Parser::statement() {
     return s;
 }
 
+// **`try` is a block, a landing pad, and no new statement machinery.**
+//
+// The pad is where the runtime arrives, and everything from there on is built
+// here out of nodes that already existed: the selector the personality
+// routine chose is compared against 1, 2, 3 - the order the handlers are
+// written in, which is the order their types go into the table - and each arm
+// is `__cxa_begin_catch`, a copy into the caught variable, the handler's own
+// body, and `__cxa_end_catch`. What no handler matches falls through to
+// `_Unwind_Resume`, which is what "this frame does not want it after all"
+// means.
+//
+// The chain is nested if/else rather than labels and jumps, because that is a
+// shape the backends already walk.
+StmtPtr Parser::tryStatement(std::size_t pos) {
+    if (target_.microsoftNames())
+        src_.fail(pos, "'try' is not supported yet for x86_64-windows - the "
+                       "Microsoft ABI's tables are a different design and not "
+                       "a different spelling of this one");
+    if (inTryBody_)
+        src_.fail(pos, "a 'try' inside another one is not supported yet - the "
+                       "call-site table holds sorted ranges that do not "
+                       "overlap, and a nested one has to split its parent");
+
+    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+    const int pointerSlot = allocateFrameSlot(voidPtr);
+    const int selectorSlot = allocateFrameSlot(types_.intType());
+    functionHasPads_ = true;
+
+    const bool wasInTry = inTryBody_;
+    inTryBody_ = true;
+    if (!peek().is("{"))
+        src_.fail(peek().pos, "'try' takes a block");
+    StmtPtr body = block();
+    inTryBody_ = wasInTry;
+
+    if (!peek().is("catch"))
+        src_.fail(peek().pos, "a 'try' needs at least one 'catch'");
+
+    // Read the handlers innermost-last, so the chain can be built from the
+    // bottom: what nothing matches is _Unwind_Resume, and each handler wraps
+    // what came before it as its else.
+    struct Handler {
+        std::string type;         // the _ZTI symbol, empty for catch (...)
+        StmtPtr stmt;
+    };
+    std::vector<Handler> handlers;
+    std::vector<int> indices;
+    std::vector<std::string> types;
+    bool sawCatchAll = false;
+
+    while (peek().is("catch")) {
+        const std::size_t cpos = peek().pos;
+        at_++;
+        expect("(");
+        if (sawCatchAll)
+            src_.fail(cpos, "'catch (...)' matches everything, so a handler "
+                            "after it could never run");
+
+        Handler h;
+        std::string caughtName;
+        const Type *caught = nullptr;
+        if (consume("...")) {
+            sawCatchAll = true;
+        } else {
+            StorageClass sc;
+            Qualifiers quals;
+            const Type *base = specifiers(&sc, &quals);
+            Declared d = declarator(base, true);
+            if (d.type->isReference())
+                src_.fail(d.pos, "catching by reference is not supported yet - "
+                                 "catch by value");
+            std::string why;
+            if (!itaniumTypeInfoName(d.type->unqualified(), &h.type, &why))
+                src_.fail(cpos, "'catch' cannot name this type: " + why);
+            caught = d.type->unqualified();
+            caughtName = d.name;
+        }
+        expect(")");
+        types.push_back(h.type);
+        indices.push_back(++functionTypeIndex_);
+
+        // The handler's own scope, holding the caught object if it was named.
+        enterScope();
+        const int scope = enterBlock();
+        std::vector<StmtPtr> steps;
+
+        std::vector<ExprPtr> beginArgs;
+        ExprPtr ptr(Var::local(".ex.ptr", pointerSlot));
+        ptr->setType(voidPtr);
+        beginArgs.push_back(std::move(ptr));
+        ExprPtr began = runtimeCall("__cxa_begin_catch", voidPtr,
+                                    std::move(beginArgs));
+
+        if (caught != nullptr && !caughtName.empty()) {
+            const int slot = declare(caughtName, caught, cpos);
+            const Type *caughtPtr = types_.pointerTo(caught);
+            ExprPtr cast(new Cast(caughtPtr, std::move(began)));
+            cast->setType(caughtPtr);
+            ExprPtr from(new Unary('*', std::move(cast)));
+            from->setType(caught);
+            ExprPtr to(Var::local(caughtName, slot));
+            to->setType(caught);
+            ExprPtr copy(new Assign(std::move(to), std::move(from)));
+            copy->setType(caught);
+            steps.push_back(StmtPtr(new ExprStmt(std::move(copy))));
+        } else {
+            steps.push_back(StmtPtr(new ExprStmt(std::move(began))));
+        }
+
+        if (!peek().is("{")) src_.fail(peek().pos, "'catch' takes a block");
+        steps.push_back(block());
+
+        ExprPtr ended = runtimeCall("__cxa_end_catch", types_.get(Kind::Void),
+                                    std::vector<ExprPtr>());
+        steps.push_back(StmtPtr(new ExprStmt(std::move(ended))));
+        leaveScope();
+        Block *b = new Block(std::move(steps));
+        b->setScope(scope);
+        h.stmt = StmtPtr(b);
+        handlers.push_back(std::move(h));
+    }
+
+    // Nothing matched: hand it back to the unwinder.
+    std::vector<ExprPtr> resumeArgs;
+    ExprPtr again(Var::local(".ex.ptr", pointerSlot));
+    again->setType(voidPtr);
+    resumeArgs.push_back(std::move(again));
+    StmtPtr chain(new ExprStmt(runtimeCall("_Unwind_Resume",
+                                           types_.get(Kind::Void),
+                                           std::move(resumeArgs))));
+
+    for (std::size_t i = handlers.size(); i-- > 0; ) {
+        if (handlers[i].type.empty()) {          // catch (...) matches always
+            chain = std::move(handlers[i].stmt);
+            continue;
+        }
+        ExprPtr sel(Var::local(".ex.sel", selectorSlot));
+        sel->setType(types_.intType());
+        ExprPtr want(new Num(static_cast<long long>(indices[i])));
+        want->setType(types_.intType());
+        ExprPtr test(new Binary(BinOp::Eq, std::move(sel), std::move(want)));
+        test->setType(types_.intType());
+        chain = StmtPtr(new If(std::move(test), std::move(handlers[i].stmt),
+                               std::move(chain)));
+    }
+
+    return StmtPtr(new Try(std::move(body), std::move(chain), pointerSlot,
+                           selectorSlot, std::move(types)));
+}
+
 StmtPtr Parser::statementBody() {
+    if (peek().is("try")) {
+        const std::size_t tpos = peek().pos;
+        at_++;
+        return tryStatement(tpos);
+    }
+
     if (peek().is("throw")) {
         const std::size_t tpos = peek().pos;
         at_++;
@@ -8982,6 +9138,9 @@ void Parser::topLevel(Program &program) {
                                          variadic, regSaveSlot, d.pos,
                                          std::move(fnVars_)));
     program.functions.back().setSymbol(defined.symbol);
+    program.functions.back().setHasLandingPads(functionHasPads_);
+    functionHasPads_ = false;
+    functionTypeIndex_ = 0;
     // A constructor is emitted under both of Itanium's names: C1 for a
     // complete object, C2 for a base subobject, the second as a label in front
     // of the first. The Microsoft ABI has one name and wants no alias.

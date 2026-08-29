@@ -102,7 +102,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
-| 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.2 **done**, 2026-08-29 |
+| 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.3 **done**, 2026-08-29 |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
@@ -1429,10 +1429,8 @@ walk out of a cxx1 frame either.
 **6.2 has landed** - see its section below. The prediction held exactly: the
 type_info pointer was the whole of the work.
 
-**6.3 - `try`/`catch`**, which is the landing pad, the personality routine and
-the `.gcc_except_table` LSDA: a call-site table saying which range goes to
-which pad, and an action table saying which types that pad accepts. The
-largest single step in the rung.
+**6.3 has landed** - see its section below. It was the largest step, and all
+three of its bugs were silent.
 
 **6.4 - cleanups.** A destructor has to run when an exception passes a local,
 which means a landing pad that runs them and calls `_Unwind_Resume`. The set
@@ -1442,6 +1440,52 @@ what is new is reaching it from a pad rather than from the return path.
 **6.5 - Windows.** `__CxxFrameHandler4` and MSVC's own tables, which are a
 different design from the Itanium one rather than a different spelling of it.
 Expect this to lag and do not promise otherwise.
+
+### 6.3 as it actually landed
+
+**Almost all of a `try` is ordinary statements**, which is what kept this
+step from being much larger. A backend is told three things: a label before
+the body and one after it, a label at the pad where the runtime arrives with
+the exception pointer and the selector in two registers, and the type_info
+symbols in order. Everything else - the selector comparison, the calls to
+`__cxa_begin_catch` and `__cxa_end_catch`, the copy into the caught variable,
+the handler bodies, and the `_Unwind_Resume` that nothing matched - is built by
+the parser out of nodes that already existed, as a chain of if/else.
+
+**Three bugs on the way, and every one of them was silent:**
+
+**Every call in a function has to be in the call-site table**, not only the
+ones inside a try. libc++abi takes a return address the table does not mention
+as a program that should stop, so the ranges between and around the try blocks
+are written out with no landing pad. Without them, an exception passing
+through a function that has a table at all ended in terminate.
+
+**The table needs a label that is not an `L` temporary.** Mach-O's
+`.subsections_via_symbols` lets the linker move and drop the pieces of a
+section and it cuts them at *symbols*; a temporary label is not one. With only
+`L` labels every table in a file was a single atom, so the **first** try in a
+file worked and the second did not - the exception simply was not caught, with
+no diagnostic anywhere. clang writes `GCC_except_table0` for this reason and
+not for readability.
+
+**The call site's action field is a byte offset plus one, not a type index.**
+With one handler the two are the same number and the difference is invisible;
+with three, the second try's field has to skip six bytes rather than three
+entries. The selector is an index into the *function's* type table too, not
+into one try's handler list, which the parser has to know because it is what
+its comparisons are written against.
+
+**`tools/mangled-names` chooses `-fexceptions` from the source now.** A file
+that writes `throw` or `try` cannot be compiled with exceptions off, and one
+that does write them is asking for exactly the symbols the flag was hiding.
+Recorded as a divergence: clang emits `__clang_call_terminate` for the case
+where a destructor throws while an exception is already unwinding, and cxx1
+runs no destructors during unwinding yet - that is 6.4.
+
+**Windows was unreachable when this landed** and the commit went in on two
+boxes with that said out loud. Nothing here is target-specific to it -
+`try` is refused by name for x86_64-windows - but the shared code did change,
+so the cl build is unverified until the box is back.
 
 ### 6.2 as it actually landed
 

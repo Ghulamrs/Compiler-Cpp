@@ -19,7 +19,7 @@ public:
 
     void defLabel(const std::string &l) override;
     void functionBegin(const std::string &name, bool exported) override;
-    void prologue(int frameSize) override;
+    void prologue(int frameSize, const std::string &lsda) override;
     void functionEnd(const std::string &name) override;
 
     void globl(const std::string &name) override;

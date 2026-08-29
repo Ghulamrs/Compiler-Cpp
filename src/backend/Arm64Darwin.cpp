@@ -306,6 +306,119 @@ int Arm64Darwin::aggStackSlot(const Type *t, const AggPlan &p, int &at) const {
     return here;
 }
 
+// **The runtime arrives here with two values in registers**, and this is the
+// whole of what the backend does about it: x0 holds the exception object and
+// x1 the selector the personality routine chose, and both go into frame slots
+// the parser already knows the numbers of. From the next instruction they are
+// ordinary locals.
+void Arm64Darwin::landingPad(int pointerSlot, int selectorSlot) {
+    out_ << "  mov x9, #" << pointerSlot << "\n";
+    out_ << "  sub x9, x29, x9\n";
+    out_ << "  str x0, [x9]\n";
+    out_ << "  mov x9, #" << selectorSlot << "\n";
+    out_ << "  sub x9, x29, x9\n";
+    out_ << "  str w1, [x9]\n";
+}
+
+// **The language-specific data area, laid out exactly as clang lays it out.**
+// Every number here was read off clang's own output rather than a
+// description, because the personality routine reads the header and then
+// trusts it: a wrong encoding byte is not a diagnostic, it is a program that
+// stops somewhere else.
+//
+//   255  LPStart omitted, so a landing pad is an offset from the function
+//   155  the type table is indirect, pc-relative, signed 4 bytes
+//     1  the call-site table is uleb128
+//
+// The call-site table is *sorted and gapless in effect*: a range that is not
+// mentioned has no landing pad, which is what the ranges outside a try want.
+// The type table is written backwards - index 1 is the entry just before
+// Lttbase - which is why the loop below runs in reverse.
+void Arm64Darwin::emitLsda(const std::string &symbol) {
+    const std::string ex = "Lexception." + symbol;
+    const std::string ttbase = "Lttbase." + symbol;
+    const std::string ttref = "Lttbaseref." + symbol;
+    const std::string cstBegin = "Lcst.begin." + symbol;
+    const std::string cstEnd = "Lcst.end." + symbol;
+    const std::string fnBegin = "Lfunc.begin." + symbol;
+    const std::string fnEnd = "Lfunc.end." + symbol;
+
+    out_ << "  .section __TEXT,__gcc_except_tab\n";
+    out_ << "  .p2align 2\n";
+    // **A label that is not an `L` temporary, and it is load-bearing.**
+    // Mach-O's `.subsections_via_symbols` lets the linker move and drop the
+    // pieces of a section, and it cuts them at symbols - a temporary label is
+    // not one. With only `L` labels here every function's table was a single
+    // atom, so the first table in a file worked and the second did not: the
+    // exception simply was not caught, with no diagnostic anywhere. clang
+    // writes `GCC_except_table0` for the same reason.
+    out_ << "GCC_except_table." << symbol << ":\n";
+    out_ << ex << ":\n";
+    out_ << "  .byte 255\n";
+    out_ << "  .byte 155\n";
+    out_ << "  .uleb128 " << ttbase << "-" << ttref << "\n";
+    out_ << ttref << ":\n";
+    out_ << "  .byte 1\n";
+    out_ << "  .uleb128 " << cstEnd << "-" << cstBegin << "\n";
+    out_ << cstBegin << ":\n";
+
+    // **Every call in the function has to be in this table, not only the
+    // ones inside a try.** The runtime looks an address up here and takes a
+    // miss as a program that should stop: libc++abi calls terminate when the
+    // return address is past the end of the table. So the ranges between the
+    // try blocks are written out too, with no landing pad and no action -
+    // which is what "an exception passes straight through here" means.
+    //
+    // **The call site's action field is a byte offset into the action table
+    // plus one, not an index.** With one handler the two are the same number
+    // and the difference is invisible; with three, the second try's field has
+    // to skip six bytes rather than three entries. Each record here is two
+    // bytes - the type index and the offset to the next record - so the step
+    // is twice the handler count.
+    int action = 1;
+    std::string at = fnBegin;
+    for (std::size_t i = 0; i < callSites().size(); i++) {
+        const CallSite &c = callSites()[i];
+        out_ << "  .uleb128 " << at << "-" << fnBegin << "\n";
+        out_ << "  .uleb128 " << c.begin << "-" << at << "\n";
+        out_ << "  .byte 0\n";
+        out_ << "  .byte 0\n";
+        out_ << "  .uleb128 " << c.begin << "-" << fnBegin << "\n";
+        out_ << "  .uleb128 " << c.end << "-" << c.begin << "\n";
+        out_ << "  .uleb128 " << c.pad << "-" << fnBegin << "\n";
+        out_ << "  .uleb128 " << action << "\n";
+        action += 2 * static_cast<int>(c.types.size());
+        at = c.end;
+    }
+    out_ << "  .uleb128 " << at << "-" << fnBegin << "\n";
+    out_ << "  .uleb128 " << fnEnd << "-" << at << "\n";
+    out_ << "  .byte 0\n";
+    out_ << "  .byte 0\n";
+    out_ << cstEnd << ":\n";
+
+    // The action table. Each record is a type index and the offset to the
+    // next record - `0` meaning there is no next, so the handler chain ends
+    // and the exception goes on unwinding.
+    lsdaTypes_.clear();
+    for (std::size_t i = 0; i < callSites().size(); i++) {
+        const CallSite &c = callSites()[i];
+        for (std::size_t k = 0; k < c.types.size(); k++) {
+            out_ << "  .byte " << (lsdaTypes_.size() + 1) << "\n";
+            out_ << "  .byte " << (k + 1 < c.types.size() ? 1 : 0) << "\n";
+            lsdaTypes_.push_back(c.types[k]);
+        }
+    }
+    out_ << "  .p2align 2\n";
+    for (std::size_t i = lsdaTypes_.size(); i-- > 0; ) {
+        const std::string here = "Lti." + symbol + "." + std::to_string(i);
+        out_ << here << ":\n";
+        if (lsdaTypes_[i].empty()) out_ << "  .long 0\n";   // catch (...)
+        else out_ << "  .long _" << lsdaTypes_[i] << "@GOT-" << here << "\n";
+    }
+    out_ << ttbase << ":\n";
+    out_ << "  .p2align 2\n";
+}
+
 void Arm64Darwin::storeToStack(const Type *t, int off) {
     if (t->isFloating()) {
         out_ << "  str " << fpReg(t, 0) << ", [sp, #" << off << "]\n";
@@ -934,7 +1047,12 @@ void Arm64Darwin::emitFunction(const Function &fn) {
         dwarfFns_.push_back(d);
         resetBlocks(fn.blocks());
         out_ << d.begin << ":\n";
+    } else if (fn.hasLandingPads()) {
+        // The call-site table measures from here, so the label has to exist
+        // whether or not there is debug information.
+        out_ << "Lfunc.begin." << fn.symbol() << ":\n";
     }
+    clearCallSites();
 
     markLine(fn.pos());
     // **Unwind data, and it is the same three lines in every function here.**
@@ -949,6 +1067,14 @@ void Arm64Darwin::emitFunction(const Function &fn) {
     // up by return address, and a return address can only be inside a call -
     // there are none in a prologue.
     out_ << "  .cfi_startproc\n";
+    // **A function with a landing pad names its personality and its table
+    // here**, before anything else: the unwinder finds both through the CFI,
+    // and the table itself is written after the body, once the labels it
+    // talks about exist.
+    if (fn.hasLandingPads()) {
+        out_ << "  .cfi_personality 155, ___gxx_personality_v0\n";
+        out_ << "  .cfi_lsda 16, Lexception." << fn.symbol() << "\n";
+    }
     out_ << "  stp x29, x30, [sp, #-16]!\n";
     out_ << "  mov x29, sp\n";
     out_ << "  .cfi_def_cfa w29, 16\n";
@@ -1044,12 +1170,16 @@ void Arm64Darwin::emitFunction(const Function &fn) {
     out_ << "  mov sp, x29\n";
     out_ << "  ldp x29, x30, [sp], #16\n";
     out_ << "  ret\n";
-    out_ << "  .cfi_endproc\n";
-    if (lineSource()) {
+    // The end label goes before .cfi_endproc and before the table, because
+    // the last call-site range measures up to it.
+    if (lineSource() || !callSites().empty())
         out_ << "Lfunc.end." << fn.symbol() << ":\n";
-
-        dwarfFns_.back().blocks = blocks();
+    out_ << "  .cfi_endproc\n";
+    if (!callSites().empty()) {
+        emitLsda(fn.symbol());
+        out_ << "  .section __TEXT,__text,regular,pure_instructions\n";
     }
+    if (lineSource()) dwarfFns_.back().blocks = blocks();
 }
 
 void Arm64Darwin::emitLoc(int file, int line, int column) {

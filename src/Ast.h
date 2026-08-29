@@ -34,6 +34,7 @@ class Conditional;
 class Comma;
 class Break;
 class Continue;
+class Try;
 
 class Visitor {
 public:
@@ -65,6 +66,7 @@ public:
     virtual void visit(const Comma &) = 0;
     virtual void visit(const Break &) = 0;
     virtual void visit(const Continue &) = 0;
+    virtual void visit(const Try &) = 0;
 };
 
 class Node {
@@ -468,6 +470,46 @@ struct Param {
     int offset;
 };
 
+// `try { ... } catch (T e) { ... }` - rung 6.3.
+//
+// **Almost all of it is ordinary statements**, and that is deliberate: the
+// comparison of the selector, the calls to __cxa_begin_catch and
+// __cxa_end_catch, the copy into the caught variable and the handler bodies
+// are all built by the parser out of nodes that already existed. What a
+// backend has to know is only this much:
+//
+//   - a label before the body and one after it, so the call-site table can
+//     say which calls this pad covers;
+//   - a label at the pad, where the runtime arrives with the exception
+//     pointer and the selector in two registers, which are stored into the
+//     two frame slots named here and are ordinary locals from then on;
+//   - the type_info symbols this try catches, in order, because index 1 in
+//     the table is the first of them - which is what the parser's comparisons
+//     were written against.
+//
+// An empty symbol is `catch (...)`, which matches everything and is why it
+// has to be last.
+class Try final : public Stmt {
+public:
+    Try(StmtPtr body, StmtPtr pad, int pointerSlot, int selectorSlot,
+        std::vector<std::string> types)
+        : body_(std::move(body)), pad_(std::move(pad)),
+          pointerSlot_(pointerSlot), selectorSlot_(selectorSlot),
+          types_(std::move(types)) {}
+    const Stmt &body() const { return *body_; }
+    const Stmt &pad() const { return *pad_; }
+    int pointerSlot() const { return pointerSlot_; }
+    int selectorSlot() const { return selectorSlot_; }
+    const std::vector<std::string> &types() const { return types_; }
+    void accept(Visitor &v) const override { v.visit(*this); }
+private:
+    StmtPtr body_;
+    StmtPtr pad_;
+    int pointerSlot_;
+    int selectorSlot_;
+    std::vector<std::string> types_;
+};
+
 struct Local {
     std::string name;
     const Type *type;
@@ -515,6 +557,12 @@ public:
 
     const std::vector<int> &blocks() const { return blocks_; }
     void setBlocks(std::vector<int> b) { blocks_ = std::move(b); }
+
+    // Whether this function has a landing pad in it, which the prologue has
+    // to know before the body is walked: the personality routine and the LSDA
+    // are named there.
+    bool hasLandingPads() const { return landingPads_; }
+    void setHasLandingPads(bool b) { landingPads_ = b; }
 private:
     std::string name_;
     std::string symbol_;
@@ -530,6 +578,7 @@ private:
     std::size_t pos_;
     std::vector<Local> locals_;
     std::vector<int> blocks_;
+    bool landingPads_ = false;
 };
 
 struct GlobalPiece {

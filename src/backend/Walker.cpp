@@ -188,6 +188,32 @@ void Walker::visit(const Comma &n) {
 
 void Walker::visit(const Break &n) { markLine(n); jump(jumps_.back().brk); }
 
+// **The shape is the same on both targets, so it lives here.** A label
+// before the body and one after it bound the range the call-site table talks
+// about; the pad is where the runtime arrives; and the jump over the pad is
+// what makes the ordinary path skip it. Everything inside the pad was built
+// by the parser.
+void Walker::visit(const Try &n) {
+    markLine(n);
+    const int id = nextLabel();
+    const std::string begin = label("try", id);
+    const std::string end = label("tryend", id);
+    const std::string pad = label("pad", id);
+    const std::string done = label("caught", id);
+
+    defineLabel(begin);
+    n.body().accept(*this);
+    defineLabel(end);
+    jump(done);
+
+    defineLabel(pad);
+    landingPad(n.pointerSlot(), n.selectorSlot());
+    n.pad().accept(*this);
+    defineLabel(done);
+
+    callSite(begin, end, pad, n.types());
+}
+
 void Walker::visit(const Continue &n) {
     markLine(n);
     for (std::size_t i = jumps_.size(); i-- > 0;) {

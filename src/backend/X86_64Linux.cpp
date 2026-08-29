@@ -1200,6 +1200,119 @@ std::string X86_64Linux::label(const char *kind, int id) const {
     return labelPrefix_ + kind + "." + std::to_string(id);
 }
 
+// The SysV pair: %rax holds the exception object and %rdx the selector, and
+// both go into frame slots the parser already knows the numbers of.
+void X86_64Linux::landingPad(int pointerSlot, int selectorSlot) {
+    a_->ins("mov", reg("%rax"), mem(-(pointerSlot), "%rbp"));
+    a_->ins("movl", reg("%edx"), mem(-(selectorSlot), "%rbp"));
+}
+
+// The same table the arm64 backend writes, in this assembler's spelling. The
+// layout and every encoding byte are documented there; what differs is the
+// section, the label prefix, and that a type_info pointer goes through a stub
+// this file has to define rather than through @GOT.
+void X86_64Linux::emitLsda(const std::string &symbol) {
+    const std::string ex = ".Lexception." + symbol;
+    const std::string ttbase = ".Lttbase." + symbol;
+    const std::string ttref = ".Lttbaseref." + symbol;
+    const std::string cstBegin = ".Lcst.begin." + symbol;
+    const std::string cstEnd = ".Lcst.end." + symbol;
+    const std::string fnBegin = ".Lfunc.begin." + symbol;
+
+    std::string &o = out_;
+    o += "  .section .gcc_except_table,\"a\",@progbits\n";
+    o += "  .p2align 2\n";
+    o += ex + ":\n";
+    o += "  .byte 255\n";
+    o += "  .byte 155\n";
+    o += "  .uleb128 " + ttbase + "-" + ttref + "\n";
+    o += ttref + ":\n";
+    o += "  .byte 1\n";
+    o += "  .uleb128 " + cstEnd + "-" + cstBegin + "\n";
+    o += cstBegin + ":\n";
+
+    // Every call in the function is in this table, the ones outside a try
+    // included - see the note beside the arm64 one: a miss is terminate.
+    const std::string fnEnd = ".Lfunc.end." + symbol;
+    // A byte offset plus one, not an index - see the note beside the arm64
+    // one. Each action record is two bytes.
+    int action = 1;
+    std::string at = fnBegin;
+    for (std::size_t i = 0; i < callSites().size(); i++) {
+        const CallSite &c = callSites()[i];
+        o += "  .uleb128 " + at + "-" + fnBegin + "\n";
+        o += "  .uleb128 " + c.begin + "-" + at + "\n";
+        o += "  .byte 0\n";
+        o += "  .byte 0\n";
+        o += "  .uleb128 " + c.begin + "-" + fnBegin + "\n";
+        o += "  .uleb128 " + c.end + "-" + c.begin + "\n";
+        o += "  .uleb128 " + c.pad + "-" + fnBegin + "\n";
+        o += "  .uleb128 " + std::to_string(action) + "\n";
+        action += 2 * static_cast<int>(c.types.size());
+        at = c.end;
+    }
+    o += "  .uleb128 " + at + "-" + fnBegin + "\n";
+    o += "  .uleb128 " + fnEnd + "-" + at + "\n";
+    o += "  .byte 0\n";
+    o += "  .byte 0\n";
+    o += cstEnd + ":\n";
+
+    lsdaTypes_.clear();
+    for (std::size_t i = 0; i < callSites().size(); i++) {
+        const CallSite &c = callSites()[i];
+        for (std::size_t k = 0; k < c.types.size(); k++) {
+            o += "  .byte " + std::to_string(lsdaTypes_.size() + 1) + "\n";
+            o += "  .byte " + std::string(k + 1 < c.types.size() ? "1" : "0") + "\n";
+            lsdaTypes_.push_back(c.types[k]);
+        }
+    }
+    o += "  .p2align 2\n";
+    for (std::size_t i = lsdaTypes_.size(); i-- > 0; ) {
+        const std::string here = ".Lti." + symbol + "." + std::to_string(i);
+        o += here + ":\n";
+        if (lsdaTypes_[i].empty()) {
+            o += "  .long 0\n";                       // catch (...)
+        } else {
+            o += "  .long .L" + lsdaTypes_[i] + ".DW.stub-" + here + "\n";
+        }
+    }
+    o += ttbase + ":\n";
+    o += "  .p2align 2\n";
+
+    // **The two objects an ELF table refers to indirectly.** The type table
+    // holds pc-relative offsets to *pointers*, not to the type_info objects
+    // themselves, because a direct reference to one living in another shared
+    // object would need a text relocation. The personality routine is named
+    // through a weak hidden comdat for the same reason. Both are what clang
+    // emits and neither is optional. Written beside the first table that
+    // wants them, so the file needs no second pass.
+    for (std::size_t i = 0; i < lsdaTypes_.size(); i++) {
+        if (lsdaTypes_[i].empty()) continue;
+        bool had = false;
+        for (std::size_t k = 0; k < lsdaStubs_.size(); k++)
+            if (lsdaStubs_[k] == lsdaTypes_[i]) had = true;
+        if (had) continue;
+        lsdaStubs_.push_back(lsdaTypes_[i]);
+        o += "  .data\n";
+        o += "  .p2align 3\n";
+        o += ".L" + lsdaTypes_[i] + ".DW.stub:\n";
+        o += "  .quad " + lsdaTypes_[i] + "\n";
+    }
+    if (!lsdaPersonality_) {
+        lsdaPersonality_ = true;
+        o += "  .hidden DW.ref.__gxx_personality_v0\n";
+        o += "  .weak DW.ref.__gxx_personality_v0\n";
+        o += "  .section .data.DW.ref.__gxx_personality_v0,\"awG\","
+             "@progbits,DW.ref.__gxx_personality_v0,comdat\n";
+        o += "  .p2align 3\n";
+        o += "  .type DW.ref.__gxx_personality_v0,@object\n";
+        o += "  .size DW.ref.__gxx_personality_v0, 8\n";
+        o += "DW.ref.__gxx_personality_v0:\n";
+        o += "  .quad __gxx_personality_v0\n";
+    }
+    o += "  .text\n";
+}
+
 std::string X86_64Linux::userLabel(const std::string &name) const {
     return labelPrefix_ + "user." + name;
 }
@@ -1239,10 +1352,17 @@ void X86_64Linux::emit(const Function &fn) {
         dwarfFns_.push_back(d);
         resetBlocks(fn.blocks());
         a_->defLabel(d.begin);
+    } else if (fn.hasLandingPads()) {
+        // The call-site table measures from here, whether or not there is
+        // debug information.
+        a_->defLabel(".Lfunc.begin." + fn.symbol());
     }
+    clearCallSites();
 
     markLine(fn.pos());
-    a_->prologue(fn.frameSize());
+    a_->prologue(fn.frameSize(),
+                 fn.hasLandingPads() ? ".Lexception." + fn.symbol()
+                                     : std::string());
 
     sretSlot_ = fn.sretSlot();
     if (sretSlot_ != 0)
@@ -1375,7 +1495,11 @@ void X86_64Linux::emit(const Function &fn) {
     a_->ins("mov", reg("%rbp"), reg("%rsp"));
     a_->ins("pop", reg("%rbp"));
     a_->ins("ret");
+    // Before .cfi_endproc, because the last call-site range measures to it.
+    if (!lineSource() && !callSites().empty())
+        a_->defLabel(".Lfunc.end." + fn.symbol());
     a_->functionEnd(fn.symbol());
+    if (!callSites().empty()) emitLsda(fn.symbol());
     if (lineSource()) {
         a_->defLabel(".Lfunc.end." + fn.symbol());
 

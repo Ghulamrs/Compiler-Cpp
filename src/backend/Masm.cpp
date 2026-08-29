@@ -262,7 +262,10 @@ void MasmSpelling::functionBegin(const std::string &name, bool exported) {
     o_ += mangle(name); o_ += " PROC FRAME\n";
 }
 
-void MasmSpelling::prologue(int frameSize) {
+void MasmSpelling::prologue(int frameSize, const std::string &lsda) {
+    // Windows has no landing pads yet - the parser refuses `try` for this
+    // target - and its unwind data is the PROC FRAME directives below.
+    (void)lsda;
     o_ += "  push rbp\n";
     o_ += "  .PUSHREG rbp\n";
     o_ += "  mov rbp, rsp\n";

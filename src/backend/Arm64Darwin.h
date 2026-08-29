@@ -56,7 +56,14 @@ public:
     void visit(const MemberAccess &) override;
     void visit(const Return &) override;
 
+    void landingPad(int pointerSlot, int selectorSlot) override;
+
 private:
+    // The `.gcc_except_table` for the function just emitted: the call-site
+    // table, the actions, and the type_info pointers the actions index.
+    void emitLsda(const std::string &symbol);
+    std::vector<std::string> lsdaTypes_;
+
     std::ostringstream out_;
     std::size_t emittedSize() override {
         return static_cast<std::size_t>(out_.tellp());

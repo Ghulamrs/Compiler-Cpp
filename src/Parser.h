@@ -756,6 +756,20 @@ private:
 
     ExprPtr newExpression(std::size_t pos);
     ExprPtr deleteExpression(std::size_t pos);
+    // `try { ... } catch (T e) { ... }` - rung 6.3.
+    StmtPtr tryStatement(std::size_t pos);
+    // Set while a try's body is being read, so a try inside one is refused
+    // rather than laid out as an overlapping range the table cannot hold.
+    bool inTryBody_ = false;
+    // Set when this function has a landing pad, so its prologue names the
+    // personality routine and the table.
+    bool functionHasPads_ = false;
+    // **The selector is an index into the whole function's type table, not
+    // into one try's handler list.** A second try in the same function
+    // continues the numbering, and the parser has to know that because it is
+    // what its comparisons are written against - the backend assigns the same
+    // numbers in the same order, which is the order the tries were read.
+    int functionTypeIndex_ = 0;
     // `throw x;` - rung 6.2. Answers the statement it lowers to.
     StmtPtr throwStatement(ExprPtr value, std::size_t pos);
     // A call to something in the runtime, named by its symbol and needing no

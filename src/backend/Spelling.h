@@ -100,7 +100,11 @@ public:
     virtual void defLabel(const std::string &l) = 0;
 
     virtual void functionBegin(const std::string &name, bool exported) = 0;
-    virtual void prologue(int frameSize) = 0;
+    // `lsda` names this function's exception table, or is empty where the
+    // function has no landing pad. The personality routine has to be named
+    // between .cfi_startproc and the first instruction, and this is the
+    // only place that sees both.
+    virtual void prologue(int frameSize, const std::string &lsda) = 0;
     virtual void functionEnd(const std::string &name) = 0;
 
     virtual void fileEntry(int, const std::string &) {}
@@ -137,7 +141,7 @@ public:
     void fileEntry(int n, const std::string &name) override;
     void location(int file, int line, int column) override;
     void functionBegin(const std::string &name, bool exported) override;
-    void prologue(int frameSize) override;
+    void prologue(int frameSize, const std::string &lsda) override;
     void functionEnd(const std::string &name) override;
     void globl(const std::string &name) override;
     void textSection() override;

@@ -1,0 +1,2 @@
+x86_64-linux  clang emits __clang_call_terminate and the _ZSt9terminatev it calls - the helper that ends the program if a destructor throws while an exception is already unwinding. cxx1 runs no destructors during unwinding yet, which is rung 6.4, so it has nothing to guard and emits neither
+arm64-darwin  same
