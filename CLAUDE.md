@@ -1491,6 +1491,59 @@ is the difference between writing a struct and writing a compressor.
 
 Expect this to lag and do not promise otherwise.
 
+### 6.5b steps 2 and 3: the FH3 tables, decoded from cl
+
+Measured with `cl /EHsc /d2FH4-`, which is how to ask for the older handler -
+cl defaults to `__CxxFrameHandler4` and its compressed encoding. What follows
+is the whole of what one `try { risky(1); } catch (int e) { ... }` needs.
+
+    $cppxdata$main  DD 019930522H            the magic number
+                    DD 02H                   maxState
+                    DD imagerel $stateUnwindMap$main
+                    DD 01H                   nTryBlocks
+                    DD imagerel $tryMap$main
+                    DD 06H                   nIPMapEntries
+                    DD imagerel $ip2state$main
+                    DD 028H                  dispUnwindHelp
+                    DD 00H                   pESTypeList
+                    DD 01H                   EHFlags
+
+    $stateUnwindMap DD -1, 0   twice         toState and action, per state
+    $tryMap         DD 0, 0, 1, 1            tryLow, tryHigh, catchHigh,
+                    DD imagerel $handlerMap$0$main        nCatches
+    $handlerMap     DD 00H                   adjectives
+                    DD imagerel ??_R0H@8     the type caught
+                    DD 020H                  dispCatchObj - where in the frame
+                    DD imagerel main$catch$0 the funclet
+                    DD 038H                  dispFrame
+    $ip2state       DD imagerel main,   -1   six pairs: an address and the
+                    DD imagerel main+13, 0   state in force from it, covering
+                    DD imagerel main+24, -1  the funclet as well as the body
+                    DD imagerel main$catch$0,    0
+                    DD imagerel main$catch$0+13, 1
+                    DD imagerel main$catch$0+29, 0
+
+**Three things in that are code, not tables.** The parent writes `-2` into the
+unwind-help slot at `dispUnwindHelp` on entry - cl emits
+`mov QWORD PTR $T2[rsp], -2` as its first instruction. The `ip2state` map
+needs a label at every point where the state changes, which the code
+generator has to place. And the funclet's own unwind info names
+`__CxxFrameHandler3` and *the parent's* `$cppxdata$` - the two share one
+FuncInfo.
+
+**The offsets are frame-relative, and cl's example is rsp-relative because
+that function has no frame pointer.** cxx1 always establishes rbp, so
+`dispUnwindHelp`, `dispCatchObj` and `dispFrame` have to be measured from
+whatever the unwind info calls the frame base - which for cxx1 is rbp with
+`UWOP_SET_FPREG`. That is the part most likely to be wrong first.
+
+**The funclet itself** (measured in step 2's listing): a `PROC` in `text$x`
+that saves `rdx` - the parent's frame pointer - into its own shadow space,
+sets `rbp` from it, runs the handler, and returns the address to continue at
+in `rax`. Because cxx1 addresses every local as `[rbp-N]`, a handler body
+compiles inside a funclet exactly as it would inline, which is the one thing
+about this that is easier here than it looks.
+
 ### 6.5b step 1 as it actually landed: unwind data by hand
 
 **Four assembler rules, each found by being stopped by it**, and none of them
