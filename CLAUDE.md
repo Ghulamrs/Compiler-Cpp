@@ -101,7 +101,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
-| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **planned**, below |
+| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1 **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
@@ -832,11 +832,12 @@ backend already knows how to emit. This is the pattern to reach for again:
 where C++ adds a *conversion*, look for an existing operation to lower it to
 before adding a case to three code generators.
 
-## Rung 5: templates, planned but not started
+## Rung 5: templates, 5.1 done and the rest planned
 
-**Nothing below is implemented.** It is the order the work is meant to happen
-in and the reasons for that order, written before any of it, the way rungs 2
-and 3 were. `template` is still refused by name.
+**5.1 landed 2026-08-29 and has its own section at the end of this one.**
+Everything from 5.2 on is still unwritten: what follows is the order the work
+is meant to happen in and the reasons for that order, written before any of
+it, the way rungs 2 and 3 were.
 
 Rung 5 is larger than rungs 2, 3 and 4 together. Rung 6 is where the three
 targets stop being symmetric: Windows EH is SEH-based and needs unwind data,
@@ -934,6 +935,44 @@ name both places, or the messages will be worse than useless.
 **The Itanium substitution table and `I...E` interact**, and the interaction is
 not guessable - the `S0_` in `_Z5twiceIdET_S0_` is a substitution of a template
 *parameter reference*. Measure every case; do not reason about this one.
+
+### 5.1 as it actually landed
+
+**The table, the `<` ambiguity, `>>`, and nothing instantiated.** A template
+declaration is read for its parameter list and its *name*, recorded in
+`templates_`, and its definition is then stepped over unparsed. Every use of
+the name is refused - by name, and after the argument list has been stepped
+over, so the reader is told about the template rather than about a stray `<`.
+
+**`>>` is split by a marker, not by inserting a token.** Every held body and
+every template records an *absolute* index into the one token vector, so
+inserting a second `>` would move all of them. `takeClosingAngle` takes the
+first `>` by leaving `angleSplit_ = at_` behind without advancing, and the
+second by advancing past the token. Tying it to the index rather than to a
+flag is what lets a replay reaching the same `>>` again start over - which
+matters from 5.2, where a body is replayed once per instantiation.
+
+**`Box<Box<int>>` is the test, and the failure it guards against is not a
+syntax error but the wrong message.** Without the split the inner list eats
+both `>` and the outer one runs to the end of the file: the case's `.error`
+holds the class-template refusal precisely because "this template argument
+list is never closed" is what it says when the split is broken.
+
+**A function template's name is read with the parameters bound to `int`.**
+The name sits behind a return type and a declarator that mention them, so `T`
+has to denote *something* before `T twice(T x)` can be read at all. The
+stand-in cannot escape: the type built is discarded and the body is skipped.
+A class template's name needs none of this - it is the identifier after
+`struct`, read straight off, because parsing the body would register a class
+that has no business existing until an argument list is given for it.
+
+**Refused by name, each with its own message**: a template template
+parameter, a default template argument, a parameter pack, `template <>`,
+explicit instantiation, a member template, and both kinds of use. `typename`
+is still refused everywhere except where 5.1 now reads it, in a parameter
+list.
+
+Suites 59 / 92 / 31; the C corpus is unchanged at 379/424.
 
 ## Decisions already taken
 

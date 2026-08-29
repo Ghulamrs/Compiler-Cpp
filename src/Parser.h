@@ -99,6 +99,52 @@ private:
     void replayInlineBodies(std::vector<PendingBody> mine);
     void skipBracedBlock();
 
+    // ---- Rung 5.1: the template table, and nothing instantiated ----
+    //
+    // One template parameter as written: `class T` / `typename T`, or a
+    // non-type one such as `int N`. Nothing is bound to either yet.
+    struct TemplateParam {
+        std::string name;
+        const Type *type = nullptr;   // null for a type parameter
+        std::size_t pos = 0;
+    };
+    // What is known about a name that names a template. `start` is the
+    // `template` keyword: instantiation here will be a replay of these
+    // tokens, so where they begin is the thing worth keeping.
+    struct TemplateDecl {
+        std::string name;
+        std::vector<TemplateParam> params;
+        bool isClass = false;
+        bool defined = false;
+        std::size_t start = 0;
+        std::size_t pos = 0;
+    };
+    std::map<std::string, TemplateDecl> templates_;
+    bool isTemplateName(const std::string &name) const {
+        return templates_.find(name) != templates_.end();
+    }
+    bool templateDeclaration();
+    void templateParameters(std::vector<TemplateParam> &params);
+    std::string templatedName(const std::vector<TemplateParam> &params,
+                              bool *isClass);
+    bool skipTemplatedDefinition();
+    void skipTemplateArguments();
+    // The whole of what a use of a template does in 5.1: step over the
+    // argument list so that the reader is told about the template rather than
+    // about a stray '<', and then refuse by name.
+    void refuseTemplateId();
+
+    // **A `>>` closes two argument lists, and the lexer hands it over as one
+    // token.** The parser cannot split it by inserting a second one: held
+    // bodies and templates record absolute token indices, and an insert would
+    // move every one of them. So the first `>` is taken by leaving this index
+    // behind instead of advancing, and the second by advancing past the
+    // token. Tying it to the index rather than to a flag is what lets a
+    // replay that reaches the same `>>` again start over.
+    std::size_t angleSplit_ = static_cast<std::size_t>(-1);
+    bool atClosingAngle() const;
+    void takeClosingAngle();
+
     // Set only while an inline body is being replayed. It makes an unqualified
     // name in a declarator mean a member of that class - and it is one-shot,
     // cleared by the first declarator that uses it, so nothing inside the body

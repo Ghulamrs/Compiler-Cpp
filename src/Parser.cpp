@@ -198,6 +198,220 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     at_ = resume;
 }
 
+// ------------------------------------------------------------------ templates
+//
+// **Rung 5.1: the table exists and nothing is instantiated.** That is the
+// whole of it, and it is first because everything else stands on it:
+// `f<int>(x)` and `a<b>(c)` are the same tokens, and the only thing that tells
+// them apart is whether `f` names a template. So the name has to be in a table
+// before any `<` is read, and a `<` opens an argument list *only* for a name
+// that is in it - never on shape alone, which is the one mistake here that
+// silently mis-parses code that used to work.
+
+// A `>` may be the front half of a `>>`. See the note on angleSplit_.
+bool Parser::atClosingAngle() const {
+    return peek().is(">") || peek().is(">>");
+}
+
+void Parser::takeClosingAngle() {
+    if (consume(">")) return;
+    if (!peek().is(">>"))
+        src_.fail(peek().pos, "expected '>' to close this template argument list");
+    if (angleSplit_ == at_) {
+        angleSplit_ = static_cast<std::size_t>(-1);
+        at_++;
+        return;
+    }
+    angleSplit_ = at_;
+}
+
+// `template < class T, int N >`. Everything C++11 puts here that this rung
+// does not implement is refused by name rather than misread.
+void Parser::templateParameters(std::vector<TemplateParam> &params) {
+    expect("<");
+    if (atClosingAngle())
+        src_.fail(peek().pos, "'template <>' is an explicit specialization, "
+                              "and that is not supported yet");
+    for (;;) {
+        const std::size_t pos = peek().pos;
+        if (peek().is("template"))
+            src_.fail(pos, "a template template parameter is not supported yet");
+
+        TemplateParam p;
+        p.pos = pos;
+        if (consume("class") || consume("typename")) {
+            if (peek().is("..."))
+                src_.fail(peek().pos, "a template parameter pack is not "
+                                      "supported yet");
+            // C++ lets a parameter go unnamed. Nothing here can refer to
+            // one, so it is a not-yet rather than a rule.
+            if (peek().kind != TokenKind::Ident)
+                src_.fail(peek().pos, "an unnamed template parameter is not "
+                                      "supported yet");
+            p.name = peek().text;
+            at_++;
+        } else {
+            // A non-type parameter is written exactly like a function's, so
+            // it is read exactly like one.
+            StorageClass sc;
+            Qualifiers quals;
+            const Type *base = specifiers(&sc, &quals);
+            if (sc != StorageNone)
+                src_.fail(pos, "a template parameter has no storage class");
+            Declared d = declarator(base);
+            if (d.name.empty())
+                src_.fail(pos, "an unnamed template parameter is not "
+                               "supported yet");
+            p.name = d.name;
+            p.type = d.type;
+        }
+        if (peek().is("="))
+            src_.fail(peek().pos, "a default template argument is not "
+                                  "supported yet");
+        for (std::size_t i = 0; i < params.size(); i++)
+            if (params[i].name == p.name)
+                src_.fail(p.pos, "'" + p.name + "' is declared twice in this "
+                                 "template parameter list");
+        params.push_back(p);
+        if (consume(",")) continue;
+        break;
+    }
+    takeClosingAngle();
+}
+
+// The name the template is being given, and nothing else about it.
+//
+// A class template's name is the identifier the `struct` or `class` keyword
+// introduces, and it is read straight off: parsing the body instead would
+// register a class that has no business existing until an argument list is
+// given for it.
+//
+// **A function template's name sits behind a return type and a declarator
+// that mention the parameters**, so `T` has to denote *something* before
+// `T twice(T x)` can be read at all. It denotes `int` here - a stand-in that
+// cannot escape, because the type this builds is thrown away and the body is
+// skipped unparsed. 5.2 replaces it with the argument the template is given.
+std::string Parser::templatedName(const std::vector<TemplateParam> &params,
+                                  bool *isClass) {
+    if (peek().is("struct") || peek().is("class") || peek().is("union")) {
+        if (peekAt(1).kind != TokenKind::Ident)
+            src_.fail(peek().pos, "this class template has no name");
+        *isClass = true;
+        return peekAt(1).text;
+    }
+    *isClass = false;
+
+    std::vector<std::string> bound;
+    for (std::size_t i = 0; i < params.size(); i++) {
+        if (params[i].type != nullptr) continue;
+        if (findTypedef(params[i].name) != nullptr) continue;
+        declareTypeName(params[i].name, types_.intType());
+        bound.push_back(params[i].name);
+    }
+
+    StorageClass sc;
+    Qualifiers quals;
+    const Type *base = specifiers(&sc, &quals);
+    Declared d = declarator(base);
+
+    for (std::size_t i = 0; i < bound.size(); i++) {
+        auto it = typedefIndex_.find(bound[i]);
+        if (it != typedefIndex_.end()) typedefIndex_.erase(it);
+    }
+    if (d.name.empty())
+        src_.fail(d.pos, "this function template has no name");
+    return d.name;
+}
+
+// From here to the `;` that ends the declaration, or to the `}` that closes
+// the body. Nothing inside is looked at - that is what "no instantiation"
+// means. Answers whether a body was there.
+bool Parser::skipTemplatedDefinition() {
+    bool body = false;
+    int depth = 0;
+    for (;;) {
+        if (peek().kind == TokenKind::End)
+            src_.fail(peek().pos, "this template's definition is never closed");
+        if (peek().is("{")) { depth++; body = true; at_++; continue; }
+        if (peek().is("}")) {
+            at_++;
+            if (--depth == 0) { consume(";"); return body; }
+            continue;
+        }
+        if (peek().is(";") && depth == 0) { at_++; return body; }
+        at_++;
+    }
+}
+
+// `template <class T> ...` at file scope. Answers false where the token is
+// something else, so topLevel can ask without committing.
+bool Parser::templateDeclaration() {
+    if (!peek().is("template")) return false;
+
+    TemplateDecl decl;
+    decl.start = at_;
+    at_++;
+    if (!peek().is("<"))
+        src_.fail(peek().pos, "explicit instantiation is not supported yet");
+    templateParameters(decl.params);
+
+    const std::size_t afterParams = at_;
+    decl.pos = peek().pos;
+    decl.name = templatedName(decl.params, &decl.isClass);
+    at_ = afterParams;
+    decl.defined = skipTemplatedDefinition();
+
+    // A template may be declared and then defined. The definition is the one
+    // worth keeping, since instantiating is replaying its tokens.
+    auto it = templates_.find(decl.name);
+    if (it == templates_.end() || (decl.defined && !it->second.defined))
+        templates_[decl.name] = decl;
+    return true;
+}
+
+// The argument list, read only far enough to step over it - and stepping over
+// it is what proves the `>>` split, since `Box<Box<int>>` cannot be got past
+// any other way. A nested list is recognised by its name being a template,
+// the same rule that opened this one.
+void Parser::skipTemplateArguments() {
+    expect("<");
+    for (;;) {
+        if (peek().kind == TokenKind::End)
+            src_.fail(peek().pos, "this template argument list is never closed");
+        if (atClosingAngle()) { takeClosingAngle(); return; }
+        if (peek().kind == TokenKind::Ident && isTemplateName(peek().text) &&
+            peekAt(1).is("<")) {
+            at_++;
+            skipTemplateArguments();
+            continue;
+        }
+        // A parenthesised argument may hold a `>` that closes nothing.
+        if (peek().is("(")) {
+            int depth = 0;
+            do {
+                if (peek().kind == TokenKind::End)
+                    src_.fail(peek().pos, "this template argument list is "
+                                          "never closed");
+                if (peek().is("(")) depth++;
+                else if (peek().is(")")) depth--;
+                at_++;
+            } while (depth > 0);
+            continue;
+        }
+        at_++;
+    }
+}
+
+void Parser::refuseTemplateId() {
+    const std::string name = peek().text;
+    const std::size_t pos = peek().pos;
+    at_++;
+    if (peek().is("<")) skipTemplateArguments();
+    src_.fail(pos, "'" + name + "' is a " +
+                   (templates_[name].isClass ? "class" : "function") +
+                   " template, and instantiating one is not supported yet");
+}
+
 const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     const char *what = isClass ? "class" : (kind == Kind::Struct ? "struct" : "union");
     std::size_t pos = peek().pos;
@@ -342,6 +556,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
     while (!peek().is("}")) {
         if (peek().kind == TokenKind::End) src_.fail(pos, "unclosed '{'");
+
+        if (peek().is("template"))
+            src_.fail(peek().pos, "a member template is not supported yet");
 
         // Where this member's declaration begins. A body written here is
         // replayed from exactly this token, so the replay re-reads the return
@@ -715,6 +932,14 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
          (peek().is("~") && peekAt(1).kind == TokenKind::Ident &&
           peekAt(1).text == inlineOwner_)))
         return types_.get(Kind::Void);
+
+    // A class template's name is not a type until it is given arguments,
+    // and giving it arguments is 5.4. Intercepted here rather than left to
+    // fall through as "expected a type", which would point the reader at the
+    // name and say nothing about why it is not one.
+    if (peek().kind == TokenKind::Ident && isTemplateName(peek().text) &&
+        peekAt(1).is("<"))
+        refuseTemplateId();
 
     if (peek().is("struct")) { at_++; return structOrUnionSpecifier(Kind::Struct); }
     if (peek().is("class"))  { at_++; return structOrUnionSpecifier(Kind::Struct, true); }
@@ -3418,6 +3643,12 @@ ExprPtr Parser::primary(Program *program) {
             src_.fail(peek().pos, std::string("'") + pending +
                                   "' is not supported yet");
     }
+
+    // A template named in an expression, with or without arguments. The
+    // argument list is stepped over before the refusal so that the reader is
+    // told about the template rather than about the `<`.
+    if (peek().kind == TokenKind::Ident && isTemplateName(peek().text))
+        refuseTemplateId();
 
     if (peek().is("__builtin_va_start")) {
         std::size_t pos = peek().pos;
@@ -6520,6 +6751,7 @@ bool Parser::linkageSpecification() {
 
 void Parser::topLevel(Program &program) {
     if (linkageSpecification()) return;
+    if (templateDeclaration()) return;
 
     StorageClass sc;
     Qualifiers quals;
