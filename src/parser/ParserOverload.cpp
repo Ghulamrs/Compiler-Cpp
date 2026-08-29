@@ -5,8 +5,8 @@
 // assignability check, which asks the same questions for a different reason.
 #include "Parser.h"
 #include "ParserInternal.h"
-#include "Mangle.h"
-#include "Source.h"
+#include "../Mangle.h"
+#include "../Source.h"
 
 #include <climits>
 #include <cstring>

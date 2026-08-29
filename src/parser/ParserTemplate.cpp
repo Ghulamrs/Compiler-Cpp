@@ -5,8 +5,8 @@
 // pattern into an instantiation. Rung 5.
 #include "Parser.h"
 #include "ParserInternal.h"
-#include "Mangle.h"
-#include "Source.h"
+#include "../Mangle.h"
+#include "../Source.h"
 
 #include <climits>
 #include <cstring>

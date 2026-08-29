@@ -19,7 +19,7 @@
 // three, because the refusal it exists to give is wanted wherever a keyword
 // can turn up and not only in an expression.
 
-#include "Ast.h"
+#include "../Ast.h"
 
 #include <string>
 

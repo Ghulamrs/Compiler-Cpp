@@ -3,7 +3,7 @@
 
 #include "backend/Backend.h"
 #include "Lexer.h"
-#include "Parser.h"
+#include "parser/Parser.h"
 #include "Preprocessor.h"
 #include "Source.h"
 #include "Type.h"

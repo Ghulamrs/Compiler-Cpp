@@ -1,9 +1,9 @@
 #pragma once
 
-#include "Ast.h"
-#include "Lexer.h"
-#include "Mangle.h"
-#include "Type.h"
+#include "../Ast.h"
+#include "../Lexer.h"
+#include "../Mangle.h"
+#include "../Type.h"
 
 #include <map>
 #include <string>

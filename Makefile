@@ -54,7 +54,16 @@ CXXFLAGS = -std=c++14 -O2 -g -Wall -Wextra -Werror -pedantic -pthread \
            -DCXX1_INCLUDE_DIR='"$(INCDIR)"'
 # src/backend holds one file per platform: the sizes its types measure, the ABI
 # facts the front end has to know, and the code generator when there is one.
-SRCS     = $(wildcard src/*.cpp) $(wildcard src/backend/*.cpp)
+# src/parser holds the nine files one class is split over - see its Parser.cpp.
+#
+# **A basename may not repeat across these three directories.** Objects here go
+# under obj/ mirroring src/, so a collision would be harmless - but msvc/
+# build.cmd gives cl a single flat /Fo directory, and there the second
+# src/parser/Type.cpp would quietly overwrite the object made from src/Type.cpp.
+# It is the reason the parser's files kept their ParserXxx names on moving into
+# a directory that would have let them drop the prefix.
+SRCS     = $(wildcard src/*.cpp) $(wildcard src/parser/*.cpp) \
+           $(wildcard src/backend/*.cpp)
 # Objects and their dependency files go under obj/ rather than beside the
 # sources they came from, so that a listing of src/ is the code and nothing
 # else. The tree under obj/ mirrors src/ - src/backend/X86_64.cpp becomes

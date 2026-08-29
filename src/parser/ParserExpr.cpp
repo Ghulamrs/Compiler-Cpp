@@ -5,8 +5,8 @@
 // throw, new and delete.
 #include "Parser.h"
 #include "ParserInternal.h"
-#include "Mangle.h"
-#include "Source.h"
+#include "../Mangle.h"
+#include "../Source.h"
 
 #include <climits>
 #include <cstring>

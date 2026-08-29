@@ -5,8 +5,8 @@
 // grammar that reads inside out, and the reason this file is not smaller.
 #include "Parser.h"
 #include "ParserInternal.h"
-#include "Mangle.h"
-#include "Source.h"
+#include "../Mangle.h"
+#include "../Source.h"
 
 #include <climits>
 #include <cstring>

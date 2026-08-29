@@ -28,10 +28,15 @@ will come up more here than it did in Compiler-S, where it cost an afternoon.
 
 `Parser.cpp` was 9,639 lines and 450 KB, which is one translation unit: every
 build recompiled all of it, and every reader had to find their subject in it.
-It is nine files now — `Parser.cpp` and eight `ParserXxx.cpp` beside it —
-still one class, declared as it always was in `Parser.h`.
+It is nine files now, in `src/parser/` — `Parser.cpp` and eight `ParserXxx.cpp`
+beside it — still one class, declared as it always was in `Parser.h`, which
+moved in with them. `src/parser/` is laid out the way `src/backend/` already
+was: the directory owns its headers, reaches the shared ones as `../Type.h`,
+and is included from outside by path, so `Driver.cpp` says
+`#include "parser/Parser.h"`. Both builds glob it — `SRCS` in the Makefile and
+the source list in `msvc/build.cmd`.
 
-| file | holds |
+| file (in `src/parser/`) | holds |
 | --- | --- |
 | `Parser.cpp` | tokens, name lookup, the declaration tests, scopes and symbol tables |
 | `ParserTemplate.cpp` | parameters, deduction, partial ordering, instantiation |
@@ -48,6 +53,14 @@ and the units were reassembled from those ranges, so the diff is a move and
 the three boxes proved it: 97 / 153 / 52 on the Mac, 97 / 153 on Linux, 94 on
 Windows and the C corpus at 379/424 — every number identical to the commit
 before.
+
+**A basename may not repeat across `src/`, `src/parser/` and `src/backend/`.**
+That is why the nine kept their `ParserXxx` names on moving into a directory
+that would have let them drop the prefix — `src/parser/Type.cpp` beside
+`src/Type.cpp` reads better and does not work. `obj/` mirrors `src/`, so make
+is safe; `msvc/build.cmd` gives cl **one flat `/Fo` directory** for every
+source in one command, and there the second `Type.cpp` overwrites the first
+one's object. It would have been found on the Windows box rather than here.
 
 Where the seams went was decided by the file-scope `static` helpers rather
 than by taste. A `static` cannot be seen from another unit, so a cut that

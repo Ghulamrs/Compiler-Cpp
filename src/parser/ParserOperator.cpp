@@ -5,8 +5,8 @@
 // increments that are written in terms of them.
 #include "Parser.h"
 #include "ParserInternal.h"
-#include "Mangle.h"
-#include "Source.h"
+#include "../Mangle.h"
+#include "../Source.h"
 
 #include <climits>
 #include <cstring>
