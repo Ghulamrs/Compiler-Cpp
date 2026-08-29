@@ -24,6 +24,40 @@ Trigraphs are still live in C++14, so write `'?\?'` and not `'??'` in any
 diagnostic. A C++ compiler's messages are full of quoted punctuation, so this
 will come up more here than it did in Compiler-S, where it cost an afternoon.
 
+## The parser is nine files
+
+`Parser.cpp` was 9,639 lines and 450 KB, which is one translation unit: every
+build recompiled all of it, and every reader had to find their subject in it.
+It is nine files now — `Parser.cpp` and eight `ParserXxx.cpp` beside it —
+still one class, declared as it always was in `Parser.h`.
+
+| file | holds |
+| --- | --- |
+| `Parser.cpp` | tokens, name lookup, the declaration tests, scopes and symbol tables |
+| `ParserTemplate.cpp` | parameters, deduction, partial ordering, instantiation |
+| `ParserType.cpp` | class, enum, the specifiers and the declarator |
+| `ParserOverload.cpp` | conversions, ranking, overload resolution |
+| `ParserClass.cpp` | constructors, destructors, vtables, thunks, implicit specials |
+| `ParserExpr.cpp` | primaries, calls, references, member access, throw, new |
+| `ParserInit.cpp` | initialisers, and the constant folding they need |
+| `ParserOperator.cpp` | one function per precedence level |
+| `ParserStmt.cpp` | statements, the top level, `parse()` |
+
+**Nothing was rewritten.** The split was cut by line range out of the old file
+and the units were reassembled from those ranges, so the diff is a move and
+the three boxes proved it: 97 / 153 / 52 on the Mac, 97 / 153 on Linux, 94 on
+Windows and the C corpus at 379/424 — every number identical to the commit
+before.
+
+Where the seams went was decided by the file-scope `static` helpers rather
+than by taste. A `static` cannot be seen from another unit, so a cut that
+separated one from its callers would have forced it into a shared header; the
+cuts were moved instead until only three helpers had callers on both sides.
+Those three — `alignTo`, `isLvalue`, `isNullConstant` — lost the keyword and
+live in `Parser.cpp`, declared in `src/ParserInternal.h`. That header is the
+whole cost of the split, and it is deliberately short: if a later change wants
+to add a fourth entry, consider moving the function instead.
+
 ## Where this came from
 
 Forked from `../Compiler-C` on 2026-08-26, at the whole-tree level rather than
