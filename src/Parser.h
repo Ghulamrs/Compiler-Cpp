@@ -150,6 +150,29 @@ private:
             bool destructor = false;
         };
         std::vector<OutOfLine> outOfLine;
+
+        // **A partial specialization: a second body for the argument lists
+        // that match a pattern.** `template <class T> struct Box<T *>` has
+        // parameters of its own, and its arguments are patterns rather than
+        // types - which is why they are kept as written and matched at every
+        // use rather than resolved once.
+        struct Partial {
+            std::vector<TemplateParam> params;
+            // One written argument. A type argument is a pattern; a non-type
+            // one is either a value or one of this specialization's own
+            // parameters, which is the only shape of it that deduces.
+            struct Arg {
+                bool isType = true;
+                const Type *type = nullptr;
+                bool isParam = false;
+                std::size_t param = 0;
+                long long value = 0;
+            };
+            std::vector<Arg> args;
+            std::size_t bodyAt = 0;      // the '{' of its class body
+            std::size_t pos = 0;
+        };
+        std::vector<Partial> partials;
     };
     std::map<std::string, TemplateDecl> templates_;
 
@@ -178,6 +201,9 @@ private:
         // Written out rather than made, so there are no parameters to bind
         // and no primary template to replay.
         bool explicitly = false;
+        // The parameters `binding` and `values` are for. Usually the
+        // template's own; for a partial specialization they are its.
+        std::vector<TemplateParam> params;
         std::vector<PendingBody> bodies;
         // Out-of-line definitions already turned into keys for this tag. They
         // are replayed through topLevel and not through replayInlineBodies:
@@ -266,10 +292,35 @@ private:
         bool had = false;
         std::size_t was = 0;
     };
-    void bindTemplateParameters(const TemplateDecl &decl,
+    void bindTemplateParameters(const std::vector<TemplateParam> &params,
                                 const std::vector<const Type *> &binding,
                                 const std::vector<long long> &values,
                                 std::vector<Shadow> *undo);
+    // [temp.deduct.type] rather than [temp.deduct.call]: this matches a
+    // template *argument* against a pattern, where nothing decays and nothing
+    // is allowed to differ - a pattern that is a pointer matches a pointer
+    // and nothing else. Deduction from a call is deliberately looser, because
+    // a conversion may still get the argument to the parameter; here there is
+    // no conversion to be had.
+    bool matchPattern(const Type *pattern, const Type *arg,
+                      std::vector<const Type *> *binding,
+                      std::string *why) const;
+    // The partial specialization these arguments ask for, or npos for none.
+    // Refuses by name where two match and neither is more specialized.
+    std::size_t choosePartial(const TemplateDecl &decl,
+                              const std::vector<TemplateArg> &args,
+                              std::vector<const Type *> *binding,
+                              std::vector<long long> *values,
+                              std::size_t pos);
+    // [temp.class.order]: whether one pattern is at least as specialized as
+    // another, which is asked by matching each against the other.
+    bool atLeastAsSpecialized(const TemplateDecl::Partial &a,
+                              const TemplateDecl::Partial &b) const;
+    bool moreSpecialized(const TemplateDecl::Partial &a,
+                         const TemplateDecl::Partial &b) const;
+    // `Box<T *>` after `template <class T> struct` - the argument list of a
+    // partial specialization, read as patterns.
+    void partialArguments(TemplateDecl::Partial *ps, std::size_t count);
     void unbindTemplateParameters(const std::vector<Shadow> &undo);
     // Deduction: the arguments worked out from the call rather than written.
     // Answers false and fills `why` when some parameter cannot be deduced.

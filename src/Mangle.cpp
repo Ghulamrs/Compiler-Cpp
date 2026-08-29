@@ -521,7 +521,22 @@ public:
     // `$02` for 3, and `$0?4` for -5: `$0`, then a '?' if it is negative,
     // then the magnitude through number(). Measured with cl.
     void templateArgument(const TemplateArg &a) {
-        if (a.isType) { type(a.type); return; }
+        if (a.isType) {
+            // **A top-level const on a type argument is spelled `$$CB`**,
+            // and only where the thing under it is not a pointer: `const int`
+            // is `$$CBH`, while `const int *` is `PEBH` and `int *const` is
+            // `QEAH` - the P becoming a Q, which type() already writes.
+            // Without any of this the const was simply dropped, and
+            // `W<const int>` shared one symbol with `W<int>`: two different
+            // classes, one name, and the wrong body called.
+            if (a.type->unqualified() != a.type && !a.type->isPointer()) {
+                out += "$$CB";
+                type(a.type->unqualified());
+                return;
+            }
+            type(a.type);
+            return;
+        }
         out += "$0";
         if (a.value < 0) { out += '?'; number(-a.value); }
         else             { number(a.value); }

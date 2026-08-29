@@ -101,7 +101,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
-| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1-5.6 **done**, 2026-08-29 |
+| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1-5.7a **done**, 2026-08-29; SFINAE and variadic refused by name |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
@@ -832,11 +832,13 @@ backend already knows how to emit. This is the pattern to reach for again:
 where C++ adds a *conversion*, look for an existing operation to lower it to
 before adding a case to three code generators.
 
-## Rung 5: templates, 5.1 to 5.6 done and 5.7 planned
+## Rung 5: templates, through partial specialization
 
-**5.1 to 5.6 landed 2026-08-29 and each has its own section at the end of this
-one - 5.1 to 5.3 was the first shippable milestone and it is reached.** Only
-5.7 is still unwritten: what follows is the order the work
+**5.1 to 5.6 and the first part of 5.7 landed 2026-08-29, each with its own
+section at the end of this one - 5.1 to 5.3 was the first shippable milestone
+and it is reached.** What remains of the rung is SFINAE and variadic
+templates, both refused by name. What follows is the order the work was meant
+to happen in and the reasons for that order: what follows is the order the work
 is meant to happen in and the reasons for that order, written before any of
 it, the way rungs 2 and 3 were.
 
@@ -899,11 +901,23 @@ nested classes; this is that path with a template-id in it.
 simpler than partial specialization and which partial specialization needs.
 
 **5.7 - partial specialization, then SFINAE, then variadic.** Each is its own
-step and each is large. 5.6 has landed, so this is the next thing to plan in
-detail - and the two pieces it will want are already here: the pattern read,
-which gives a template's signature with `Kind::TemplateParam` still in it, and
-`deduceOne`, which already matches a pattern against a real type. Partial
-specialization is choosing between several patterns that all match.
+step and each is large. **Partial specialization has landed** - see its
+section below. The other two are still unwritten and refused by name, and what
+each will want is now clearer:
+
+**SFINAE** needs a substitution that can *fail* rather than refuse. Every
+`src_.fail` reached while a candidate's signature is being formed would have
+to become a rejection of that candidate instead, which is a different error
+discipline from the one the rest of this compiler has - errors at the point of
+interception, and no recovery. The narrow version worth taking first is
+`enable_if`: a failure inside a template argument's *type* only, not inside a
+body, which is where the standard puts the line anyway.
+
+**Variadic templates** need a parameter that stands for a list, which the
+pattern types cannot say: `Kind::TemplateParam` holds one index. A pack is
+also the first thing here whose expansion changes how many arguments a call
+has, so `parseArguments` and the whole argument-count machinery would see
+something new. Both are larger than partial specialization was.
 
 **5.1 to 5.3 is the first shippable milestone**: function templates that
 deduce, mangle correctly on all three targets, and link against clang's
@@ -1237,6 +1251,63 @@ is built from `T twice(T)` plus the arguments, and this declaration is not
 that - so it cannot be read as an ordinary definition. Its own step.
 
 Suites 73 / 116 / 39; the C corpus is unchanged.
+
+### 5.7a as it actually landed: partial specialization
+
+**The pieces were already here, which is why this was the smallest step of
+the rung.** The pattern read gives a template's arguments with
+`Kind::TemplateParam` still in them, and matching a pattern against a real
+type is a walk `deduceOne` already did. What is new is that the walk here is
+**[temp.deduct.type] rather than [temp.deduct.call]**: `matchPattern` decays
+nothing and forgives nothing - a pattern that is a pointer matches a pointer
+and nothing else, because there is no conversion here for a mismatch to be
+excused by. Deduction from a call is deliberately looser and stays that way.
+
+**The qualifier is asked about before anything else and both sides must
+agree.** `What<const T>` matches `What<const int>` with T as int and does not
+match `What<int>`; `What<T>` matches both, binding T to the qualified type
+where there is one. That ordering is the whole rule.
+
+**The tag never changes.** `What<int *>` is that whether the body came from
+the template or from a pattern that matched it, so the mangling and every
+lookup are what rung 5.4 left them.
+
+**[temp.class.order] asked the standard's own way**, by matching each pattern
+against the other: A is at least as specialized as B when B's pattern matches
+A's, with A's parameters standing as opaque types - which is what
+`Kind::TemplateParam` already is.
+
+**"Was not beaten" is not the same as "beats", and the difference is a silent
+wrong answer.** `P<A, int>` and `P<int, B>` given `P<int, int>` match neither
+each other, so neither is more specialized and the program is ambiguous.
+Checking only whether the winner had been beaten let that through and picked
+whichever was written first. The winner must beat every other candidate.
+
+**Refused by name**: a partial specialization with a parameter its arguments
+never mention (nothing could ever work it out), one with no body, and one of
+something that is not a class template.
+
+### Two bugs this step found, and neither was about templates
+
+**A class with member functions and no data members lost all of them.** The
+empty-class rule - size 1, so two objects have different addresses - returned
+from the middle of the class body, before the held member bodies were
+replayed, before the implicit special members were declared, and before a
+vtable would have been emitted. Calling a member of such a class compiled and
+linked to nothing. It had shipped since member functions arrived, because no
+case had a class carrying behaviour and no state. Found from the far end: a
+class template with two type parameters would not link, and an empty class is
+what it happened to be. The rule changes the numbers now and nothing else.
+
+**A const template argument was dropped from the Microsoft name.** Measured
+with cl: `W<const int>` is `?f@?$W@$$CBH@@QEAAHXZ`, and `$$CB` is written only
+where the thing under the const is not a pointer - `const int *` is `PEBH` and
+`int *const` is `QEAH`, the P becoming a Q, which type() already wrote. cxx1
+dropped it, so `W<const int>` and `W<int>` shared one symbol: two different
+classes, one name, and whichever body was emitted answered for both. Silent,
+and only on Windows. Itanium spells it with a K and always had.
+
+Suites 78 / 125 / 42; the C corpus is unchanged.
 
 ## Decisions already taken
 

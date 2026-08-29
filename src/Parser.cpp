@@ -348,12 +348,12 @@ std::string Parser::templatedName(const std::vector<TemplateParam> &params,
 // non-type one an enumerator, which is what makes `T x` and `int a[N]` read
 // with no second lookup path: the two things a template parameter can be are
 // the two things this parser already knows how to look up.
-void Parser::bindTemplateParameters(const TemplateDecl &decl,
+void Parser::bindTemplateParameters(const std::vector<TemplateParam> &params,
                                     const std::vector<const Type *> &binding,
                                     const std::vector<long long> &values,
                                     std::vector<Shadow> *undo) {
-    for (std::size_t i = 0; i < decl.params.size(); i++) {
-        const TemplateParam &p = decl.params[i];
+    for (std::size_t i = 0; i < params.size(); i++) {
+        const TemplateParam &p = params[i];
         Shadow s;
         s.name = p.name;
         s.isType = p.type == nullptr;
@@ -395,7 +395,7 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
                                             std::string *qualifier) {
     const std::size_t resume = at_;
     std::vector<Shadow> undo;
-    bindTemplateParameters(decl, binding, values, &undo);
+    bindTemplateParameters(decl.params, binding, values, &undo);
     const bool wasPattern = patternOnly_;
     for (std::size_t i = 0; i < binding.size(); i++)
         if (binding[i] != nullptr && binding[i]->kind() == Kind::TemplateParam)
@@ -454,6 +454,9 @@ bool Parser::skipTemplatedDefinition() {
     }
 }
 
+// Defined below, beside the pattern matching it belongs with.
+static bool mentionsParam(const Type *t, std::size_t i);
+
 // `template <class T> ...` at file scope. Answers false where the token is
 // something else, so topLevel can ask without committing.
 bool Parser::templateDeclaration() {
@@ -480,6 +483,45 @@ bool Parser::templateDeclaration() {
         src_.fail(decl.pos, "a " + special + " of a class template written "
                             "outside the class is not supported yet - write "
                             "it inside the class");
+
+    // **`template <class T> struct Box<T *>` - a partial specialization.** It
+    // is told from the primary by the `<` after the name: a class template
+    // being *declared* has nothing there, and one already declared is being
+    // specialized rather than redeclared.
+    if ((peek().is("struct") || peek().is("class") || peek().is("union")) &&
+        peekAt(1).kind == TokenKind::Ident && peekAt(2).is("<")) {
+        auto primary = templates_.find(peekAt(1).text);
+        if (primary == templates_.end() || !primary->second.isClass)
+            src_.fail(peekAt(1).pos, "'" + peekAt(1).text + "' is not a class "
+                                     "template, so there is nothing here to "
+                                     "specialize");
+        TemplateDecl::Partial ps;
+        ps.params = decl.params;
+        ps.pos = decl.pos;
+        at_ += 2;
+        partialArguments(&ps, primary->second.params.size());
+        if (!peek().is("{"))
+            src_.fail(peek().pos, "a partial specialization is a definition, "
+                                  "and this one has no body");
+        ps.bodyAt = at_;
+        for (std::size_t i = 0; i < ps.params.size(); i++) {
+            bool mentioned = false;
+            for (std::size_t k = 0; k < ps.args.size(); k++)
+                if (!ps.args[k].isType) {
+                    if (ps.args[k].isParam && ps.args[k].param == i) mentioned = true;
+                } else if (mentionsParam(ps.args[k].type, i)) {
+                    mentioned = true;
+                }
+            if (!mentioned)
+                src_.fail(ps.params[i].pos, "'" + ps.params[i].name + "' is "
+                          "never used in this specialization's arguments, so "
+                          "nothing could ever work it out");
+        }
+        at_ = decl.afterParams;
+        skipTemplatedDefinition();
+        primary->second.partials.push_back(ps);
+        return true;
+    }
 
     std::string qualifier;
     decl.name = templatedName(decl.params, &decl.isClass, &qualifier);
@@ -768,6 +810,7 @@ Parser::instantiate(const TemplateDecl &decl,
     Specialization sp;
     sp.key = key;
     sp.name = decl.name;
+    sp.params = decl.params;
     sp.symbol = symbol;
     sp.fn = fn;
     sp.binding = binding;
@@ -862,7 +905,7 @@ void Parser::instantiatePending() {
             TemplateDecl decl = templates_[sp.name];
 
             std::vector<Shadow> undo;
-            bindTemplateParameters(decl, sp.binding, sp.values, &undo);
+            bindTemplateParameters(sp.params, sp.binding, sp.values, &undo);
             const std::string wasKey = instantiationKey_;
             const std::string wasOf = instantiationOf_;
             instantiationKey_ = sp.isClass ? std::string() : sp.key;
@@ -1018,6 +1061,237 @@ bool Parser::deduceTemplateArguments(const TemplateDecl &decl,
     return true;
 }
 
+// Whether parameter `i` appears anywhere in a pattern. A parameter a
+// specialization never mentions could not be worked out from any argument
+// list, so the specialization could never be chosen - which is worth refusing
+// where it is written rather than leaving as a specialization that silently
+// never applies.
+static bool mentionsParam(const Type *t, std::size_t i) {
+    if (t == nullptr) return false;
+    if (t->unqualified() != t) return mentionsParam(t->unqualified(), i);
+    if (t->kind() == Kind::TemplateParam)
+        return static_cast<std::size_t>(t->length()) == i;
+    if (t->isPointer() || t->isArray()) return mentionsParam(t->pointee(), i);
+    if (t->isReference()) return mentionsParam(t->referent(), i);
+    if (t->isSpecialization()) {
+        for (std::size_t k = 0; k < t->templateArgs().size(); k++)
+            if (t->templateArgs()[k].isType &&
+                mentionsParam(t->templateArgs()[k].type, i)) return true;
+        return false;
+    }
+    return false;
+}
+
+// [temp.deduct.type]. A pattern that is a pointer matches a pointer and
+// nothing else - there is no conversion here for a mismatch to be forgiven
+// by, which is what makes this stricter than deduction from a call.
+bool Parser::matchPattern(const Type *pattern, const Type *arg,
+                          std::vector<const Type *> *binding,
+                          std::string *why) const {
+    // **The qualifier is asked about before anything else, and both sides
+    // must agree.** `Box<const T>` matches `Box<const int>` with T as int; it
+    // does not match `Box<int>`. `Box<T>` matches both, binding T to the
+    // qualified type where there is one - which is why this comes first and
+    // the parameter case second.
+    if (pattern->unqualified() != pattern) {
+        if (arg->unqualified() == arg) {
+            *why = "'" + arg->describe() + "' is not const";
+            return false;
+        }
+        return matchPattern(pattern->unqualified(), arg->unqualified(),
+                            binding, why);
+    }
+
+    if (pattern->kind() == Kind::TemplateParam) {
+        const std::size_t i = static_cast<std::size_t>(pattern->length());
+        if ((*binding)[i] == nullptr) { (*binding)[i] = arg; return true; }
+        if ((*binding)[i] != arg) {
+            *why = "it is '" + (*binding)[i]->describe() + "' in one place and '" +
+                   arg->describe() + "' in another";
+            return false;
+        }
+        return true;
+    }
+
+    if (pattern->isPointer())
+        return arg->isPointer() &&
+               matchPattern(pattern->pointee(), arg->pointee(), binding, why);
+    if (pattern->isReference())
+        return arg->isReference() &&
+               matchPattern(pattern->referent(), arg->referent(), binding, why);
+    if (pattern->isArray())
+        return arg->isArray() && pattern->length() == arg->length() &&
+               matchPattern(pattern->pointee(), arg->pointee(), binding, why);
+
+    if (pattern->isSpecialization()) {
+        if (!arg->isSpecialization() ||
+            arg->templateName() != pattern->templateName() ||
+            arg->templateArgs().size() != pattern->templateArgs().size())
+            return false;
+        for (std::size_t i = 0; i < pattern->templateArgs().size(); i++) {
+            const TemplateArg &p = pattern->templateArgs()[i];
+            const TemplateArg &a = arg->templateArgs()[i];
+            if (p.isType != a.isType) return false;
+            if (!p.isType) {
+                if (p.value != a.value) return false;
+                continue;
+            }
+            if (!matchPattern(p.type, a.type, binding, why)) return false;
+        }
+        return true;
+    }
+
+    if (pattern != arg) {
+        *why = "'" + arg->describe() + "' is not '" + pattern->describe() + "'";
+        return false;
+    }
+    return true;
+}
+
+// `Box<T *>` - read with this specialization's own parameters bound to
+// themselves, so what comes out is a pattern rather than a type.
+void Parser::partialArguments(TemplateDecl::Partial *ps, std::size_t count) {
+    expect("<");
+    const bool wasInArgs = inTemplateArgs_;
+    const bool wasPattern = patternOnly_;
+    inTemplateArgs_ = true;
+    patternOnly_ = true;
+
+    std::vector<Shadow> undo;
+    std::vector<const Type *> binding(ps->params.size());
+    std::vector<long long> values(ps->params.size(), 1);
+    for (std::size_t i = 0; i < ps->params.size(); i++)
+        binding[i] = ps->params[i].type == nullptr
+                         ? types_.templateParam(static_cast<int>(i))
+                         : ps->params[i].type;
+    bindTemplateParameters(ps->params, binding, values, &undo);
+
+    for (std::size_t i = 0; i < count; i++) {
+        if (i > 0) expect(",");
+        TemplateDecl::Partial::Arg a;
+        // **A non-type argument that is one of our own parameters is the only
+        // shape of one that deduces**, so it is recognised by its tokens
+        // before it can be folded into the value it was bound to.
+        std::size_t which = ps->params.size();
+        if (peek().kind == TokenKind::Ident)
+            for (std::size_t k = 0; k < ps->params.size(); k++)
+                if (ps->params[k].type != nullptr &&
+                    ps->params[k].name == peek().text) which = k;
+        if (which < ps->params.size() &&
+            (peekAt(1).is(",") || peekAt(1).is(">") || peekAt(1).is(">>"))) {
+            a.isType = false;
+            a.isParam = true;
+            a.param = which;
+            at_++;
+        } else if (atTypeName()) {
+            StorageClass sc;
+            Qualifiers quals;
+            const Type *base = specifiers(&sc, &quals);
+            Declared d = declarator(base, true);
+            a.isType = true;
+            a.type = d.type;
+        } else {
+            a.isType = false;
+            a.value = constantExpression("a template argument");
+        }
+        ps->args.push_back(a);
+    }
+    if (!atClosingAngle())
+        src_.fail(peek().pos, "this specialization gives more arguments than "
+                              "the template has parameters");
+    takeClosingAngle();
+
+    unbindTemplateParameters(undo);
+    inTemplateArgs_ = wasInArgs;
+    patternOnly_ = wasPattern;
+}
+
+// [temp.class.order], asked the standard's own way: A is at least as
+// specialized as B when B's pattern matches A's. A's parameters stand as
+// opaque types while that happens, which is exactly what they already are -
+// Kind::TemplateParam is not a type anything can be.
+bool Parser::atLeastAsSpecialized(const TemplateDecl::Partial &a,
+                                  const TemplateDecl::Partial &b) const {
+    std::vector<const Type *> binding(b.params.size());
+    std::string why;
+    for (std::size_t i = 0; i < a.args.size() && i < b.args.size(); i++) {
+        if (a.args[i].isType != b.args[i].isType) return false;
+        if (!a.args[i].isType) {
+            if (b.args[i].isParam) continue;      // a parameter takes anything
+            if (a.args[i].isParam) return false;
+            if (a.args[i].value != b.args[i].value) return false;
+            continue;
+        }
+        if (!matchPattern(b.args[i].type, a.args[i].type, &binding, &why))
+            return false;
+    }
+    return true;
+}
+
+bool Parser::moreSpecialized(const TemplateDecl::Partial &a,
+                             const TemplateDecl::Partial &b) const {
+    return atLeastAsSpecialized(a, b) && !atLeastAsSpecialized(b, a);
+}
+
+// Which partial specialization these arguments ask for.
+std::size_t Parser::choosePartial(const TemplateDecl &decl,
+                                  const std::vector<TemplateArg> &args,
+                                  std::vector<const Type *> *binding,
+                                  std::vector<long long> *values,
+                                  std::size_t pos) {
+    std::vector<std::size_t> fits;
+    std::vector<std::vector<const Type *> > bindings;
+    std::vector<std::vector<long long> > valueSets;
+
+    for (std::size_t p = 0; p < decl.partials.size(); p++) {
+        const TemplateDecl::Partial &ps = decl.partials[p];
+        if (ps.args.size() != args.size()) continue;
+        std::vector<const Type *> b(ps.params.size());
+        std::vector<long long> v(ps.params.size(), 0);
+        std::string why;
+        bool ok = true;
+        for (std::size_t i = 0; i < args.size() && ok; i++) {
+            const TemplateDecl::Partial::Arg &a = ps.args[i];
+            if (a.isType != args[i].isType) { ok = false; break; }
+            if (!a.isType) {
+                if (a.isParam) v[a.param] = args[i].value;
+                else if (a.value != args[i].value) ok = false;
+                continue;
+            }
+            if (!matchPattern(a.type, args[i].type, &b, &why)) ok = false;
+        }
+        for (std::size_t i = 0; ok && i < ps.params.size(); i++)
+            if (ps.params[i].type == nullptr && b[i] == nullptr) ok = false;
+        if (!ok) continue;
+        fits.push_back(p);
+        bindings.push_back(b);
+        valueSets.push_back(v);
+    }
+
+    if (fits.empty()) return static_cast<std::size_t>(-1);
+
+    // **One has to beat every other, and "not beaten" is not the same as
+    // "beats".** `P<A, int>` and `P<int, B>` given `P<int, int>` are the case:
+    // neither matches the other, so neither is more specialized, and the
+    // program is ambiguous. Asking only whether the winner was beaten lets
+    // that through and picks whichever came first, which is the silent kind
+    // of wrong this compiler refuses.
+    std::size_t best = 0;
+    for (std::size_t k = 1; k < fits.size(); k++)
+        if (moreSpecialized(decl.partials[fits[k]], decl.partials[fits[best]]))
+            best = k;
+    for (std::size_t k = 0; k < fits.size(); k++)
+        if (k != best &&
+            !moreSpecialized(decl.partials[fits[best]], decl.partials[fits[k]]))
+            src_.fail(pos, "'" + decl.name + "' has two partial "
+                           "specializations that fit these arguments and "
+                           "neither is more specialized than the other");
+
+    *binding = bindings[best];
+    *values = valueSets[best];
+    return fits[best];
+}
+
 // `Box<int, 3>` where a type was expected - rung 5.4.
 //
 // The class is made by replaying `struct Box { ... };` with the arguments
@@ -1053,20 +1327,37 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
         src_.fail(pos, "'" + decl.name + "' is declared but never defined, so "
                        "there is nothing to instantiate");
 
+    // **A partial specialization is chosen before anything is replayed**, and
+    // what it changes is which tokens get replayed and with which parameters
+    // bound. The tag does not change: `Box<int *>` is that whether the body
+    // came from the template or from a pattern that matched it, which is what
+    // keeps the mangling and every lookup the same.
+    std::vector<const Type *> useBinding = binding;
+    std::vector<long long> useValues = values;
+    std::vector<TemplateParam> useParams = decl.params;
+    const std::size_t which = choosePartial(decl, args, &useBinding, &useValues,
+                                            pos);
+    const bool partial = which != static_cast<std::size_t>(-1);
+    if (partial) useParams = decl.partials[which].params;
+
     const std::size_t resume = at_;
     std::vector<Shadow> undo;
-    bindTemplateParameters(decl, binding, values, &undo);
+    bindTemplateParameters(useParams, useBinding, useValues, &undo);
 
-    at_ = decl.afterParams;
+    at_ = partial ? decl.partials[which].bodyAt : decl.afterParams;
     classInstantiationTag_ = tag;
+    if (partial) classInstantiationOf_ = decl.name;
     instantiatingArgs_ = args;
     heldForSpecialization_.clear();
     const bool wasDeferring = deferSpecializationBodies_;
     deferSpecializationBodies_ = true;
     StorageClass sc;
     Qualifiers quals;
-    const Type *made = specifiers(&sc, &quals);
+    const Type *made = partial
+        ? structOrUnionSpecifier(Kind::Struct, false)
+        : specifiers(&sc, &quals);
     classInstantiationTag_.clear();
+    classInstantiationOf_.clear();
     instantiatingArgs_.clear();
     deferSpecializationBodies_ = wasDeferring;
     std::vector<PendingBody> bodies;
@@ -1082,8 +1373,9 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     Specialization sp;
     sp.key = tag;
     sp.name = decl.name;
-    sp.binding = binding;
-    sp.values = values;
+    sp.params = useParams;
+    sp.binding = useBinding;
+    sp.values = useValues;
     sp.start = decl.afterParams;
     sp.pos = pos;
     sp.isClass = true;
@@ -1618,15 +1910,21 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // that carries behaviour and no state. The size is one byte so that two
     // objects of it have different addresses, which is what the standard asks
     // for and not an arbitrary choice.
-    if (members.empty() && totalBits == 0) {
-        type->setDataSize(1);
-        type->complete(members, 1, 1);
-        return type;
-    }
-
+    //
+    // **It changes the numbers and nothing else.** This used to return here,
+    // which meant a class with no data members never reached the lines below:
+    // its held member bodies were dropped, its implicit special members were
+    // never declared, and a vtable would not have been emitted. A class
+    // carrying only behaviour is the ordinary shape of one, and calling a
+    // member of it linked to nothing. Found while a class template with two
+    // type parameters would not link, which is what an empty one happened to
+    // be.
     int size = static_cast<int>(alignTo((totalBits + 7) / 8, widest));
-    type->setDataSize(static_cast<int>((totalBits + 7) / 8));
-    type->complete(members, size, widest);
+    int align = widest;
+    if (members.empty() && totalBits == 0) { size = 1; align = 1; }
+    type->setDataSize(members.empty() && totalBits == 0
+                          ? 1 : static_cast<int>((totalBits + 7) / 8));
+    type->complete(members, size, align);
     // Held bodies are read now, with the class complete: every member exists,
     // so a body may name one declared below it. Taken out of the vector first,
     // because a body may itself define a class with held bodies of its own.
