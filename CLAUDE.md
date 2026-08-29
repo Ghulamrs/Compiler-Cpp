@@ -1732,7 +1732,67 @@ suite said so immediately: **eight Windows cases failed with wrong values and
 no crash**, which is what a stack slot read one frame away looks like. One
 choke point at the renderer catches every shape by construction.
 
-### 6.5b steps 2 and 3 as they stand: emitted, and the runtime will not arrive
+### 6.5b steps 2 and 3: done - cxx1 catches on Windows
+
+**`catch-check.cmd` prints `before / caught 7 / after`**, and it runs inside
+`verify-three` beside the throw check. That one has cl catch what cxx1 threw
+and says nothing about this frame; this compiles both halves with cxx1, so
+what it tests is the funclet, the FH3 tables and the unwind data together.
+
+**Two faults stood between the tables being right and this working, and
+neither was in the tables.**
+
+**`text$x` is a segment called text.** The funclet's segment was written the
+way cl's listing writes it, undotted, and the linker gave it a section of its
+own with data attributes - so the runtime found the handler, called it
+correctly, and faulted on the first instruction because the page was not
+code. **It reads exactly like a dispatch fault and is not one.** `.text$x`
+with `ALIGN(16) 'CODE'` is what assembles. This is the *third* time cl's
+listing has recorded what cl means rather than something that assembles -
+`.pdata` and `.xdata` were the first two, in step 1.
+
+**rsp is restored from rbp, never by adding to itself.** Once the handler ran,
+`after` printed and the program then jumped to `0xFFFFFFFFFFFFFFFE`. That is
+-2, the unwind-help sentinel: `ret` had taken it as a return address. Resuming
+after a catch is the case that decides this - the runtime unwinds the frame
+and jumps back into the middle of the function, and **rsp is whatever it left
+there** rather than what the body had, so `add rsp, frameSize` lands
+somewhere arbitrary. `lea rsp, [rbp + frameSize]` is right, and it is written
+as an offset of zero because this target's renderer adds the frame size to
+every rbp displacement.
+
+**How they were found, with no debugger on the box.** A vectored exception
+handler in a cl-compiled translation unit, installed before the throw, printing
+the exception code, the faulting address and the RVA. It showed the C++ throw
+going out (`E06D7363`) and then where the access violation landed - and an RVA
+matched against `dumpbin /headers` named the section, which was the whole
+answer. `AddVectoredExceptionHandler` is worth reaching for before installing
+debugging tools.
+
+**Several `try` statements in one function work**, which the first version did
+not: it wrote tables for `msTries()[0]` and nothing else, so the second try in
+a function had no tables and the program died with no output at all. Try *k*
+owns states 2k and 2k+1 - the body and its handlers - and `maxState` is twice
+the count. They are numbered rather than nested because the parser refuses a
+`try` inside another; a nested one would want `tryLow` and `tryHigh` to span
+its child's states, which is what those two fields are for.
+
+**What is still refused, and why it is not a small thing.** `return` inside a
+`catch`: a handler is a function of its own there, so leaving one early is not
+a jump but a *return* of the address to carry on at - in the register a return
+value would travel in. `try-catch.cpp` ends every handler with one and so
+still names this target in its `.notarget`; `try-catch-value.cpp` is the same
+feature with handlers that fall off their end and runs on all three.
+
+**`tools/mangled-names` still asks clang with `-fno-exceptions` for Windows,
+and step 4 is what changes it.** `-fexceptions` was tried now that cxx1 can
+catch: fourteen cases differ, and every difference is a `?dtor$N@...` funclet -
+clang runs a destructor during unwinding by compiling it into a cleanup
+funclet, and cxx1 emits no cleanups on this target. That is a missing feature
+rather than a wrong name, and asking for it would report the same absence
+fourteen times.
+
+### 6.5b steps 2 and 3, as they stood while stuck
 
 **Superseded in part** - the frame fault described below is fixed; what
 follows is what has been eliminated since, and what has not.

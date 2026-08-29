@@ -129,6 +129,15 @@ for pair in "x86_64-linux:x86_64-linux-gnu" \
     # and its name string - and cxx1 has no RTTI at all, refusing `typeid` by
     # name. Under -fno-rtti clang writes a plain 0 in the vtable's typeinfo
     # slot, which is exactly what cxx1 writes.
+    # **-fno-exceptions for Windows, and it is rung 6.5b step 4 that changes
+    # it.** cxx1 can now throw and catch on that target, so the obvious move
+    # is -fexceptions everywhere - and it was tried, and it makes fourteen
+    # cases differ. Every one of the differences is a `?dtor$N@...` funclet:
+    # clang runs a destructor during unwinding by compiling it into a cleanup
+    # funclet of its own, and cxx1 emits no cleanups on this target yet. That
+    # is a missing feature rather than a wrong name, so asking for it here
+    # would report the same absence fourteen times and drown the thing this
+    # suite is for. Flip this line when cleanups land.
     if [ "$theirs" = x86_64-pc-windows-msvc ]; then EH=-fno-exceptions; else EH=-fexceptions; fi
     if ! clang++ -x c++ -std=c++11 $EH -fno-rtti -w -target "$theirs" -S "$SRC" -o "$OUT/theirs.s" \
                  2>"$OUT/theirs.err"; then

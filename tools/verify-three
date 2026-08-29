@@ -115,6 +115,17 @@ double 2.5" ]; then
         tail -4 "$OUT/throw.txt" | sed 's/^/      /'
         fail=$((fail + 1))
     fi
+
+    # The mirror, and the one rung 6.5b is for: both halves compiled by cxx1,
+    # so what it tests is the funclet and the FH3 tables rather than the
+    # ThrowInfo chain the check above covers.
+    if ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\catch-check.cmd $REMOTE" \
+           2>/dev/null | tr -d '\r' | grep -q '^caught 7$'; then
+        echo "  catch-check: cxx1 caught what cxx1 threw"
+    else
+        echo "  catch-check: FAILED"
+        STATUS=1
+    fi
     echo "windows cases: $pass passed, $fail failed"
     [ "$fail" -eq 0 ] || STATUS=1
     rm -rf "$OUT"

@@ -876,15 +876,6 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     // handlers are kept whole and none of __cxa_begin_catch, the selector or
     // _Unwind_Resume is built at all.
     const bool microsoft = target_.microsoftNames();
-    // **Refused still, and the frame is no longer the reason.** rbp is the
-    // establisher frame now and every displacement in the tables is a
-    // positive offset from it, which was the fault this rung was stuck on.
-    // What remains is that the runtime does not arrive in a handler
-    // correctly - see rung 6.5b in CLAUDE.md for what has been eliminated.
-    if (microsoft)
-        src_.fail(pos, "'try' is not supported yet for x86_64-windows - the "
-                       "funclets and tables are emitted and the runtime does "
-                       "not yet arrive in them correctly; see rung 6.5b");
     functionHasTry_ = true;
     if (inTryBody_)
         src_.fail(pos, "a 'try' inside another one is not supported yet - the "

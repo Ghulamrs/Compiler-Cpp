@@ -583,7 +583,20 @@ void MasmCodeGen::endFunclet(const std::string &resume) {
 
     const std::string sym = funcletSymbol_;
     std::string f;
-    f += "\ntext$x SEGMENT\n";
+    // **`.text$x`, and the dot is the whole of it** - the same trap as
+    // `.pdata` in step 1, and found the same way. A segment called `text` is
+    // a segment called text: the linker gives it a section of its own with
+    // data attributes, and the runtime then calls a handler that sits on a
+    // page it may not execute. It faults *at the first instruction of the
+    // funclet*, which reads as the dispatch having gone wrong when in fact
+    // the dispatch was right and the page was not code.
+    //
+    // cl's listing writes `text$x` undotted, which is the third time that
+    // listing has recorded what cl means rather than something that
+    // assembles - see the note on .pdata.
+    // The 'CODE' class is what makes the linker give it execute
+    // permission and fold it beside .text rather than beside the data.
+    f += "\n.text$x SEGMENT ALIGN(16) 'CODE'\n";
     f += sym + " PROC\n";
     f += "$LNbeg$" + sym + ":\n";
     f += "  mov QWORD PTR [rsp+16], rdx\n";
@@ -603,7 +616,7 @@ void MasmCodeGen::endFunclet(const std::string &resume) {
     f += "  ret 0\n";
     f += "$LNend$" + sym + ":\n";
     f += sym + " ENDP\n";
-    f += "text$x ENDS\n";
+    f += ".text$x ENDS\n";
 
     // A funclet carries unwind data of its own, naming the same handler and
     // *the parent's* FuncInfo - the two share one description of the try.
@@ -650,67 +663,84 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
 
     const std::string m = masm_.mangledName();
     const int frame = masm_.frameSize_;
+    const std::size_t tries = msTries().size();
     std::string o;
     o += funclets_;
     funclets_.clear();
     funcletIndex_ = 0;
 
-    // One try only for now; the parser refuses a nested one for its own
-    // reasons, and more than one in a row wants a state per try rather than
-    // the two this writes.
-    const MsTryRegion &r = msTries()[0];
+    // **Two states per try**: the body is one and its handlers the next, so
+    // try k owns states 2k and 2k+1 and there are 2*tries of them. They are
+    // numbered rather than nested because the parser refuses a `try` inside
+    // another - a nested one would want tryLow and tryHigh to span its
+    // child's states, which is what those two fields are for.
+    const std::size_t states = 2 * tries;
+
+    std::size_t ipRows = 0;
+    for (std::size_t k = 0; k < tries; k++)
+        ipRows += 2 + msTries()[k].handlers.size();
 
     o += "\n.xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
     o += "$cppxdata$" + m + " DD 019930522H\n";
-    o += "  DD 02H\n";                      // maxState: in the try, in a catch
+    o += "  DD " + std::to_string(states) + "\n";
     o += "  DD imagerel $stateUnwindMap$" + m + "\n";
-    o += "  DD 01H\n";
+    o += "  DD " + std::to_string(tries) + "\n";
     o += "  DD imagerel $tryMap$" + m + "\n";
-    o += "  DD " + std::to_string(3 + r.handlers.size()) + "\n";
+    o += "  DD " + std::to_string(ipRows + 1) + "\n";
     o += "  DD imagerel $ip2state$" + m + "\n";
-    o += "  DD " + std::to_string(frame - r.unwindHelpSlot) + "\n";
+    o += "  DD " + std::to_string(frame - msTries()[0].unwindHelpSlot) + "\n";
     o += "  DD 00H\n";                      // no exception specification
     o += "  DD 01H\n";                      // EHFlags: compiled with /EHsc
 
     // No cleanups yet, so every state unwinds to nothing and runs nothing.
-    o += "$stateUnwindMap$" + m + " DD 0ffffffffH\n  DD 00H\n";
-    o += "  DD 0ffffffffH\n  DD 00H\n";
+    o += "$stateUnwindMap$" + m;
+    for (std::size_t i = 0; i < states; i++)
+        o += (i == 0 ? " DD 0ffffffffH\n" : "  DD 0ffffffffH\n") + std::string("  DD 00H\n");
 
-    o += "$tryMap$" + m + " DD 00H\n";      // tryLow
-    o += "  DD 00H\n";                      // tryHigh
-    o += "  DD 01H\n";                      // catchHigh
-    o += "  DD " + std::to_string(r.handlers.size()) + "\n";
-    o += "  DD imagerel $handlerMap$0$" + m + "\n";
-
-    o += "$handlerMap$0$" + m;
-    for (std::size_t i = 0; i < r.handlers.size(); i++) {
-        const MsHandlerRow &h = r.handlers[i];
-        // 0x40 is HT_IsCatchAll, and a catch-all names no type.
-        o += (i == 0 ? " DD " : "  DD ");
-        o += h.descriptor.empty() ? "040H\n" : "00H\n";
-        o += h.descriptor.empty() ? "  DD 00H\n"
-                                  : "  DD imagerel " + h.descriptor + "\n";
-        o += "  DD " + std::to_string(h.objectSlot == 0
-                                          ? 0 : frame - h.objectSlot) + "\n";
-        o += "  DD imagerel " + h.funclet + "\n";
-        // dispFrame, left at the frame size because that is what cl writes -
-        // measured on a function with no frame pointer, where its frame was
-        // 56 and this field was 56. Zero was tried, on the reasoning that rbp
-        // is now the establisher, and changed nothing.
-        o += "  DD " + std::to_string(frame) + "\n";
+    o += "$tryMap$" + m;
+    for (std::size_t k = 0; k < tries; k++) {
+        const MsTryRegion &r = msTries()[k];
+        o += (k == 0 ? " DD " : "  DD ") + std::to_string(2 * k) + "\n";   // tryLow
+        o += "  DD " + std::to_string(2 * k) + "\n";                       // tryHigh
+        o += "  DD " + std::to_string(2 * k + 1) + "\n";                   // catchHigh
+        o += "  DD " + std::to_string(r.handlers.size()) + "\n";
+        o += "  DD imagerel $handlerMap$" + std::to_string(k) + "$" + m + "\n";
     }
 
-    // Where each state begins. -1 is "outside any try", 0 is inside it, and 1
-    // is inside a handler - which is why a funclet needs a row of its own.
+    for (std::size_t k = 0; k < tries; k++) {
+        const MsTryRegion &r = msTries()[k];
+        o += "$handlerMap$" + std::to_string(k) + "$" + m;
+        for (std::size_t i = 0; i < r.handlers.size(); i++) {
+            const MsHandlerRow &h = r.handlers[i];
+            // 0x40 is HT_IsCatchAll, and a catch-all names no type.
+            o += (i == 0 ? " DD " : "  DD ");
+            o += h.descriptor.empty() ? "040H\n" : "00H\n";
+            o += h.descriptor.empty() ? "  DD 00H\n"
+                                      : "  DD imagerel " + h.descriptor + "\n";
+            o += "  DD " + std::to_string(h.objectSlot == 0
+                                              ? 0 : frame - h.objectSlot) + "\n";
+            o += "  DD imagerel " + h.funclet + "\n";
+            o += "  DD " + std::to_string(frame) + "\n";
+        }
+    }
+
+    // Where each state begins. -1 is "outside any try", and a funclet is
+    // wholly inside its own handler state.
     o += "$ip2state$" + m + " DD imagerel $LNbeg$" + m + "\n";
     o += "  DD 0ffffffffH\n";
-    o += "  DD imagerel " + masm_.labelName(r.begin) + "\n";
-    o += "  DD 00H\n";
-    o += "  DD imagerel " + masm_.labelName(r.end) + "\n";
-    o += "  DD 0ffffffffH\n";
-    for (std::size_t i = 0; i < r.handlers.size(); i++) {
-        o += "  DD imagerel " + r.handlers[i].funclet + "\n";
-        o += "  DD 01H\n";
+    for (std::size_t k = 0; k < tries; k++) {
+        const MsTryRegion &r = msTries()[k];
+        o += "  DD imagerel " + masm_.labelName(r.begin) + "\n";
+        o += "  DD " + std::to_string(2 * k) + "\n";
+        o += "  DD imagerel " + masm_.labelName(r.end) + "\n";
+        o += "  DD 0ffffffffH\n";
+    }
+    for (std::size_t k = 0; k < tries; k++) {
+        const MsTryRegion &r = msTries()[k];
+        for (std::size_t i = 0; i < r.handlers.size(); i++) {
+            o += "  DD imagerel " + r.handlers[i].funclet + "\n";
+            o += "  DD " + std::to_string(2 * k + 1) + "\n";
+        }
     }
     o += ".xdata ENDS\n\n.CODE\n";
     out_ += o;

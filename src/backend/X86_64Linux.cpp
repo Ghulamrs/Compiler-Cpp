@@ -1496,10 +1496,19 @@ void X86_64Linux::emit(const Function &fn) {
     else if (fn.returns()->isFloating())    a_->ins("pxor", reg("%xmm0"), reg("%xmm0"));
     else                                    a_->ins("mov", immText("0"), reg("%rax"));
     a_->defLabel(returnLabel_);
-    // rbp *is* rsp where the locals are above it, so there is nothing to
-    // restore - the allocation is given back by hand instead.
+    // **rsp is restored *from rbp*, never by adding to itself.** Resuming
+    // after a catch is the case that decides it: the runtime unwinds the
+    // frame and jumps back into the middle of the function, and rsp is
+    // whatever it left there rather than what the body had. Adding the frame
+    // size to it then lands somewhere arbitrary - measured, and what it
+    // landed on was the unwind-help slot, so `ret` took -2 as a return
+    // address and the program jumped to 0xFFFFFFFFFFFFFFFE.
+    //
+    // Where the locals are above the base this is `lea rsp, [rbp+frameSize]`,
+    // and it is written as an offset of zero because this target's renderer
+    // adds the frame size to every rbp displacement.
     if (localsAboveFrameBase()) {
-        if (frameSize_ > 0) a_->ins("add", imm(frameSize_), reg("%rsp"));
+        a_->ins("lea", mem(0, "%rbp"), reg("%rsp"));
     } else {
         a_->ins("mov", reg("%rbp"), reg("%rsp"));
     }

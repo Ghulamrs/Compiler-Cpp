@@ -1,0 +1,1 @@
+x86_64-windows  clang is asked with -fno-exceptions on this target - see tools/mangled-names - so it refuses a case that throws and there is nothing to compare against. That is rung 6.5b step 4's to change: with -fexceptions clang emits a cleanup funclet per destructor and cxx1 emits none, which would report a missing feature as fourteen naming differences.
