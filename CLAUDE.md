@@ -101,7 +101,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
-| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1-5.5 **done**, 2026-08-29 |
+| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1-5.6 **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
@@ -832,11 +832,11 @@ backend already knows how to emit. This is the pattern to reach for again:
 where C++ adds a *conversion*, look for an existing operation to lower it to
 before adding a case to three code generators.
 
-## Rung 5: templates, 5.1 to 5.5 done and the rest planned
+## Rung 5: templates, 5.1 to 5.6 done and 5.7 planned
 
-**5.1 to 5.5 landed 2026-08-29 and each has its own section at the end of this
-one - 5.1 to 5.3 was the first shippable milestone and it is reached.**
-Everything from 5.6 on is still unwritten: what follows is the order the work
+**5.1 to 5.6 landed 2026-08-29 and each has its own section at the end of this
+one - 5.1 to 5.3 was the first shippable milestone and it is reached.** Only
+5.7 is still unwritten: what follows is the order the work
 is meant to happen in and the reasons for that order, written before any of
 it, the way rungs 2 and 3 were.
 
@@ -899,7 +899,11 @@ nested classes; this is that path with a template-id in it.
 simpler than partial specialization and which partial specialization needs.
 
 **5.7 - partial specialization, then SFINAE, then variadic.** Each is its own
-step and each is large. Not planned in detail until 5.6 lands.
+step and each is large. 5.6 has landed, so this is the next thing to plan in
+detail - and the two pieces it will want are already here: the pattern read,
+which gives a template's signature with `Kind::TemplateParam` still in it, and
+`deduceOne`, which already matches a pattern against a real type. Partial
+specialization is choosing between several patterns that all match.
 
 **5.1 to 5.3 is the first shippable milestone**: function templates that
 deduce, mangle correctly on all three targets, and link against clang's
@@ -1197,6 +1201,42 @@ a constructor has none, and the ordinary path for that - `atUntypedMemberDefinit
 - looks for `Name ::` and not for a template-id. Its own step.
 
 Suites 70 / 113 / 38; the C corpus is unchanged.
+
+### 5.6 as it actually landed
+
+**Nothing about the class path changed, which is the point.** The tag is
+`Name<int>` exactly as it would be if the template had produced it, so every
+use finds this one through the same lookup, both manglers spell it the same
+way, and its members are keyed the same. What differs is only where the body
+came from - which is why a specialization may have members the template does
+not.
+
+**The argument list is read against the primary's parameters.** That is what
+decides whether an argument is a type or a value, the same rule every other
+use follows, and the reason the primary has to be declared first.
+
+**Too late is an error about placement, not a redefinition.** [temp.expl.spec]
+wants the specialization before the first use that would instantiate, and if
+one already did then two different classes have been given one name. The
+existing tag lookup is what catches it, and the message says where to move the
+specialization rather than that something is defined twice.
+
+**A written class emits its inline members; an instantiated one emits the
+members something calls.** Two rules, and they are not an inconsistency: 5.4
+gates an *implicit* instantiation because clang and cl instantiate a member
+only on use, while a class written out - ordinary or explicitly specialized -
+goes down the path every class has always taken. An explicit specialization
+behaves like the class it is. Measured: an unused member of one leaves the
+same extra symbol an unused member of a plain class does, which is the
+divergence `docs/CONFORMANCE.md` already records for inline members.
+
+**Refused by name: an explicit specialization of a function template.** A
+class one is a class definition, which the class path already reads. A
+function one has to be mangled from the *primary's* pattern - `_Z5twiceIiET_S0_`
+is built from `T twice(T)` plus the arguments, and this declaration is not
+that - so it cannot be read as an ordinary definition. Its own step.
+
+Suites 73 / 116 / 39; the C corpus is unchanged.
 
 ## Decisions already taken
 

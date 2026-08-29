@@ -464,6 +464,7 @@ bool Parser::templateDeclaration() {
     at_++;
     if (!peek().is("<"))
         src_.fail(peek().pos, "explicit instantiation is not supported yet");
+    if (peekAt(1).is(">")) return explicitSpecialization();
     templateParameters(decl.params);
 
     decl.afterParams = at_;
@@ -523,6 +524,73 @@ bool Parser::templateDeclaration() {
         decl.outOfLine = it->second.outOfLine;
         it->second = decl;
     }
+    return true;
+}
+
+// `template <> struct Box<int> { ... };` - rung 5.6.
+//
+// A class written out for one argument list instead of made from the
+// template. Nothing about the class path changes: the tag is `Box<int>` here
+// exactly as it would be if the template had produced it, so every use finds
+// this one through the same lookup, the manglers spell it the same way, and
+// a member is keyed the same. What differs is only where the body came from.
+//
+// **The argument list is read against the primary's parameters**, which is
+// what decides whether an argument is a type or a value - the same rule as
+// every other use, and the reason the primary has to be declared first.
+bool Parser::explicitSpecialization() {
+    const std::size_t pos = peek().pos;
+    expect("<");
+    takeClosingAngle();
+
+    if (!peek().is("struct") && !peek().is("class") && !peek().is("union"))
+        src_.fail(peek().pos, "an explicit specialization of a function "
+                              "template is not supported yet - this one is not "
+                              "a class");
+    const Kind kind = peek().is("union") ? Kind::Union : Kind::Struct;
+    const bool isClass = peek().is("class");
+    at_++;
+
+    if (peek().kind != TokenKind::Ident)
+        src_.fail(peek().pos, "this specialization names no class");
+    const std::string name = peek().text;
+    auto primary = templates_.find(name);
+    if (primary == templates_.end() || !primary->second.isClass)
+        src_.fail(peek().pos, "'" + name + "' is not a class template, so "
+                              "there is nothing here to specialize");
+    at_++;
+    if (!peek().is("<"))
+        src_.fail(peek().pos, "'" + name + "' is a class template and a "
+                              "specialization of it needs its arguments");
+
+    std::vector<const Type *> binding;
+    std::vector<long long> values;
+    std::vector<TemplateArg> args;
+    templateArguments(primary->second, &binding, &values, &args);
+
+    const std::string tag = specializationKey(name, args);
+    // **Too late is an error, not a redefinition.** [temp.expl.spec]: a
+    // specialization has to be declared before the first use that would
+    // instantiate the template, and if one already did then two different
+    // classes have been given one name.
+    if (findTypedef(tag) != nullptr)
+        src_.fail(pos, "'" + tag + "' has already been used further up, so "
+                       "specializing it here is too late - the specialization "
+                       "goes before the first use");
+    if (!peek().is("{"))
+        src_.fail(peek().pos, "an explicit specialization is a definition, and "
+                              "this one has no body");
+
+    classInstantiationTag_ = tag;
+    classInstantiationOf_ = name;
+    instantiatingArgs_ = args;
+    const Type *made = structOrUnionSpecifier(kind, isClass);
+    classInstantiationTag_.clear();
+    classInstantiationOf_.clear();
+    instantiatingArgs_.clear();
+
+    declareTypeName(tag, made);
+    expect(";");
     return true;
 }
 
@@ -993,11 +1061,14 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     classInstantiationTag_ = tag;
     instantiatingArgs_ = args;
     heldForSpecialization_.clear();
+    const bool wasDeferring = deferSpecializationBodies_;
+    deferSpecializationBodies_ = true;
     StorageClass sc;
     Qualifiers quals;
     const Type *made = specifiers(&sc, &quals);
     classInstantiationTag_.clear();
     instantiatingArgs_.clear();
+    deferSpecializationBodies_ = wasDeferring;
     std::vector<PendingBody> bodies;
     bodies.swap(heldForSpecialization_);
 
@@ -1124,7 +1195,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // scope - `struct Node *p;` inside a class is the global Node - so the
     // qualification only happens where a body follows.
     const Type *within = classStack_.empty() ? nullptr : classStack_.back();
-    const std::string local = tag;
+    std::string local = tag;
     const bool defining = peek().is("{") || peek().is(":");
 
     // **A specialization is named by its whole argument list.** The tag every
@@ -1133,9 +1204,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // localName() and enclosing() beside it before templates needed one.
     std::string specializationOf;
     if (!classInstantiationTag_.empty() && defining) {
-        specializationOf = tag;
+        // An explicit specialization has already had `Box<int>` read off it,
+        // so there is no identifier here and the template's name comes along
+        // beside the tag. An implicit one still has its `Box` in hand.
+        specializationOf = classInstantiationOf_.empty() ? tag
+                                                         : classInstantiationOf_;
         tag = classInstantiationTag_;
+        local = specializationOf;
         classInstantiationTag_.clear();
+        classInstantiationOf_.clear();
     }
 
     if (within != nullptr && !tag.empty()) {
@@ -1577,8 +1654,10 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // inside a function - and a replay goes through topLevel, which clears
     // the locals of the function being parsed. They are handed back instead
     // and replayed by the same pass that defines function specializations.
-    if (!specializationOf.empty()) heldForSpecialization_ = std::move(mine);
-    else replayInlineBodies(std::move(mine));
+    if (!specializationOf.empty() && deferSpecializationBodies_)
+        heldForSpecialization_ = std::move(mine);
+    else
+        replayInlineBodies(std::move(mine));
     return type;
 }
 

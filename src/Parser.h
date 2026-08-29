@@ -175,6 +175,9 @@ private:
         // middle of whatever asked for it, and replaying a body there would
         // walk over the enclosing function's own state.
         bool isClass = false;
+        // Written out rather than made, so there are no parameters to bind
+        // and no primary template to replay.
+        bool explicitly = false;
         std::vector<PendingBody> bodies;
         // Out-of-line definitions already turned into keys for this tag. They
         // are replayed through topLevel and not through replayInlineBodies:
@@ -213,6 +216,19 @@ private:
     // must take, and the sign to hold its member bodies rather than replay
     // them. One-shot, taken by structOrUnionSpecifier.
     std::string classInstantiationTag_;
+    // The template's own name, for the explicit-specialization path, where
+    // `struct Box<int>` has already been read by the time the class body is
+    // parsed and there is no identifier left for structOrUnionSpecifier to
+    // take it from.
+    std::string classInstantiationOf_;
+    // **Held bodies are deferred only for an implicit instantiation.** That
+    // happens in the middle of whatever asked for the class; an explicit
+    // specialization is a definition at file scope like any other, so its
+    // bodies are replayed where they are written.
+    bool deferSpecializationBodies_ = false;
+    // `template <> struct Box<int> { ... };` - a class written out for one
+    // argument list instead of made from the template.
+    bool explicitSpecialization();
     // The arguments that tag was built from, and the bodies the class came
     // back with. Both are handed between instantiateClass and the one call to
     // structOrUnionSpecifier it makes, which is why they are fields rather
