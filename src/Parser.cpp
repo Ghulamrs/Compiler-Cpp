@@ -346,7 +346,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // Where this member's declaration begins. A body written here is
         // replayed from exactly this token, so the replay re-reads the return
         // type and parameters rather than trying to rebuild them.
-        const std::size_t itemStart = at_;
+        std::size_t itemStart = at_;
 
         // Set when a body was held and stepped over: a definition ends at its
         // '}' and has no ';' to consume, unlike every other member.
@@ -369,8 +369,13 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             continue;
         }
 
+        // **The replay must not start at `virtual`.** A held body is re-read
+        // through the ordinary out-of-line path, and out of line the keyword
+        // is not written - C++ puts it on the declaration inside the class
+        // and nowhere else. So it is stepped over here and the replay begins
+        // at the return type, which is what specifiers() is able to read.
         bool isVirtual = false;
-        if (peek().is("virtual")) { isVirtual = true; at_++; }
+        if (peek().is("virtual")) { isVirtual = true; at_++; itemStart = at_; }
 
         // `~Point();` - a destructor, recognised the same way and for the same
         // reason as a constructor: it has no return type and its name is the
@@ -1579,6 +1584,18 @@ void Parser::registerDestructor(const std::string &cls, std::size_t pos,
                                 Access access, bool isVirtual, bool implicit) {
     const std::vector<const Type *> params;
     const std::string key = destructorKey(cls);
+
+    // **A base with a virtual destructor makes this one virtual**, keyword or
+    // not - [class.dtor], and the same rule declareMember follows for an
+    // ordinary override. The base's slots are already down in this class's
+    // table, so the question is answered by looking for the "~" entry, and it
+    // has to be answered here rather than after the name is built: the code
+    // letter below reads it.
+    std::vector<VSlot> &slots = vtables_[cls];
+    std::size_t slot = slots.size();
+    for (std::size_t i = 0; i < slots.size(); i++)
+        if (slots[i].name == "~") { slot = i; isVirtual = true; break; }
+
     // **A virtual destructor is U on Microsoft whatever its access**, the same
     // rule a virtual member function already followed - measured with cl,
     // which writes ??1VB@@UEAA@XZ where a non-virtual public one is QEAA.
@@ -1608,13 +1625,12 @@ void Parser::registerDestructor(const std::string &cls, std::size_t pos,
     const bool ms = target_.microsoftNames();
     const std::string deleting = deletingDestructorSymbol(cls);
 
-    std::vector<VSlot> &slots = vtables_[cls];
     std::vector<const Type *> none;
-    for (std::size_t i = 0; i < slots.size(); i++) {
-        if (slots[i].name != "~") continue;
-        slots[i].symbol = ms ? deleting : out;          // the complete form
-        if (!ms && i + 1 < slots.size() && slots[i + 1].name == "~$deleting")
-            slots[i + 1].symbol = deleting;
+    if (slot < slots.size()) {
+        slots[slot].symbol = ms ? deleting : out;       // the complete form
+        if (!ms && slot + 1 < slots.size() &&
+            slots[slot + 1].name == "~$deleting")
+            slots[slot + 1].symbol = deleting;
         return;
     }
     slots.push_back(VSlot{ "~", ms ? deleting : out, none, false });
@@ -3055,6 +3071,34 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
     if (inUnion && isVirtual)
         src_.fail(d.pos, "a union cannot have a virtual function");
 
+    // **A slot is taken once and then kept.** An override replaces the entry
+    // the base put there rather than adding one, which is what makes a
+    // Base * and a Derived * agree about where to look. Matching is by name,
+    // parameters and constness - the signature, minus the return type, which
+    // is what [class.virtual] calls overriding.
+    //
+    // **Finding that slot is itself what makes this function virtual.**
+    // [class.virtual]: a function that overrides one is virtual whether or
+    // not the keyword is written again, and the derived class's slots have
+    // already come down from the base by the time any member is declared. So
+    // the search runs before the name is built rather than after - the
+    // Microsoft ABI spells a virtual member U and a plain one Q, and a
+    // silently-non-virtual override would have been given the wrong name as
+    // well as the wrong dispatch.
+    std::vector<VSlot> &slots = vtables_[cls];
+    std::size_t slot = slots.size();
+    for (std::size_t i = 0; i < slots.size(); i++) {
+        if (slots[i].name != d.name || slots[i].constThis != constThis) continue;
+        if (slots[i].params.size() != params.size()) continue;
+        bool same = true;
+        for (std::size_t k = 0; k < params.size(); k++)
+            if (slots[i].params[k] != params[k]) { same = false; break; }
+        if (!same) continue;
+        slot = i;
+        isVirtual = true;
+        break;
+    }
+
     const std::string symbol = memberSymbol(cls, d.name, fn, access, constThis,
                                             d.pos, isVirtual);
     set.push_back(functions_.size());
@@ -3063,23 +3107,8 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
         fn->returns(), params, fn->isVariadicFn(), false, d.pos, false,
         cls, constThis, access, isVirtual });
 
-    // **A slot is taken once and then kept.** An override replaces the entry
-    // the base put there rather than adding one, which is what makes a
-    // Base * and a Derived * agree about where to look. Matching is by name,
-    // parameters and constness - the signature, minus the return type, which
-    // is what [class.virtual] calls overriding.
     if (!isVirtual) return;
-    std::vector<VSlot> &slots = vtables_[cls];
-    for (std::size_t i = 0; i < slots.size(); i++) {
-        if (slots[i].name != d.name || slots[i].constThis != constThis) continue;
-        if (slots[i].params.size() != params.size()) continue;
-        bool same = true;
-        for (std::size_t k = 0; k < params.size(); k++)
-            if (slots[i].params[k] != params[k]) { same = false; break; }
-        if (!same) continue;
-        slots[i].symbol = symbol;
-        return;
-    }
+    if (slot < slots.size()) { slots[slot].symbol = symbol; return; }
     slots.push_back(VSlot{ d.name, symbol, params, constThis });
 }
 

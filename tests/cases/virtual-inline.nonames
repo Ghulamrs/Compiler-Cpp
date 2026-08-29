@@ -1,0 +1,1 @@
+x86_64-linux  the destructors are inline, so clang emits them once in a comdat as D2 and puts D2 in the vtable slot - no D1 and no C1 anywhere; cxx1 emits both of Itanium's forms - see docs/CONFORMANCE.md, "An inline member function is a strong symbol"

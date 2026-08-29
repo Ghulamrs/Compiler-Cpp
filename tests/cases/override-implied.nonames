@@ -1,0 +1,2 @@
+x86_64-linux  C1 and C2 do the same thing where no base is virtual, so clang calls C2 at the complete-object site and emits no C1 at all; cxx1 emits both forms - see docs/CONFORMANCE.md, "An inline member function is a strong symbol"
+arm64-darwin  same, for Base: it is only ever built as a subobject here, so clang writes its C2 and no C1

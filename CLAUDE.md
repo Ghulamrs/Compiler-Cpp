@@ -412,6 +412,18 @@ is what lets a `Base *` and a `Derived *` agree on where to look. It is emitted
 as an ordinary global whose initialiser pieces are symbol addresses, so no
 backend was told about vtables at all.
 
+**Finding a base's slot is what makes a function virtual**, not the keyword.
+[class.virtual] says an override is virtual whether or not `virtual` is
+written again, and a destructor is virtual as soon as a base's is. cxx1 used
+to require the keyword, and a class that left it out was dispatched
+*statically* - it compiled, ran, and quietly gave the base's answer, which is
+the one outcome this project refuses loudest. So the slot search runs *before*
+the linkage name is built rather than after: Microsoft spells a virtual member
+U and a plain one Q, and getting the dispatch wrong had been getting the name
+wrong too. The destructor half is worse than the function half - `delete`
+through a `Base *` ran `~Base` alone and the derived class's own cleanup never
+happened.
+
 The two ABIs differ in the header, and so in what the vptr holds. Itanium
 writes offset-to-top and a typeinfo pointer first and the vptr points at
 **table + 16** - measured from the `addq $16` in clang's own constructor. The
@@ -477,6 +489,13 @@ definition path, so constructors, `this`, init lists, destructors and virtuals
 needed no second implementation. `inlineOwner_` supplies the `Class::` the
 source does not have and is **one-shot**, cleared by the first declarator that
 uses it, so declarations inside the body stay ordinary locals.
+
+**The replay begins after `virtual`, not at it.** Out of line the keyword is
+not written - C++ puts it on the declaration inside the class and nowhere else
+- so the recorded token has to be the one after it, or the ordinary path is
+handed a `virtual` that `specifiers()` will not read. It was, and every
+virtual function written inside its class was a parse error until this was
+fixed: `error: expected a type`, pointing at the keyword.
 
 **The three special members a class does not write, the compiler does** -
 default constructor, copy constructor, copy assignment - and the first thing
