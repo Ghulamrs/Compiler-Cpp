@@ -264,9 +264,7 @@ void Parser::templateParameters(std::vector<TemplateParam> &params) {
         TemplateParam p;
         p.pos = pos;
         if (consume("class") || consume("typename")) {
-            if (peek().is("..."))
-                src_.fail(peek().pos, "a template parameter pack is not "
-                                      "supported yet");
+            if (consume("...")) p.isPack = true;
             // C++ lets a parameter go unnamed. Nothing here can refer to
             // one, so it is a not-yet rather than a rule.
             if (peek().kind != TokenKind::Ident)
@@ -277,6 +275,15 @@ void Parser::templateParameters(std::vector<TemplateParam> &params) {
         } else {
             // A non-type parameter is written exactly like a function's, so
             // it is read exactly like one.
+            for (std::size_t k = 0; peekAt(k).kind != TokenKind::End; k++) {
+                if (peekAt(k).is(",") || peekAt(k).is(">") || peekAt(k).is(">>"))
+                    break;
+                if (peekAt(k).is("...")) {
+                    src_.fail(peekAt(k).pos, "a non-type parameter pack is not "
+                                             "supported yet - a pack of types "
+                                             "is");
+                }
+            }
             StorageClass sc;
             Qualifiers quals;
             const Type *base = specifiers(&sc, &quals);
@@ -296,6 +303,13 @@ void Parser::templateParameters(std::vector<TemplateParam> &params) {
             if (params[i].name == p.name)
                 src_.fail(p.pos, "'" + p.name + "' is declared twice in this "
                                  "template parameter list");
+        // **Only the last parameter may be a pack.** A pack takes every
+        // argument that is left, so anything written after one could never be
+        // given a value.
+        if (!params.empty() && params.back().isPack)
+            src_.fail(p.pos, "'" + params.back().name + "' is a parameter pack "
+                             "and takes every argument that is left, so '" +
+                             p.name + "' after it could never be given one");
         params.push_back(p);
         if (consume(",")) continue;
         break;
@@ -354,12 +368,34 @@ std::string Parser::templatedName(const std::vector<TemplateParam> &params,
 void Parser::bindTemplateParameters(const std::vector<TemplateParam> &params,
                                     const std::vector<const Type *> &binding,
                                     const std::vector<long long> &values,
+                                    const std::vector<std::vector<const Type *> > &packs,
                                     std::vector<Shadow> *undo) {
     for (std::size_t i = 0; i < params.size(); i++) {
         const TemplateParam &p = params[i];
         Shadow s;
         s.name = p.name;
         s.isType = p.type == nullptr;
+        // **A pack is not a type name.** Nothing may write `Ts` on its own;
+        // what reads it is `Ts...` and `sizeof...(Ts)`, and both want the
+        // list rather than a type standing for it.
+        if (p.isPack) {
+            s.isPack = true;
+            auto had = packs_.find(p.name);
+            if (had != packs_.end()) {
+                s.had = true;
+                s.hadPack = had->second.types;
+                s.hadNames = had->second.names;
+            }
+            PackBinding pb;
+            if (i < binding.size() && binding[i] != nullptr &&
+                binding[i]->kind() == Kind::TemplateParam)
+                pb.types.push_back(binding[i]);       // reading a pattern
+            else if (i < packs.size())
+                pb.types = packs[i];
+            packs_[p.name] = pb;
+            undo->push_back(s);
+            continue;
+        }
         if (s.isType) {
             auto it = typedefIndex_.find(p.name);
             if (it != typedefIndex_.end()) { s.had = true; s.was = it->second; }
@@ -378,6 +414,15 @@ void Parser::bindTemplateParameters(const std::vector<TemplateParam> &params,
 void Parser::unbindTemplateParameters(const std::vector<Shadow> &undo) {
     for (std::size_t k = undo.size(); k-- > 0; ) {
         const Shadow &s = undo[k];
+        if (s.isPack) {
+            if (s.had) {
+                packs_[s.name].types = s.hadPack;
+                packs_[s.name].names = s.hadNames;
+            } else {
+                packs_.erase(s.name);
+            }
+            continue;
+        }
         if (s.isType) {
             if (s.had) typedefIndex_[s.name] = s.was;
             else       typedefIndex_.erase(s.name);
@@ -395,7 +440,8 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
                                             const std::vector<const Type *> &binding,
                                             const std::vector<long long> &values,
                                             std::string *name,
-                                            std::string *qualifier) {
+                                            std::string *qualifier,
+                                            const std::vector<std::vector<const Type *> > *packs) {
     const std::size_t resume = at_;
     // **Put back even if this throws.** Forming a signature is what a trial
     // runs, and a failed one must leave the parameter names unbound for the
@@ -406,7 +452,11 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
         std::vector<Shadow> undo;
         ~Unbind() { p->unbindTemplateParameters(undo); }
     } guard{ this, std::vector<Shadow>() };
-    bindTemplateParameters(decl.params, binding, values, &guard.undo);
+    bindTemplateParameters(decl.params, binding, values,
+                           packs != nullptr
+                               ? *packs
+                               : std::vector<std::vector<const Type *> >(),
+                           &guard.undo);
     const bool wasPattern = patternOnly_;
     for (std::size_t i = 0; i < binding.size(); i++)
         if (binding[i] != nullptr && binding[i]->kind() == Kind::TemplateParam)
@@ -721,10 +771,13 @@ void Parser::skipTemplateArguments() {
 void Parser::templateArguments(const TemplateDecl &decl,
                                std::vector<const Type *> *binding,
                                std::vector<long long> *values,
-                               std::vector<TemplateArg> *args) {
+                               std::vector<TemplateArg> *args,
+                               std::vector<std::vector<const Type *> > *packs) {
     expect("<");
     const bool wasInArgs = inTemplateArgs_;
     inTemplateArgs_ = true;
+    if (packs != nullptr) packs->assign(decl.params.size(),
+                                        std::vector<const Type *>());
     for (std::size_t i = 0; i < decl.params.size(); i++) {
         if (i > 0 && !consume(","))
             src_.fail(peek().pos, "'" + decl.name + "' takes " +
@@ -733,6 +786,34 @@ void Parser::templateArguments(const TemplateDecl &decl,
                                   std::to_string(i));
         const TemplateParam &p = decl.params[i];
         TemplateArg a;
+        // **A pack takes everything that is left**, including nothing. It is
+        // the last parameter by construction, so there is no ambiguity about
+        // where it stops: the closing angle stops it.
+        if (p.isPack) {
+            a.isPack = true;
+            a.isType = true;
+            while (!atClosingAngle()) {
+                if (!a.pack.empty()) expect(",");
+                if (peek().kind == TokenKind::Ident && peekAt(1).is("...") &&
+                    packs_.find(peek().text) != packs_.end())
+                    src_.fail(peek().pos, "expanding a pack into another "
+                                          "template's argument list is not "
+                                          "supported yet");
+                StorageClass sc;
+                Qualifiers quals;
+                const Type *base = specifiers(&sc, &quals);
+                Declared d = declarator(base, true);
+                if (!d.name.empty())
+                    src_.fail(d.pos, "a template argument is a type here, and "
+                                     "this names something");
+                a.pack.push_back(d.type);
+            }
+            binding->push_back(nullptr);
+            values->push_back(0);
+            if (packs != nullptr) (*packs)[i] = a.pack;
+            args->push_back(a);
+            break;
+        }
         if (p.type == nullptr) {
             StorageClass sc;
             Qualifiers quals;
@@ -772,7 +853,15 @@ std::string Parser::specializationKey(const std::string &name,
     std::string key = name + "<";
     for (std::size_t i = 0; i < args.size(); i++) {
         if (i > 0) key += ",";
-        if (!args[i].isType) key += std::to_string(args[i].value);
+        if (args[i].isPack) {
+            key += "{";
+            for (std::size_t k = 0; k < args[i].pack.size(); k++) {
+                if (k > 0) key += ",";
+                key += args[i].pack[k]->describe();
+            }
+            key += "}";
+        }
+        else if (!args[i].isType) key += std::to_string(args[i].value);
         // A pattern's argument is a template parameter, and describe() would
         // put a space in a tag every table is keyed by.
         else if (args[i].type->kind() == Kind::TemplateParam)
@@ -794,7 +883,8 @@ const Parser::Signature &
 Parser::instantiate(const TemplateDecl &decl,
                     const std::vector<const Type *> &binding,
                     const std::vector<long long> &values,
-                    const std::vector<TemplateArg> &args, std::size_t pos) {
+                    const std::vector<TemplateArg> &args, std::size_t pos,
+                    const std::vector<std::vector<const Type *> > &packs) {
     const std::string key = specializationKey(decl.name, args);
 
     if (const std::vector<std::size_t> *had = overloadsOf(key))
@@ -805,7 +895,8 @@ Parser::instantiate(const TemplateDecl &decl,
                        "there is nothing to instantiate");
 
     std::string name;
-    const Type *fn = readTemplateDeclaration(decl, binding, values, &name);
+    const Type *fn = readTemplateDeclaration(decl, binding, values, &name,
+                                             nullptr, &packs);
 
     std::vector<const Type *> pattern(decl.params.size());
     for (std::size_t i = 0; i < decl.params.size(); i++)
@@ -829,6 +920,7 @@ Parser::instantiate(const TemplateDecl &decl,
     sp.key = key;
     sp.name = decl.name;
     sp.params = decl.params;
+    sp.packs = packs;
     sp.symbol = symbol;
     sp.fn = fn;
     sp.binding = binding;
@@ -923,7 +1015,7 @@ void Parser::instantiatePending() {
             TemplateDecl decl = templates_[sp.name];
 
             std::vector<Shadow> undo;
-            bindTemplateParameters(sp.params, sp.binding, sp.values, &undo);
+            bindTemplateParameters(sp.params, sp.binding, sp.values, sp.packs, &undo);
             const std::string wasKey = instantiationKey_;
             const std::string wasOf = instantiationOf_;
             instantiationKey_ = sp.isClass ? std::string() : sp.key;
@@ -1039,7 +1131,9 @@ bool Parser::deduceOne(const Type *pattern, const Type *arg,
 bool Parser::deduceTemplateArguments(const TemplateDecl &decl,
                                      const std::vector<ExprPtr> &args,
                                      std::vector<const Type *> *binding,
+                                     std::vector<std::vector<const Type *> > *packs,
                                      std::string *why) {
+    packs->assign(decl.params.size(), std::vector<const Type *>());
     for (std::size_t i = 0; i < decl.params.size(); i++)
         if (decl.params[i].type != nullptr) {
             *why = "'" + decl.params[i].name + "' is a non-type parameter, "
@@ -1055,27 +1149,42 @@ bool Parser::deduceTemplateArguments(const TemplateDecl &decl,
     std::string ignored;
     const Type *fn = readTemplateDeclaration(decl, pattern, none, &ignored);
 
-    if (fn->params().size() != args.size()) {
-        *why = "it takes " + std::to_string(fn->params().size()) +
-               " argument(s) and this call gives " +
+    // **A trailing pack takes every argument the written parameters leave.**
+    // It is the last parameter by construction, so "the rest" needs no
+    // searching - and it may be none, which is why this is a `<` and not a
+    // `!=` on the count.
+    const bool hasPack = !decl.params.empty() && decl.params.back().isPack;
+    const std::size_t fixed = hasPack ? fn->params().size() - 1
+                                      : fn->params().size();
+    if (hasPack ? args.size() < fixed : args.size() != fixed) {
+        *why = "it takes " + std::string(hasPack ? "at least " : "") +
+               std::to_string(fixed) + " argument(s) and this call gives " +
                std::to_string(args.size());
         return false;
     }
 
     binding->assign(decl.params.size(), nullptr);
-    for (std::size_t i = 0; i < args.size(); i++)
+    for (std::size_t i = 0; i < fixed; i++)
         if (!deduceOne(fn->params()[i], args[i]->type(), binding, why)) {
             *why = "'" + decl.params[i < decl.params.size() ? i : 0].name +
                    "' cannot be worked out from this call: " + *why;
             return false;
         }
-    for (std::size_t i = 0; i < binding->size(); i++)
+    if (hasPack) {
+        std::vector<const Type *> members;
+        for (std::size_t i = fixed; i < args.size(); i++)
+            members.push_back(decayedType(args[i]->type()));
+        (*packs)[decl.params.size() - 1] = members;
+    }
+    for (std::size_t i = 0; i < binding->size(); i++) {
+        if (decl.params[i].isPack) continue;
         if ((*binding)[i] == nullptr) {
             *why = "'" + decl.params[i].name + "' appears in no parameter, so "
                    "there is nothing in the call to work it out from - write "
                    "the arguments out";
             return false;
         }
+    }
     return true;
 }
 
@@ -1195,7 +1304,8 @@ void Parser::partialArguments(TemplateDecl::Partial *ps, std::size_t count) {
         binding[i] = ps->params[i].type == nullptr
                          ? types_.templateParam(static_cast<int>(i))
                          : ps->params[i].type;
-    bindTemplateParameters(ps->params, binding, values, &undo);
+    bindTemplateParameters(ps->params, binding, values,
+                           std::vector<std::vector<const Type *> >(), &undo);
 
     for (std::size_t i = 0; i < count; i++) {
         if (i > 0) expect(",");
@@ -1334,7 +1444,8 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     std::vector<const Type *> binding;
     std::vector<long long> values;
     std::vector<TemplateArg> args;
-    templateArguments(decl, &binding, &values, &args);
+    std::vector<std::vector<const Type *> > packs;
+    templateArguments(decl, &binding, &values, &args, &packs);
 
     const std::string tag = specializationKey(decl.name, args);
 
@@ -1373,7 +1484,10 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
 
     const std::size_t resume = at_;
     std::vector<Shadow> undo;
-    bindTemplateParameters(useParams, useBinding, useValues, &undo);
+    bindTemplateParameters(useParams, useBinding, useValues,
+                           partial ? std::vector<std::vector<const Type *> >()
+                                   : packs,
+                           &undo);
 
     at_ = partial ? decl.partials[which].bodyAt : decl.afterParams;
     classInstantiationTag_ = tag;
@@ -1407,6 +1521,7 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     sp.params = useParams;
     sp.binding = useBinding;
     sp.values = useValues;
+    if (!partial) sp.packs = packs;
     sp.start = decl.afterParams;
     sp.pos = pos;
     sp.isClass = true;
@@ -1438,8 +1553,10 @@ ExprPtr Parser::templateCall(Program *program) {
         parseArguments(callArgs);
 
         std::vector<const Type *> deduced;
+        std::vector<std::vector<const Type *> > deducedPacks;
         std::string why;
-        if (!deduceTemplateArguments(decl, callArgs, &deduced, &why)) {
+        if (!deduceTemplateArguments(decl, callArgs, &deduced, &deducedPacks,
+                                     &why)) {
             // Not an error while an ordinary function of this name might
             // still take the call - it is one fewer candidate. With no such
             // function it is the whole answer, and saying why beats "not
@@ -1452,7 +1569,12 @@ ExprPtr Parser::templateCall(Program *program) {
             for (std::size_t i = 0; i < deduced.size(); i++) {
                 TemplateArg a;
                 a.isType = true;
-                a.type = deduced[i];
+                if (decl.params[i].isPack) {
+                    a.isPack = true;
+                    a.pack = deducedPacks[i];
+                } else {
+                    a.type = deduced[i];
+                }
                 args.push_back(a);
             }
             // **[temp.deduct]/8, which is what SFINAE is.** The arguments
@@ -1466,7 +1588,7 @@ ExprPtr Parser::templateCall(Program *program) {
             // the immediate context either.
             try {
                 Trial trial(this);
-                instantiate(decl, deduced, values, args, pos);
+                instantiate(decl, deduced, values, args, pos, deducedPacks);
             } catch (const SubstitutionFailure &f) {
                 if (overloadsOf(name) == nullptr)
                     src_.fail(pos, "'" + name + "' is a function template and "
@@ -1482,9 +1604,10 @@ ExprPtr Parser::templateCall(Program *program) {
     std::vector<const Type *> binding;
     std::vector<long long> values;
     std::vector<TemplateArg> args;
-    templateArguments(decl, &binding, &values, &args);
+    std::vector<std::vector<const Type *> > packs;
+    templateArguments(decl, &binding, &values, &args, &packs);
 
-    instantiate(decl, binding, values, args, pos);
+    instantiate(decl, binding, values, args, pos, packs);
     if (!peek().is("("))
         src_.fail(peek().pos, "'" + name + "' is a function template, and "
                               "naming one without calling it is not supported "
@@ -4765,6 +4888,49 @@ void Parser::blockFunctionDeclaration(const Declared &d) {
     declareFunction(d.name, d.type, params, variadic, false, d.pos);
 }
 
+// **`Ts... rest` - one thing written, several parameters made.**
+//
+// In a pattern the pack stands for itself and this is one parameter of type
+// `Ts...`, which is what Itanium spells `DpT0_` and says at every size. In a
+// real instantiation it is as many parameters as the pack has members, named
+// `rest$0`, `rest$1` - and those names are what `rest...` expands to at a
+// call, which is the whole mechanism.
+bool Parser::packParameter(std::vector<const Type *> *types,
+                           std::vector<std::string> *names) {
+    if (peek().kind != TokenKind::Ident || !peekAt(1).is("...")) return false;
+    auto pk = packs_.find(peek().text);
+    if (pk == packs_.end()) return false;
+
+    const std::vector<const Type *> members = pk->second.types;
+    const bool pattern = members.size() == 1 &&
+                         members[0]->kind() == Kind::TemplateParam;
+    at_ += 2;
+    std::string base;
+    if (peek().kind == TokenKind::Ident) { base = peek().text; at_++; }
+
+    if (pattern) {
+        types->push_back(types_.packExpansion(members[0]));
+        if (names != nullptr) names->push_back(base);
+        return true;
+    }
+    std::vector<std::string> made;
+    for (std::size_t i = 0; i < members.size(); i++) {
+        types->push_back(types_.withoutConst(members[i]));
+        made.push_back(base + "$" + std::to_string(i));
+        if (names != nullptr) names->push_back(made.back());
+    }
+    // Recorded under the *written* name as well, so `rest...` at a call and
+    // `sizeof...(rest)` both find it beside `sizeof...(Ts)`.
+    if (!base.empty()) {
+        PackBinding pb;
+        pb.types = members;
+        pb.names = made;
+        packs_[base] = pb;
+    }
+    pk->second.names = made;
+    return true;
+}
+
 void Parser::parameterTypes(std::vector<const Type *> &params, bool &variadic) {
     expect("(");
     variadic = false;
@@ -4773,6 +4939,11 @@ void Parser::parameterTypes(std::vector<const Type *> &params, bool &variadic) {
 
     for (;;) {
         if (consume("...")) { variadic = true; expect(")"); break; }
+        if (packParameter(&params, nullptr)) {
+            if (consume(")")) break;
+            expect(",");
+            continue;
+        }
         StorageClass psc;
         Qualifiers pquals;
         const Type *pt = specifiers(&psc, &pquals);
@@ -5916,6 +6087,33 @@ ExprPtr Parser::objectRef(const std::string &name) {
 void Parser::parseArguments(std::vector<ExprPtr> &args) {
     if (consume(")")) return;
     for (;;) {
+        // **`rest...` - one thing written, one argument per member.** The
+        // names were made when the parameter list expanded, so this is a
+        // lookup and not a substitution: whatever `rest$0` and `rest$1` are
+        // now, that is what goes here.
+        if (peek().kind == TokenKind::Ident && peekAt(1).is("...")) {
+            auto pk = packs_.find(peek().text);
+            if (pk != packs_.end() && !pk->second.names.empty()) {
+                at_ += 2;
+                for (std::size_t i = 0; i < pk->second.names.size(); i++) {
+                    ExprPtr one = objectRef(pk->second.names[i]);
+                    if (one == nullptr)
+                        src_.fail(peek().pos, "'" + pk->second.names[i] +
+                                              "' went missing from this pack");
+                    args.push_back(decay(std::move(one)));
+                }
+                if (consume(")")) break;
+                expect(",");
+                continue;
+            }
+            // An empty pack expands to no arguments at all.
+            if (pk != packs_.end() && pk->second.types.empty()) {
+                at_ += 2;
+                if (consume(")")) break;
+                expect(",");
+                continue;
+            }
+        }
         args.push_back(assign());
         if (consume(")")) break;
         expect(",");
@@ -6367,6 +6565,29 @@ ExprPtr Parser::unary() {
         std::size_t pos = peek().pos;
         at_++;
         return deleteExpression(pos);
+    }
+
+    // `sizeof...(Ts)` and `sizeof...(args)` - how many, not how big. Both
+    // spellings name the same pack: the parameter and the function parameter
+    // made from it are one entry here.
+    if (peek().is("sizeof") && peekAt(1).is("...")) {
+        const std::size_t spos = peek().pos;
+        at_ += 2;
+        expect("(");
+        if (peek().kind != TokenKind::Ident)
+            src_.fail(peek().pos, "'sizeof...' takes the name of a parameter "
+                                  "pack");
+        auto pack = packs_.find(peek().text);
+        if (pack == packs_.end())
+            src_.fail(peek().pos, "'" + peek().text + "' is not a parameter "
+                                  "pack");
+        const long long n = static_cast<long long>(pack->second.types.size());
+        at_++;
+        expect(")");
+        (void)spos;
+        ExprPtr n2(new Num(n));
+        n2->setType(types_.get(target_.sizeType()));
+        return n2;
     }
 
     if (peek().is("sizeof")) {
@@ -8236,6 +8457,28 @@ void Parser::topLevel(Program &program) {
         } else {
             for (;;) {
                 if (consume("...")) { variadic = true; expect(")"); break; }
+
+                // `Ts... rest` in a definition: as many parameters as the
+                // pack has members, each with a name of its own, and those
+                // names are what `rest...` expands to at a call.
+                {
+                    std::vector<const Type *> packTypes;
+                    std::vector<std::string> packNames;
+                    if (packParameter(&packTypes, &packNames)) {
+                        for (std::size_t k = 0; k < packTypes.size(); k++) {
+                            inParams_ = true;
+                            int poff = declare(packNames[k], packTypes[k],
+                                               peek().pos);
+                            inParams_ = false;
+                            params.push_back(types_.withoutConst(packTypes[k]));
+                            paramSlots.push_back(Param{ packTypes[k], poff });
+                        }
+                        if (consume(")")) break;
+                        expect(",");
+                        continue;
+                    }
+                }
+
                 std::size_t pscPos = peek().pos;
                 StorageClass psc;
                 Qualifiers pquals;

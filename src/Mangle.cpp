@@ -220,6 +220,14 @@ public:
     // `Li3E` - the value, with its own type in front and `n` for a negative
     // one. Measured: num<-11>() is _Z3numILin11EEiv.
     void templateArgument(const TemplateArg &a) {
+        // `J i c E` - a pack argument is its members between J and E, and an
+        // empty one is `JE`. Measured: _Z7nothingIJicEEiv, _Z5totalIiJEEiT_DpT0_.
+        if (a.isPack) {
+            out += 'J';
+            for (std::size_t i = 0; i < a.pack.size(); i++) type(a.pack[i]);
+            out += 'E';
+            return;
+        }
         if (a.isType) { type(a.type); return; }
         out += 'L';
         type(a.type);
@@ -298,6 +306,16 @@ private:
         if (qualifiedItself(t)) {
             out += 'K';
             type(t->unqualified());
+            subs_.push_back(Sub{ t, std::string() });
+            return;
+        }
+
+        // `Dp` and then what is being expanded, which is a parameter and so
+        // says the same thing however many members the pack has. Measured:
+        // `void f(Ts...)` is `DpT_` at every size.
+        if (t->kind() == Kind::PackExpansion) {
+            out += "Dp";
+            type(t->pointee());
             subs_.push_back(Sub{ t, std::string() });
             return;
         }
@@ -535,6 +553,18 @@ public:
     // `$02` for 3, and `$0?4` for -5: `$0`, then a '?' if it is negative,
     // then the magnitude through number(). Measured with cl.
     void templateArgument(const TemplateArg &a) {
+        // A pack's members are written one after another with nothing around
+        // them, and an empty pack is `$$V`. Measured with cl:
+        // ??$total@HH@@YAHHH@Z for a pack of one, ??$total@H$$V@@YAHH@Z for none.
+        if (a.isPack) {
+            if (a.pack.empty()) { out += "$$V"; return; }
+            for (std::size_t i = 0; i < a.pack.size(); i++) {
+                TemplateArg one;
+                one.type = a.pack[i];
+                templateArgument(one);
+            }
+            return;
+        }
         if (a.isType) {
             // **A top-level const on a type argument is spelled `$$CB`**,
             // and only where the thing under it is not a pointer: `const int`

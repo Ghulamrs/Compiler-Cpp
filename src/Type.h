@@ -21,6 +21,12 @@ enum class Kind {
     // from Void to Function, and a reference is never one of those - it is
     // always a reference *to* something and so always derived.
     LValueRef,
+    // **The expansion of a parameter pack**, `Ts...`, which appears in a
+    // pattern where the pack's own members appear in the substituted
+    // signature. Itanium writes `Dp` and then the parameter - `DpT0_` - and
+    // says the same thing however many members the pack has, which is what
+    // makes one pattern serve every specialization.
+    PackExpansion,
     // **A template parameter, and it is not a type anything is made of.** It
     // exists so that a template's signature can be written down as the
     // *pattern* it was declared as - `T twice(T)` rather than
@@ -55,6 +61,11 @@ struct TemplateArg {
     const Type *type = nullptr;
     bool isType = true;
     long long value = 0;
+    // **A pack argument is a list, not a type.** Itanium spells one `J...E`
+    // and Microsoft lists its members inline with `$$V` for an empty one, so
+    // both need the members rather than anything standing for them.
+    bool isPack = false;
+    std::vector<const Type *> pack;
 };
 
 int homogeneousFloatCount(const Type *t, Kind *elem);
@@ -353,6 +364,7 @@ public:
     const Type *templateParam(int index);
     // `owner::name`, where owner is a pattern. Interned on the pair.
     const Type *dependentMember(const Type *owner, const std::string &name);
+    const Type *packExpansion(const Type *of);
 
     Type *structType(Kind kind, const std::string &tag);
     Type *anonymousStruct(Kind kind);

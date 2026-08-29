@@ -123,6 +123,9 @@ private:
         std::string name;
         const Type *type = nullptr;   // null for a type parameter
         std::size_t pos = 0;
+        // `class... Ts` - it stands for a list, and only the last parameter
+        // may be one, since everything after it could never be deduced.
+        bool isPack = false;
     };
     // What is known about a name that names a template. `start` is the
     // `template` keyword: instantiation here will be a replay of these
@@ -189,6 +192,7 @@ private:
         const Type *fn = nullptr;           // the substituted signature
         std::vector<const Type *> binding;  // by parameter index
         std::vector<long long> values;      // non-type arguments, same index
+        std::vector<std::vector<const Type *> > packs;   // same index again
         std::size_t start = 0;              // the template's own tokens
         std::size_t pos = 0;                // where it was first asked for
         bool emitted = false;
@@ -285,7 +289,9 @@ private:
                                  const std::vector<const Type *> &binding,
                                  const std::vector<long long> &values,
                                  const std::vector<TemplateArg> &args,
-                                 std::size_t pos);
+                                 std::size_t pos,
+                                 const std::vector<std::vector<const Type *> > &packs =
+                                     std::vector<std::vector<const Type *> >());
     void instantiatePending();
     bool memberIsUsed(const std::string &key) const;
     // "twice<int>" - the table key and what the diagnostics call it.
@@ -297,17 +303,37 @@ private:
                                         const std::vector<const Type *> &binding,
                                         const std::vector<long long> &values,
                                         std::string *name,
-                                        std::string *qualifier = nullptr);
+                                        std::string *qualifier = nullptr,
+                                        const std::vector<std::vector<const Type *> > *packs = nullptr);
     // What a binding does to the two name tables, and how to put them back.
     struct Shadow {
         std::string name;
         bool isType = true;
+        bool isPack = false;
         bool had = false;
         std::size_t was = 0;
+        std::vector<const Type *> hadPack;
+        std::vector<std::string> hadNames;
     };
+    // **A pack while a specialization is being read**: the types it was given
+    // and, once its function parameters have been made, the names they were
+    // given. `rest` becomes `rest$0`, `rest$1`, and `rest...` in a call is
+    // those two names - which is the whole of how an expansion works here.
+    struct PackBinding {
+        std::vector<const Type *> types;
+        std::vector<std::string> names;
+    };
+    std::map<std::string, PackBinding> packs_;
+    // `Ts... rest` in a parameter list. Answers false where the tokens are
+    // not that; otherwise reads it and adds what it expands to.
+    bool packParameter(std::vector<const Type *> *types,
+                       std::vector<std::string> *names);
+    // `packs` is indexed like the others and read only for a parameter that
+    // is one; everything else ignores it.
     void bindTemplateParameters(const std::vector<TemplateParam> &params,
                                 const std::vector<const Type *> &binding,
                                 const std::vector<long long> &values,
+                                const std::vector<std::vector<const Type *> > &packs,
                                 std::vector<Shadow> *undo);
     // [temp.deduct.type] rather than [temp.deduct.call]: this matches a
     // template *argument* against a pattern, where nothing decays and nothing
@@ -340,6 +366,7 @@ private:
     bool deduceTemplateArguments(const TemplateDecl &decl,
                                  const std::vector<ExprPtr> &args,
                                  std::vector<const Type *> *binding,
+                                 std::vector<std::vector<const Type *> > *packs,
                                  std::string *why);
     bool deduceOne(const Type *pattern, const Type *arg,
                    std::vector<const Type *> *binding, std::string *why) const;
@@ -351,7 +378,8 @@ private:
     void templateArguments(const TemplateDecl &decl,
                            std::vector<const Type *> *binding,
                            std::vector<long long> *values,
-                           std::vector<TemplateArg> *args);
+                           std::vector<TemplateArg> *args,
+                           std::vector<std::vector<const Type *> > *packs = nullptr);
     bool isTemplateName(const std::string &name) const {
         return templates_.find(name) != templates_.end();
     }

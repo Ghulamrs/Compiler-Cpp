@@ -101,7 +101,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
-| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1-5.7b **done**, 2026-08-29; variadic refused by name |
+| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
@@ -832,13 +832,11 @@ backend already knows how to emit. This is the pattern to reach for again:
 where C++ adds a *conversion*, look for an existing operation to lower it to
 before adding a case to three code generators.
 
-## Rung 5: templates, through partial specialization
+## Rung 5: templates, done
 
-**5.1 to 5.6 and the first part of 5.7 landed 2026-08-29, each with its own
-section at the end of this one - 5.1 to 5.3 was the first shippable milestone
-and it is reached.** What remains of the rung is SFINAE and variadic
-templates, both refused by name. What follows is the order the work was meant
-to happen in and the reasons for that order: what follows is the order the work
+**All of 5.1 to 5.7 landed 2026-08-29, each with its own section at the end of
+this one.** What follows is the order the work was meant to happen in and the
+reasons for that order, written before any of it: what follows is the order the work
 is meant to happen in and the reasons for that order, written before any of
 it, the way rungs 2 and 3 were.
 
@@ -909,11 +907,10 @@ each will want is now clearer:
 substitution that can *fail* rather than refuse, and the line held exactly
 where the plan said: a failure inside a signature, not inside a body.
 
-**Variadic templates** need a parameter that stands for a list, which the
-pattern types cannot say: `Kind::TemplateParam` holds one index. A pack is
-also the first thing here whose expansion changes how many arguments a call
-has, so `parseArguments` and the whole argument-count machinery would see
-something new. Both are larger than partial specialization was.
+**Variadic templates have landed too** - see the section below. The
+prediction was right about what they would need and wrong about the size:
+expansion turned out to be a lookup rather than a substitution, which made it
+smaller than SFINAE.
 
 **5.1 to 5.3 is the first shippable milestone**: function templates that
 deduce, mangle correctly on all three targets, and link against clang's
@@ -1375,6 +1372,42 @@ in both directions and print what the all-g++ build prints, including the case
 with the empty class sitting between other arguments.
 
 Suites 83 / 134 / 45; the C corpus is unchanged.
+
+### 5.7c as it actually landed: variadic templates
+
+**A pack is bound to a list of types, not to a type**, which is the one thing
+`Kind::TemplateParam` could not say. Nothing may write `Ts` on its own; what
+reads a pack is `Ts...`, `rest...` and `sizeof...`, and all three want the
+list. It is shadowed and restored like every other binding, in a table of its
+own.
+
+**`Ts... rest` is one thing written and several parameters made, and which
+one depends on who is reading.** In a *pattern* it is one parameter of type
+`Ts...` - Itanium spells that `DpT0_` and says the same thing at every size,
+which is exactly what lets one pattern serve every specialization. In a real
+instantiation it is as many parameters as the pack has members, named
+`rest$0`, `rest$1`.
+
+**So expansion is a lookup, not a substitution.** `rest...` at a call is the
+names those parameters were given, looked up like any other identifier -
+whatever `rest$0` holds now is what goes in. That is why this step was
+smaller than SFINAE rather than larger, which the plan had it the other way
+round.
+
+**The measured mangling, and the two ABIs disagree about shape as usual:**
+
+    Itanium   _Z7nothingIJicEEiv        a pack argument is J...E
+              _Z5totalIiJEEiT_DpT0_     an empty one is JE, and the parameter
+                                        is still Dp whatever the size
+    Microsoft ??$total@HH@@YAHHH@Z      members listed inline, nothing around
+              ??$total@H$$V@@YAHH@Z     and $$V for an empty pack
+
+**Refused by name, each its own step**: a non-type pack (binding one is
+binding a list of *types*, and a list of values needs a second list beside it
+and a second expansion), expanding a pack into another template's argument
+list, and a parameter written after a pack.
+
+Suites 87 / 137 / 46; the C corpus is unchanged.
 
 ## Decisions already taken
 
