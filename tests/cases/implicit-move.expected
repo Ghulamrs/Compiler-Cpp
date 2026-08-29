@@ -1,0 +1,26 @@
+Plain:
+  move 1
+  p.a=-1 p2.a=1 p2.n=5
+Mixed:
+  copyonly 2
+  move 3
+  m.c=2 m.l=-1 m2.c=2 m2.l=3
+HasDtor:
+  copy 4
+  h.a=4 h2.a=4
+  ~HasDtor
+  ~HasDtor
+Base:
+  move 20
+  bb.b=-1 bb2.b=20
+Derived:
+  move 6
+  move 7
+  d.b=-1 d.d=-1 d2.b=6 d2.d=7
+Arr:
+  move 8
+  move 9
+  r=-1,-1 r2=8,9
+byValue:
+  move 10
+  got 11, w.a=-1

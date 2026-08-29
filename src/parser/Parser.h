@@ -661,6 +661,8 @@ private:
     // implicit - which is what [class.copy] calls a copy constructor.
     const Signature *copyConstructorOf(const Type *cls) const;
     const Signature *moveConstructorOf(const Type *cls) const;
+    void declareImplicitMoveCtor(const std::string &tag, const Type *type,
+                                 std::size_t pos, bool userDeclared);
     // `int i = 0; while (i < count) { one; i = i + 1; }` over an array
     // member's elements. A loop rather than `count` copies of the statement,
     // because the count is a property of the type and nothing bounds it.

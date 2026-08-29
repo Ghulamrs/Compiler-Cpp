@@ -178,7 +178,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | **done**, 2026-08-29 |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.4 and Windows `throw` **done**, 2026-08-29 |
-| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1-7.3 and 7.4a/7.4b **done**, 2026-08-29 |
+| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1-7.4 **done**, 2026-08-29 |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
 punctuators, `__cplusplus`, `bool`/`true`/`false`, class and enum tags as type
@@ -1938,14 +1938,55 @@ constructor is how the implicit one gets declared, a user-declared move
 constructor has to suppress that explicitly - which is [class.copy]/7, where
 the implicit copy is *deleted*.
 
-What is left of 7.4 is the **implicit** move constructor, which is 7.4c and is
-a measured divergence rather than a guess: a class that declares nothing gets
-one in C++11, and cxx1 uses its implicit copy instead. With a member whose
-move differs from its copy, clang prints `inner move` and cxx1 prints `inner
-copy` - **silent, and the kind this project refuses.** Implicit move
-*assignment* is not observable here and can wait: `operator=` cannot be
-written at all, so every assignment bottoms out in memberwise scalar copies
-and a move of those is a copy of those.
+**7.4c has landed, and 7.4 with it: the move constructor the compiler
+writes.** The divergence it was opened for is closed - a class with a member
+whose move differs from its copy now prints `inner move` where it printed
+`inner copy`.
+
+[class.copy]/9 gives a class an implicit move constructor only if it declared
+none of a copy constructor, a move constructor, a copy assignment, a move
+assignment or a destructor - each being evidence the class manages something
+by hand, and a memberwise move of such a class is how a double free happens.
+**Two of the five cannot be written in this language yet**, so three are
+checked; and they have to be read in `declareImplicitSpecials` *before* any
+implicit member is declared, because a moment later every one of them answers
+yes for a class that wrote nothing.
+
+[class.copy]/15 makes the body a move of each base and each member, which is
+`static_cast<T &&>(other.m)` for every one - so the synthesised body marks
+each source as an xvalue and 7.4b's binding does the rest. **A subobject with
+no move constructor is copied, and that is the language's answer rather than a
+shortcut**: `T &&` binds to `const T &`, so moving something that has only a
+copy is exactly what its copy constructor does.
+
+**Nothing that calls the synthesiser had to learn about moves.** Which of the
+three members is being written is read off the signature - an implicit
+constructor whose parameter is `X &&` is the move constructor and there is
+nothing else it could be - so `defineImplicitFunctions` is unchanged and the
+one function writes all three bodies.
+
+Implicit move *assignment* is provably unobservable here and is not written:
+`operator=` cannot be declared at all, so every assignment in this language
+bottoms out in memberwise scalar copies, and a move of those is a copy of
+those.
+
+**A general difference in the names, found here and not about moves.** On
+x86_64-linux clang emits only the C2 variant of any *inline* constructor, and
+a constructor the compiler writes is inline by nature with no out-of-line form
+to switch to - so every implicit constructor meets it. Measured with an
+implicit *copy* constructor, which shows the same C2-only set with no move in
+sight. cxx1 emits C1 and C2 everywhere; the two are identical for a class with
+no virtual bases and both are mergeable definitions, so the extra C1 costs
+object size and nothing else. Darwin emits both and agrees on all 39 names,
+Windows on all 20. In `implicit-move.nonames`, and it is the second case to
+record it - `move-constructor.nonames` is the same fact reached by defining
+constructors inside a class body.
+
+**One thing the case had to be told to do.** `Base` was only ever built as
+part of a `Derived`, and clang then has no use for its complete-object
+constructor and emits none - which showed up as two cxx1-only C1 names on
+Darwin. Building a `Base` directly is what the case was missing rather than
+what cxx1 was doing wrong, and all 39 agree once it does.
 
 **What `static_cast` does not do is refused out loud.** Its non-reference case
 is handed to `convert()`, the same road the C-style cast takes, which is a

@@ -756,9 +756,19 @@ void Parser::declareImplicitSpecials(const std::string &tag, const Type *type,
     // implicit default one; a class that writes any constructor still gets an
     // implicit copy constructor.
     const bool wroteConstructor = overloadsOf(constructorKey(tag)) != nullptr;
+    // **Read now, for the same reason and at the same moment.** After the
+    // three calls below, every one of these answers yes for a class that
+    // wrote nothing at all, and [class.copy]/9 is a question about what the
+    // *user* declared.
+    const bool wroteCopyOrDtor = copyConstructorOf(type) != nullptr ||
+                                 moveConstructorOf(type) != nullptr ||
+                                 overloadsOf(destructorKey(tag)) != nullptr;
     declareImplicitDestructor(tag, type, pos);
     declareImplicitCopyCtor(tag, type, pos);
     declareImplicitCopyAssign(tag, type, pos);
+    // Before the `wroteConstructor` return below: writing a constructor of
+    // your own costs you the implicit *default* one and nothing else.
+    declareImplicitMoveCtor(tag, type, pos, wroteCopyOrDtor);
     if (wroteConstructor) return;
 
     bool work = type->polymorphic();
@@ -1036,6 +1046,62 @@ void Parser::declareImplicitCopyAssign(const std::string &tag, const Type *type,
 // What makes one non-trivial: a virtual function, because the new object's
 // vptr is its own and not a copy of the source's, or a base or member whose
 // own copy constructor has to run.
+// [class.copy]/9: a class gets an implicit move constructor only if it has
+// declared none of a copy constructor, a move constructor, a copy assignment,
+// a move assignment or a destructor. The reasoning behind that list is that
+// each of them is evidence the class manages something by hand, and a
+// memberwise move of a class that manages something by hand is how a
+// double free happens.
+//
+// **Two of the five cannot arise here and one is passed in.** A copy or move
+// assignment operator cannot be written at all - `operator` is refused - so
+// those two are vacuous, and the other three are read in
+// declareImplicitSpecials before any implicit member has been declared, which
+// is the only moment at which "user-declared" can still be told from
+// "declared by us a line ago".
+//
+// `work` is the same question the copy asks: a move that is a memberwise byte
+// copy is what the ABI already does for a trivially copyable class, and
+// declaring one would put a symbol in the object file that clang does not.
+void Parser::declareImplicitMoveCtor(const std::string &tag, const Type *type,
+                                     std::size_t pos, bool userDeclared) {
+    if (userDeclared) return;
+    if (moveConstructorOf(type) != nullptr) return;
+
+    bool work = type->polymorphic();
+    const std::vector<Type::BaseSpec> &bs = type->bases();
+    for (std::size_t i = 0; i < bs.size() && !work; i++)
+        if (moveConstructorOf(bs[i].type) != nullptr ||
+            copyConstructorOf(bs[i].type) != nullptr) work = true;
+    const std::vector<Member> &ms = type->members();
+    for (std::size_t i = 0; i < ms.size() && !work; i++) {
+        const Type *mc = memberClass(ms[i].type);
+        if (moveConstructorOf(mc) != nullptr ||
+            copyConstructorOf(mc) != nullptr) work = true;
+    }
+    if (!work) return;
+
+    std::vector<const Type *> params;
+    // Not const, and that is the whole point of it: the source is going to be
+    // taken apart, so the member moves below need to be able to write to it.
+    params.push_back(types_.rvalueReferenceTo(type));
+    const Type *fn = types_.functionType(types_.get(Kind::Void), params, false);
+    std::string out, why;
+    const bool ok = target_.microsoftNames()
+            ? microsoftConstructorName(tag, type, fn, 'Q', &out, &why)
+            : itaniumConstructorName(tag, type, fn, true, &out, &why);
+    if (!ok)
+        src_.fail(pos, "'" + tag + "' needs a move constructor the compiler "
+                       "would write, and it cannot be given a name the linker "
+                       "can hold: " + why);
+
+    functionIndex_[constructorKey(tag)].push_back(functions_.size());
+    functions_.push_back(Signature{ tag, out, types_.get(Kind::Void), params,
+                                    false, false, pos, false, tag, false,
+                                    Access::Public, false });
+    functions_.back().implicit = true;
+}
+
 void Parser::declareImplicitCopyCtor(const std::string &tag, const Type *type,
                                      std::size_t pos) {
     if (copyConstructorOf(type) != nullptr) return;
@@ -1278,6 +1344,14 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
     const Type *type = findTypedef(cls);
     if (type == nullptr || !type->isStructOrUnion()) return;
 
+    // **The signature says which of the three this is**, so nothing that calls
+    // this had to learn about moves: an implicit constructor whose parameter
+    // is `X &&` is the move constructor and there is nothing else it could be.
+    const bool moving = srcRef->isRValueReference();
+    const char *kind = assigning ? "copy assignment"
+                     : moving    ? "move constructor"
+                                 : "copy constructor";
+
     const int savedFrame = frameSize_;
     frameSize_ = 0;
     const Type *self = types_.pointerTo(type);
@@ -1298,14 +1372,21 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
     const std::vector<Type::BaseSpec> &bs = type->bases();
     for (std::size_t i = 0; i < bs.size(); i++) {
         const Type *base = bs[i].type;
-        const Signature *cc = assigning ? copyAssignOf(base)
-                                        : copyConstructorOf(base);
+        // **A member or base without a move constructor is copied, not
+        // refused.** [class.copy]/15: the implicit move performs a *move* of
+        // each subobject, and moving something that has only a copy is what
+        // its copy constructor does - `T &&` binds to `const T &` perfectly
+        // well. So the fallback is the language's, not a shortcut.
+        const Signature *cc = nullptr;
+        if (assigning) cc = copyAssignOf(base);
+        else {
+            if (moving) cc = moveConstructorOf(base);
+            if (cc == nullptr) cc = copyConstructorOf(base);
+        }
         if (cc == nullptr) continue;              // trivial: its members copy below
         if (cc->access != Access::Public)
-            src_.fail(pos, "'" + cls + "' cannot be copied by the " +
-                           (assigning ? "assignment" : "constructor") +
-                           " the compiler would write: the copy " +
-                           (assigning ? "assignment" : "constructor") +
+            src_.fail(pos, std::string("'") + cls + "' cannot be built by the " +
+                           kind + " the compiler would write: the " + kind +
                            " of its base '" + base->tag() + "' is " +
                            (cc->access == Access::Private ? "private" : "protected"));
         functions_[static_cast<std::size_t>(cc - &functions_[0])].used = true;
@@ -1322,9 +1403,11 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
         }
         ExprPtr from(Var::local("that", thatSlot));
         from->setType(srcPtr);
-        from = convert(std::move(from), types_.pointerTo(types_.withConst(base)));
+        from = convert(std::move(from),
+                       types_.pointerTo(moving ? base : types_.withConst(base)));
         ExprPtr fromObj(new Unary('*', std::move(from)));
         fromObj->setType(base);
+        if (moving) fromObj->setXvalue();
 
         std::vector<ExprPtr> args;
         args.push_back(std::move(me));
@@ -1361,16 +1444,18 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
 
         const Type *mt = ms[i].type;
         const Type *elem = mt->isArray() ? mt->pointee() : mt;
-        const Signature *cc = assigning ? copyAssignOf(memberClass(mt))
-                                        : copyConstructorOf(memberClass(mt));
+        const Signature *cc = nullptr;
+        if (assigning) cc = copyAssignOf(memberClass(mt));
+        else {
+            if (moving) cc = moveConstructorOf(memberClass(mt));
+            if (cc == nullptr) cc = copyConstructorOf(memberClass(mt));
+        }
         if (cc != nullptr) {
             if (cc->access != Access::Public)
-                src_.fail(pos, "'" + cls + "' cannot be copied by the " +
-                               (assigning ? "assignment" : "constructor") +
-                               " the compiler would write: the copy " +
-                               (assigning ? "assignment" : "constructor") +
-                               " of '" + memberClass(mt)->tag() + "', the type of '" +
-                               ms[i].name + "', is " +
+                src_.fail(pos, std::string("'") + cls + "' cannot be built by "
+                               "the " + kind + " the compiler would write: the " +
+                               kind + " of '" + memberClass(mt)->tag() +
+                               "', the type of '" + ms[i].name + "', is " +
                                (cc->access == Access::Private ? "private"
                                                               : "protected"));
             functions_[static_cast<std::size_t>(cc - &functions_[0])].used = true;
@@ -1401,6 +1486,7 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
         from->setType(srcPtr);
         ExprPtr fromObj(new Unary('*', std::move(from)));
         fromObj->setType(srcRef->referent());
+        if (moving) fromObj->setXvalue();
         ExprPtr src(new MemberAccess(std::move(fromObj), ms[i].name, ms[i].offset,
                                      ms[i].width, ms[i].bitOffset));
         src->setType(mt);
@@ -1415,6 +1501,12 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
             src = ExprPtr(new Unary('*', std::move(srcAt)));
             src->setType(elem);
         }
+
+        // After the array unwrap, so that it lands on the element that is
+        // actually handed over. `static_cast<T &&>(other.m)` for every member
+        // is what [class.copy]/15 says the body is, and this is that cast -
+        // harmless on a scalar, where the move is an assignment either way.
+        if (moving) src->setXvalue();
 
         StmtPtr one;
         if (cc != nullptr) {
