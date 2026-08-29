@@ -178,6 +178,12 @@ private:
                 bool isParam = false;
                 std::size_t param = 0;
                 long long value = 0;
+                // `R...` written as the last argument of the pattern, where R
+                // is this specialization's own pack parameter. It takes every
+                // argument the fixed ones in front of it did not, which is
+                // what lets `L<T, R...>` peel one type off a list of any
+                // length - the shape a recursive variadic class is made of.
+                bool isPackExpansion = false;
             };
             std::vector<Arg> args;
             std::size_t bodyAt = 0;      // the '{' of its class body
@@ -358,6 +364,7 @@ private:
                               const std::vector<TemplateArg> &args,
                               std::vector<const Type *> *binding,
                               std::vector<long long> *values,
+                              std::vector<std::vector<const Type *> > *packs,
                               std::size_t pos);
     // [temp.class.order]: whether one pattern is at least as specialized as
     // another, which is asked by matching each against the other.
@@ -367,7 +374,8 @@ private:
                          const TemplateDecl::Partial &b) const;
     // `Box<T *>` after `template <class T> struct` - the argument list of a
     // partial specialization, read as patterns.
-    void partialArguments(TemplateDecl::Partial *ps, std::size_t count);
+    void partialArguments(TemplateDecl::Partial *ps,
+                          const std::vector<TemplateParam> &primary);
     void unbindTemplateParameters(const std::vector<Shadow> &undo);
     // Deduction: the arguments worked out from the call rather than written.
     // Answers false and fills `why` when some parameter cannot be deduced.

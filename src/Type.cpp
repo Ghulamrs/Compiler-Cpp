@@ -197,8 +197,18 @@ const Member *Type::findMember(const std::string &name) const {
     // `const X &` could not see a member of it while a free function could:
     // the free function's parameter type was interned after the class closed,
     // the member function's while it was still open.
-    for (const Member &m : members())
-        if (m.name == name) return &m;
+    // **Backwards, because a derived member hides a base's.** The list is
+    // built base-first - each base's members are copied in at their offsets
+    // and the class's own are appended - so it runs from most-base to
+    // most-derived, and the last match is the one C++ says the name means.
+    //
+    // Forwards, `struct Tuple<T, Rest...> : Tuple<Rest...> { T head; }` read
+    // the *innermost* head at every level: three members called head, and
+    // every use found the first. It gave wrong values and no diagnostic,
+    // which is the reason this is written out.
+    const std::vector<Member> &all = members();
+    for (std::size_t i = all.size(); i > 0; i--)
+        if (all[i - 1].name == name) return &all[i - 1];
     return nullptr;
 }
 

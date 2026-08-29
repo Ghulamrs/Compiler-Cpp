@@ -99,6 +99,93 @@ scope and grants it access, so it wants a friend list on the class that
 function outside the class it is written in. What changed is only that the
 compiler now says which word it cannot read.
 
+## Rung 5 reopened: a real tuple, 2026-08-29
+
+Asked whether this compiler supports tuples. There is no `std::tuple` and
+there never will be here - `lib/` is the C headers and there is no C++
+standard library at all - so the question worth answering was whether the
+*language* can express one. A fixed-arity `Pair` already worked. The
+recursive variadic shape the real one is built from did not, and finding out
+why turned up **nine** things rather than the two it looked like.
+
+```cpp
+template <class... Ts> struct Tuple;
+template <> struct Tuple<> { };
+template <class T, class... Rest>
+struct Tuple<T, Rest...> : Tuple<Rest...> {
+    T head;
+    Tuple<Rest...> *tail() { return this; }
+};
+```
+
+**Three were template gaps.**
+
+*A partial specialization that peels a pack.* `template <class... Ts> struct
+L;` has one parameter and `L<T, R...>` gives it two, because a pack stands for
+a list rather than a type - so checking written arguments against parameter
+count rejected every recursive variadic class. What says where the pattern
+stops is the closing angle. Matching is the other half: the arguments arrive
+as *one* pack, so `choosePartial` flattens them and matches the fixed
+arguments in front, with a trailing `R...` taking the rest - possibly nothing.
+
+*A pack expanded into another template's argument list*, `Tuple<Rest...>`,
+which was refused by name. It works where the members are known, because a
+pack argument is read last and takes everything left, so an expansion splices
+its members in where it stands. **It is still refused in a pattern**, where
+the pack stands for itself and what would be spliced is the parameter - that
+is deduction, and a different problem with the same syntax.
+
+*A dependent base*, `: Tuple<Rest...>`. The base clause read a bare identifier
+and looked it up as a typedef, which a template-id can never be. Reading the
+base as a *type* reaches the code that already knows how to instantiate one,
+and costs nothing inside a template because a pattern is never parsed.
+
+**Three more were consequences of those, found only by running it.**
+
+A partial specialization may have a **base clause**, so `bodyAt` points at `:`
+as well as `{`. A variadic template is very often **declared and never
+defined**, every definition being a specialization - so "nothing to
+instantiate" has to be asked *after* a partial is chosen. And a partial's pack
+has to be recorded in its `Specialization`, because the held member bodies are
+replayed later from that record: left out, every level replayed with an empty
+pack and `Tuple<char, long>::tail` was declared to return `Tuple<long> &`
+while its body said `Tuple<> &`.
+
+**Three were nothing to do with templates, and two of those were silent.**
+
+`int &get() { return x; }` was reported as a *reference data member*. At the
+point that check is made the `(` has not been read, so the type in hand is
+still the return type - the same shape as the `constexpr` function test in
+7.5a, and the same fix.
+
+**The empty base optimisation was missing.** An empty class has `sizeof` 1 -
+so two objects of it differ in address - and a *data size* of 0, and the two
+are different numbers on purpose. `dataSize()` answered 1, so `struct D : E {
+int x; };` was 8 bytes where clang and cl both say 4, and **every class with
+an empty base had a layout that agreed with no other compiler**. All three
+users of `dataSize()` are asking "how far into an object does this base's data
+reach", and 0 is the right answer to that for all of them. A recursive
+variadic class feels it hardest: it bottoms out in an empty specialization and
+pays at every level.
+
+**A derived member did not hide a base's.** A base's members are copied into
+the derived class's list at their own offsets - that flattening *is* the
+layout - so the list runs most-base to most-derived and `findMember` has to
+read it **backwards**. Forwards, every one of `Tuple`'s three `head` members
+resolved to the innermost: wrong values, right types, no diagnostic.
+
+**Still refused, and each says so by name:** binding a *reference* to a base
+subobject (`Tuple<Rest...> &tail() { return *this; }` - the pointer form
+works), and a template-id as a qualified name in an expression
+(`Tuple<Rest...>::depth()`).
+
+**A test-case rule this cost a Windows round to learn: a case that prints
+`sizeof` may not contain `long`.** It is 8 bytes on the two Itanium targets
+and 4 on Windows, so such a case measures the data model rather than the
+layout and no single `.expected` can serve all three. `double` is 8
+everywhere. All three failures on the Windows box were this and none was the
+layout work.
+
 ## Where this came from
 
 Forked from `../Compiler-C` on 2026-08-26, at the whole-tree level rather than

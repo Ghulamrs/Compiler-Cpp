@@ -127,8 +127,28 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             else if (peek().is("private"))   { how = Access::Private;   at_++; }
 
             std::size_t bpos = peek().pos;
-            std::string baseName = expectIdent("a base class name");
-            const Type *b = findTypedef(baseName);
+            // **Read the base as a type rather than as a name.** A base may
+            // be written `A<T>`, and a template-id is not something
+            // findTypedef can answer: the class does not exist until it is
+            // instantiated. specifiers() is the code that already knows how
+            // to turn one into a type, and it is reached here for the same
+            // reason a declaration reaches it.
+            //
+            // Inside a template this costs nothing extra, because a pattern
+            // is never parsed: instantiation replays the tokens with the
+            // parameters bound, so `A<T>` is read as `A<int>` and instantiated
+            // then, at the point where T is known.
+            std::string baseName = peek().kind == TokenKind::Ident
+                                       ? peek().text : std::string();
+            const Type *b = nullptr;
+            if (atTypeName()) {
+                StorageClass bsc;
+                Qualifiers bquals;
+                b = specifiers(&bsc, &bquals);
+                if (b != nullptr) b = b->unqualified();
+            } else {
+                baseName = expectIdent("a base class name");
+            }
             if (b == nullptr || !b->isStructOrUnion())
                 src_.fail(bpos, "'" + baseName + "' is not a class, so it "
                                 "cannot be a base");
@@ -354,7 +374,17 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             // which means a constructor, which is rung 3. Refusing it by name
             // is better than laying it out as if it were a pointer and having
             // every use of it read the wrong thing.
-            if (d.type->isReference())
+            //
+            // **Only when it is a member at all.** `int &get() { ... }` is a
+            // member *function* returning a reference, and at this point
+            // d.type is still the return type - the '(' has not been read -
+            // so without asking, a perfectly ordinary accessor was reported
+            // as a reference data member. The same three ways of being a
+            // function as everywhere else: the '(' ahead, parameters recorded
+            // to re-read, or a function type reached through a typedef.
+            const bool memberIsFunction = peek().is("(") || d.paramsAt != 0 ||
+                                          d.type->isFunction();
+            if (!memberIsFunction && d.type->isReference())
                 src_.fail(d.pos, "'" + d.name + "' is a reference member, and "
                                  "binding one needs a constructor - not "
                                  "supported yet; a pointer member works now");
@@ -513,8 +543,26 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     int size = static_cast<int>(alignTo((totalBits + 7) / 8, widest));
     int align = widest;
     if (members.empty() && totalBits == 0) { size = 1; align = 1; }
+    // **An empty class has sizeof 1 and a data size of 0**, and the two are
+    // different numbers on purpose. The 1 is so that two objects of it have
+    // different addresses; the 0 is what every user of dataSize() wants,
+    // which in each case is "how far into an object does this base's data
+    // reach". For an empty base that is nowhere, so a derived class puts its
+    // own members at offset 0 and the base costs nothing - the empty base
+    // optimisation, which the Itanium ABI requires and clang and cl both do.
+    //
+    // Written as 1 here, `struct D : E { int x; };` was 8 bytes where clang
+    // says 4, and every class with an empty base had a layout that agreed
+    // with nothing. A recursive variadic class feels it hardest: it bottoms
+    // out in an empty specialization and pays for it at every level.
+    //
+    // **The one case this does not handle** is two subobjects of the same
+    // empty type in one object, which Itanium requires to have different
+    // addresses and this would place both at 0. That needs `struct C : A, B`
+    // where B also derives from A, and it is not reachable while a repeated
+    // base is refused for its own reasons.
     type->setDataSize(members.empty() && totalBits == 0
-                          ? 1 : static_cast<int>((totalBits + 7) / 8));
+                          ? 0 : static_cast<int>((totalBits + 7) / 8));
     type->complete(members, size, align);
     // Held bodies are read now, with the class complete: every member exists,
     // so a body may name one declared below it. Taken out of the vector first,

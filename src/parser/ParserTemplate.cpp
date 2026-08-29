@@ -348,15 +348,25 @@ bool Parser::templateDeclaration() {
         ps.params = decl.params;
         ps.pos = decl.pos;
         at_ += 2;
-        partialArguments(&ps, primary->second.params.size());
-        if (!peek().is("{"))
+        partialArguments(&ps, primary->second.params);
+        // **`:` as well as `{`.** A specialization may have a base clause, and
+        // a recursive variadic one always does - `struct A<T, R...> : A<R...>`
+        // is the whole shape. bodyAt points at whichever comes first, because
+        // the replay goes through structOrUnionSpecifier, which reads the
+        // base clause and the body in that order anyway.
+        if (!peek().is("{") && !peek().is(":"))
             src_.fail(peek().pos, "a partial specialization is a definition, "
                                   "and this one has no body");
         ps.bodyAt = at_;
         for (std::size_t i = 0; i < ps.params.size(); i++) {
             bool mentioned = false;
             for (std::size_t k = 0; k < ps.args.size(); k++)
-                if (!ps.args[k].isType) {
+                if (ps.args[k].isPackExpansion) {
+                    // `R...` names its parameter and holds no pattern to
+                    // walk, so it is asked about directly rather than through
+                    // mentionsParam - whose argument would be null.
+                    if (ps.args[k].param == i) mentioned = true;
+                } else if (!ps.args[k].isType) {
                     if (ps.args[k].isParam && ps.args[k].param == i) mentioned = true;
                 } else if (mentionsParam(ps.args[k].type, i)) {
                     mentioned = true;
@@ -581,13 +591,43 @@ void Parser::templateArguments(const TemplateDecl &decl,
         if (p.isPack) {
             a.isPack = true;
             a.isType = true;
+            // **`first` and not `a.pack.empty()`.** An expansion may
+            // contribute nothing - `A<R...>` where R is empty is how a
+            // recursion ends - and then the pack is still empty at the second
+            // argument, so emptiness cannot say whether a comma is due.
+            bool first = true;
             while (!atClosingAngle()) {
-                if (!a.pack.empty()) expect(",");
-                if (peek().kind == TokenKind::Ident && peekAt(1).is("...") &&
-                    packs_.find(peek().text) != packs_.end())
-                    src_.fail(peek().pos, "expanding a pack into another "
-                                          "template's argument list is not "
-                                          "supported yet");
+                if (!first) expect(",");
+                first = false;
+                // **`R...` - one pack expanded into another's argument list.**
+                // This is what makes a recursive variadic class possible:
+                // `struct A<T, R...> : A<R...>` passes on everything but the
+                // head, and each step shortens the list by one until the
+                // empty specialization stops it. What is written is a name
+                // and three dots; what it means is every member of that pack
+                // spliced in where it stands.
+                if (peek().kind == TokenKind::Ident && peekAt(1).is("...")) {
+                    auto pk = packs_.find(peek().text);
+                    if (pk != packs_.end()) {
+                        const std::vector<const Type *> &members =
+                            pk->second.types;
+                        // In a pattern the pack stands for itself and there is
+                        // nothing to splice - the members are the parameter,
+                        // not types. Reading one here would put a
+                        // Kind::TemplateParam into a real argument list.
+                        if (members.size() == 1 &&
+                            members[0]->kind() == Kind::TemplateParam)
+                            src_.fail(peek().pos,
+                                      "expanding a pack into another "
+                                      "template's argument list needs the "
+                                      "pack's members, and here it stands for "
+                                      "itself");
+                        at_ += 2;
+                        for (std::size_t k = 0; k < members.size(); k++)
+                            a.pack.push_back(members[k]);
+                        continue;
+                    }
+                }
                 StorageClass sc;
                 Qualifiers quals;
                 const Type *base = specifiers(&sc, &quals);
@@ -682,6 +722,7 @@ Parser::instantiate(const TemplateDecl &decl,
     if (!decl.defined)
         src_.fail(pos, "'" + decl.name + "' is declared but never defined, so "
                        "there is nothing to instantiate");
+
 
     std::string name;
     const Type *fn = readTemplateDeclaration(decl, binding, values, &name,
@@ -1144,7 +1185,17 @@ bool Parser::matchPattern(const Type *pattern, const Type *arg,
 
 // `Box<T *>` - read with this specialization's own parameters bound to
 // themselves, so what comes out is a pattern rather than a type.
-void Parser::partialArguments(TemplateDecl::Partial *ps, std::size_t count) {
+void Parser::partialArguments(TemplateDecl::Partial *ps,
+                              const std::vector<TemplateParam> &primary) {
+    const std::size_t count = primary.size();
+    // **A variadic primary is not written a fixed number of arguments.**
+    // `template <class... Ts> struct L;` has one parameter and
+    // `struct L<T, R...>` gives it two, because the pack stands for a list
+    // rather than for one type. So the closing angle says where the pattern
+    // stops, not the parameter count - which is why the count was the wrong
+    // thing to check and gave "more arguments than the template has
+    // parameters" for every recursive variadic class.
+    const bool variadic = !primary.empty() && primary.back().isPack;
     expect("<");
     const bool wasInArgs = inTemplateArgs_;
     const bool wasPattern = patternOnly_;
@@ -1161,9 +1212,26 @@ void Parser::partialArguments(TemplateDecl::Partial *ps, std::size_t count) {
     bindTemplateParameters(ps->params, binding, values,
                            std::vector<std::vector<const Type *> >(), &undo);
 
-    for (std::size_t i = 0; i < count; i++) {
+    for (std::size_t i = 0; variadic ? !atClosingAngle() : i < count; i++) {
         if (i > 0) expect(",");
         TemplateDecl::Partial::Arg a;
+
+        // `R...` - this specialization's own pack, standing for everything
+        // the fixed arguments before it did not take.
+        if (peek().kind == TokenKind::Ident && peekAt(1).is("...")) {
+            std::size_t k = ps->params.size();
+            for (std::size_t j = 0; j < ps->params.size(); j++)
+                if (ps->params[j].isPack && ps->params[j].name == peek().text)
+                    k = j;
+            if (k < ps->params.size()) {
+                a.isType = true;
+                a.isPackExpansion = true;
+                a.param = k;
+                at_ += 2;
+                ps->args.push_back(a);
+                continue;
+            }
+        }
         // **A non-type argument that is one of our own parameters is the only
         // shape of one that deduces**, so it is recognised by its tokens
         // before it can be folded into the value it was bound to.
@@ -1195,6 +1263,15 @@ void Parser::partialArguments(TemplateDecl::Partial *ps, std::size_t count) {
         src_.fail(peek().pos, "this specialization gives more arguments than "
                               "the template has parameters");
     takeClosingAngle();
+    // A pack expansion may only be last: everything after it could never be
+    // told apart from a member of it. Same rule, and the same reason, as a
+    // pack having to be the last *parameter*.
+    for (std::size_t i = 0; i + 1 < ps->args.size(); i++)
+        if (ps->args[i].isPackExpansion)
+            src_.fail(ps->params.empty() ? 0 : ps->params[0].pos,
+                      "a pack expansion has to be the last argument of a "
+                      "specialization - anything after it could never be told "
+                      "apart from one of its members");
 
     unbindTemplateParameters(undo);
     inTemplateArgs_ = wasInArgs;
@@ -1233,34 +1310,73 @@ std::size_t Parser::choosePartial(const TemplateDecl &decl,
                                   const std::vector<TemplateArg> &args,
                                   std::vector<const Type *> *binding,
                                   std::vector<long long> *values,
+                                  std::vector<std::vector<const Type *> > *packs,
                                   std::size_t pos) {
     std::vector<std::size_t> fits;
     std::vector<std::vector<const Type *> > bindings;
     std::vector<std::vector<long long> > valueSets;
+    std::vector<std::vector<std::vector<const Type *> > > packSets;
+
+    // **The arguments arrive as one pack when the primary is variadic.**
+    // `L<int, char>` against `template <class... Ts>` is a single TemplateArg
+    // holding both, and a pattern like `L<T, R...>` is written against the
+    // *members*. So the list is flattened once here and every pattern is
+    // matched against that.
+    std::vector<TemplateArg> flat;
+    for (std::size_t i = 0; i < args.size(); i++) {
+        if (!args[i].isPack) { flat.push_back(args[i]); continue; }
+        for (std::size_t k = 0; k < args[i].pack.size(); k++) {
+            TemplateArg one;
+            one.isType = true;
+            one.type = args[i].pack[k];
+            flat.push_back(one);
+        }
+    }
 
     for (std::size_t p = 0; p < decl.partials.size(); p++) {
         const TemplateDecl::Partial &ps = decl.partials[p];
-        if (ps.args.size() != args.size()) continue;
+
+        // A trailing `R...` takes everything the fixed arguments leave, so
+        // the arity it demands is a minimum rather than an equality.
+        const bool takesRest = !ps.args.empty() &&
+                               ps.args.back().isPackExpansion;
+        const std::size_t fixed = takesRest ? ps.args.size() - 1
+                                            : ps.args.size();
+        if (takesRest ? flat.size() < fixed : ps.args.size() != flat.size())
+            continue;
+
         std::vector<const Type *> b(ps.params.size());
         std::vector<long long> v(ps.params.size(), 0);
+        std::vector<std::vector<const Type *> > pk(ps.params.size());
         std::string why;
         bool ok = true;
-        for (std::size_t i = 0; i < args.size() && ok; i++) {
+        for (std::size_t i = 0; i < fixed && ok; i++) {
             const TemplateDecl::Partial::Arg &a = ps.args[i];
-            if (a.isType != args[i].isType) { ok = false; break; }
+            if (a.isType != flat[i].isType) { ok = false; break; }
             if (!a.isType) {
-                if (a.isParam) v[a.param] = args[i].value;
-                else if (a.value != args[i].value) ok = false;
+                if (a.isParam) v[a.param] = flat[i].value;
+                else if (a.value != flat[i].value) ok = false;
                 continue;
             }
-            if (!matchPattern(a.type, args[i].type, &b, &why)) ok = false;
+            if (!matchPattern(a.type, flat[i].type, &b, &why)) ok = false;
         }
+        if (ok && takesRest) {
+            const TemplateDecl::Partial::Arg &tail = ps.args.back();
+            for (std::size_t i = fixed; i < flat.size() && ok; i++) {
+                if (!flat[i].isType) { ok = false; break; }
+                pk[tail.param].push_back(flat[i].type);
+            }
+        }
+        // A pack parameter binds through `pk` and never through `b`, so it is
+        // not the unbound-parameter fault this is looking for.
         for (std::size_t i = 0; ok && i < ps.params.size(); i++)
-            if (ps.params[i].type == nullptr && b[i] == nullptr) ok = false;
+            if (ps.params[i].type == nullptr && !ps.params[i].isPack &&
+                b[i] == nullptr) ok = false;
         if (!ok) continue;
         fits.push_back(p);
         bindings.push_back(b);
         valueSets.push_back(v);
+        packSets.push_back(pk);
     }
 
     if (fits.empty()) return static_cast<std::size_t>(-1);
@@ -1284,6 +1400,7 @@ std::size_t Parser::choosePartial(const TemplateDecl &decl,
 
     *binding = bindings[best];
     *values = valueSets[best];
+    if (packs != nullptr) *packs = packSets[best];
     return fits[best];
 }
 
@@ -1319,10 +1436,6 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
 
     if (const Type *had = findTypedef(tag)) return had;
 
-    if (!decl.defined)
-        src_.fail(pos, "'" + decl.name + "' is declared but never defined, so "
-                       "there is nothing to instantiate");
-
     // **A partial specialization is chosen before anything is replayed**, and
     // what it changes is which tokens get replayed and with which parameters
     // bound. The tag does not change: `Box<int *>` is that whether the body
@@ -1331,17 +1444,29 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     std::vector<const Type *> useBinding = binding;
     std::vector<long long> useValues = values;
     std::vector<TemplateParam> useParams = decl.params;
+    std::vector<std::vector<const Type *> > usePacks;
     const std::size_t which = choosePartial(decl, args, &useBinding, &useValues,
-                                            pos);
+                                            &usePacks, pos);
     const bool partial = which != static_cast<std::size_t>(-1);
     if (partial) useParams = decl.partials[which].params;
 
+    // **Asked after the partial is chosen, not before.** A variadic template
+    // is very often declared and never defined - `template <class... Ts>
+    // struct Tuple;` - because every definition it has is a specialization.
+    // There is a body to replay whenever one of them matched; only when none
+    // did is there nothing here at all.
+    if (!partial && !decl.defined)
+        src_.fail(pos, "'" + decl.name + "' is declared but never defined, so "
+                       "there is nothing to instantiate");
+
     const std::size_t resume = at_;
     std::vector<Shadow> undo;
+    // **A chosen partial binds its own pack, not the primary's.** `L<T, R...>`
+    // matched against `L<int, char, long>` leaves R holding {char, long}, and
+    // that is what the replayed body has to see - the primary's Ts is not in
+    // scope at all, its parameters having been replaced by the pattern's.
     bindTemplateParameters(useParams, useBinding, useValues,
-                           partial ? std::vector<std::vector<const Type *> >()
-                                   : packs,
-                           &undo);
+                           partial ? usePacks : packs, &undo);
 
     at_ = partial ? decl.partials[which].bodyAt : decl.afterParams;
     classInstantiationTag_ = tag;
@@ -1375,7 +1500,13 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     sp.params = useParams;
     sp.binding = useBinding;
     sp.values = useValues;
-    if (!partial) sp.packs = packs;
+    // **A partial's pack has to be recorded too.** The held member bodies are
+    // replayed later, from this record, with the parameters bound again - and
+    // a body that says `Tuple<Rest...>` needs Rest to hold what it held when
+    // the declaration was read. Left empty, every level of a recursive class
+    // replayed with an empty pack, so `Tuple<char, long>::tail` was declared
+    // to return `Tuple<long> &` and its body said `Tuple<> &`.
+    sp.packs = partial ? usePacks : packs;
     sp.start = decl.afterParams;
     sp.pos = pos;
     sp.isClass = true;
