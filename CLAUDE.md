@@ -264,7 +264,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | **done**, 2026-08-29 |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
-| 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.4 and Windows `throw` **done**, 2026-08-29 |
+| 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | **done** on all three targets, 2026-08-30 - `return` inside a `catch` is refused on Windows |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1-7.5 **done**, 2026-08-29 |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
