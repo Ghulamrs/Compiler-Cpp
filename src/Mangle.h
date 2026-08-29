@@ -1,9 +1,9 @@
 #pragma once
 
+#include "Type.h"
+
 #include <string>
 #include <vector>
-
-class Type;
 
 // The linkage name of something with C++ linkage, in the ABI of the platform
 // it is being compiled for. Conforming to the platform ABI rather than
@@ -26,15 +26,7 @@ class Type;
 bool itaniumFunctionName(const std::string &name, const Type *fn, bool internal,
                          std::string *out, std::string *problem);
 
-// One template argument as a name needs it: a type, or a value of a type.
-// `type` is the argument itself for a type argument and the *parameter's*
-// type for a non-type one, because that is what both ABIs write beside the
-// value - Itanium `Li3E`, Microsoft `$02`.
-struct TemplateArg {
-    const Type *type = nullptr;
-    bool isType = true;
-    long long value = 0;
-};
+// TemplateArg lives in Type.h: a specialization carries its arguments.
 
 // A function template specialization. The two ABIs want two different things
 // here and the difference is not cosmetic:

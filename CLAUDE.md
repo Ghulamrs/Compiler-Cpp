@@ -101,7 +101,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
-| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1-5.3 **done**, 2026-08-29 |
+| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1-5.4 **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
@@ -832,13 +832,13 @@ backend already knows how to emit. This is the pattern to reach for again:
 where C++ adds a *conversion*, look for an existing operation to lower it to
 before adding a case to three code generators.
 
-## Rung 5: templates, 5.1 to 5.3 done and the rest planned
+## Rung 5: templates, 5.1 to 5.4 done and the rest planned
 
-**5.1, 5.2 and 5.3 landed 2026-08-29 and each has its own section at the end
-of this one - 5.1 to 5.3 was the first shippable milestone and it is
-reached.** Everything from 5.4 on is still unwritten: what follows is the
-order the work is meant to happen in and the reasons for that order, written
-before any of it, the way rungs 2 and 3 were.
+**5.1 to 5.4 landed 2026-08-29 and each has its own section at the end of this
+one - 5.1 to 5.3 was the first shippable milestone and it is reached.**
+Everything from 5.5 on is still unwritten: what follows is the order the work
+is meant to happen in and the reasons for that order, written before any of
+it, the way rungs 2 and 3 were.
 
 Rung 5 is larger than rungs 2, 3 and 4 together. Rung 6 is where the three
 targets stop being symmetric: Windows EH is SEH-based and needs unwind data,
@@ -1093,6 +1093,72 @@ is no duplicate - the same divergence `docs/CONFORMANCE.md` records for inline
 members, working in this direction by luck rather than by design.
 
 Suites 66 / 104 / 35; the C corpus is unchanged.
+
+### 5.4 as it actually landed
+
+**The plan said nested classes would make this cheap and they did.** A
+specialization is an ordinary class whose tag is `Box<int,3>` - and `tag()`
+was already an arbitrary qualified string with `localName()` and
+`enclosing()` beside it, so every table keyed by the tag needed nothing. The
+class path was told one thing: what tag to take. `structOrUnionSpecifier` runs
+unchanged over the template's own tokens with the arguments bound, exactly as
+a function specialization replays its definition.
+
+**A specialization carries its name and arguments on the `Type`**, because
+neither ABI spells the tag: Itanium wants `3BoxIiLi3EE` and Microsoft
+`?$Box@H$02@`. `Kind::TemplateParam` and `TemplateArg` are what those two are
+built from, and `TemplateArg` moved into `Type.h` for it.
+
+**The measured mangling, cl and clang agreeing:**
+
+    Itanium   _ZN3BoxIiLi3EE4sizeEv        the template-id is a prefix component
+              _Z3two6HolderIiES_IdE        the template NAME is a candidate of
+                                           its own - the S_ there is the word
+              _Z4same6HolderIiES0_         and the whole type is the next one
+              _Z6nested6HolderIS_IiEE      both, in one name
+    Microsoft ?size@?$Box@H$02@@QEAAHXZ    one scope component
+              ?copyFrom@?$Holder@H@@QEAAXAEBU1@@Z   pushed as one name
+              ?withClass@@YAXU?$Holder@US@@@@US@@@Z the id's own tables again
+
+**So the Itanium table holds two kinds of candidate**, a type or a template's
+name, and `Sub` says which. Getting this wrong is invisible until two
+specializations of one template meet in a signature.
+
+**The injected class name is what made the bodies work.** Inside `Holder`'s
+own body the word `Holder` means this specialization - `const Holder &` and a
+`Holder *` return type both need it. Registered as a member type name,
+`Holder<int>::Holder`, so the walk a nested class already needs finds it. Two
+places had to be taught separately: from inside the body through
+`classStack_`, and **from a replayed body's return type through
+`inlineOwner_`** - a held body is replayed at file scope and its return type
+is read before the declarator says which class it belongs to, so
+`currentClass_` is not set yet. `Holder *self()` failed while
+`copyFrom(const Holder &)` worked, which is what pointed at it.
+
+**A specialization's constructor has two spellings and both are needed.** The
+source writes `Holder(`; the table keys it `Holder<int>::Holder<int>`, because
+that is what `constructorKey` makes of the tag. `PendingBody` carries the
+source name beside the tag, and only the name that *is* the class moves.
+
+**Member bodies are not replayed where the class is made.** Instantiating a
+class happens in the middle of whatever asked for it - which may be a
+declaration inside a function - and a replay goes through `topLevel`, which
+clears that function's locals. They are handed back and replayed by the same
+fixed-point pass that defines function specializations.
+
+**And only the members something calls.** clang and cl both instantiate a
+member function of a class template on use, so emitting the rest puts symbols
+in the object that neither oracle has - measured, one unused member was one
+extra name on all three targets. `PendingBody` carries the function table's
+key and the gate is `Signature::used` again. A body skipped on one pass may be
+wanted after another is replayed, which is what the outer loop is for.
+
+**Reading a pattern must not instantiate a class.** `Holder<T>` has a member
+of type T, which has no size. `patternOnly_` answers a shallow type instead,
+carrying the name and the arguments and nothing else - which is all either
+caller reads, since the mangler spells those and deduction compares them.
+
+Suites 68 / 110 / 37; the C corpus is unchanged.
 
 ## Decisions already taken
 

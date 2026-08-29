@@ -100,6 +100,16 @@ private:
     struct PendingBody {
         std::string tag;
         std::size_t start;
+        // The class's name **as the source wrote it**, which is not the tag
+        // for a specialization: the body of `Holder<int>` still says
+        // `Holder(` for its constructor. The tag qualifies; this recognises.
+        std::string local;
+        // The function table's key for the member this body belongs to. Only
+        // a specialization's bodies are gated on it: clang instantiates a
+        // member function of a class template only where something calls one,
+        // and emitting the rest would put symbols in the object that no
+        // oracle has.
+        std::string key;
     };
     std::vector<PendingBody> pendingBodies_;
     void replayInlineBodies(std::vector<PendingBody> mine);
@@ -147,6 +157,13 @@ private:
         std::size_t start = 0;              // the template's own tokens
         std::size_t pos = 0;                // where it was first asked for
         bool emitted = false;
+        // A class specialization instead of a function one. Its member
+        // functions are held bodies, replayed with the same fixed-point pass
+        // and for the same reason: instantiating a class happens in the
+        // middle of whatever asked for it, and replaying a body there would
+        // walk over the enclosing function's own state.
+        bool isClass = false;
+        std::vector<PendingBody> bodies;
     };
     std::vector<Specialization> specializations_;
     // Set while a specialization's definition is being replayed: the name the
@@ -163,6 +180,26 @@ private:
                    ? instantiationKey_ : name;
     }
     ExprPtr templateCall(Program *program);
+    // `Box<int, 3>` where a type was expected. Answers the class, made if the
+    // arguments have not been seen before.
+    const Type *instantiateClass(const TemplateDecl &decl, std::size_t pos);
+    // Set while a class template is being instantiated: the tag the class
+    // must take, and the sign to hold its member bodies rather than replay
+    // them. One-shot, taken by structOrUnionSpecifier.
+    std::string classInstantiationTag_;
+    // The arguments that tag was built from, and the bodies the class came
+    // back with. Both are handed between instantiateClass and the one call to
+    // structOrUnionSpecifier it makes, which is why they are fields rather
+    // than parameters: everything in between is the ordinary class path.
+    std::vector<TemplateArg> instantiatingArgs_;
+    std::vector<PendingBody> heldForSpecialization_;
+    // Set while a template's declaration is being read as a *pattern* - with
+    // Kind::TemplateParam bound in place of the arguments, for the Itanium
+    // mangler and for deduction. A class template met there must not be
+    // instantiated: `Holder<T>` has a member of type T, which has no size.
+    // It answers a shallow type instead, carrying the name and the arguments
+    // and nothing else, which is all either caller reads.
+    bool patternOnly_ = false;
     const Signature &instantiate(const TemplateDecl &decl,
                                  const std::vector<const Type *> &binding,
                                  const std::vector<long long> &values,
@@ -237,6 +274,9 @@ private:
     // cleared by the first declarator that uses it, so nothing inside the body
     // picks it up.
     std::string inlineOwner_;
+    // The same class as the source spells it. Equal to inlineOwner_ for an
+    // ordinary class and the template's own name for a specialization.
+    std::string inlineOwnerName_;
 
     void emitVtable(const Type *cls, const std::string &tag, std::size_t pos);
     // The statements that set an object's vptrs - the primary one and any a

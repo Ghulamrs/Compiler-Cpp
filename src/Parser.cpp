@@ -74,6 +74,19 @@ const Type *Parser::findTypedef(const std::string &name) const {
         if (const Type *t = lookupInClass(classStack_[i], name)) return t;
     if (currentClass_ != nullptr)
         if (const Type *t = lookupInClass(currentClass_, name)) return t;
+
+    // **A held body is replayed at file scope, and its return type is read
+    // before anything says which class it belongs to.** `Holder *self()`
+    // inside `Holder` is the case: currentClass_ is set from the declarator's
+    // qualifier, which has not been read yet. inlineOwner_ is the one thing
+    // that knows, so it is asked here - and this is why the injected class
+    // name works in a member's return type as well as in its parameters.
+    if (!inlineOwner_.empty()) {
+        auto it = typedefIndex_.find(inlineOwner_);
+        if (it != typedefIndex_.end())
+            if (const Type *t = lookupInClass(typedefs_[it->second].type, name))
+                return t;
+    }
     return nullptr;
 }
 
@@ -127,7 +140,13 @@ bool Parser::atTypeName() const {
                                      "const", "volatile" };
     for (const char *k : t)
         if (peek().is(k)) return true;
-    return peek().kind == TokenKind::Ident && findTypedef(peek().text) != nullptr;
+    if (peek().kind != TokenKind::Ident) return false;
+    // `Box<int> b;` declares a variable, so the name has to answer yes here -
+    // but only with a `<` after it, since the bare name is not a type.
+    auto tmpl = templates_.find(peek().text);
+    if (tmpl != templates_.end() && tmpl->second.isClass && peekAt(1).is("<"))
+        return true;
+    return findTypedef(peek().text) != nullptr;
 }
 
 bool Parser::atDeclarationStart() const {
@@ -192,8 +211,10 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     for (std::size_t i = 0; i < mine.size(); i++) {
         at_ = mine[i].start;
         inlineOwner_ = mine[i].tag;
+        inlineOwnerName_ = mine[i].local.empty() ? mine[i].tag : mine[i].local;
         topLevel(*current_);
         inlineOwner_.clear();
+        inlineOwnerName_.clear();
     }
     at_ = resume;
 }
@@ -365,6 +386,10 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
     const std::size_t resume = at_;
     std::vector<Shadow> undo;
     bindTemplateParameters(decl, binding, values, &undo);
+    const bool wasPattern = patternOnly_;
+    for (std::size_t i = 0; i < binding.size(); i++)
+        if (binding[i] != nullptr && binding[i]->kind() == Kind::TemplateParam)
+            patternOnly_ = true;
 
     at_ = decl.afterParams;
     StorageClass sc;
@@ -391,6 +416,7 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
                          "and only function templates are supported yet");
     }
 
+    patternOnly_ = wasPattern;
     unbindTemplateParameters(undo);
     at_ = resume;
     *name = d.name;
@@ -534,8 +560,12 @@ std::string Parser::specializationKey(const std::string &name,
     std::string key = name + "<";
     for (std::size_t i = 0; i < args.size(); i++) {
         if (i > 0) key += ",";
-        key += args[i].isType ? args[i].type->describe()
-                              : std::to_string(args[i].value);
+        if (!args[i].isType) key += std::to_string(args[i].value);
+        // A pattern's argument is a template parameter, and describe() would
+        // put a space in a tag every table is keyed by.
+        else if (args[i].type->kind() == Kind::TemplateParam)
+            key += "$T" + std::to_string(args[i].type->length());
+        else key += args[i].type->describe();
     }
     return key + ">";
 }
@@ -624,10 +654,32 @@ void Parser::instantiatePending() {
             // can rank one, and an ordinary function may then win the tie -
             // in which case clang emits no specialization and neither does
             // this. The same rule the implicit special members follow.
-            const std::vector<std::size_t> *had =
-                overloadsOf(specializations_[i].key);
-            if (had == nullptr || !functions_[(*had)[0]].used) continue;
-            specializations_[i].emitted = true;
+            // **A member function of a class template is instantiated only
+            // where something calls it.** clang and cl both do that, so
+            // emitting the rest would put symbols in the object that neither
+            // oracle has. Taken a body at a time, and a body that is skipped
+            // this time round may be wanted after another one is replayed -
+            // which is what the outer loop is for.
+            std::vector<PendingBody> now;
+            if (specializations_[i].isClass) {
+                std::vector<PendingBody> later;
+                for (std::size_t b = 0; b < specializations_[i].bodies.size(); b++) {
+                    const PendingBody &body = specializations_[i].bodies[b];
+                    const std::vector<std::size_t> *set = overloadsOf(body.key);
+                    bool wanted = false;
+                    for (std::size_t k = 0; set != nullptr && k < set->size(); k++)
+                        if (functions_[(*set)[k]].used) wanted = true;
+                    (wanted ? now : later).push_back(body);
+                }
+                if (now.empty()) continue;
+                specializations_[i].bodies = later;
+                if (later.empty()) specializations_[i].emitted = true;
+            } else {
+                const std::vector<std::size_t> *had =
+                    overloadsOf(specializations_[i].key);
+                if (had == nullptr || !functions_[(*had)[0]].used) continue;
+                specializations_[i].emitted = true;
+            }
             again = true;
 
             // Copied, not held by reference: replaying may append to the
@@ -639,12 +691,19 @@ void Parser::instantiatePending() {
             bindTemplateParameters(decl, sp.binding, sp.values, &undo);
             const std::string wasKey = instantiationKey_;
             const std::string wasOf = instantiationOf_;
-            instantiationKey_ = sp.key;
-            instantiationOf_ = sp.name;
+            instantiationKey_ = sp.isClass ? std::string() : sp.key;
+            instantiationOf_ = sp.isClass ? std::string() : sp.name;
 
             const std::size_t resume = at_;
-            at_ = sp.start;
-            topLevel(*current_);
+            if (sp.isClass) {
+                // Its member functions, written inside the class and held
+                // there. inlineOwner_ supplies the "Box<int,3>::" that the
+                // source does not have, the same way it does for any class.
+                replayInlineBodies(now);
+            } else {
+                at_ = sp.start;
+                topLevel(*current_);
+            }
             at_ = resume;
 
             instantiationKey_ = wasKey;
@@ -696,6 +755,26 @@ bool Parser::deduceOne(const Type *pattern, const Type *arg,
             *why = "it is '" + (*binding)[i]->describe() + "' in one argument "
                    "and '" + deduced->describe() + "' in another";
             return false;
+        }
+        return true;
+    }
+
+    // **`Holder<T>` against `Holder<int>`.** The two have to be the same
+    // template before their arguments mean anything - `Holder<T>` deduces
+    // nothing from a `Box<int>`.
+    if (pattern->isSpecialization()) {
+        if (!arg->isSpecialization() ||
+            arg->templateName() != pattern->templateName() ||
+            arg->templateArgs().size() != pattern->templateArgs().size()) {
+            *why = "'" + arg->describe() + "' is not a '" +
+                   pattern->templateName() + "'";
+            return false;
+        }
+        for (std::size_t i = 0; i < pattern->templateArgs().size(); i++) {
+            const TemplateArg &p = pattern->templateArgs()[i];
+            const TemplateArg &a = arg->templateArgs()[i];
+            if (!p.isType || !a.isType) continue;
+            if (!deduceOne(p.type, a.type, binding, why)) return false;
         }
         return true;
     }
@@ -756,6 +835,73 @@ bool Parser::deduceTemplateArguments(const TemplateDecl &decl,
             return false;
         }
     return true;
+}
+
+// `Box<int, 3>` where a type was expected - rung 5.4.
+//
+// The class is made by replaying `struct Box { ... };` with the arguments
+// bound, exactly as a function specialization replays its definition, and the
+// only thing the class path had to be told is what tag to take. Everything
+// else falls out of nested classes: tag() was already an arbitrary qualified
+// string, and both manglers already walked a scope.
+const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) {
+    std::vector<const Type *> binding;
+    std::vector<long long> values;
+    std::vector<TemplateArg> args;
+    templateArguments(decl, &binding, &values, &args);
+
+    const std::string tag = specializationKey(decl.name, args);
+
+    // Reading a pattern, not building a class. `Holder<T>` cannot be laid out
+    // - T has no size - and neither the mangler nor deduction wants it laid
+    // out: both read only the template's name and its argument list.
+    if (patternOnly_) {
+        Type *shallow = types_.structType(Kind::Struct, tag);
+        if (!shallow->isSpecialization())
+            shallow->setSpecialization(decl.name, args);
+        return shallow;
+    }
+
+    if (const Type *had = findTypedef(tag)) return had;
+
+    if (!decl.defined)
+        src_.fail(pos, "'" + decl.name + "' is declared but never defined, so "
+                       "there is nothing to instantiate");
+
+    const std::size_t resume = at_;
+    std::vector<Shadow> undo;
+    bindTemplateParameters(decl, binding, values, &undo);
+
+    at_ = decl.afterParams;
+    classInstantiationTag_ = tag;
+    instantiatingArgs_ = args;
+    heldForSpecialization_.clear();
+    StorageClass sc;
+    Qualifiers quals;
+    const Type *made = specifiers(&sc, &quals);
+    classInstantiationTag_.clear();
+    instantiatingArgs_.clear();
+    std::vector<PendingBody> bodies;
+    bodies.swap(heldForSpecialization_);
+
+    unbindTemplateParameters(undo);
+    at_ = resume;
+
+    if (!made->isStructOrUnion())
+        src_.fail(pos, "'" + decl.name + "' is not a class template");
+    declareTypeName(tag, made);
+
+    Specialization sp;
+    sp.key = tag;
+    sp.name = decl.name;
+    sp.binding = binding;
+    sp.values = values;
+    sp.start = decl.afterParams;
+    sp.pos = pos;
+    sp.isClass = true;
+    sp.bodies = bodies;
+    specializations_.push_back(sp);
+    return made;
 }
 
 // A template named in an expression. 5.2 wants the arguments written out:
@@ -863,6 +1009,18 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     const Type *within = classStack_.empty() ? nullptr : classStack_.back();
     const std::string local = tag;
     const bool defining = peek().is("{") || peek().is(":");
+
+    // **A specialization is named by its whole argument list.** The tag every
+    // table here is keyed by becomes "Box<int,3>", which nested classes
+    // already made possible: the tag was an arbitrary qualified string with
+    // localName() and enclosing() beside it before templates needed one.
+    std::string specializationOf;
+    if (!classInstantiationTag_.empty() && defining) {
+        specializationOf = tag;
+        tag = classInstantiationTag_;
+        classInstantiationTag_.clear();
+    }
+
     if (within != nullptr && !tag.empty()) {
         if (!defining) {
             if (const Type *had = findTypedef(tag))
@@ -873,6 +1031,17 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
     Type *type = tag.empty() ? types_.anonymousStruct(kind)
                              : types_.structType(kind, tag);
+    if (!specializationOf.empty()) {
+        type->setLocalName(tag);
+        type->setSpecialization(specializationOf, instantiatingArgs_);
+        // **The injected class name.** Inside `Holder`'s own body the word
+        // `Holder` means this specialization, not the template - which is
+        // what makes `const Holder &` a legal parameter there. Registered as
+        // a member type name, so the walk a nested class already needs finds
+        // it: from inside the body through classStack_, and from a member's
+        // own body through currentClass_.
+        declareTypeName(tag + "::" + specializationOf, type);
+    }
     if (within != nullptr && !local.empty()) {
         type->setLocalName(local);
         type->setEnclosing(within);
@@ -1011,7 +1180,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             at_++;
             declareConstructor(tag, cpos, access);
             if (peek().is("{") || peek().is(":")) {
-                pendingBodies_.push_back(PendingBody{ tag, itemStart });
+                pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
+                                                      constructorKey(tag) });
                 skipBracedBlock();
                 continue;
             }
@@ -1036,7 +1206,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             at_ += 2;
             declareDestructor(tag, dpos, access, isVirtual);
             if (peek().is("{")) {
-                pendingBodies_.push_back(PendingBody{ tag, itemStart });
+                pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
+                                                      destructorKey(tag) });
                 skipBracedBlock();
                 continue;
             }
@@ -1191,7 +1362,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                                          "a name - this one is anonymous");
                     declareMember(tag, d, constThis, access,
                                   kind == Kind::Union, isVirtual);
-                    pendingBodies_.push_back(PendingBody{ tag, itemStart });
+                    pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
+                                                          tag + "::" + d.name });
                     skipBracedBlock();
                     heldBody = true;
                     break;
@@ -1283,7 +1455,13 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     if (copyConstructorOf(type) != nullptr) type->setNonTrivialCopy(true);
     if (destructorOf(type) != nullptr) type->setHasDestructor(true);
     if (type->polymorphic()) emitVtable(type, tag, pos);
-    replayInlineBodies(std::move(mine));
+    // **A specialization's member bodies are not replayed here.** This is in
+    // the middle of whatever asked for the class - which may be a declaration
+    // inside a function - and a replay goes through topLevel, which clears
+    // the locals of the function being parsed. They are handed back instead
+    // and replayed by the same pass that defines function specializations.
+    if (!specializationOf.empty()) heldForSpecialization_ = std::move(mine);
+    else replayInlineBodies(std::move(mine));
     return type;
 }
 
@@ -1360,19 +1538,22 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // Replaying an inline constructor or destructor: the tokens are `X(` or
     // `~X(` with no type in front, exactly as they were written in the class.
     if (!inlineOwner_.empty() &&
-        ((peek().kind == TokenKind::Ident && peek().text == inlineOwner_ &&
+        ((peek().kind == TokenKind::Ident && peek().text == inlineOwnerName_ &&
           peekAt(1).is("(")) ||
          (peek().is("~") && peekAt(1).kind == TokenKind::Ident &&
-          peekAt(1).text == inlineOwner_)))
+          peekAt(1).text == inlineOwnerName_)))
         return types_.get(Kind::Void);
 
-    // A class template's name is not a type until it is given arguments,
-    // and giving it arguments is 5.4. Intercepted here rather than left to
-    // fall through as "expected a type", which would point the reader at the
-    // name and say nothing about why it is not one.
+    // A class template with its arguments *is* a type. A function template
+    // named where a type was expected is not, and is refused by name.
     if (peek().kind == TokenKind::Ident && isTemplateName(peek().text) &&
-        peekAt(1).is("<"))
-        refuseTemplateId();
+        peekAt(1).is("<")) {
+        const TemplateDecl decl = templates_[peek().text];
+        if (!decl.isClass) refuseTemplateId();
+        const std::size_t tpos = peek().pos;
+        at_++;
+        return instantiateClass(decl, tpos);
+    }
 
     if (peek().is("struct")) { at_++; return structOrUnionSpecifier(Kind::Struct); }
     if (peek().is("class"))  { at_++; return structOrUnionSpecifier(Kind::Struct, true); }
@@ -1590,7 +1771,15 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
 
     if (!inlineOwner_.empty() && !name.empty() && !peek().is("::")) {
         qualifier = inlineOwner_;
+        // **A specialization's constructor is written under the template's
+        // name and keyed under the tag's.** The source says `Holder(`; the
+        // table says "Holder<int>::Holder<int>", because that is what
+        // constructorKey makes of the tag. Only the name that *is* the class
+        // moves - an ordinary member keeps what it was written as.
+        if (name == inlineOwnerName_ && inlineOwnerName_ != inlineOwner_)
+            name = localOf(inlineOwner_);
         if (inlineDtor) name = "~" + name;
+        inlineOwnerName_.clear();
         inlineOwner_.clear();     // one-shot: the body's own declarations are
                                   // ordinary locals, not members
     }

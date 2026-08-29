@@ -100,10 +100,14 @@ public:
         }
         if (substituted(cls)) return;
         if (cls->enclosing() != nullptr) prefix(cls->enclosing(), std::string());
-        const std::string &one = cls->localName();
-        out += std::to_string(one.size());
-        out += one;
-        subs_.push_back(cls);
+        if (cls->isSpecialization()) {
+            templateId(cls);
+        } else {
+            const std::string &one = cls->localName();
+            out += std::to_string(one.size());
+            out += one;
+        }
+        subs_.push_back(Sub{ cls, std::string() });
     }
 
     void memberFunction(const std::string &cls, const Type *clsType,
@@ -197,9 +201,10 @@ public:
         // `void f4(T, T)` with T=int is _Z2f4IiEvT_S0_, and the second T_ is
         // S0_ - index one. Something occupies index zero before the arguments
         // are written, and the only thing written by then is the name. The
-        // entry is a null because nothing ever matches it: 5.4 gives it a
-        // type when a specialization can appear inside another one.
-        subs_.push_back(nullptr);
+        // entry is the name itself, which is what the ABI makes a candidate.
+        Sub self;
+        self.name = name;
+        subs_.push_back(self);
 
         out += 'I';
         for (std::size_t i = 0; i < args.size(); i++) templateArgument(args[i]);
@@ -224,29 +229,62 @@ public:
     }
 
 private:
-    std::vector<const Type *> subs_;
+    // **A candidate is a type or a template's name.** The name is a candidate
+    // of its own - measured: `void two(Holder<int>, Holder<double>)` is
+    // _Z3two6HolderIiES_IdE, where the S_ is the word "Holder" and not any
+    // type. So the table holds one or the other and never both.
+    struct Sub {
+        const Type *type = nullptr;
+        std::string name;
+    };
+    std::vector<Sub> subs_;
 
     // The seq-id: the first repeat is S_, then S0_, S1_ ... S9_, SA_ and on
     // in base 36. Anything past the first is one less than its index, which
     // is the part that is easy to get wrong.
-    bool substituted(const Type *t) {
-        for (std::size_t i = 0; i < subs_.size(); i++) {
-            if (subs_[i] != t) continue;
-            out += 'S';
-            if (i > 0) {
-                std::string digits;
-                for (std::size_t v = i - 1;; v /= 36) {
-                    digits.insert(digits.begin(),
-                                  static_cast<char>(v % 36 < 10 ? '0' + v % 36
-                                                                : 'A' + v % 36 - 10));
-                    if (v < 36) break;
-                }
-                out += digits;
+    void seqId(std::size_t i) {
+        out += 'S';
+        if (i > 0) {
+            std::string digits;
+            for (std::size_t v = i - 1;; v /= 36) {
+                digits.insert(digits.begin(),
+                              static_cast<char>(v % 36 < 10 ? '0' + v % 36
+                                                            : 'A' + v % 36 - 10));
+                if (v < 36) break;
             }
-            out += '_';
-            return true;
+            out += digits;
         }
+        out += '_';
+    }
+
+    bool substituted(const Type *t) {
+        for (std::size_t i = 0; i < subs_.size(); i++)
+            if (subs_[i].type == t && subs_[i].name.empty()) { seqId(i); return true; }
         return false;
+    }
+
+    bool substitutedName(const std::string &n) {
+        for (std::size_t i = 0; i < subs_.size(); i++)
+            if (subs_[i].name == n) { seqId(i); return true; }
+        return false;
+    }
+
+    // `3BoxIiLi3EE` - the template's name, then the arguments between I and
+    // E. Two candidates come out of it and in this order: the name, then the
+    // whole thing. Measured on _Z6nested6HolderIS_IiEE, where the inner
+    // Holder is the S_ that the outer one's name left behind.
+    void templateId(const Type *t) {
+        if (!substitutedName(t->templateName())) {
+            out += std::to_string(t->templateName().size());
+            out += t->templateName();
+            Sub s;
+            s.name = t->templateName();
+            subs_.push_back(s);
+        }
+        out += 'I';
+        const std::vector<TemplateArg> &args = t->templateArgs();
+        for (std::size_t i = 0; i < args.size(); i++) templateArgument(args[i]);
+        out += 'E';
     }
 
     void type(const Type *t) {
@@ -260,7 +298,7 @@ private:
         if (qualifiedItself(t)) {
             out += 'K';
             type(t->unqualified());
-            subs_.push_back(t);
+            subs_.push_back(Sub{ t, std::string() });
             return;
         }
 
@@ -271,7 +309,7 @@ private:
             out += 'T';
             if (t->length() > 0) out += std::to_string(t->length() - 1);
             out += '_';
-            subs_.push_back(t);
+            subs_.push_back(Sub{ t, std::string() });
             return;
         }
         if (const char *b = itaniumBuiltin(t->kind())) { out += b; return; }
@@ -300,6 +338,11 @@ private:
                 out += 'E';
                 return;                       // prefix() pushed it already
             }
+            if (t->isSpecialization()) {
+                templateId(t);
+                subs_.push_back(Sub{ t, std::string() });
+                return;                       // pushed here, not below
+            }
             const std::string *tag = tagOf(t);
             if (tag == nullptr) return;
             out += std::to_string(tag->size());
@@ -308,7 +351,7 @@ private:
             refuse("this type has no Itanium linkage name yet");
             return;
         }
-        subs_.push_back(t);
+        subs_.push_back(Sub{ t, std::string() });
     }
 };
 
@@ -328,8 +371,40 @@ public:
     void scopeOf(const Type *cls, const std::string &fallback) {
         if (cls == nullptr) pushName(fallback);
         else for (const Type *c = cls; c != nullptr; c = c->enclosing())
-            pushName(c->localName());
+            pushName(componentOf(c));
         out += '@';               // closes the scope list
+    }
+
+    // What one scope component is *called*. For an ordinary class that is its
+    // own name; for a specialization it is the whole template-id, built here
+    // and then pushed as one name - measured, `?copyFrom@?$Holder@H@@QEAAX...`
+    // where the parameter's back-reference 1 stands for `?$Holder@H`.
+    //
+    // **Built with the tables put aside**, the same rule a function
+    // template's id follows: in `?withClass@@YAXU?$Holder@US@@@@US@@@Z` the S
+    // written inside the argument list is invisible outside it, so the second
+    // parameter spells S again rather than referring back.
+    std::string componentOf(const Type *c) {
+        if (!c->isSpecialization()) return c->localName();
+
+        std::vector<std::string> outerNames;
+        std::vector<const Type *> outerArgs;
+        std::string outerOut;
+        outerNames.swap(names_);
+        outerArgs.swap(args_);
+        outerOut.swap(out);
+
+        out = "?$";
+        pushName(c->templateName());
+        const std::vector<TemplateArg> &args = c->templateArgs();
+        for (std::size_t i = 0; i < args.size(); i++) templateArgument(args[i]);
+        std::string component;
+        component.swap(out);
+
+        names_.swap(outerNames);
+        args_.swap(outerArgs);
+        out.swap(outerOut);
+        return component;
     }
 
     void memberFunction(const std::string &cls, const Type *clsType,
@@ -610,7 +685,10 @@ private:
             out += t->kind() == Kind::Union ? 'T'
                  : t->declaredClass()       ? 'V'
                                             : 'U';
-            if (t->enclosing() != nullptr) { scopeOf(t, std::string()); return; }
+            if (t->enclosing() != nullptr || t->isSpecialization()) {
+                scopeOf(t, std::string());
+                return;
+            }
             nameComponent(*tag);
             return;
         }

@@ -5,12 +5,31 @@
 // record absolute token indices and an insert would move all of them. The
 // first `>` is taken by leaving a marker at the index instead of advancing.
 //
-// This is a refusal case because 5.1 instantiates nothing - but which refusal
-// is exactly the point. Without the split the inner list would swallow both
-// `>` and the outer one would run to the end of the file looking for its own,
-// and the message would be "this template argument list is never closed".
-template <class T> struct Box { T slot; };
+// Written both ways here, spaced and tight, and they must be the same type -
+// which is what the two assignments through one `Wrap` prove. Until class
+// templates this was a refusal case, and the refusal it wanted was the
+// class-template one rather than "this argument list is never closed", which
+// is what a broken split says.
+extern "C" { int printf(const char *, ...); }
+
+template <class T> struct Box {
+    T slot;
+    T get() { return slot; }
+};
+template <class T> struct Wrap {
+    Box<T> inner;
+    T peel() { return inner.get(); }
+};
+
 int main() {
-    Box<Box<int>> b;
+    Box<Box<int> > spaced;
+    Box<Box<int>> tight;
+    spaced.slot.slot = 3;
+    tight.slot.slot = 4;
+    printf("%d %d\n", spaced.get().slot, tight.get().slot);
+
+    Wrap<int> w;
+    w.inner.slot = 5;
+    printf("%d\n", w.peel());
     return 0;
 }

@@ -35,6 +35,21 @@ class Target;
 
 class Type;
 
+// One template argument: a type, or a value of a type. `type` is the argument
+// itself for a type argument and the *parameter's* type for a non-type one,
+// because that is what both ABIs write beside the value - Itanium `Li3E`,
+// Microsoft `$02`.
+//
+// It lives here rather than beside the manglers because a class that is a
+// specialization carries its arguments: the tag is "Box<int,3>", which is
+// what every table in the parser is keyed by, and neither ABI spells a name
+// that way.
+struct TemplateArg {
+    const Type *type = nullptr;
+    bool isType = true;
+    long long value = 0;
+};
+
 int homogeneousFloatCount(const Type *t, Kind *elem);
 
 bool containsX87(const Type *t, const Target &target);
@@ -143,6 +158,17 @@ public:
         return local_.empty() ? tag_ : local_;
     }
     void setLocalName(std::string n) { local_ = std::move(n); }
+
+    // A class made by instantiating a class template. The name and arguments
+    // are kept because the tag - "Box<int,3>" - is the parser's key and not
+    // anything a linker has ever seen.
+    bool isSpecialization() const { return !templateName_.empty(); }
+    const std::string &templateName() const { return templateName_; }
+    const std::vector<TemplateArg> &templateArgs() const { return templateArgs_; }
+    void setSpecialization(std::string name, std::vector<TemplateArg> args) {
+        templateName_ = std::move(name);
+        templateArgs_ = std::move(args);
+    }
     const Type *enclosing() const {
         return unqual_ ? unqual_->enclosing() : enclosing_;
     }
@@ -282,6 +308,11 @@ private:
 
     std::string tag_;
     std::string local_;
+    // Set on a class that is a template specialization. `local_` is
+    // "Box<int,3>" there, which no ABI writes: Itanium wants `3BoxIiLi3EE`
+    // and Microsoft `?$Box@H$02@`, both built from these two.
+    std::string templateName_;
+    std::vector<TemplateArg> templateArgs_;
     const Type *enclosing_ = nullptr;
     Access nestedAccess_ = Access::Public;
     bool isClass_ = false;

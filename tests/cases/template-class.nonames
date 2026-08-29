@@ -1,0 +1,1 @@
+x86_64-linux  the constructors and destructors here are inline, so clang emits one comdat copy as C2/D2 and no C1 or D1 at all; cxx1 emits both of Itanium's forms - see docs/CONFORMANCE.md, "An inline member function is a strong symbol". Darwin's spelling keeps both, which is why only this target differs
