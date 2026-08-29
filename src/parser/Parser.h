@@ -33,6 +33,12 @@ private:
         bool isConst = false;
         std::string staticName;
         bool isRegister = false;
+        // [expr.const]: a const object of integral type initialised with a
+        // constant expression *is* one, so its value has to be kept where
+        // fold() can find it later. The object still exists and still has an
+        // address; this is what it is worth when read.
+        bool isConstantValue = false;
+        long long constantValue = 0;
     };
 
     struct GlobalSym {
@@ -42,6 +48,8 @@ private:
         bool isConst = false;
         bool emitted = false;
         bool hasInit = false;
+        bool isConstantValue = false;   // as for Local, above
+        long long constantValue = 0;
     };
 
     struct Signature {
@@ -496,6 +504,12 @@ private:
     struct Qualifiers {
         bool isConst = false;
         bool isVolatile = false;
+        // `constexpr` implies const on an object, so isConst is set with it
+        // and almost everything downstream needs to know nothing more. What
+        // this adds is the *demand*: a constexpr object whose initialiser is
+        // not a constant expression is an error, where a const one is simply
+        // an ordinary variable.
+        bool isConstexpr = false;
     };
 
     struct TypedefName {
@@ -898,6 +912,7 @@ private:
     };
 
     Init parseInitialiser();
+    bool constantInitialiser(const Type *t, const Init &in, long long *out) const;
     ExprPtr targetFor(const std::string &name, const std::vector<InitStep> &path);
 
     void initStore(const std::string &name, std::vector<InitStep> &path,

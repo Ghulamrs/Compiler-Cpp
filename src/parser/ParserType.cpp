@@ -601,6 +601,15 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         if (consume("extern"))  { *storage = StorageExtern; continue; }
         if (consume("typedef")) { *storage = StorageTypedef; continue; }
         if (consume("const"))    { quals->isConst = true; continue; }
+        // **`constexpr` on an object is `const` plus a demand.** [dcl.constexpr]
+        // makes the object const, and the rest of the compiler wants to know
+        // nothing else about it - which is why this sets both and why almost
+        // nothing downstream mentions constexpr at all.
+        if (consume("constexpr")) {
+            quals->isConst = true;
+            quals->isConstexpr = true;
+            continue;
+        }
         if (consume("volatile")) { quals->isVolatile = true; continue; }
         if (consume("register")) { *storage = StorageRegister; continue; }
         if (consume("auto"))     { *storage = StorageAuto; continue; }
@@ -715,6 +724,11 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         // loops on bad input is worse than one that says no.
         if (peek().kind == TokenKind::Ident) break;
         if (consume("const"))         { quals->isConst = true; continue; }
+        if (consume("constexpr")) {
+            quals->isConst = true;
+            quals->isConstexpr = true;
+            continue;
+        }
         if (consume("volatile"))      { quals->isVolatile = true; continue; }
         if (consume("float"))         isFloat++;
         else if (consume("double"))   isDouble++;

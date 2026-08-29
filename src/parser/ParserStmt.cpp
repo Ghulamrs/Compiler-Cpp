@@ -272,6 +272,20 @@ StmtPtr Parser::declarationBody() {
         const int off = declare(d.name, d.type, d.pos);
         locals_.back().isConst = d.type->isConst();
         locals_.back().isRegister = (sc == StorageRegister);
+        if (hasInit) {
+            long long value = 0;
+            if (constantInitialiser(d.type, in, &value)) {
+                locals_.back().isConstantValue = true;
+                locals_.back().constantValue = value;
+            } else if (quals.isConstexpr) {
+                src_.fail(d.pos, "'" + d.name + "' is 'constexpr', so its value "
+                                 "has to be known while this is compiled, and "
+                                 "this initialiser is not a constant expression");
+            }
+        } else if (quals.isConstexpr) {
+            src_.fail(d.pos, "'" + d.name + "' is 'constexpr' and has no "
+                             "initialiser - there is nothing for it to be");
+        }
 
         // **An object with a destructor is alive from here**, whether or not
         // it had a constructor to run. A class can have one and not the
@@ -488,6 +502,21 @@ long long Parser::constantExpression(const char *what) {
 }
 
 bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
+    // **A name, when it names a constant.** The object is real and has an
+    // address; what is answered here is what it is worth when read, which
+    // [expr.const] says a const integral object initialised by a constant
+    // expression may be asked for. Locals first, because a local of the same
+    // name shadows the global - the same order every other lookup uses.
+    if (const Var *v = dynamic_cast<const Var *>(&e)) {
+        if (v->isLocal()) {
+            if (const Local *l = findLocal(v->name()))
+                if (l->isConstantValue) { *out = l->constantValue; return true; }
+            return false;
+        }
+        if (const GlobalSym *g = findGlobal(v->name()))
+            if (g->isConstantValue) { *out = g->constantValue; return true; }
+        return false;
+    }
     if (const Num *n = dynamic_cast<const Num *>(&e)) {
         if (n->type()->isFloating()) return false;
         *out = n->value();
@@ -569,6 +598,25 @@ bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
     }
 
     return false;
+}
+
+// **[expr.const]/3: a named integral constant is a constant expression.** A
+// const object of integral or enumeration type, initialised with a constant
+// expression, is one - which is the rule that lets C++ write
+// `const int n = 4; int a[n];` where C has to use a macro or an enum. It is
+// the whole of what a `constexpr` *variable* adds over `const`, minus the
+// demand that the initialiser really is constant.
+//
+// Only integral, because that is what fold() answers in. A const double is a
+// constant expression in C++ too and is not one here; nothing asks for a
+// floating constant expression, since every context that wants one - array
+// bounds, case labels, enumerators, non-type template arguments - wants an
+// integer.
+bool Parser::constantInitialiser(const Type *t, const Init &in,
+                                 long long *out) const {
+    if (t == nullptr || !t->isConst() || !t->isInteger()) return false;
+    if (in.isList || in.value == nullptr) return false;
+    return fold(*in.value, out, in.pos);
 }
 
 long long Parser::narrowTo(long long v, const Type *t) const {
@@ -1143,6 +1191,26 @@ void Parser::topLevel(Program &program) {
     frameSize_ = 0;
     Declared d = declarator(base);
 
+    // **A `constexpr` function is 7.5b and is refused by name until then.**
+    // Accepting it and treating it as an ordinary function would compile and
+    // run correctly - a constexpr function may always be called at run time -
+    // and would then quietly fail to be constant in the one place the keyword
+    // was written for, with the reader told only that an array bound is not
+    // constant. Evaluating a call needs an interpreter over the AST, which is
+    // a second execution model beside the three backends.
+    // The '(' is still ahead at this point - a function is told from an
+    // object here by what follows the declarator, not by its type, which is
+    // still the *return* type. The three ways of arriving are a definition or
+    // declaration written out (`peek().is("(")`), one whose parameters have
+    // been recorded to re-read (`paramsAt`), and one declared through a
+    // typedef, whose type really is a function type.
+    if (quals.isConstexpr &&
+        (peek().is("(") || d.paramsAt != 0 || d.type->isFunction()))
+        src_.fail(d.pos, "'constexpr' on a function is not supported yet - "
+                         "evaluating a call while compiling needs an "
+                         "interpreter this compiler does not have; on a "
+                         "variable it works");
+
     // `int Counter::total = 0;` - a static member's definition. A member
     // *function*'s definition is spelled the same way up to here and is told
     // apart by the '(' that follows, which is the same question the class body
@@ -1182,13 +1250,27 @@ void Parser::topLevel(Program &program) {
 
             std::vector<GlobalPiece> pieces;
             bool hasInit = false;
+            // Read while the initialiser tree is still in scope - `in` does
+            // not outlive the branch, and flattenInit answers in bytes rather
+            // than in the value this wants.
+            bool constantKnown = false;
+            long long constantValue = 0;
             if (consume("=")) {
                 Init in = parseInitialiser();
                 if (d.type->isArray() && d.type->length() < 0)
                     d.type = types_.arrayOf(d.type->pointee(),
                                             inferredLength(in, d.type->pointee(), d.pos));
+                constantKnown = constantInitialiser(d.type, in, &constantValue);
+                if (!constantKnown && quals.isConstexpr)
+                    src_.fail(d.pos, "'" + d.name + "' is 'constexpr', so its "
+                                     "value has to be known while this is "
+                                     "compiled, and this initialiser is not a "
+                                     "constant expression");
                 flattenInit(d.type, in, 0, pieces);
                 hasInit = true;
+            } else if (quals.isConstexpr && sc != StorageExtern) {
+                src_.fail(d.pos, "'" + d.name + "' is 'constexpr' and has no "
+                                 "initialiser - there is nothing for it to be");
             } else if (d.type->isArray() && d.type->length() < 0 &&
                        sc != StorageExtern) {
                 src_.fail(d.pos, "'" + d.name + "' has no length and no initialiser "
@@ -1239,7 +1321,8 @@ void Parser::topLevel(Program &program) {
                             (objectIsConst && sc != StorageExtern);
             std::string symbol = dataSymbol(d.name, d.type, internal, d.pos);
             globals_.push_back(GlobalSym{ d.name, symbol, d.type, objectIsConst,
-                                          sc != StorageExtern, hasInit });
+                                          sc != StorageExtern, hasInit,
+                                          constantKnown, constantValue });
             if (sc != StorageExtern)
                 program.globals.push_back(Global{ d.name, symbol, d.type,
                                                   std::move(pieces), hasInit,

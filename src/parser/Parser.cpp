@@ -30,7 +30,7 @@ const char *notYetSupported(const std::string &word) {
     static const char *const pending[] = {
         "alignas", "alignof", "and", "and_eq", "asm",
         "bitand", "bitor", "catch", "char16_t", "char32_t", "compl",
-        "constexpr", "const_cast", "dynamic_cast",
+        "const_cast", "dynamic_cast",
         "explicit", "export", "friend", "inline", "mutable", "namespace",
         "noexcept", "not", "not_eq", "nullptr", "operator", "or",
         "or_eq", "reinterpret_cast",
@@ -260,8 +260,15 @@ bool Parser::atDeclarationStart() const {
         }
     }
 
+    // `constexpr` beside the storage classes, and it has to be here rather
+    // than in atTypeName: it is a decl-specifier that names no type, so a
+    // statement starting with it is a declaration and nothing else. Left out,
+    // `constexpr int n = 4;` inside a function goes to expression parsing and
+    // the reader is told an expression was expected, pointing at a keyword
+    // that begins a perfectly good declaration.
     return atTypeName() || peek().is("static") || peek().is("extern")
-        || peek().is("register") || peek().is("auto") || peek().is("typedef");
+        || peek().is("register") || peek().is("auto") || peek().is("typedef")
+        || peek().is("constexpr");
 }
 
 // From the '{' to the '}' that closes it, counting depth. The body is not

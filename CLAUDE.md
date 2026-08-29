@@ -178,7 +178,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | **done**, 2026-08-29 |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.4 and Windows `throw` **done**, 2026-08-29 |
-| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1-7.4 **done**, 2026-08-29 |
+| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1-7.4 and 7.5a **done**, 2026-08-29 |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
 punctuators, `__cplusplus`, `bool`/`true`/`false`, class and enum tags as type
@@ -2023,6 +2023,58 @@ Microsoft ABI `$$Q` where it writes `A`.
 `constexpr` *function* is the real work: evaluating a call at compile time
 means an interpreter over the AST, which is a second execution model beside
 the backends.
+
+**7.5a has landed, and most of it was not about `constexpr` at all.** The
+plan above says a constexpr variable is `const` with a required constant
+initialiser, and that was true - but it assumed the `const` half already
+worked, and it did not. `fold` had no case for a *name*: it folded literals
+and operators and stopped at the first identifier. So
+
+```
+const int n = 4;
+int a[n];          // "expected an array length, and this is not an integer
+                   //  constant expression"
+```
+
+and the same refusal for a case label, an enumerator value, a non-type
+template argument and a nested `const int m = n * 2;`. Five doors into the
+same evaluator, all shut. **[expr.const]/3 - a const object of integral type
+initialised with a constant expression is a constant expression - is a rule
+this compiler simply did not have**, and it is the rule that lets C++ write
+`const int n = 4; int a[n];` where C reaches for a macro or an enum.
+
+So the work was to give `Local` and `GlobalSym` a value to remember and teach
+`fold` to read a `Var` back out of them. Locals before globals, the shadowing
+order every other lookup uses. **The object is not folded away**: it still
+exists, still has an address, and `&n` still works - what is answered is what
+it is worth when read. Both suite cases take the address of a constant to say
+so, and there is a second reason to: clang folds every use and emits no
+symbol at all, so without an address taken the two disagree about what a
+translation unit contains.
+
+On top of that, `constexpr` itself is small. It sets `isConst` and one flag,
+and the flag carries a *demand* rather than a meaning: an initialiser that is
+not constant is an error where a plain `const` would have taken it and simply
+not been usable as a constant afterwards.
+
+**Two things needed saying that the plan did not mention.**
+`atDeclarationStart` had to learn the keyword - it is a decl-specifier that
+names no type, so without it `constexpr int n = 4;` inside a function went to
+expression parsing and the reader was told an expression was expected, at a
+keyword beginning a perfectly good declaration. And a `constexpr` *function*
+is refused by name until 7.5b: accepted quietly it would compile and run
+correctly, since a constexpr function may always be called at run time, and
+would then fail to be constant in the one place the keyword was written for.
+Finding it is a question about the token after the declarator, not about the
+type - at that point the type is still the *return* type and the `(` has not
+been read.
+
+**A names-suite trap, and it is the assembler's.** `width` is a MASM reserved
+word, so the MASM backend emits `$width` - deliberately, invisible to a
+program, and stopping at the import boundary. `tests/names.sh` filters
+`$`-prefixed symbols, so the case reported a difference that was about the
+assembler and not about `constexpr`. The case renames the variable and says
+why.
 
 **7.6 - lambdas**, last because they need the most from the rest: a closure is
 a class with a call operator, generated where the lambda is written, holding
