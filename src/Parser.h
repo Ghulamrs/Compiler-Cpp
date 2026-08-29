@@ -138,6 +138,18 @@ private:
         // from here with the arguments bound.
         std::size_t afterParams = 0;
         std::size_t pos = 0;
+        // **A member of this class template defined outside it** -
+        // `template <class T> T Box<T>::get(int)`. Kept on the class rather
+        // than as a template of its own, because that is what it is: the
+        // member was declared in the body and this is where its definition
+        // happens to be written. Replayed when the class is instantiated,
+        // and only for a member something calls.
+        struct OutOfLine {
+            std::size_t start = 0;
+            std::string member;    // "get", or the class's name for a ctor
+            bool destructor = false;
+        };
+        std::vector<OutOfLine> outOfLine;
     };
     std::map<std::string, TemplateDecl> templates_;
 
@@ -164,6 +176,20 @@ private:
         // walk over the enclosing function's own state.
         bool isClass = false;
         std::vector<PendingBody> bodies;
+        // Out-of-line definitions already turned into keys for this tag. They
+        // are replayed through topLevel and not through replayInlineBodies:
+        // the tokens carry `Box<T>::get`, so the qualifier is written and the
+        // ordinary member-definition path reads it.
+        struct Outside {
+            std::size_t start = 0;
+            std::string key;
+        };
+        std::vector<Outside> outside;
+        // Which of the class template's out-of-line definitions have been
+        // replayed for this specialization. Not a count: the list can grow
+        // after the class is made, since a definition may be written further
+        // down the file than the first use.
+        std::vector<bool> outsideDone;
     };
     std::vector<Specialization> specializations_;
     // Set while a specialization's definition is being replayed: the name the
@@ -206,6 +232,7 @@ private:
                                  const std::vector<TemplateArg> &args,
                                  std::size_t pos);
     void instantiatePending();
+    bool memberIsUsed(const std::string &key) const;
     // "twice<int>" - the table key and what the diagnostics call it.
     std::string specializationKey(const std::string &name,
                                   const std::vector<TemplateArg> &args) const;
@@ -214,7 +241,8 @@ private:
     const Type *readTemplateDeclaration(const TemplateDecl &decl,
                                         const std::vector<const Type *> &binding,
                                         const std::vector<long long> &values,
-                                        std::string *name);
+                                        std::string *name,
+                                        std::string *qualifier = nullptr);
     // What a binding does to the two name tables, and how to put them back.
     struct Shadow {
         std::string name;
@@ -249,10 +277,17 @@ private:
     }
     bool templateDeclaration();
     void templateParameters(std::vector<TemplateParam> &params);
+    // What the declaration after `template <...>` actually declares: a class
+    // template, a function template, or a member of a class template defined
+    // outside it. `qualifier` is the class for that last one and empty
+    // otherwise.
     std::string templatedName(const std::vector<TemplateParam> &params,
-                              bool *isClass);
+                              bool *isClass, std::string *qualifier);
     bool skipTemplatedDefinition();
     void skipTemplateArguments();
+    // `Box<T>::Box(` or `Box<T>::~Box(` - a constructor or destructor written
+    // outside its class template.
+    bool atOutOfLineSpecial(std::string *what);
     // The whole of what a use of a template does in 5.1: step over the
     // argument list so that the reader is told about the template rather than
     // about a stray '<', and then refuse by name.

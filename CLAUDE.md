@@ -101,7 +101,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
-| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1-5.4 **done**, 2026-08-29 |
+| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1-5.5 **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
@@ -832,11 +832,11 @@ backend already knows how to emit. This is the pattern to reach for again:
 where C++ adds a *conversion*, look for an existing operation to lower it to
 before adding a case to three code generators.
 
-## Rung 5: templates, 5.1 to 5.4 done and the rest planned
+## Rung 5: templates, 5.1 to 5.5 done and the rest planned
 
-**5.1 to 5.4 landed 2026-08-29 and each has its own section at the end of this
+**5.1 to 5.5 landed 2026-08-29 and each has its own section at the end of this
 one - 5.1 to 5.3 was the first shippable milestone and it is reached.**
-Everything from 5.5 on is still unwritten: what follows is the order the work
+Everything from 5.6 on is still unwritten: what follows is the order the work
 is meant to happen in and the reasons for that order, written before any of
 it, the way rungs 2 and 3 were.
 
@@ -1159,6 +1159,44 @@ carrying the name and the arguments and nothing else - which is all either
 caller reads, since the mangler spells those and deduction compares them.
 
 Suites 68 / 110 / 37; the C corpus is unchanged.
+
+### 5.5 as it actually landed
+
+**The plan called this "the qualified-name path with a template-id in it" and
+that is exactly what it was.** One place in the declarator had to learn that
+the name it just read may be a class template, in which case what follows is
+an argument list and the class it makes is the qualifier. Everything after the
+`::` is read by the loop nested classes already needed. That one insertion is
+the whole feature at the parse end.
+
+**Finding it took a wrong turn worth recording.** The read that learns what a
+`template <...>` declares used to bind the parameters to `int`, which was
+enough to find a name - but `Box<T>::size` was then read as a declaration
+*named* `Box`, because the declarator stopped at the `<` it could not use. The
+symptom was silent: everything compiled and the definitions simply never
+appeared, and the link failed with six undefined members. The read binds the
+parameters to themselves now, which also stops a name scan instantiating
+`Box<int>` for a declaration that asks for no class at all.
+
+**An out-of-line definition belongs to the class template, not to a template
+of its own.** The member was declared in the class body; this is only where
+its definition happens to be written. So it is kept on the `TemplateDecl` and
+replayed when a specialization needs it - **and the list is re-read on every
+pass**, because a definition may be written further down the file than the use
+that asked for the class. `tests/cases/template-out-of-line.cpp` puts one
+after `main` on purpose.
+
+**Replayed through `topLevel`, not `replayInlineBodies`.** The tokens already
+say `Box<T>::get`, so with the parameters bound the ordinary member-definition
+path reads the qualifier itself. `inlineOwner_` exists to supply a qualifier
+the source does not have, and here the source has one.
+
+**Refused by name: a constructor or destructor written outside the class.** A
+member function has a return type, which is what gets the declarator started;
+a constructor has none, and the ordinary path for that - `atUntypedMemberDefinition`
+- looks for `Name ::` and not for a template-id. Its own step.
+
+Suites 70 / 113 / 38; the C corpus is unchanged.
 
 ## Decisions already taken
 

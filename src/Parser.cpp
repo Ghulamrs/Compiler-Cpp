@@ -313,7 +313,8 @@ void Parser::templateParameters(std::vector<TemplateParam> &params) {
 // cannot escape, because the type this builds is thrown away and the body is
 // skipped unparsed. 5.2 replaces it with the argument the template is given.
 std::string Parser::templatedName(const std::vector<TemplateParam> &params,
-                                  bool *isClass) {
+                                  bool *isClass, std::string *qualifier) {
+    qualifier->clear();
     if (peek().is("struct") || peek().is("class") || peek().is("union")) {
         if (peekAt(1).kind != TokenKind::Ident)
             src_.fail(peek().pos, "this class template has no name");
@@ -322,13 +323,21 @@ std::string Parser::templatedName(const std::vector<TemplateParam> &params,
     }
     *isClass = false;
 
+    // **Read as a pattern, with the parameters standing for themselves.** The
+    // stand-in used to be `int`, which was enough to find a name - but it
+    // would instantiate `Box<int>` here, at a declaration that may be the
+    // out-of-line definition of a member and asks for no class at all.
     TemplateDecl scratch;
     scratch.params = params;
     scratch.afterParams = at_;
-    std::vector<const Type *> binding(params.size(), types_.intType());
+    std::vector<const Type *> binding(params.size());
     std::vector<long long> values(params.size(), 1);
+    for (std::size_t i = 0; i < params.size(); i++)
+        binding[i] = params[i].type == nullptr
+                         ? types_.templateParam(static_cast<int>(i))
+                         : params[i].type;
     std::string name;
-    readTemplateDeclaration(scratch, binding, values, &name);
+    readTemplateDeclaration(scratch, binding, values, &name, qualifier);
     if (name.empty())
         src_.fail(peek().pos, "this function template has no name");
     return name;
@@ -382,7 +391,8 @@ void Parser::unbindTemplateParameters(const std::vector<Shadow> &undo) {
 const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
                                             const std::vector<const Type *> &binding,
                                             const std::vector<long long> &values,
-                                            std::string *name) {
+                                            std::string *name,
+                                            std::string *qualifier) {
     const std::size_t resume = at_;
     std::vector<Shadow> undo;
     bindTemplateParameters(decl, binding, values, &undo);
@@ -411,7 +421,7 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
         bool variadic = false;
         parameterTypes(params, variadic);
         d.type = types_.functionType(d.type, std::move(params), variadic);
-    } else {
+    } else if (qualifier == nullptr) {
         src_.fail(d.pos, "'" + d.name + "' is a template and not a function, "
                          "and only function templates are supported yet");
     }
@@ -420,6 +430,7 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
     unbindTemplateParameters(undo);
     at_ = resume;
     *name = d.name;
+    if (qualifier != nullptr) *qualifier = d.qualifier;
     return d.type;
 }
 
@@ -457,16 +468,89 @@ bool Parser::templateDeclaration() {
 
     decl.afterParams = at_;
     decl.pos = peek().pos;
-    decl.name = templatedName(decl.params, &decl.isClass);
-    at_ = decl.afterParams;
-    decl.defined = skipTemplatedDefinition();
 
+    // Its own step, and refused by name until then: the declarator reads a
+    // class *name* before the `::`, and reading a template-id there is what
+    // an out-of-line constructor needs. A member function is different - it
+    // has a return type, so the qualifier is read by the declarator's
+    // ordinary qualified path.
+    std::string special;
+    if (atOutOfLineSpecial(&special))
+        src_.fail(decl.pos, "a " + special + " of a class template written "
+                            "outside the class is not supported yet - write "
+                            "it inside the class");
+
+    std::string qualifier;
+    decl.name = templatedName(decl.params, &decl.isClass, &qualifier);
+    at_ = decl.afterParams;
+    const bool defined = skipTemplatedDefinition();
+
+    // **A member of a class template defined outside it belongs to the
+    // class**, not to a template of its own. The declarator already reads a
+    // qualified name for a nested class; all that is new is that the
+    // qualifier is a template-id, and the class it names is the pattern.
+    if (!qualifier.empty()) {
+        const Type *of = findTypedef(qualifier);
+        if (of == nullptr || !of->isSpecialization())
+            src_.fail(decl.pos, "'" + qualifier + "' is not a class template, "
+                                "so this defines a member of nothing");
+        auto owner = templates_.find(of->templateName());
+        if (owner == templates_.end())
+            src_.fail(decl.pos, "'" + of->templateName() + "' is not a class "
+                                "template");
+        // The template's own name, not the qualifier: that is the pattern's
+        // internal tag and holds a `$` no reader ever wrote.
+        if (!defined)
+            src_.fail(decl.pos, "'" + of->templateName() + "::" + decl.name +
+                                "' is declared here and not defined - a member "
+                                "is declared inside its class");
+        TemplateDecl::OutOfLine ool;
+        ool.start = decl.afterParams;
+        ool.member = decl.name;
+        ool.destructor = !decl.name.empty() && decl.name[0] == '~';
+        owner->second.outOfLine.push_back(ool);
+        return true;
+    }
+
+    decl.defined = defined;
     // A template may be declared and then defined. The definition is the one
-    // worth keeping, since instantiating is replaying its tokens.
+    // worth keeping, since instantiating is replaying its tokens - but any
+    // out-of-line members gathered against the declaration come with it.
     auto it = templates_.find(decl.name);
-    if (it == templates_.end() || (decl.defined && !it->second.defined))
+    if (it == templates_.end()) {
         templates_[decl.name] = decl;
+    } else if (decl.defined && !it->second.defined) {
+        decl.outOfLine = it->second.outOfLine;
+        it->second = decl;
+    }
     return true;
+}
+
+// The tokens read without being consumed. skipTemplateArguments is what walks
+// the argument list, so the `>>` split has to be put back too.
+bool Parser::atOutOfLineSpecial(std::string *what) {
+    if (peek().kind != TokenKind::Ident) return false;
+    auto t = templates_.find(peek().text);
+    if (t == templates_.end() || !t->second.isClass || !peekAt(1).is("<"))
+        return false;
+
+    const std::string name = peek().text;
+    const std::size_t resume = at_;
+    const std::size_t wasSplit = angleSplit_;
+    at_++;
+    skipTemplateArguments();
+
+    bool yes = false;
+    if (peek().is("::")) {
+        std::size_t n = 1;
+        if (peekAt(n).is("~")) { n++; *what = "destructor"; }
+        else                   { *what = "constructor"; }
+        if (peekAt(n).kind == TokenKind::Ident && peekAt(n).text == name &&
+            peekAt(n + 1).is("(")) yes = true;
+    }
+    at_ = resume;
+    angleSplit_ = wasSplit;
+    return yes;
 }
 
 // The argument list, read only far enough to step over it - and stepping over
@@ -644,6 +728,17 @@ Parser::instantiate(const TemplateDecl &decl,
 // definitions are replayed afterwards - and to a fixed point, since a body
 // may ask for one of its own. The same shape the implicit special members
 // already have.
+// Whether anything under this key has been chosen by a call. A member
+// function of a class template is instantiated only where one has been -
+// clang and cl both - so this is the gate on every body a specialization
+// holds, inside the class or outside it.
+bool Parser::memberIsUsed(const std::string &key) const {
+    const std::vector<std::size_t> *set = overloadsOf(key);
+    for (std::size_t k = 0; set != nullptr && k < set->size(); k++)
+        if (functions_[(*set)[k]].used) return true;
+    return false;
+}
+
 void Parser::instantiatePending() {
     for (bool again = true; again; ) {
         again = false;
@@ -661,19 +756,30 @@ void Parser::instantiatePending() {
             // this time round may be wanted after another one is replayed -
             // which is what the outer loop is for.
             std::vector<PendingBody> now;
+            std::vector<std::size_t> outsideNow;
             if (specializations_[i].isClass) {
                 std::vector<PendingBody> later;
                 for (std::size_t b = 0; b < specializations_[i].bodies.size(); b++) {
                     const PendingBody &body = specializations_[i].bodies[b];
-                    const std::vector<std::size_t> *set = overloadsOf(body.key);
-                    bool wanted = false;
-                    for (std::size_t k = 0; set != nullptr && k < set->size(); k++)
-                        if (functions_[(*set)[k]].used) wanted = true;
-                    (wanted ? now : later).push_back(body);
+                    (memberIsUsed(body.key) ? now : later).push_back(body);
                 }
-                if (now.empty()) continue;
                 specializations_[i].bodies = later;
-                if (later.empty()) specializations_[i].emitted = true;
+
+                // **Looked up fresh, because the list can still be growing.**
+                // An out-of-line definition may be written further down the
+                // file than the use that asked for the class, so what the
+                // template has now is not what it had then.
+                const TemplateDecl &d = templates_[specializations_[i].name];
+                std::vector<bool> &done = specializations_[i].outsideDone;
+                done.resize(d.outOfLine.size(), false);
+                for (std::size_t k = 0; k < d.outOfLine.size(); k++) {
+                    if (done[k]) continue;
+                    if (!memberIsUsed(specializations_[i].key + "::" +
+                                      d.outOfLine[k].member)) continue;
+                    done[k] = true;
+                    outsideNow.push_back(k);
+                }
+                if (now.empty() && outsideNow.empty()) continue;
             } else {
                 const std::vector<std::size_t> *had =
                     overloadsOf(specializations_[i].key);
@@ -700,6 +806,13 @@ void Parser::instantiatePending() {
                 // there. inlineOwner_ supplies the "Box<int,3>::" that the
                 // source does not have, the same way it does for any class.
                 replayInlineBodies(now);
+                // And the ones written outside it, which need no owner: the
+                // tokens say `Box<T>::get`, so with T bound the ordinary
+                // member-definition path reads the qualifier itself.
+                for (std::size_t k = 0; k < outsideNow.size(); k++) {
+                    at_ = templates_[sp.name].outOfLine[outsideNow[k]].start;
+                    topLevel(*current_);
+                }
             } else {
                 at_ = sp.start;
                 topLevel(*current_);
@@ -859,6 +972,10 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
         Type *shallow = types_.structType(Kind::Struct, tag);
         if (!shallow->isSpecialization())
             shallow->setSpecialization(decl.name, args);
+        // Registered so that `Box<T>::get` reads: the declarator's qualified
+        // path looks the class up by name, and this is the only name it has.
+        // The tag holds a `$` and so cannot collide with anything written.
+        declareTypeName(tag, shallow);
         return shallow;
     }
 
@@ -1768,6 +1885,28 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
 
     if (nameOptional && peek().kind != TokenKind::Ident) name.clear();
     else name = expectIdent("a name");
+
+    // **`Box<T, N>::size` - a class template's name where a class name goes.**
+    // The plan said this rung was the qualified-name path with a template-id
+    // in it, and this is the one place that had to be told: the name just
+    // read is a class template, so what follows it is an argument list and
+    // the class it makes is the qualifier. Everything after the `::` is read
+    // by the loop below, unchanged.
+    {
+        auto tmpl = templates_.find(name);
+        if (!name.empty() && peek().is("<") && tmpl != templates_.end() &&
+            tmpl->second.isClass) {
+            const std::size_t tpos = pos;
+            const Type *cls = instantiateClass(tmpl->second, tpos);
+            if (!peek().is("::"))
+                src_.fail(peek().pos, "'" + cls->tag() + "' is a type here, "
+                                      "and a declaration needs a name after "
+                                      "it");
+            at_++;
+            qualifier = cls->tag();
+            name = expectIdent("a member name");
+        }
+    }
 
     if (!inlineOwner_.empty() && !name.empty() && !peek().is("::")) {
         qualifier = inlineOwner_;
