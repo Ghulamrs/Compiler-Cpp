@@ -5050,7 +5050,7 @@ static const char *notYetSupported(const std::string &word) {
         "noexcept", "not", "not_eq", "nullptr", "operator", "or",
         "or_eq", "reinterpret_cast",
         "static_assert", "static_cast", "template", "thread_local",
-        "throw", "try", "typeid", "using", "virtual",
+        "try", "typeid", "using", "virtual",
         "xor", "xor_eq"
     };
     for (const char *k : pending)
@@ -6651,6 +6651,95 @@ ExprPtr Parser::unary() {
 // in a translation unit built by clang. It also means allocation failure does
 // what the platform does - the real operator new throws - and this compiler has
 // no exceptions until rung 6. docs/CONFORMANCE.md records that.
+ExprPtr Parser::runtimeCall(const char *symbol, const Type *returns,
+                            std::vector<ExprPtr> args) {
+    std::vector<int> argSlots(args.size(), 0);
+    Call *call = new Call(symbol, nullptr, std::move(args), false, 0,
+                          static_cast<int>(argSlots.size()),
+                          std::move(argSlots));
+    call->setSymbol(symbol);
+    ExprPtr n(call);
+    n->setType(returns);
+    return n;
+}
+
+// **`throw x;` is three calls and a store, and no new machinery.**
+//
+//     void *e = __cxa_allocate_exception(sizeof x);
+//     *(T *)e = x;
+//     __cxa_throw(e, &_ZTI<T>, 0);
+//
+// The Itanium ABI puts the object in memory the runtime owns, hands it over
+// with the type that identifies it, and never returns. Written as one comma
+// expression so that it is a statement wherever an expression is one.
+//
+// **The type_info pointer is the whole of the work.** cxx1 has no RTTI: the
+// vtable's typeinfo slot is a plain zero and `typeid` is refused. For a
+// *fundamental* type the object is already in the standard library and naming
+// it is enough, which is why this rung starts there and refuses everything
+// else by name.
+StmtPtr Parser::throwStatement(ExprPtr value, std::size_t pos) {
+    const Type *thrown = value->type()->unqualified();
+    std::string info, why;
+    if (!itaniumTypeInfoName(thrown, &info, &why))
+        src_.fail(pos, "'throw' cannot name the type of this: " + why);
+
+    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+    const int slot = allocateFrameSlot(voidPtr);
+    const std::string temp = ".ex" + std::to_string(refTemps_++);
+
+    std::vector<ExprPtr> sizeArg;
+    ExprPtr howBig(new Num(static_cast<long long>(thrown->size(target_))));
+    howBig->setType(types_.get(target_.sizeType()));
+    sizeArg.push_back(std::move(howBig));
+    ExprPtr got = runtimeCall("__cxa_allocate_exception", voidPtr,
+                              std::move(sizeArg));
+
+    ExprPtr held(Var::local(temp, slot));
+    held->setType(voidPtr);
+    ExprPtr save(new Assign(std::move(held), std::move(got)));
+    save->setType(voidPtr);
+
+    const Type *thrownPtr = types_.pointerTo(thrown);
+    ExprPtr asT(Var::local(temp, slot));
+    asT->setType(voidPtr);
+    ExprPtr cast(new Cast(thrownPtr, std::move(asT)));
+    cast->setType(thrownPtr);
+    ExprPtr into(new Unary('*', std::move(cast)));
+    into->setType(thrown);
+    ExprPtr store(new Assign(std::move(into), convert(std::move(value), thrown)));
+    store->setType(thrown);
+
+    // The exception object, the type that identifies it, and the destructor
+    // it does not have. A fundamental type needs none, so the third argument
+    // is the null the ABI asks for there.
+    std::vector<ExprPtr> throwArgs;
+    ExprPtr object(Var::local(temp, slot));
+    object->setType(voidPtr);
+    throwArgs.push_back(std::move(object));
+
+    Var *ti = Var::global(info);
+    ti->setSymbol(info);
+    ExprPtr tiRef(ti);
+    tiRef->setType(types_.get(Kind::Char));
+    ExprPtr tiAddr(new Unary('&', std::move(tiRef)));
+    tiAddr->setType(voidPtr);
+    throwArgs.push_back(std::move(tiAddr));
+
+    ExprPtr none(new Num(0LL));
+    none->setType(voidPtr);
+    throwArgs.push_back(std::move(none));
+
+    ExprPtr thrower = runtimeCall("__cxa_throw", types_.get(Kind::Void),
+                                  std::move(throwArgs));
+
+    ExprPtr first(new Comma(std::move(save), std::move(store)));
+    first->setType(thrown);
+    ExprPtr whole(new Comma(std::move(first), std::move(thrower)));
+    whole->setType(types_.get(Kind::Void));
+    return StmtPtr(new ExprStmt(std::move(whole)));
+}
+
 ExprPtr Parser::callAllocator(const char *itanium, const char *microsoft,
                               const Type *returns, ExprPtr arg,
                               std::size_t pos) {
@@ -8077,6 +8166,26 @@ StmtPtr Parser::statement() {
 }
 
 StmtPtr Parser::statementBody() {
+    if (peek().is("throw")) {
+        const std::size_t tpos = peek().pos;
+        at_++;
+        if (peek().is(";"))
+            src_.fail(tpos, "a rethrow - 'throw' with nothing after it - is "
+                            "not supported yet");
+        // **Windows lags here and the reason is a shape, not an omission.**
+        // The Microsoft ABI hands _CxxThrowException a ThrowInfo, which
+        // points at a catchable-type array, which points at a copy record,
+        // which points at the RTTI descriptor - four objects and an
+        // image-relative relocation, where Itanium wants one pointer.
+        if (target_.microsoftNames())
+            src_.fail(tpos, "'throw' is not supported yet for x86_64-windows - "
+                            "the Microsoft ABI wants a ThrowInfo chain this "
+                            "compiler does not emit");
+        ExprPtr value = decay(expr());
+        expect(";");
+        return throwStatement(std::move(value), tpos);
+    }
+
     if (consume("return")) {
         std::size_t pos = peek().pos;
         if (consume(";")) {

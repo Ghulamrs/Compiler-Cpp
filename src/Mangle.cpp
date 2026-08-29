@@ -173,6 +173,10 @@ public:
         out += "E";
     }
 
+    // The type as a signature spells it, with nothing around it - which is
+    // what follows `_ZTI`.
+    void typeInfoFor(const Type *t) { type(t); }
+
     void function(const std::string &name, const Type *fn, bool internal) {
         out = internal ? "_ZL" : "_Z";
         out += std::to_string(name.size());
@@ -771,6 +775,22 @@ bool microsoftFunctionName(const std::string &name, const Type *fn, bool interna
     (void)internal;   // the Microsoft ABI spells an internal function the same
     Microsoft m;
     m.function(name, fn);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
+bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem) {
+    if (itaniumBuiltin(t->kind()) == nullptr) {
+        *problem = "only a fundamental type has a type_info object the "
+                   "standard library already carries; one for '" +
+                   t->describe() + "' would have to be emitted here, and that "
+                   "is its own step";
+        return false;
+    }
+    Itanium m;
+    m.out = "_ZTI";
+    m.typeInfoFor(t);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;

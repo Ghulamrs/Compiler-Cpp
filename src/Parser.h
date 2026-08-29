@@ -756,6 +756,12 @@ private:
 
     ExprPtr newExpression(std::size_t pos);
     ExprPtr deleteExpression(std::size_t pos);
+    // `throw x;` - rung 6.2. Answers the statement it lowers to.
+    StmtPtr throwStatement(ExprPtr value, std::size_t pos);
+    // A call to something in the runtime, named by its symbol and needing no
+    // declaration - the same shape callAllocator has used for operator new.
+    ExprPtr runtimeCall(const char *symbol, const Type *returns,
+                        std::vector<ExprPtr> args);
     ExprPtr callAllocator(const char *itanium, const char *microsoft,
                           const Type *returns, ExprPtr arg, std::size_t pos);
     int newTemps_ = 0;

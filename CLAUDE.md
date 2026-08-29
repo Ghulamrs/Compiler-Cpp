@@ -102,7 +102,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
-| 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1 **done**, 2026-08-29 |
+| 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.2 **done**, 2026-08-29 |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
@@ -1426,12 +1426,8 @@ but not on the frames.
 tested without it, and it is worth having on its own: a debugger could not
 walk out of a cxx1 frame either.
 
-**6.2 - `throw`, with nothing catching it.** `__cxa_allocate_exception`, the
-object copied in, `__cxa_throw` with a type-info pointer - and that pointer is
-the work: cxx1 has no RTTI at all, and the vtable's typeinfo slot is a plain
-0. Throwing a builtin can borrow the library's `_ZTIi`; throwing a class needs
-cxx1 to emit `_ZTI`/`_ZTS` of its own. Take the builtin first and refuse the
-class by name.
+**6.2 has landed** - see its section below. The prediction held exactly: the
+type_info pointer was the whole of the work.
 
 **6.3 - `try`/`catch`**, which is the landing pad, the personality routine and
 the `.gcc_except_table` LSDA: a call-site table saying which range goes to
@@ -1446,6 +1442,37 @@ what is new is reaching it from a pad rather than from the return path.
 **6.5 - Windows.** `__CxxFrameHandler4` and MSVC's own tables, which are a
 different design from the Itanium one rather than a different spelling of it.
 Expect this to lag and do not promise otherwise.
+
+### 6.2 as it actually landed
+
+**`throw x;` is three calls and a store, and it needed no new machinery.**
+
+    void *e = __cxa_allocate_exception(sizeof x);
+    *(T *)e = x;
+    __cxa_throw(e, &_ZTI<T>, 0);
+
+Written as one comma expression, so it is a statement wherever an expression
+is one. The Itanium ABI puts the object in memory the runtime owns, hands it
+over with the type that identifies it, and never returns.
+
+**The type_info pointer was the whole of the work, as the plan said.** cxx1
+has no RTTI: the vtable's typeinfo slot is a plain zero and `typeid` is
+refused. For a *fundamental* type the object is already in the standard
+library and `_ZTI` plus the type as a signature spells it - `_ZTIi`, `_ZTId` -
+so the existing Itanium type encoding names it and nothing has to be emitted.
+For a class or a pointer the compiler has to emit the object, and that is
+refused by name rather than thrown with a type nobody can catch.
+
+**Windows lags here and the reason is a shape rather than an omission.** The
+Microsoft ABI hands `_CxxThrowException` a ThrowInfo, which points at a
+catchable-type array, which points at a copy record, which points at the RTTI
+descriptor - four objects and an image-relative relocation, where Itanium
+wants one pointer. Measured; refused by name for that target.
+
+**Checked by a run, in the other direction from 6.1.** `tools/unwind-check`
+grew a second half: cxx1 throws and the system compiler catches, an int and a
+double, because the size of the object and the type that names it are what
+that really tests - a wrong type_info is caught by nobody.
 
 ### 6.1 as it actually landed
 
@@ -1469,8 +1496,8 @@ routine. It is in the repository rather than on a box, for the reason
 being tested is the *frame*, and a frame is all cxx1 has to contribute for an
 exception to cross it.
 
-Suites unchanged at 87 / 137 / 46 - nothing a case can see, which is why the
-tool exists.
+Suites 88 / 137 / 46 after 6.2, which adds only a refusal - what `throw`
+actually does needs a handler, and the tool is where that lives.
 
 ## Decisions already taken
 

@@ -55,6 +55,13 @@ bool microsoftTemplateFunctionName(const std::string &name, const Type *fn,
                                    const std::vector<TemplateArg> &args,
                                    std::string *out, std::string *problem);
 
+// The Itanium name of a type's `std::type_info` object: `_ZTI` and then the
+// type, spelled exactly as it is spelled in a signature - `_ZTIi`, `_ZTId`.
+// For a *fundamental* type the object itself lives in the standard library,
+// so naming it is all a compiler has to do; for anything else the compiler
+// has to emit the object too, and this refuses those by name.
+bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem);
+
 bool microsoftFunctionName(const std::string &name, const Type *fn, bool internal,
                            std::string *out, std::string *problem);
 

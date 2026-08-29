@@ -1,19 +1,23 @@
 #!/bin/sh
-# Can an exception unwind *through* a frame cxx1 compiled?
+# What an exception can do with a frame cxx1 compiled - two checks, and both
+# have to be runs rather than diffs, because this is machinery that either
+# works or ends the program.
 #
-# This is the check that settles rung 6.1, and it has to be a run rather than
-# a diff: unwind data is either right or the program aborts. Three files - one
-# that throws, one in the middle, one that catches - with only the middle one
-# compiled by cxx1 and the other two by the system compiler. If the middle
-# frame has no unwind data the personality routine cannot step over it and the
-# program ends with "terminating due to uncaught exception"; with it, the
-# exception passes through and is caught.
+#   through  an exception thrown by the system compiler's code unwinds
+#            *through* a cxx1 frame to a handler beyond it. That is rung 6.1:
+#            without unwind data the personality routine cannot step over the
+#            frame and the program ends with "terminating due to uncaught
+#            exception".
 #
-#   tools/unwind-check              on this machine
+#   from     an exception thrown by cxx1's own code is caught by the system
+#            compiler's. That is rung 6.2, and what it checks is that the
+#            object, its size and its type_info pointer are what the Itanium
+#            ABI says - a wrong type_info is caught by nobody.
 #
-# cxx1 cannot throw or catch yet, which is exactly why the other two files are
-# compiled by clang or g++: what is being tested is the *frame*, and a frame
-# is all cxx1 has to contribute for an exception to cross it.
+#   tools/unwind-check              both, on this machine
+#
+# cxx1 cannot *catch* anything yet, which is why the handler is always the
+# other compiler's.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CXX1=${CXX1:-$ROOT/cxx1.exe}
@@ -43,9 +47,42 @@ CPP
 "$CXX1" -c "$DIR/middle.cpp" -o "$DIR/middle.o"
 "$SYS" "$DIR/thrower.o" "$DIR/middle.o" "$DIR/main.o" -o "$DIR/prog"
 
+status=0
 if out=$("$DIR/prog" 2>&1) && [ "$out" = "caught 1" ]; then
-    echo "unwind-check: an exception crossed a cxx1 frame"
-    exit 0
+    echo "unwind-check: through - an exception crossed a cxx1 frame"
+else
+    echo "unwind-check: through - FAILED - $out"
+    status=1
 fi
-echo "unwind-check: FAILED - $out"
-exit 1
+
+# The other direction: cxx1 throws and the system compiler catches. A double
+# as well as an int, because the size of the object and the type that names
+# it are what this is really checking.
+cat > "$DIR/risky.cpp" <<'CPP'
+void risky(int n) { if (n > 0) throw n; }
+void riskyDouble(double x) { if (x > 0) throw x; }
+CPP
+cat > "$DIR/catcher.cpp" <<'CPP'
+extern "C" int printf(const char *, ...);
+void risky(int n);
+void riskyDouble(double x);
+int main() {
+    try { risky(7); } catch (int e) { printf("int %d\n", e); }
+    try { riskyDouble(2.5); } catch (double d) { printf("double %.1f\n", d); }
+    risky(0);
+    return 0;
+}
+CPP
+"$CXX1" -c "$DIR/risky.cpp" -o "$DIR/risky.o"
+"$SYS" -x c++ -std=c++11 -c "$DIR/catcher.cpp" -o "$DIR/catcher.o"
+"$SYS" "$DIR/risky.o" "$DIR/catcher.o" -o "$DIR/prog2"
+
+want='int 7
+double 2.5'
+if out=$("$DIR/prog2" 2>&1) && [ "$out" = "$want" ]; then
+    echo "unwind-check: from - a cxx1 throw was caught by $SYS"
+else
+    echo "unwind-check: from - FAILED - $out"
+    status=1
+fi
+exit $status
