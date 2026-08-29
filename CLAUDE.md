@@ -1483,9 +1483,11 @@ where a destructor throws while an exception is already unwinding, and cxx1
 runs no destructors during unwinding yet - that is 6.4.
 
 **Windows was unreachable when this landed** and the commit went in on two
-boxes with that said out loud. Nothing here is target-specific to it -
-`try` is refused by name for x86_64-windows - but the shared code did change,
-so the cl build is unverified until the box is back.
+boxes with that said out loud - `da6bf71` is the one commit here whose message
+says so. **The box came back and it passes**: cxx1 builds with cl and all 45
+of its cases run, with `try-catch` skipped for that target as its `.notarget`
+says. So the gap was in the checking rather than in the code, which is the
+outcome to hope for and not one to assume.
 
 ### 6.2 as it actually landed
 
