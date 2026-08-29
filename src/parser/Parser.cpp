@@ -34,7 +34,7 @@ const char *notYetSupported(const std::string &word) {
         "explicit", "export", "friend", "inline", "mutable", "namespace",
         "noexcept", "not", "not_eq", "nullptr", "operator", "or",
         "or_eq", "reinterpret_cast",
-        "static_assert", "static_cast", "template", "thread_local",
+        "static_assert", "template", "thread_local",
         "typeid", "using", "virtual",
         "xor", "xor_eq"
     };
@@ -48,7 +48,11 @@ bool isNullConstant(const Expr &e) {
     return n != nullptr && n->type()->isInteger() && n->value() == 0;
 }
 
-bool isLvalue(const Expr &e) {
+// Does this expression name an object at all - what [basic.lval] calls a
+// glvalue? Both an lvalue and an xvalue do, and the difference between them
+// is not asked here: reference binding wants an address and either will give
+// one, so this is the question it asks.
+bool isGlvalue(const Expr &e) {
     if (dynamic_cast<const Var *>(&e)) return true;
     if (dynamic_cast<const MemberAccess *>(&e)) return true;
     if (const Unary *u = dynamic_cast<const Unary *>(&e)) return u->op() == '*';
@@ -59,8 +63,17 @@ bool isLvalue(const Expr &e) {
     // names is the shared object, which can be assigned to and have its
     // address taken like any other.
     if (const Comma *c = dynamic_cast<const Comma *>(&e))
-        return isLvalue(c->right());
+        return isGlvalue(c->right());
     return false;
+}
+
+// An object that something else may still be looking at. The same question as
+// above minus the objects handed over by `static_cast<T &&>`, and that
+// subtraction is the whole of what an rvalue reference is for: `T &&` refuses
+// an lvalue and takes an xvalue, so that a move can empty out what it is
+// given without anyone noticing.
+bool isLvalue(const Expr &e) {
+    return !e.isXvalue() && isGlvalue(e);
 }
 
 const Token &Parser::peekAt(std::size_t n) const {

@@ -79,8 +79,24 @@ class Expr : public Node {
 public:
     const Type *type() const { return type_; }
     void setType(const Type *t) { type_ = t; }
+
+    // **Set only by `static_cast<T &&>`, and it is a value category rather
+    // than a type.** [basic.lval] splits expressions that name an object into
+    // two: an lvalue, which something else may still be using, and an xvalue,
+    // which is that same object offered up to be taken apart. The two are
+    // built identically here - the mark is the whole difference - because the
+    // difference is entirely in what may be *done* with the object, and
+    // nothing about how its address is computed.
+    //
+    // No visitor sees this and no backend reads it. It is answered during
+    // parsing, by overload resolution choosing a move over a copy and by
+    // reference binding taking an address instead of a copy, and by then it
+    // has done its work.
+    bool isXvalue() const { return xvalue_; }
+    void setXvalue() { xvalue_ = true; }
 private:
     const Type *type_ = nullptr;
+    bool xvalue_ = false;
 };
 
 class Stmt : public Node {

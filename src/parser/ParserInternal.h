@@ -33,6 +33,11 @@ int alignTo(int n, int a);
 // reference binding itself, and those two live in different units.
 bool isLvalue(const Expr &e);
 
+// Does it name an object, lvalue or xvalue alike? Reference binding wants an
+// address and both kinds have one; only the rule that an rvalue reference
+// refuses an lvalue needs the two told apart.
+bool isGlvalue(const Expr &e);
+
 // The integer literal 0, which [conv.ptr] lets stand for a null pointer.
 // Asked by argument ranking and again by the conditional operator.
 bool isNullConstant(const Expr &e);

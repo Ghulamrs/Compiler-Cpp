@@ -91,7 +91,74 @@ ExprPtr Parser::comparison(BinOp op, ExprPtr lhs, ExprPtr rhs) {
     return n;
 }
 
+// `static_cast<T>(e)`. Parsed here rather than beside the C-style cast because
+// [expr.post] makes it a postfix-expression: `static_cast<B &>(d).f()` is
+// written, and reading it here is what lets postfix() apply the `.f()` to it.
+//
+// **The reference case is the one this was written for.** `static_cast<T &&>`
+// is what `std::move` is - the standard library's move is a cast and nothing
+// else - and without it an lvalue can never be offered to an rvalue reference,
+// which would leave every move constructor in a program unreachable. What it
+// produces is the operand itself, marked: the object is unchanged and its
+// address is unchanged, and all that is said is that whoever takes it may take
+// it apart.
+//
+// Every other target type is handed to convert(), which is the same road the
+// C-style cast takes. That is a *subset* of static_cast - a base-to-derived
+// downcast and a cast between unrelated enums are also static_cast's and are
+// refused here - and the subset is honest rather than silent: convert() says
+// what it will not do.
+ExprPtr Parser::staticCast(std::size_t pos) {
+    expect("<");
+    StorageClass sc;
+    const Type *to = specifiers(&sc);
+    to = declarator(to, true).type;
+    if (!atClosingAngle())
+        src_.fail(peek().pos, "expected '>' to close 'static_cast<'");
+    takeClosingAngle();
+    expect("(");
+    ExprPtr v = expr();
+    expect(")");
+
+    if (to->isReference()) {
+        const Type *referent = to->referent();
+        v = useReference(std::move(v));
+        if (!isGlvalue(*v))
+            src_.fail(pos, "'static_cast<" + to->describe() + ">' needs an "
+                           "object to cast, and this is a value with no "
+                           "address of its own - it is already the kind of "
+                           "thing a '" + to->describe() + "' binds to");
+        if (v->type()->unqualified() != referent->unqualified())
+            src_.fail(pos, "'static_cast<" + to->describe() + ">' of a '" +
+                           v->type()->describe() + "' - casting a reference "
+                           "to a different type is not supported yet, and "
+                           "this one names '" + referent->describe() + "'");
+        if (v->type()->isConst() && !referent->isConst())
+            src_.fail(pos, "'static_cast<" + to->describe() + ">' of a '" +
+                           v->type()->describe() + "' - a cast does not take "
+                           "const off; 'const_cast' is what does, and it is "
+                           "not supported yet");
+        // An lvalue reference cast leaves an lvalue and there is nothing to
+        // mark; an rvalue reference cast is the whole point of this function.
+        if (to->isRValueReference()) v->setXvalue();
+        return v;
+    }
+
+    v = decay(std::move(v));
+    if (to->isVoid()) {
+        ExprPtr c(new Cast(to, std::move(v)));
+        return c;
+    }
+    return convert(std::move(v), to);
+}
+
 ExprPtr Parser::primary(Program *program) {
+    if (peek().is("static_cast")) {
+        std::size_t pos = peek().pos;
+        at_++;
+        return staticCast(pos);
+    }
+
     if (peek().is("true") || peek().is("false")) {
         bool value = peek().is("true");
         at_++;
@@ -469,6 +536,10 @@ const Type *Parser::decltypeSpecifier() {
         src_.fail(pos, "'decltype' needs an expression with a type, and this "
                        "one has none");
     if (namePath) return t;
+    // [dcl.type.simple]/4 in full: an xvalue answers `T &&`, an lvalue `T &`,
+    // and a prvalue `T`. Three categories and three answers, which is why the
+    // xvalue mark has to be asked about before the lvalue is.
+    if (e->isXvalue()) return types_.rvalueReferenceTo(t);
     return isLvalue(*e) ? types_.referenceTo(t) : t;
 }
 
@@ -523,10 +594,16 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
                        "reference binds only to a value that has none, so "
                        "that taking it apart harms nobody");
 
-    // The direct binding: an addressable lvalue of exactly the type named,
+    // The direct binding: an addressable glvalue of exactly the type named,
     // which the reference then *is*. Everything else either makes a temporary
     // below or is refused.
-    if (isLvalue(*init) && noAddressBecause == nullptr &&
+    //
+    // **isGlvalue and not isLvalue**, so that an xvalue binds here rather than
+    // falling through to the temporary. An rvalue reference has just been let
+    // past the refusal above precisely so that it can bind to the object
+    // itself; copying it into a temporary first would defeat the entire
+    // point, and silently - a move constructor would run, on a copy.
+    if (isGlvalue(*init) && noAddressBecause == nullptr &&
         it->unqualified() == referent->unqualified()) {
         if (it->isConst() && !referent->isConst())
             src_.fail(pos, what + " is '" + ref->describe() + "' and this is '" +
@@ -739,7 +816,16 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
                                 const std::string &what,
                                 std::vector<std::pair<int, const Type *> > &destroy) {
     const Type *cls = type->unqualified();
-    const Signature *cc = copyConstructorOf(cls);
+    // **A by-value parameter is initialised from the argument, so an xvalue
+    // moves into it.** [dcl.init]/17 makes this ordinary initialisation and
+    // overload resolution over the constructors, which would pick the move;
+    // this path predates rvalue references and reaches for the copy by name,
+    // so the choice is made here instead. Without it `take(static_cast<S &&>
+    // (e))` copies, silently, and `e` is left untouched where C++ says it has
+    // been emptied.
+    const Signature *cc = nullptr;
+    if (arg->isXvalue()) cc = moveConstructorOf(cls);
+    if (cc == nullptr) cc = copyConstructorOf(cls);
 
     // **A class that only has a destructor still goes by address on Itanium**,
     // and the copy the caller makes for it is a move of bytes rather than a

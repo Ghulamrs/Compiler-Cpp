@@ -178,7 +178,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | **done**, 2026-08-29 |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.4 and Windows `throw` **done**, 2026-08-29 |
-| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1-7.3 and 7.4a **done**, 2026-08-29 |
+| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1-7.3 and 7.4a/7.4b **done**, 2026-08-29 |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
 punctuators, `__cplusplus`, `bool`/`true`/`false`, class and enum tags as type
@@ -1898,10 +1898,69 @@ Refused by name: a class range, which needs `begin` and `end` found on the
 class and called where an array's bounds are in its type; and a reference
 loop variable, which needs the binding machinery a reference declaration has.
 
-**7.4a has landed: `&&` as a type, and the binding rule.** What is left of
-7.4 is the *move members* - a move constructor and move assignment beside the
-four rung 3 already writes - and `static_cast<T &&>`, without which an lvalue
-can never be offered to one.
+**7.4a has landed: `&&` as a type, and the binding rule.**
+
+**7.4b has landed too: `static_cast`, and with it the third value category.**
+`static_cast<T &&>` *is* `std::move` - the standard library's move is a cast
+and nothing else - so until this existed no lvalue could reach a move
+constructor and every one of them was unreachable.
+
+What the cast makes is an **xvalue**, and it is carried as a one-bit mark on
+`Expr` rather than as a type. The object and its address are unchanged; the
+only thing said is that whoever takes it may take it apart. That splits the
+old `isLvalue` in two, and the split is where all the behaviour is:
+
+* `isGlvalue` - names an object. **Reference binding asks this**, so an
+  xvalue binds to the object itself. Asking `isLvalue` there would have sent
+  it to the temporary path, and a move constructor would have run on a copy -
+  silently.
+* `isLvalue` - names an object *and is not an xvalue*. **The rule that
+  `T &&` refuses an lvalue asks this**, and so does argument ranking.
+* `decltype` now has three answers rather than two, which is
+  [dcl.type.simple]/4 in full: `T &&` for an xvalue, `T &` for an lvalue, `T`
+  for a prvalue.
+
+**A by-value parameter had to be taught separately.** `materialiseCopy`
+predates rvalue references and reached for the copy constructor by name, so
+`take(static_cast<S &&>(e))` copied and left `e` untouched where C++ says it
+has been emptied. It asks for the move constructor first when the argument is
+an xvalue. This is the same class of bug as the binding one - a path written
+before a value category existed, which keeps working and gives the wrong
+answer.
+
+**`copyConstructorOf` was answering with move constructors.** It matched any
+single parameter that `isReference()`, which was exact until `&&` became a
+type in 7.4a. Two faults: the answer depended on which of the two was
+declared first, and a copy could be routed to a constructor whose entire
+contract is that it is never handed an lvalue. It skips rvalue references
+now, with `moveConstructorOf` beside it; and because not finding a copy
+constructor is how the implicit one gets declared, a user-declared move
+constructor has to suppress that explicitly - which is [class.copy]/7, where
+the implicit copy is *deleted*.
+
+What is left of 7.4 is the **implicit** move constructor, which is 7.4c and is
+a measured divergence rather than a guess: a class that declares nothing gets
+one in C++11, and cxx1 uses its implicit copy instead. With a member whose
+move differs from its copy, clang prints `inner move` and cxx1 prints `inner
+copy` - **silent, and the kind this project refuses.** Implicit move
+*assignment* is not observable here and can wait: `operator=` cannot be
+written at all, so every assignment bottoms out in memberwise scalar copies
+and a move of those is a copy of those.
+
+**What `static_cast` does not do is refused out loud.** Its non-reference case
+is handed to `convert()`, the same road the C-style cast takes, which is a
+subset - a base-to-derived downcast is a `static_cast` and is not here.
+`static_cast<T &&>` of a prvalue is refused too: legal C++, an identity, but
+it needs a temporary materialised and there is no path here that does that.
+
+**One measured difference in the names, and it is not about moves.** On
+x86_64-linux clang emits only the C2 constructors for `move-constructor.cpp`
+and calls them directly, where cxx1 emits C1 and C2 as it does everywhere.
+The deciding thing is `inline`: every constructor in that case is defined
+inside the class body, and writing the same three out of line makes clang emit
+both on that target as well - which is why no earlier case met it. Darwin
+emits both either way and agrees with cxx1 on all 8 names, so the mangling is
+not in question. Recorded in `move-constructor.nonames`.
 
 **An rvalue reference is the same machine as an lvalue one.** Both are a slot
 holding an address, both are read by dereferencing it, so `isReference()`

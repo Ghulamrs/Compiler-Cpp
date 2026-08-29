@@ -660,6 +660,7 @@ private:
     // A constructor of this class taking one reference to it, written or
     // implicit - which is what [class.copy] calls a copy constructor.
     const Signature *copyConstructorOf(const Type *cls) const;
+    const Signature *moveConstructorOf(const Type *cls) const;
     // `int i = 0; while (i < count) { one; i = i + 1; }` over an array
     // member's elements. A loop rather than `count` copies of the statement,
     // because the count is a property of the type and nothing bounds it.
@@ -965,6 +966,7 @@ private:
     ExprPtr add();
     ExprPtr mul();
     ExprPtr castExpr();
+    ExprPtr staticCast(std::size_t pos);
     ExprPtr unary();
     ExprPtr postfix();
     ExprPtr primary(Program *program);

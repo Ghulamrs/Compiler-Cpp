@@ -535,7 +535,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // once: a copy constructor exists at this point if the class wrote one or
     // if one was just declared for it, and one was just declared exactly when
     // a base or member made the copy non-trivial.
-    if (copyConstructorOf(type) != nullptr) type->setNonTrivialCopy(true);
+    if (copyConstructorOf(type) != nullptr || moveConstructorOf(type) != nullptr)
+        type->setNonTrivialCopy(true);
     if (destructorOf(type) != nullptr) type->setHasDestructor(true);
     if (type->polymorphic()) emitVtable(type, tag, pos);
     // **A specialization's member bodies are not replayed here.** This is in

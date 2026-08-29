@@ -687,6 +687,29 @@ const Parser::Signature *Parser::copyConstructorOf(const Type *cls) const {
     for (std::size_t k = 0; k < set->size(); k++) {
         const Signature &f = functions_[(*set)[k]];
         if (f.params.size() != 1 || !f.params[0]->isReference()) continue;
+        // **`S(S &&)` is not a copy constructor**, and until rung 7 there was
+        // no way to write one so isReference() alone was enough. Answering
+        // one here would make the result depend on which of the two was
+        // declared first, and would hand an lvalue to a constructor whose
+        // whole contract is that it will not be given one.
+        if (f.params[0]->isRValueReference()) continue;
+        if (f.params[0]->referent()->unqualified() != cls->unqualified()) continue;
+        return &f;
+    }
+    return nullptr;
+}
+
+// `S(S &&)`, written by hand - the compiler does not yet write one. The
+// mirror of copyConstructorOf and told apart from it by exactly one thing,
+// which is the kind of reference the parameter is.
+const Parser::Signature *Parser::moveConstructorOf(const Type *cls) const {
+    if (cls == nullptr || !cls->isStructOrUnion() || cls->tag().empty())
+        return nullptr;
+    const std::vector<std::size_t> *set = overloadsOf(constructorKey(cls->tag()));
+    if (set == nullptr) return nullptr;
+    for (std::size_t k = 0; k < set->size(); k++) {
+        const Signature &f = functions_[(*set)[k]];
+        if (f.params.size() != 1 || !f.params[0]->isRValueReference()) continue;
         if (f.params[0]->referent()->unqualified() != cls->unqualified()) continue;
         return &f;
     }
@@ -1016,6 +1039,11 @@ void Parser::declareImplicitCopyAssign(const std::string &tag, const Type *type,
 void Parser::declareImplicitCopyCtor(const std::string &tag, const Type *type,
                                      std::size_t pos) {
     if (copyConstructorOf(type) != nullptr) return;
+    // [class.copy]/7: a user-declared move constructor **deletes** the
+    // implicit copy constructor. Not declaring one is how that is said here,
+    // and the effect is the same - a copy is refused, and the candidate list
+    // in the message shows the move constructor that took its place.
+    if (moveConstructorOf(type) != nullptr) return;
 
     bool work = type->polymorphic();
     const std::vector<Type::BaseSpec> &bs = type->bases();
