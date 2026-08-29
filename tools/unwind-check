@@ -1,0 +1,51 @@
+#!/bin/sh
+# Can an exception unwind *through* a frame cxx1 compiled?
+#
+# This is the check that settles rung 6.1, and it has to be a run rather than
+# a diff: unwind data is either right or the program aborts. Three files - one
+# that throws, one in the middle, one that catches - with only the middle one
+# compiled by cxx1 and the other two by the system compiler. If the middle
+# frame has no unwind data the personality routine cannot step over it and the
+# program ends with "terminating due to uncaught exception"; with it, the
+# exception passes through and is caught.
+#
+#   tools/unwind-check              on this machine
+#
+# cxx1 cannot throw or catch yet, which is exactly why the other two files are
+# compiled by clang or g++: what is being tested is the *frame*, and a frame
+# is all cxx1 has to contribute for an exception to cross it.
+set -e
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+CXX1=${CXX1:-$ROOT/cxx1.exe}
+SYS=${SYSCXX:-c++}
+DIR=$(mktemp -d)
+trap 'rm -rf "$DIR"' EXIT
+
+cat > "$DIR/thrower.cpp" <<'CPP'
+void thrower(int n) { if (n > 0) throw n; }
+CPP
+cat > "$DIR/middle.cpp" <<'CPP'
+void thrower(int n);
+int middle(int n) { thrower(n); return 0; }
+CPP
+cat > "$DIR/main.cpp" <<'CPP'
+extern "C" int printf(const char *, ...);
+int middle(int n);
+int main() {
+    try { middle(1); } catch (int e) { printf("caught %d\n", e); return 0; }
+    printf("the exception never arrived\n");
+    return 1;
+}
+CPP
+
+"$SYS" -x c++ -std=c++11 -c "$DIR/thrower.cpp" -o "$DIR/thrower.o"
+"$SYS" -x c++ -std=c++11 -c "$DIR/main.cpp" -o "$DIR/main.o"
+"$CXX1" -c "$DIR/middle.cpp" -o "$DIR/middle.o"
+"$SYS" "$DIR/thrower.o" "$DIR/middle.o" "$DIR/main.o" -o "$DIR/prog"
+
+if out=$("$DIR/prog" 2>&1) && [ "$out" = "caught 1" ]; then
+    echo "unwind-check: an exception crossed a cxx1 frame"
+    exit 0
+fi
+echo "unwind-check: FAILED - $out"
+exit 1

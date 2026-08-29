@@ -102,7 +102,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
-| 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
+| 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1 **done**, 2026-08-29 |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
@@ -1408,6 +1408,69 @@ and a second expansion), expanding a pack into another template's argument
 list, and a parameter written after a pack.
 
 Suites 87 / 137 / 46; the C corpus is unchanged.
+
+## Rung 6: exceptions, planned
+
+**6.1 has landed and has its own section below.** What follows is the order
+the rest is meant to happen in, written before any of it.
+
+**The asymmetry the rung-5 plan warned about is real, and the first surprise
+is that it runs the other way.** The MASM backend has emitted Microsoft's
+unwind data since it was written - `PROC FRAME`, `.PUSHREG`, `.SETFRAME`,
+`.ALLOCSTACK`, `.ENDPROLOG`, which ml64 turns into `.pdata` and `.xdata` - so
+**Windows frames were already unwindable and the two Itanium targets were
+not**. Windows will still lag on the *tables*, which are MSVC's own format,
+but not on the frames.
+
+**6.1 - unwind data on the Itanium targets.** Nothing else in the rung can be
+tested without it, and it is worth having on its own: a debugger could not
+walk out of a cxx1 frame either.
+
+**6.2 - `throw`, with nothing catching it.** `__cxa_allocate_exception`, the
+object copied in, `__cxa_throw` with a type-info pointer - and that pointer is
+the work: cxx1 has no RTTI at all, and the vtable's typeinfo slot is a plain
+0. Throwing a builtin can borrow the library's `_ZTIi`; throwing a class needs
+cxx1 to emit `_ZTI`/`_ZTS` of its own. Take the builtin first and refuse the
+class by name.
+
+**6.3 - `try`/`catch`**, which is the landing pad, the personality routine and
+the `.gcc_except_table` LSDA: a call-site table saying which range goes to
+which pad, and an action table saying which types that pad accepts. The
+largest single step in the rung.
+
+**6.4 - cleanups.** A destructor has to run when an exception passes a local,
+which means a landing pad that runs them and calls `_Unwind_Resume`. The set
+of live objects is already tracked - `alive_` is what a `return` unwinds - so
+what is new is reaching it from a pad rather than from the return path.
+
+**6.5 - Windows.** `__CxxFrameHandler4` and MSVC's own tables, which are a
+different design from the Itanium one rather than a different spelling of it.
+Expect this to lag and do not promise otherwise.
+
+### 6.1 as it actually landed
+
+**It is the same three directives in every function, because a cxx1 frame has
+one shape.** The frame pointer is pushed and then established and never moves,
+so the CFA is `rbp + 16` (or `x29 + 16`) for the whole body and the saved
+registers sit just below it. Emitted where the frame is established rather
+than beside each instruction, which is what clang does too: the unwinder looks
+CFI up by *return address*, and a return address can only be inside a call -
+there are none in a prologue.
+
+**Checked by a run, because unwind data is either right or the program
+aborts.** `tools/unwind-check` compiles three files - one that throws, one in
+the middle, one that catches - with only the middle one compiled by cxx1. It
+passes now and the same program aborted with "terminating due to uncaught
+exception" before, which is what an opaque frame does to a personality
+routine. It is in the repository rather than on a box, for the reason
+`tools/cl-measure` is.
+
+**cxx1 can throw nothing yet and that is the point of the check**: what is
+being tested is the *frame*, and a frame is all cxx1 has to contribute for an
+exception to cross it.
+
+Suites unchanged at 87 / 137 / 46 - nothing a case can see, which is why the
+tool exists.
 
 ## Decisions already taken
 

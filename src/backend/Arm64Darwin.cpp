@@ -937,8 +937,23 @@ void Arm64Darwin::emitFunction(const Function &fn) {
     }
 
     markLine(fn.pos());
+    // **Unwind data, and it is the same three lines in every function here.**
+    // A cxx1 frame has one shape - the pair saved at the top and x29 pointing
+    // at it - so the CFA is x29 + 16 for the whole body and the two saved
+    // registers sit just below it. Without this the frame is opaque: nothing
+    // can unwind through it, which is why a debugger's backtrace stopped at
+    // the first cxx1 function and why an exception could not pass one.
+    //
+    // Emitted after the frame is established rather than beside each
+    // instruction, which is what clang does too: the unwinder looks the CFI
+    // up by return address, and a return address can only be inside a call -
+    // there are none in a prologue.
+    out_ << "  .cfi_startproc\n";
     out_ << "  stp x29, x30, [sp, #-16]!\n";
     out_ << "  mov x29, sp\n";
+    out_ << "  .cfi_def_cfa w29, 16\n";
+    out_ << "  .cfi_offset w30, -8\n";
+    out_ << "  .cfi_offset w29, -16\n";
 
     int frame = alignTo(fn.frameSize(), 16);
     if (frame > 0) {
@@ -1029,6 +1044,7 @@ void Arm64Darwin::emitFunction(const Function &fn) {
     out_ << "  mov sp, x29\n";
     out_ << "  ldp x29, x30, [sp], #16\n";
     out_ << "  ret\n";
+    out_ << "  .cfi_endproc\n";
     if (lineSource()) {
         out_ << "Lfunc.end." << fn.symbol() << ":\n";
 
