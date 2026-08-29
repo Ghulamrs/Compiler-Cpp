@@ -301,26 +301,100 @@ std::string Parser::templatedName(const std::vector<TemplateParam> &params,
     }
     *isClass = false;
 
-    std::vector<std::string> bound;
-    for (std::size_t i = 0; i < params.size(); i++) {
-        if (params[i].type != nullptr) continue;
-        if (findTypedef(params[i].name) != nullptr) continue;
-        declareTypeName(params[i].name, types_.intType());
-        bound.push_back(params[i].name);
-    }
+    TemplateDecl scratch;
+    scratch.params = params;
+    scratch.afterParams = at_;
+    std::vector<const Type *> binding(params.size(), types_.intType());
+    std::vector<long long> values(params.size(), 1);
+    std::string name;
+    readTemplateDeclaration(scratch, binding, values, &name);
+    if (name.empty())
+        src_.fail(peek().pos, "this function template has no name");
+    return name;
+}
 
+// **The parameters are bound to the argument list, and the tables are put
+// back exactly as they were.** A type parameter becomes a type name and a
+// non-type one an enumerator, which is what makes `T x` and `int a[N]` read
+// with no second lookup path: the two things a template parameter can be are
+// the two things this parser already knows how to look up.
+void Parser::bindTemplateParameters(const TemplateDecl &decl,
+                                    const std::vector<const Type *> &binding,
+                                    const std::vector<long long> &values,
+                                    std::vector<Shadow> *undo) {
+    for (std::size_t i = 0; i < decl.params.size(); i++) {
+        const TemplateParam &p = decl.params[i];
+        Shadow s;
+        s.name = p.name;
+        s.isType = p.type == nullptr;
+        if (s.isType) {
+            auto it = typedefIndex_.find(p.name);
+            if (it != typedefIndex_.end()) { s.had = true; s.was = it->second; }
+            typedefIndex_[p.name] = typedefs_.size();
+            typedefs_.push_back(TypedefName{ p.name, binding[i] });
+        } else {
+            auto it = enumIndex_.find(p.name);
+            if (it != enumIndex_.end()) { s.had = true; s.was = it->second; }
+            enumIndex_[p.name] = enums_.size();
+            enums_.push_back(EnumConst{ p.name, values[i] });
+        }
+        undo->push_back(s);
+    }
+}
+
+void Parser::unbindTemplateParameters(const std::vector<Shadow> &undo) {
+    for (std::size_t k = undo.size(); k-- > 0; ) {
+        const Shadow &s = undo[k];
+        if (s.isType) {
+            if (s.had) typedefIndex_[s.name] = s.was;
+            else       typedefIndex_.erase(s.name);
+        } else {
+            if (s.had) enumIndex_[s.name] = s.was;
+            else       enumIndex_.erase(s.name);
+        }
+    }
+}
+
+// The declaration read again with the arguments in force. Nothing is
+// registered: this answers what the signature *is*, and the caller decides
+// what to do with it.
+const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
+                                            const std::vector<const Type *> &binding,
+                                            const std::vector<long long> &values,
+                                            std::string *name) {
+    const std::size_t resume = at_;
+    std::vector<Shadow> undo;
+    bindTemplateParameters(decl, binding, values, &undo);
+
+    at_ = decl.afterParams;
     StorageClass sc;
     Qualifiers quals;
     const Type *base = specifiers(&sc, &quals);
     Declared d = declarator(base);
 
-    for (std::size_t i = 0; i < bound.size(); i++) {
-        auto it = typedefIndex_.find(bound[i]);
-        if (it != typedefIndex_.end()) typedefIndex_.erase(it);
+    // **The declarator records where the parameter list is and does not read
+    // it**, which is how a definition gets to read the parameters once, with
+    // their names. Here there is no definition to read them for, so they are
+    // read for their types the way a prototype's are.
+    //
+    // The declarator's type is the *return* type at this point - the same
+    // shape topLevel reads, where the function type is built once the
+    // parameters have been.
+    if (d.paramsAt != 0 || peek().is("(")) {
+        if (d.paramsAt != 0) at_ = d.paramsAt;
+        std::vector<const Type *> params;
+        bool variadic = false;
+        parameterTypes(params, variadic);
+        d.type = types_.functionType(d.type, std::move(params), variadic);
+    } else {
+        src_.fail(d.pos, "'" + d.name + "' is a template and not a function, "
+                         "and only function templates are supported yet");
     }
-    if (d.name.empty())
-        src_.fail(d.pos, "this function template has no name");
-    return d.name;
+
+    unbindTemplateParameters(undo);
+    at_ = resume;
+    *name = d.name;
+    return d.type;
 }
 
 // From here to the `;` that ends the declaration, or to the `}` that closes
@@ -355,10 +429,10 @@ bool Parser::templateDeclaration() {
         src_.fail(peek().pos, "explicit instantiation is not supported yet");
     templateParameters(decl.params);
 
-    const std::size_t afterParams = at_;
+    decl.afterParams = at_;
     decl.pos = peek().pos;
     decl.name = templatedName(decl.params, &decl.isClass);
-    at_ = afterParams;
+    at_ = decl.afterParams;
     decl.defined = skipTemplatedDefinition();
 
     // A template may be declared and then defined. The definition is the one
@@ -400,6 +474,205 @@ void Parser::skipTemplateArguments() {
         }
         at_++;
     }
+}
+
+// `<int, 3>` at a use, read against the parameter list it is for. A type
+// parameter takes a type-id and a non-type one a constant expression, so
+// which is which is decided by the template and never by the shape of what is
+// written - the same rule that decided the `<` itself.
+void Parser::templateArguments(const TemplateDecl &decl,
+                               std::vector<const Type *> *binding,
+                               std::vector<long long> *values,
+                               std::vector<TemplateArg> *args) {
+    expect("<");
+    const bool wasInArgs = inTemplateArgs_;
+    inTemplateArgs_ = true;
+    for (std::size_t i = 0; i < decl.params.size(); i++) {
+        if (i > 0 && !consume(","))
+            src_.fail(peek().pos, "'" + decl.name + "' takes " +
+                                  std::to_string(decl.params.size()) +
+                                  " template arguments and this gives " +
+                                  std::to_string(i));
+        const TemplateParam &p = decl.params[i];
+        TemplateArg a;
+        if (p.type == nullptr) {
+            StorageClass sc;
+            Qualifiers quals;
+            const Type *base = specifiers(&sc, &quals);
+            Declared d = declarator(base, true);
+            if (!d.name.empty())
+                src_.fail(d.pos, "a template argument is a type here, and this "
+                                 "names something");
+            binding->push_back(d.type);
+            values->push_back(0);
+            a.isType = true;
+            a.type = d.type;
+        } else {
+            if (!p.type->isInteger())
+                src_.fail(p.pos, "a non-type template parameter of type '" +
+                                 p.type->describe() + "' is not supported yet - "
+                                 "it must be an integer type");
+            const long long v = constantExpression("a template argument");
+            binding->push_back(p.type);
+            values->push_back(v);
+            a.isType = false;
+            a.type = p.type;
+            a.value = v;
+        }
+        args->push_back(a);
+    }
+    if (!atClosingAngle())
+        src_.fail(peek().pos, "'" + decl.name + "' takes " +
+                              std::to_string(decl.params.size()) +
+                              " template arguments and this gives more");
+    takeClosingAngle();
+    inTemplateArgs_ = wasInArgs;
+}
+
+std::string Parser::specializationKey(const std::string &name,
+                                      const std::vector<TemplateArg> &args) const {
+    std::string key = name + "<";
+    for (std::size_t i = 0; i < args.size(); i++) {
+        if (i > 0) key += ",";
+        key += args[i].isType ? args[i].type->describe()
+                              : std::to_string(args[i].value);
+    }
+    return key + ">";
+}
+
+// The specialization these arguments ask for, made if it is new.
+//
+// **The two ABIs are handed two different things and that is not cosmetic.**
+// Itanium is given the template's *pattern* - the signature with
+// Kind::TemplateParam still in it - because its name spells `T_` where a type
+// came from a parameter, and the substituted signature cannot say that.
+// Microsoft is given the substituted signature, which is what it writes. So
+// the declaration is read twice, once each way.
+const Parser::Signature &
+Parser::instantiate(const TemplateDecl &decl,
+                    const std::vector<const Type *> &binding,
+                    const std::vector<long long> &values,
+                    const std::vector<TemplateArg> &args, std::size_t pos) {
+    const std::string key = specializationKey(decl.name, args);
+
+    if (const std::vector<std::size_t> *had = overloadsOf(key))
+        return functions_[(*had)[0]];
+
+    if (!decl.defined)
+        src_.fail(pos, "'" + decl.name + "' is declared but never defined, so "
+                       "there is nothing to instantiate");
+
+    std::string name;
+    const Type *fn = readTemplateDeclaration(decl, binding, values, &name);
+
+    std::vector<const Type *> pattern(decl.params.size());
+    for (std::size_t i = 0; i < decl.params.size(); i++)
+        pattern[i] = decl.params[i].type == nullptr
+                         ? types_.templateParam(static_cast<int>(i))
+                         : binding[i];
+    std::string patternName;
+    const Type *patternFn =
+        readTemplateDeclaration(decl, pattern, values, &patternName);
+
+    std::string symbol, why;
+    const bool ok = target_.microsoftNames()
+        ? microsoftTemplateFunctionName(decl.name, fn, args, &symbol, &why)
+        : itaniumTemplateFunctionName(decl.name, patternFn, args, false,
+                                      &symbol, &why);
+    if (!ok)
+        src_.fail(pos, "'" + key + "' cannot be given a name the linker can "
+                       "hold: " + why);
+
+    Specialization sp;
+    sp.key = key;
+    sp.name = decl.name;
+    sp.symbol = symbol;
+    sp.fn = fn;
+    sp.binding = binding;
+    sp.values = values;
+    sp.start = decl.afterParams;
+    sp.pos = pos;
+    specializations_.push_back(sp);
+
+    functionIndex_[key].push_back(functions_.size());
+    functions_.push_back(Signature{ key, symbol, fn->returns(), fn->params(),
+                                    fn->isVariadicFn(), false, pos, false,
+                                    std::string(), false, Access::Public });
+    return functions_.back();
+}
+
+// **A body cannot be written where the call is**, because the call is in the
+// middle of another function. So every specialization is recorded and the
+// definitions are replayed afterwards - and to a fixed point, since a body
+// may ask for one of its own. The same shape the implicit special members
+// already have.
+void Parser::instantiatePending() {
+    for (bool again = true; again; ) {
+        again = false;
+        for (std::size_t i = 0; i < specializations_.size(); i++) {
+            if (specializations_[i].emitted) continue;
+            specializations_[i].emitted = true;
+            again = true;
+
+            // Copied, not held by reference: replaying may append to the
+            // vector and move it.
+            const Specialization sp = specializations_[i];
+            TemplateDecl decl = templates_[sp.name];
+
+            std::vector<Shadow> undo;
+            bindTemplateParameters(decl, sp.binding, sp.values, &undo);
+            const std::string wasKey = instantiationKey_;
+            const std::string wasOf = instantiationOf_;
+            instantiationKey_ = sp.key;
+            instantiationOf_ = sp.name;
+
+            const std::size_t resume = at_;
+            at_ = sp.start;
+            topLevel(*current_);
+            at_ = resume;
+
+            instantiationKey_ = wasKey;
+            instantiationOf_ = wasOf;
+            unbindTemplateParameters(undo);
+        }
+    }
+}
+
+// A template named in an expression. 5.2 wants the arguments written out:
+// deducing them from the call is 5.3, and a class template is 5.4.
+ExprPtr Parser::templateCall(Program *program) {
+    const std::string name = peek().text;
+    const std::size_t pos = peek().pos;
+    const TemplateDecl decl = templates_[name];
+    if (decl.isClass) refuseTemplateId();
+    at_++;
+    if (!peek().is("<"))
+        src_.fail(pos, "'" + name + "' is a function template and its "
+                       "arguments have to be written - deducing them from the "
+                       "call is not supported yet");
+
+    std::vector<const Type *> binding;
+    std::vector<long long> values;
+    std::vector<TemplateArg> args;
+    templateArguments(decl, &binding, &values, &args);
+
+    instantiate(decl, binding, values, args, pos);
+    if (!peek().is("("))
+        src_.fail(peek().pos, "'" + name + "' is a function template, and "
+                              "naming one without calling it is not supported "
+                              "yet");
+    at_++;
+    (void)program;
+    std::vector<ExprPtr> callArgs;
+    parseArguments(callArgs);
+
+    // Looked up by key rather than held across the arguments: an argument may
+    // itself be a call that instantiates something, and a reference into
+    // functions_ does not survive the vector growing.
+    const std::string key = specializationKey(decl.name, args);
+    const Signature &sig = functions_[(*overloadsOf(key))[0]];
+    return completeCall(sig.name, sig.symbol, nullptr, sig.returns, sig.params,
+                        sig.variadic, pos, std::move(callArgs));
 }
 
 void Parser::refuseTemplateId() {
@@ -3396,8 +3669,13 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
                              const std::vector<const Type *> &params,
                              bool variadic, bool defining, std::size_t pos,
                              bool internal) {
-    const bool cName = cLinkage_ > 0 || name == "main";
-    std::vector<std::size_t> &set = functionIndex_[name];
+    // While a specialization is being replayed the function it declares is
+    // the specialization, keyed and mangled as "twice<int>". Its entry was
+    // made when the call asked for it, so this finds that one and marks it
+    // defined rather than computing a second symbol.
+    const std::string &key = instantiationName(name);
+    const bool cName = cLinkage_ > 0 || key == "main";
+    std::vector<std::size_t> &set = functionIndex_[key];
 
     for (std::size_t k = 0; k < set.size(); k++) {
         Signature &f = functions_[set[k]];
@@ -3408,12 +3686,12 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
         if (!same) continue;
 
         if (f.returns != returns)
-            src_.fail(pos, "'" + name + "' was declared to return '" +
+            src_.fail(pos, "'" + key + "' was declared to return '" +
                            f.returns->describe() + "' and this says '" +
                            returns->describe() + "' - two functions cannot "
                            "differ in the return type alone");
         if (defining) {
-            if (f.defined) src_.fail(pos, "'" + name + "' is defined twice");
+            if (f.defined) src_.fail(pos, "'" + key + "' is defined twice");
             f.defined = true;
         }
         return;
@@ -3425,15 +3703,15 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
     if (!set.empty()) {
         const Signature &first = functions_[set[0]];
         if (cName || first.cLinkage)
-            src_.fail(pos, "'" + name + "' cannot be overloaded - " +
-                           (name == "main" ? std::string("'main' is one function")
+            src_.fail(pos, "'" + key + "' cannot be overloaded - " +
+                           (key == "main" ? std::string("'main' is one function")
                                            : std::string("a name with C linkage "
                                              "carries one symbol")));
     }
 
     set.push_back(functions_.size());
-    functions_.push_back(Signature{ name,
-                                    functionSymbol(name, returns, params, variadic,
+    functions_.push_back(Signature{ key,
+                                    functionSymbol(key, returns, params, variadic,
                                                    internal, pos),
                                     returns, params, variadic, defining, pos,
                                     cName, std::string(), false,
@@ -3465,7 +3743,7 @@ const Parser::Signature &
 Parser::lookupSignature(const std::string &name,
                         const std::vector<const Type *> &params,
                         bool variadic, std::size_t pos) const {
-    if (const std::vector<std::size_t> *set = overloadsOf(name)) {
+    if (const std::vector<std::size_t> *set = overloadsOf(instantiationName(name))) {
         for (std::size_t k = 0; k < set->size(); k++) {
             const Signature &f = functions_[(*set)[k]];
             if (f.params.size() != params.size() || f.variadic != variadic) continue;
@@ -3644,11 +3922,12 @@ ExprPtr Parser::primary(Program *program) {
                                   "' is not supported yet");
     }
 
-    // A template named in an expression, with or without arguments. The
-    // argument list is stepped over before the refusal so that the reader is
+    // A template named in an expression. A function template with its
+    // arguments written is instantiated; everything else is refused by name,
+    // and with the argument list stepped over first so that the reader is
     // told about the template rather than about the `<`.
     if (peek().kind == TokenKind::Ident && isTemplateName(peek().text))
-        refuseTemplateId();
+        return templateCall(program);
 
     if (peek().is("__builtin_va_start")) {
         std::size_t pos = peek().pos;
@@ -3708,7 +3987,12 @@ ExprPtr Parser::primary(Program *program) {
     }
 
     if (consume("(")) {
+        // Inside parentheses a `>` is an operator again, which is exactly why
+        // C++ makes a comparison in a template argument need them.
+        const bool wasInArgs = inTemplateArgs_;
+        inTemplateArgs_ = false;
         ExprPtr e = expr();
+        inTemplateArgs_ = wasInArgs;
         expect(")");
         return e;
     }
@@ -5650,6 +5934,7 @@ ExprPtr Parser::shift() {
     ExprPtr n = add();
     for (;;) {
         BinOp op;
+        if (inTemplateArgs_ && peek().is(">>")) return n;
         if (consume("<<"))      op = BinOp::Shl;
         else if (consume(">>")) op = BinOp::Shr;
         else return n;
@@ -5661,6 +5946,10 @@ ExprPtr Parser::shift() {
 ExprPtr Parser::relational() {
     ExprPtr n = shift();
     for (;;) {
+        // [temp.names]: a `>` inside a template argument list closes it. This
+        // is the whole reason C++ makes `f<(a > b)>` need its parentheses,
+        // and the parentheses are where the flag is cleared.
+        if (inTemplateArgs_ && (peek().is(">") || peek().is(">>"))) return n;
         if (consume("<"))       n = comparison(BinOp::Lt, std::move(n), shift());
         else if (consume("<=")) n = comparison(BinOp::Le, std::move(n), shift());
         else if (consume(">"))  n = comparison(BinOp::Gt, std::move(n), shift());
@@ -7364,6 +7653,7 @@ Program Parser::parse() {
     current_ = &program;
     while (peek().kind != TokenKind::End)
         topLevel(program);
+    instantiatePending();
     defineImplicitFunctions();
     if (program.functions.empty())
         src_.fail(0, "the file defines no functions");

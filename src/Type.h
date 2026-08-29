@@ -20,7 +20,15 @@ enum class Kind {
     // After Function, and it matters: TypeTable builds one Type per value
     // from Void to Function, and a reference is never one of those - it is
     // always a reference *to* something and so always derived.
-    LValueRef
+    LValueRef,
+    // **A template parameter, and it is not a type anything is made of.** It
+    // exists so that a template's signature can be written down as the
+    // *pattern* it was declared as - `T twice(T)` rather than
+    // `int twice(int)` - which is what the Itanium mangler has to read: a
+    // specialization's name spells `T_` where the substituted signature has
+    // lost all record of where the int came from. Nothing but the manglers
+    // ever sees one; a parameter has no size, no alignment and no value.
+    TemplateParam
 };
 
 class Target;
@@ -301,6 +309,10 @@ public:
     const Type *arrayOf(const Type *t, long long length);
     const Type *functionType(const Type *returns,
                              std::vector<const Type *> params, bool variadic);
+    // The Nth parameter of the template being mangled. Interned like any
+    // other derived type, so two mentions of T in one signature are one
+    // pointer and the substitution table sees them as the repeat they are.
+    const Type *templateParam(int index);
 
     Type *structType(Kind kind, const std::string &tag);
     Type *anonymousStruct(Kind kind);

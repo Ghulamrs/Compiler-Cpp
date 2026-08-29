@@ -101,7 +101,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
-| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1 **done**, 2026-08-29 |
+| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1 and 5.2 **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
@@ -832,12 +832,12 @@ backend already knows how to emit. This is the pattern to reach for again:
 where C++ adds a *conversion*, look for an existing operation to lower it to
 before adding a case to three code generators.
 
-## Rung 5: templates, 5.1 done and the rest planned
+## Rung 5: templates, 5.1 and 5.2 done and the rest planned
 
-**5.1 landed 2026-08-29 and has its own section at the end of this one.**
-Everything from 5.2 on is still unwritten: what follows is the order the work
-is meant to happen in and the reasons for that order, written before any of
-it, the way rungs 2 and 3 were.
+**5.1 and 5.2 landed 2026-08-29 and each has its own section at the end of
+this one.** Everything from 5.3 on is still unwritten: what follows is the
+order the work is meant to happen in and the reasons for that order, written
+before any of it, the way rungs 2 and 3 were.
 
 Rung 5 is larger than rungs 2, 3 and 4 together. Rung 6 is where the three
 targets stop being symmetric: Windows EH is SEH-based and needs unwind data,
@@ -973,6 +973,68 @@ is still refused everywhere except where 5.1 now reads it, in a parameter
 list.
 
 Suites 59 / 92 / 31; the C corpus is unchanged at 379/424.
+
+### 5.2 as it actually landed
+
+**A specialization is made by replaying the template's tokens with the
+parameters bound**, and the binding is the whole trick: a type parameter is
+entered as a *type name* and a non-type one as an *enumerator*. Those are the
+two things this parser already knows how to look up, so `T x` and `int a[N]`
+are read by the ordinary path with nothing taught about templates. The tables
+are shadowed and put back, not cleared, because a template parameter may share
+a name with something at file scope.
+
+**A body cannot be written where the call is** - the call is in the middle of
+another function - so a request is recorded and the definitions are replayed
+after the file is read, to a fixed point. A body may ask for a specialization
+of its own, which `quad` in `tests/cases/template-function.cpp` does. Same
+shape as the implicit special members.
+
+**The two ABIs are handed two different signatures, and that is not
+cosmetic.** Itanium gets the template's *pattern* - `T twice(T)`, with
+`Kind::TemplateParam` still in it - because its name spells `T_` where a type
+came from a parameter, and the substituted signature has lost that. Microsoft
+gets the *substituted* signature, which is what it writes. So the declaration
+is read twice, once each way, and `Kind::TemplateParam` exists for no other
+purpose: it has no size, no alignment and reaches no backend.
+
+**The measured facts, all confirmed against cl as well as clang:**
+
+    Itanium   _Z5twiceIiET_S0_    the return type IS encoded, and as T_
+              _Z2f4IiEvT_S0_      void f4(T,T): the second T_ is S0_, not S_
+              _Z4takeIiEvRKT_     the qualifier is asked about before the kind
+              _Z3numILin11EEiv    a negative non-type argument
+    Microsoft ??$twice@H@@YAHH@Z  the substituted return type, H not T_
+              ??$negative@H$0?4@  -5 is $0 then '?' then number(5)
+              ??$same@US@@@@YA?AUS@@U0@   the template-id's own tables
+
+**The template name is Itanium substitution candidate zero.** That is what
+makes the second `T_` in `void f4(T, T)` come out `S0_` rather than `S_`, and
+nothing else written by that point could occupy the slot. Measured, because
+reasoning about the substitution table is what CLAUDE.md already said not to
+do.
+
+**A Microsoft template-id carries back-reference tables of its own.** In
+`??$same@US@@@@YA?AUS@@U0@` the parameter's name back-reference 0 is the `S`
+the *return type* pushed - the `S` inside the argument list is invisible to
+the signature. Both tables are put aside, used fresh, and put back.
+
+**`>` stops being an operator inside an argument list**, and parentheses are
+where it starts again - which is the whole reason C++ makes `f<(a > b)>` need
+them. One flag, cleared in `primary`'s parenthesis branch.
+
+**`tools/mangled-names` had been excluding every name beginning `??`** - so
+every constructor, destructor, `operator=` and deleting destructor the
+Microsoft ABI spells had never been compared by it. It was meant to exclude
+only `??_C@`, the string literals. Narrowed when a file full of template
+specializations came back as "0 names"; all 31 cases still passed afterwards,
+so what it had not been checking was right anyway.
+
+**Two pre-existing gaps turned up while probing and neither is about
+templates**: `int()` as a value-initialised expression is not parsed at all,
+and a definition may not leave a parameter unnamed. Both refuse by name.
+
+Suites 63 / 98 / 33; the C corpus is unchanged.
 
 ## Decisions already taken
 

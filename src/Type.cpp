@@ -130,6 +130,19 @@ const Type *TypeTable::referenceTo(const Type *t) {
     return derived_.back();
 }
 
+// The index is kept in length_, which nothing else on a template parameter
+// uses. Interned like every other derived type - and the interning loop skips
+// a qualified copy for the same reason every other loop here does, or
+// `const T` would be handed back for `T`.
+const Type *TypeTable::templateParam(int index) {
+    for (Type *d : derived_)
+        if (!d->isConst() && d->kind() == Kind::TemplateParam &&
+            d->length() == index)
+            return d;
+    derived_.push_back(new Type(Kind::TemplateParam, nullptr, index));
+    return derived_.back();
+}
+
 const Type *TypeTable::arrayOf(const Type *t, long long length) {
     for (Type *d : derived_)
         if (!d->const_ && d->kind() == Kind::Array && d->pointee() == t &&
@@ -284,6 +297,7 @@ const char *Type::name() const {
     case Kind::Array:     return "array";
     case Kind::Function:  return "function";
     case Kind::LValueRef: return "reference";
+    case Kind::TemplateParam: return "template parameter";
     }
     return "?";
 }

@@ -179,6 +179,50 @@ public:
         if (fn->isVariadicFn()) out += "z";
     }
 
+    // A function template specialization, mangled from the template's own
+    // signature and the arguments it was given - never from the substituted
+    // one, which cannot say where a type came from.
+    //
+    // **A specialization encodes its return type and an ordinary function
+    // does not**, which is the rule most likely to be guessed wrong: without
+    // it two specializations differing only in return type would share a
+    // symbol, and there is nothing else in the name to tell them apart.
+    void templateFunction(const std::string &name, const Type *pattern,
+                          const std::vector<TemplateArg> &args, bool internal) {
+        out = internal ? "_ZL" : "_Z";
+        out += std::to_string(name.size());
+        out += name;
+
+        // **The template name is substitution candidate zero.** Measured:
+        // `void f4(T, T)` with T=int is _Z2f4IiEvT_S0_, and the second T_ is
+        // S0_ - index one. Something occupies index zero before the arguments
+        // are written, and the only thing written by then is the name. The
+        // entry is a null because nothing ever matches it: 5.4 gives it a
+        // type when a specialization can appear inside another one.
+        subs_.push_back(nullptr);
+
+        out += 'I';
+        for (std::size_t i = 0; i < args.size(); i++) templateArgument(args[i]);
+        out += 'E';
+
+        type(pattern->returns());
+        const std::vector<const Type *> &params = pattern->params();
+        if (params.empty() && !pattern->isVariadicFn()) { out += "v"; return; }
+        for (const Type *p : params) type(p);
+        if (pattern->isVariadicFn()) out += "z";
+    }
+
+    // `Li3E` - the value, with its own type in front and `n` for a negative
+    // one. Measured: num<-11>() is _Z3numILin11EEiv.
+    void templateArgument(const TemplateArg &a) {
+        if (a.isType) { type(a.type); return; }
+        out += 'L';
+        type(a.type);
+        if (a.value < 0) { out += 'n'; out += std::to_string(-a.value); }
+        else             { out += std::to_string(a.value); }
+        out += 'E';
+    }
+
 private:
     std::vector<const Type *> subs_;
 
@@ -209,9 +253,24 @@ private:
         if (!ok) return;
         if (substituted(t)) return;
 
+        // **The qualifier comes first, and asking about it first is what
+        // makes `const T &` come out RKT_ rather than RT_.** A qualified copy
+        // of a template parameter still answers TemplateParam for its kind,
+        // so a branch on the kind placed above this one silently drops the K.
         if (qualifiedItself(t)) {
             out += 'K';
             type(t->unqualified());
+            subs_.push_back(t);
+            return;
+        }
+
+        // **`T_` is the first parameter and `T0_` the second** - the same
+        // seq-id shape the substitution table uses, and a candidate in that
+        // table itself, which is what makes the second mention of T an S.
+        if (t->kind() == Kind::TemplateParam) {
+            out += 'T';
+            if (t->length() > 0) out += std::to_string(t->length() - 1);
+            out += '_';
             subs_.push_back(t);
             return;
         }
@@ -346,6 +405,51 @@ public:
         if (params.empty() && !fn->isVariadicFn()) { out += "XZ"; return; }
         for (const Type *p : params) argument(p);
         out += fn->isVariadicFn() ? "ZZ" : "@Z";
+    }
+
+    // ??$twice@H@@YAHH@Z - `??$` where an ordinary function has `?`, then the
+    // template-id as one scope component, then the empty enclosing scope
+    // list, and from there an ordinary free function. The signature written
+    // is the *substituted* one: H for the return type where Itanium writes
+    // T_. Measured with cl.
+    void templateFunction(const std::string &name, const Type *fn,
+                          const std::vector<TemplateArg> &args) {
+        out = "??$";
+        templateId(name, args);
+        out += '@';               // the empty enclosing scope list
+        out += "YA";
+        returnType(fn->returns());
+        const std::vector<const Type *> &params = fn->params();
+        if (params.empty() && !fn->isVariadicFn()) { out += "XZ"; return; }
+        for (const Type *p : params) argument(p);
+        out += fn->isVariadicFn() ? "ZZ" : "@Z";
+    }
+
+    // **A template-id carries back-reference tables of its own.** Measured
+    // with cl: `T same(T)` at T=S is ??$same@US@@@@YA?AUS@@U0@, and the
+    // parameter's name back-reference 0 is the S the *return type* pushed -
+    // the S inside the argument list is invisible to the signature. So both
+    // tables are put aside, used fresh, and put back.
+    void templateId(const std::string &name,
+                    const std::vector<TemplateArg> &args) {
+        std::vector<std::string> outerNames;
+        std::vector<const Type *> outerArgs;
+        outerNames.swap(names_);
+        outerArgs.swap(args_);
+        pushName(name);
+        for (std::size_t i = 0; i < args.size(); i++) templateArgument(args[i]);
+        out += '@';               // closes the template-id
+        names_.swap(outerNames);
+        args_.swap(outerArgs);
+    }
+
+    // `$02` for 3, and `$0?4` for -5: `$0`, then a '?' if it is negative,
+    // then the magnitude through number(). Measured with cl.
+    void templateArgument(const TemplateArg &a) {
+        if (a.isType) { type(a.type); return; }
+        out += "$0";
+        if (a.value < 0) { out += '?'; number(-a.value); }
+        else             { number(a.value); }
     }
 
     // ?pub@C@@2HA - the name, the class, then the access as a digit and the
@@ -530,6 +634,27 @@ bool microsoftFunctionName(const std::string &name, const Type *fn, bool interna
     (void)internal;   // the Microsoft ABI spells an internal function the same
     Microsoft m;
     m.function(name, fn);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
+bool itaniumTemplateFunctionName(const std::string &name, const Type *pattern,
+                                 const std::vector<TemplateArg> &args,
+                                 bool internal,
+                                 std::string *out, std::string *problem) {
+    Itanium m;
+    m.templateFunction(name, pattern, args, internal);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
+bool microsoftTemplateFunctionName(const std::string &name, const Type *fn,
+                                   const std::vector<TemplateArg> &args,
+                                   std::string *out, std::string *problem) {
+    Microsoft m;
+    m.templateFunction(name, fn, args);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;

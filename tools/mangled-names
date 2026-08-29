@@ -32,6 +32,12 @@ trap 'rm -rf "$OUT"' EXIT
 # label. That is a difference in how a literal is stored rather than in how a
 # name is spelled, so it is left out here.
 #
+# **Only that one, though.** The exclusion used to be every name beginning
+# `??`, which is every constructor, destructor, `operator=`, deleting
+# destructor and function template specialization the Microsoft ABI spells -
+# so none of them was ever compared here. Narrowed to ??_C@ when function
+# templates arrived and the tool answered "0 names" for a file full of them.
+#
 # **An indirect call names no symbol**, so the two `call` rules below skip an
 # operand starting with '*'. Virtual dispatch is exactly that - `call *%r11` -
 # and without the guard the register was scraped as a name and reported as a
@@ -48,7 +54,7 @@ names() {
         -e 's/^[[:space:]]*callq[[:space:]][[:space:]]*\([^*][^[:space:]]*\).*/\1/p' \
         -e 's/^[[:space:]]*bl[[:space:]][[:space:]]*//p' "$1" |
     sed -e 's/"//g' -e 's/[:,].*//' -e 's/@PLT$//' -e 's/[[:space:]].*//' |
-    grep -vE '^$|^[.$]|^_*L|^l_|^@feat|^\?\?|_end_|_begin_|^_*main$' |
+    grep -vE '^$|^[.$]|^_*L|^l_|^@feat|^\?\?_C@|_end_|_begin_|^_*main$' |
     grep -vE '^_*stack_chk|^_*fltused$|^__real@|^__xmm@' |
     # MASM writes an indirect call as `call r11`, with no '*' to tell it from a
     # symbol - so the register names go here. The AT&T targets are handled by

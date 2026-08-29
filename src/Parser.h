@@ -2,6 +2,7 @@
 
 #include "Ast.h"
 #include "Lexer.h"
+#include "Mangle.h"
 #include "Type.h"
 
 #include <map>
@@ -117,9 +118,78 @@ private:
         bool isClass = false;
         bool defined = false;
         std::size_t start = 0;
+        // The token after the `>` that closed the parameter list, which is
+        // where the declaration proper begins. Instantiating is re-reading
+        // from here with the arguments bound.
+        std::size_t afterParams = 0;
         std::size_t pos = 0;
     };
     std::map<std::string, TemplateDecl> templates_;
+
+    // ---- Rung 5.2: function templates, explicit arguments ----
+    //
+    // One specialization that has been asked for. The body is not written
+    // where the call is - a call is in the middle of another function - so
+    // the request is recorded and the definitions are replayed afterwards, to
+    // a fixed point, the way the implicit special members already are.
+    struct Specialization {
+        std::string key;                    // "twice<int>", and the table key
+        std::string name;                   // "twice"
+        std::string symbol;
+        const Type *fn = nullptr;           // the substituted signature
+        std::vector<const Type *> binding;  // by parameter index
+        std::vector<long long> values;      // non-type arguments, same index
+        std::size_t start = 0;              // the template's own tokens
+        std::size_t pos = 0;                // where it was first asked for
+        bool emitted = false;
+    };
+    std::vector<Specialization> specializations_;
+    // Set while a specialization's definition is being replayed: the name the
+    // function must be given, and the symbol it must carry. One-shot, taken
+    // by the declarator that names the function.
+    std::string instantiationKey_;
+    std::string instantiationOf_;
+    // A `>` inside a template argument list closes it and is not an operator
+    // - [temp.names], and the reason a comparison there must be parenthesised.
+    // Cleared inside parentheses, where a `>` is an operator again.
+    bool inTemplateArgs_ = false;
+    const std::string &instantiationName(const std::string &name) const {
+        return (!instantiationKey_.empty() && name == instantiationOf_)
+                   ? instantiationKey_ : name;
+    }
+    ExprPtr templateCall(Program *program);
+    const Signature &instantiate(const TemplateDecl &decl,
+                                 const std::vector<const Type *> &binding,
+                                 const std::vector<long long> &values,
+                                 const std::vector<TemplateArg> &args,
+                                 std::size_t pos);
+    void instantiatePending();
+    // "twice<int>" - the table key and what the diagnostics call it.
+    std::string specializationKey(const std::string &name,
+                                  const std::vector<TemplateArg> &args) const;
+    // The template's declaration re-read with `binding` in force. Answers its
+    // function type and, through `name`, the name it declares.
+    const Type *readTemplateDeclaration(const TemplateDecl &decl,
+                                        const std::vector<const Type *> &binding,
+                                        const std::vector<long long> &values,
+                                        std::string *name);
+    // What a binding does to the two name tables, and how to put them back.
+    struct Shadow {
+        std::string name;
+        bool isType = true;
+        bool had = false;
+        std::size_t was = 0;
+    };
+    void bindTemplateParameters(const TemplateDecl &decl,
+                                const std::vector<const Type *> &binding,
+                                const std::vector<long long> &values,
+                                std::vector<Shadow> *undo);
+    void unbindTemplateParameters(const std::vector<Shadow> &undo);
+    // The argument list at a use: `<int, 3>` read into types and values.
+    void templateArguments(const TemplateDecl &decl,
+                           std::vector<const Type *> *binding,
+                           std::vector<long long> *values,
+                           std::vector<TemplateArg> *args);
     bool isTemplateName(const std::string &name) const {
         return templates_.find(name) != templates_.end();
     }

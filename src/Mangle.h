@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 class Type;
 
@@ -24,6 +25,43 @@ class Type;
 // them, and takes the flag only so the two can be called the same way.
 bool itaniumFunctionName(const std::string &name, const Type *fn, bool internal,
                          std::string *out, std::string *problem);
+
+// One template argument as a name needs it: a type, or a value of a type.
+// `type` is the argument itself for a type argument and the *parameter's*
+// type for a non-type one, because that is what both ABIs write beside the
+// value - Itanium `Li3E`, Microsoft `$02`.
+struct TemplateArg {
+    const Type *type = nullptr;
+    bool isType = true;
+    long long value = 0;
+};
+
+// A function template specialization. The two ABIs want two different things
+// here and the difference is not cosmetic:
+//
+// **Itanium is given the template's PATTERN** - `T twice(T)`, with the
+// parameters still in it as Kind::TemplateParam - because the name it writes
+// spells `T_` where the parameter came from a template parameter, and the
+// substituted signature has lost all record of that. It also encodes a return
+// type, which an ordinary function's name does not. Measured:
+// `_Z5twiceIiET_S0_`, and `_Z2f4IiEvT_S0_` for `void f4(T, T)`, whose second
+// `T_` is `S0_` and not `S_` - the template *name* is substitution candidate
+// zero.
+//
+// **Microsoft is given the substituted signature**, which is what it spells:
+// `??$twice@H@@YAHH@Z` writes H for the return type where Itanium writes T_.
+// Its template-id carries back-reference tables of its own - measured with
+// cl on `??$same@US@@@@YA?AUS@@U0@`, where the parameter's name
+// back-reference 0 is the S the *return type* pushed, not the S written
+// inside the argument list.
+bool itaniumTemplateFunctionName(const std::string &name, const Type *pattern,
+                                 const std::vector<TemplateArg> &args,
+                                 bool internal,
+                                 std::string *out, std::string *problem);
+
+bool microsoftTemplateFunctionName(const std::string &name, const Type *fn,
+                                   const std::vector<TemplateArg> &args,
+                                   std::string *out, std::string *problem);
 
 bool microsoftFunctionName(const std::string &name, const Type *fn, bool internal,
                            std::string *out, std::string *problem);
