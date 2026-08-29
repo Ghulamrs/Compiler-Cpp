@@ -1,0 +1,15 @@
+build 1
+destroy 1
+caught 1
+---
+build 1
+build 2
+destroy 2
+destroy 1
+caught 10
+---
+build 1
+build 2
+nothing thrown
+destroy 2
+destroy 1

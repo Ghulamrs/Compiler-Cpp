@@ -1,0 +1,1 @@
+x86_64-windows  cxx1 makes no cleanup regions for this target and `throw` is refused there - the Microsoft tables are rung 6.5

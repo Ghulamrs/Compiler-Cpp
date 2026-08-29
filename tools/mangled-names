@@ -15,13 +15,6 @@ set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SRC=$1
-# Exceptions off unless the case uses them - see the note beside the clang
-# invocation below.
-if grep -qE '(^|[^A-Za-z_])(throw|try)([^A-Za-z_]|$)' "$1"; then
-    EH=-fexceptions
-else
-    EH=-fno-exceptions
-fi
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 
@@ -51,6 +44,14 @@ trap 'rm -rf "$OUT"' EXIT
 # subsections_via_symbols cuts the section there - which is why it shows up
 # here at all - and cxx1 and clang have no reason to spell it alike.
 #
+# `__clang_call_terminate` and the `_ZSt9terminatev` it calls are excluded for
+# a third reason, and it is a real gap rather than a spelling: they are the
+# guard clang emits for a destructor that throws while an exception is already
+# unwinding. cxx1 emits no such guard - `noexcept` is not implemented and a
+# destructor that throws during unwinding would simply escape - so the two
+# names are a feature difference, recorded here rather than argued with on
+# every case that has a destructor.
+#
 # **An indirect call names no symbol**, so the two `call` rules below skip an
 # operand starting with '*'. Virtual dispatch is exactly that - `call *%r11` -
 # and without the guard the register was scraped as a name and reported as a
@@ -67,7 +68,7 @@ names() {
         -e 's/^[[:space:]]*callq[[:space:]][[:space:]]*\([^*][^[:space:]]*\).*/\1/p' \
         -e 's/^[[:space:]]*bl[[:space:]][[:space:]]*//p' "$1" |
     sed -e 's/"//g' -e 's/[:,].*//' -e 's/@PLT$//' -e 's/[[:space:]].*//' |
-    grep -vE '^$|^[.$]|^_*L|^l_|^@feat|^\?\?_C@|^GCC_except_table|_end_|_begin_|^_*main$' |
+    grep -vE '^$|^[.$]|^_*L|^l_|^@feat|^\?\?_C@|^GCC_except_table|^_*__clang_call_terminate$|^_*_ZSt9terminatev$|_end_|_begin_|^_*main$' |
     grep -vE '^_*stack_chk|^_*fltused$|^__real@|^__xmm@' |
     # MASM writes an indirect call as `call r11`, with no '*' to tell it from a
     # symbol - so the register names go here. The AT&T targets are handled by
@@ -107,25 +108,28 @@ for pair in "x86_64-linux:x86_64-linux-gnu" \
         status=1
         continue
     fi
-    # **-fno-exceptions, and it is about the comparison rather than the code.**
-    # A class with a destructor makes clang emit a cleanup path - the
-    # personality routine, .gcc_except_table, _Unwind_Resume - and cxx1 has no
-    # exceptions until rung 6, so those symbols would read as a disagreement
-    # about names when they are a difference in features. Turning them off asks
-    # clang the question this tool is actually asking. Mangling is unchanged by
-    # the flag; only the cleanup machinery goes.
+    # **-fexceptions, and that was the other way round until rung 6.4.**
+    # It used to be -fno-exceptions: a class with a destructor made clang emit
+    # a cleanup path - the personality routine, .gcc_except_table,
+    # _Unwind_Resume - and cxx1 had none of that, so the symbols read as a
+    # disagreement about names when they were a difference in features.
     #
-    # **Except where the case itself throws.** A file that writes `throw` or
-    # `try` cannot be compiled with exceptions off at all, and one that does
-    # write them is asking for exactly the symbols this flag was hiding. So
-    # the flag is chosen from the source: it is about what the two compilers
-    # are being asked to do, not a setting the tool has an opinion about.
+    # cxx1 emits those cleanups now, so the flag would hide *its* work
+    # instead. Asking both compilers for the same language is the only
+    # comparison worth making, and it is the one that would have caught a
+    # missing cleanup rather than excusing it.
+    #
+    # **Windows is still asked with them off**, and that is not an oversight:
+    # cxx1 makes no cleanup regions for that target - rung 6.5 - so asking
+    # clang for MSVC's EH funclets there would compare a feature cxx1 has
+    # against one it does not.
     #
     # **-fno-rtti is the same argument again**, and it arrived with vtables: a
     # polymorphic class makes clang emit _ZTI and _ZTS - the typeinfo object
     # and its name string - and cxx1 has no RTTI at all, refusing `typeid` by
     # name. Under -fno-rtti clang writes a plain 0 in the vtable's typeinfo
     # slot, which is exactly what cxx1 writes.
+    if [ "$theirs" = x86_64-pc-windows-msvc ]; then EH=-fno-exceptions; else EH=-fexceptions; fi
     if ! clang++ -x c++ -std=c++11 $EH -fno-rtti -w -target "$theirs" -S "$SRC" -o "$OUT/theirs.s" \
                  2>"$OUT/theirs.err"; then
         echo "$mine: clang refused it, so there is nothing to compare against"

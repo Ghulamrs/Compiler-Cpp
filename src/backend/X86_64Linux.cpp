@@ -1247,7 +1247,8 @@ void X86_64Linux::emitLsda(const std::string &symbol) {
         o += "  .uleb128 " + c.begin + "-" + fnBegin + "\n";
         o += "  .uleb128 " + c.end + "-" + c.begin + "\n";
         o += "  .uleb128 " + c.pad + "-" + fnBegin + "\n";
-        o += "  .uleb128 " + std::to_string(action) + "\n";
+        o += "  .uleb128 " +
+             std::to_string(c.types.empty() ? 0 : action) + "\n";
         action += 2 * static_cast<int>(c.types.size());
         at = c.end;
     }

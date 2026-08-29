@@ -102,7 +102,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
-| 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.3 **done**, 2026-08-29 |
+| 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.4 **done**, 2026-08-29 |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
@@ -1432,14 +1432,61 @@ type_info pointer was the whole of the work.
 **6.3 has landed** - see its section below. It was the largest step, and all
 three of its bugs were silent.
 
-**6.4 - cleanups.** A destructor has to run when an exception passes a local,
-which means a landing pad that runs them and calls `_Unwind_Resume`. The set
-of live objects is already tracked - `alive_` is what a `return` unwinds - so
-what is new is reaching it from a pad rather than from the return path.
+**6.4 has landed** - see its section below. The prediction was right: `alive_`
+was the whole of the bookkeeping, and what was new was where the code runs
+from.
 
 **6.5 - Windows.** `__CxxFrameHandler4` and MSVC's own tables, which are a
 different design from the Itanium one rather than a different spelling of it.
 Expect this to lag and do not promise otherwise.
+
+### 6.4 as it actually landed
+
+**The objects are the ones a `return` already unwinds.** `alive_` holds them
+and nothing new had to track them; the difference is only where the code runs
+from - a landing pad rather than the return path, ending in `_Unwind_Resume`
+rather than in a return. A cleanup region is a `Try` with an empty type list,
+which is what makes the call-site table write action 0.
+
+**One region per stretch, and the stretches do not overlap.** Two objects give
+two ranges - after the first, after the second - each with a pad that destroys
+exactly what exists by then. An exception thrown before the second is built
+must not destroy it, and a call-site table holds sorted disjoint ranges, so
+they are *split* rather than nested. The statements that do the constructing
+are outside every region on purpose: an exception from a constructor leaves
+that object unbuilt.
+
+**A `Try`'s body became a list rather than a block**, because a cleanup region
+covers a slice of an enclosing block's statements and must not open a scope of
+its own - the objects it destroys belong to the block outside it.
+
+**The bug worth keeping: resizing a vector down and back up is not undo.**
+The first pad bounded its destructor list by shrinking `alive_` and restoring
+the size afterwards, which default-constructs what it threw away - so the
+*second* pad destroyed an object with no class and silently ran one destructor
+short. `emitDestructors` takes an upper bound now and mutates nothing.
+
+**Refused by name: a local with a destructor and a `try` in one function.**
+Each is a range in the same call-site table and one would have to split the
+other, which is the same reason a nested `try` is refused.
+
+**Windows makes no cleanup regions and needs none**: `throw` is refused for
+that target, so nothing can unwind through one of its frames, and the
+destructors on the normal path are unchanged. Making them anyway would have
+put a landing pad in a backend whose tables cannot describe one - which is
+exactly what happened for one build, and `.Lfunc.begin.main` reaching ml64 is
+what said so.
+
+**`tools/mangled-names` asks with `-fexceptions` now** for the two Itanium
+targets, where it used to ask with them off. The flag was hiding a feature
+clang had and cxx1 did not; now it would hide cxx1's own work. Windows is
+still asked with them off, for the same reason turned round. Two names are
+excluded rather than argued with on every case that has a destructor:
+`__clang_call_terminate` and `_ZSt9terminatev`, the guard clang emits for a
+destructor that throws while an exception is already unwinding - cxx1 emits no
+such guard, which is a real gap and not a spelling.
+
+Suites 90 / 141 / 48.
 
 ### 6.3 as it actually landed
 

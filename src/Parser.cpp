@@ -3456,9 +3456,74 @@ ExprPtr Parser::destructorCall(ExprPtr address, const Signature &dtor,
 // last first, which is the order the standard fixes and the only order that
 // can be right when one object's destructor may read another that was built
 // before it.
+// **One region per stretch, and the stretches do not overlap.** Objects a, b
+// and c built in that order give three ranges - after a, after b, after c -
+// and each pad destroys exactly what exists by then. That is what lets a
+// call-site table hold them: sorted and disjoint, where nesting them would
+// not be.
+//
+// The statements that *do* the constructing are outside every region on
+// purpose: an exception from a constructor leaves that object unbuilt, and
+// the region before it destroys what came earlier.
+std::vector<StmtPtr> Parser::wrapCleanups(
+    std::vector<StmtPtr> body,
+    const std::vector<std::pair<std::size_t, std::size_t> > &built,
+    std::size_t aliveAtEntry, std::size_t pos) {
+    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+    const int pointerSlot = allocateFrameSlot(voidPtr);
+    const int selectorSlot = allocateFrameSlot(types_.intType());
+    functionHasPads_ = true;
+
+    std::vector<StmtPtr> out;
+    for (std::size_t i = 0; i < built[0].first; i++)
+        out.push_back(std::move(body[i]));
+
+    for (std::size_t k = 0; k < built.size(); k++) {
+        const std::size_t from = built[k].first;
+        const std::size_t to = k + 1 < built.size() ? built[k + 1].first
+                                                    : body.size();
+        std::vector<StmtPtr> guarded;
+        for (std::size_t i = from; i < to; i++) guarded.push_back(std::move(body[i]));
+        if (guarded.empty()) continue;
+        out.push_back(StmtPtr(new Try(
+            std::move(guarded),
+            cleanupPad(aliveAtEntry, built[k].second, pointerSlot, pos),
+            pointerSlot, selectorSlot, std::vector<std::string>())));
+    }
+    return out;
+}
+
+// **What an exception has to do on its way out of a scope.** The objects are
+// the same ones a `return` unwinds - `alive_` holds them and nothing new had
+// to track them - and the only difference is where the code runs from: a
+// landing pad rather than the return path, ending in _Unwind_Resume rather
+// than in a return.
+StmtPtr Parser::cleanupPad(std::size_t from, std::size_t to, int pointerSlot,
+                           std::size_t pos) {
+    // **Bounded rather than truncated.** Resizing `alive_` down and back up
+    // would default-construct what it had thrown away, and the second pad
+    // would then destroy an object with no class - silently one destructor
+    // short.
+    std::vector<StmtPtr> steps;
+    emitDestructors(steps, from, pos, -1, to);
+
+    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+    std::vector<ExprPtr> args;
+    ExprPtr ptr(Var::local(".ex.ptr", pointerSlot));
+    ptr->setType(voidPtr);
+    args.push_back(std::move(ptr));
+    steps.push_back(StmtPtr(new ExprStmt(
+        runtimeCall("_Unwind_Resume", types_.get(Kind::Void), std::move(args)))));
+
+    Block *b = new Block(std::move(steps));
+    b->setScope(-1);
+    return StmtPtr(b);
+}
+
 void Parser::emitDestructors(std::vector<StmtPtr> &into, std::size_t from,
-                             std::size_t pos, int except) {
-    for (std::size_t i = alive_.size(); i > from; i--) {
+                             std::size_t pos, int except, std::size_t to) {
+    if (to > alive_.size()) to = alive_.size();
+    for (std::size_t i = to; i > from; i--) {
         const Alive &a = alive_[i - 1];
         if (except >= 0 && a.offset == except && !a.byAddress) continue;
         const Signature *dtor = destructorOf(a.cls);
@@ -8136,16 +8201,39 @@ StmtPtr Parser::block() {
     bool isBody = atFunctionBody_;
     atFunctionBody_ = false;
     int scope = isBody ? 0 : enterBlock();
+    // **Where each object became alive**, as a statement index and how many
+    // objects were alive after it. A cleanup region runs from one of these to
+    // the next, and destroys exactly what was built by then - which is why
+    // the ranges are split rather than one region for the whole block: an
+    // exception thrown before the second object exists must not destroy it.
+    std::vector<std::pair<std::size_t, std::size_t> > built;
     std::vector<StmtPtr> body;
     while (!peek().is("}")) {
         if (peek().kind == TokenKind::End)
             src_.fail(peek().pos, "unclosed '{'");
+        const std::size_t aliveBefore = alive_.size();
         body.push_back(atDeclarationStart() ? declaration() : statement());
+        if (alive_.size() > aliveBefore)
+            built.push_back(std::make_pair(body.size(), alive_.size()));
     }
+
     // Everything this block constructed is destroyed here, last first. The
     // objects are found by where they are in `alive_` rather than by walking
     // the block again: what a scope built is exactly what it added.
     emitDestructors(body, aliveAtEntry, peek().pos);
+
+    // **Windows makes no cleanup regions and needs none.** `throw` is refused
+    // for that target, so nothing can unwind through one of its frames, and
+    // the destructors on the normal path are unchanged. Making them anyway
+    // would put a landing pad in a backend whose tables cannot describe one.
+    if (!built.empty() && !target_.microsoftNames()) {
+        if (functionHasTry_ || inTryBody_)
+            src_.fail(pos, "a local with a destructor and a 'try' in one "
+                           "function is not supported yet - each is a range in "
+                           "the call-site table and one would have to split "
+                           "the other");
+        body = wrapCleanups(std::move(body), built, aliveAtEntry, pos);
+    }
     alive_.resize(aliveAtEntry);
 
     expect("}");
@@ -8183,6 +8271,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         src_.fail(pos, "'try' is not supported yet for x86_64-windows - the "
                        "Microsoft ABI's tables are a different design and not "
                        "a different spelling of this one");
+    functionHasTry_ = true;
     if (inTryBody_)
         src_.fail(pos, "a 'try' inside another one is not supported yet - the "
                        "call-site table holds sorted ranges that do not "
@@ -8311,7 +8400,9 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                                std::move(chain)));
     }
 
-    return StmtPtr(new Try(std::move(body), std::move(chain), pointerSlot,
+    std::vector<StmtPtr> guarded;
+    guarded.push_back(std::move(body));
+    return StmtPtr(new Try(std::move(guarded), std::move(chain), pointerSlot,
                            selectorSlot, std::move(types)));
 }
 
@@ -9141,6 +9232,7 @@ void Parser::topLevel(Program &program) {
     program.functions.back().setHasLandingPads(functionHasPads_);
     functionHasPads_ = false;
     functionTypeIndex_ = 0;
+    functionHasTry_ = false;
     // A constructor is emitted under both of Itanium's names: C1 for a
     // complete object, C2 for a base subobject, the second as a label in front
     // of the first. The Microsoft ABI has one name and wants no alias.

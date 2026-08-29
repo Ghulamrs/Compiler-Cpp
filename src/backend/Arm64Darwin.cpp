@@ -386,7 +386,9 @@ void Arm64Darwin::emitLsda(const std::string &symbol) {
         out_ << "  .uleb128 " << c.begin << "-" << fnBegin << "\n";
         out_ << "  .uleb128 " << c.end << "-" << c.begin << "\n";
         out_ << "  .uleb128 " << c.pad << "-" << fnBegin << "\n";
-        out_ << "  .uleb128 " << action << "\n";
+        // No handler at all is a *cleanup*: the pad runs destructors and
+        // hands the exception back, and action 0 is how the table says so.
+        out_ << "  .uleb128 " << (c.types.empty() ? 0 : action) << "\n";
         action += 2 * static_cast<int>(c.types.size());
         at = c.end;
     }

@@ -654,8 +654,21 @@ private:
     std::vector<Alive> alive_;
     // `except` is the frame offset of an object not to destroy - the one
     // being returned, which the caller destroys instead.
+    // A cleanup region's landing pad: destroy alive_[from..to), last first,
+    // and hand the exception back to the unwinder.
+    StmtPtr cleanupPad(std::size_t from, std::size_t to, int pointerSlot,
+                       std::size_t pos);
+    // The block's statements with each stretch that has objects alive turned
+    // into a cleanup region of its own.
+    std::vector<StmtPtr> wrapCleanups(
+        std::vector<StmtPtr> body,
+        const std::vector<std::pair<std::size_t, std::size_t> > &built,
+        std::size_t aliveAtEntry, std::size_t pos);
+    // `to` bounds the top of the range, for a cleanup pad that must destroy
+    // only what existed at its point in the block.
     void emitDestructors(std::vector<StmtPtr> &into, std::size_t from,
-                         std::size_t pos, int except = -1);
+                         std::size_t pos, int except = -1,
+                         std::size_t to = static_cast<std::size_t>(-1));
     StmtPtr constructLocal(const Declared &d, int offset,
                            std::vector<ExprPtr> args);
 
@@ -770,6 +783,11 @@ private:
     // what its comparisons are written against - the backend assigns the same
     // numbers in the same order, which is the order the tries were read.
     int functionTypeIndex_ = 0;
+    // Set where a function writes a `try`. A cleanup region is a call site
+    // too, and a call-site table holds sorted ranges that do not overlap - so
+    // one inside a try, or a try inside one, is refused until the table can
+    // split a range rather than nest it.
+    bool functionHasTry_ = false;
     // `throw x;` - rung 6.2. Answers the statement it lowers to.
     StmtPtr throwStatement(ExprPtr value, std::size_t pos);
     // A call to something in the runtime, named by its symbol and needing no

@@ -1,0 +1,1 @@
+x86_64-linux  C1 and C2 do the same thing where no base is virtual, so clang calls C2 at the complete-object site and emits no C1 or D1; cxx1 emits both of Itanium's forms - see docs/CONFORMANCE.md, "An inline member function is a strong symbol". Darwin keeps both, which is why only this target differs

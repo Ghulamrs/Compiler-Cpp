@@ -202,7 +202,7 @@ void Walker::visit(const Try &n) {
     const std::string done = label("caught", id);
 
     defineLabel(begin);
-    n.body().accept(*this);
+    for (std::size_t i = 0; i < n.body().size(); i++) n.body()[i]->accept(*this);
     defineLabel(end);
     jump(done);
 

@@ -488,22 +488,28 @@ struct Param {
 //     were written against.
 //
 // An empty symbol is `catch (...)`, which matches everything and is why it
-// has to be last.
+// has to be last. **An empty *list* is a cleanup**: a region with no handler
+// at all, whose pad destroys what has been built and hands the exception back
+// to the unwinder.
 class Try final : public Stmt {
 public:
-    Try(StmtPtr body, StmtPtr pad, int pointerSlot, int selectorSlot,
-        std::vector<std::string> types)
+    // The body is a *list* rather than a block, because a cleanup region
+    // covers a slice of an enclosing block's statements and must not open a
+    // scope of its own - the objects it destroys belong to the block outside
+    // it.
+    Try(std::vector<StmtPtr> body, StmtPtr pad, int pointerSlot,
+        int selectorSlot, std::vector<std::string> types)
         : body_(std::move(body)), pad_(std::move(pad)),
           pointerSlot_(pointerSlot), selectorSlot_(selectorSlot),
           types_(std::move(types)) {}
-    const Stmt &body() const { return *body_; }
+    const std::vector<StmtPtr> &body() const { return body_; }
     const Stmt &pad() const { return *pad_; }
     int pointerSlot() const { return pointerSlot_; }
     int selectorSlot() const { return selectorSlot_; }
     const std::vector<std::string> &types() const { return types_; }
     void accept(Visitor &v) const override { v.visit(*this); }
 private:
-    StmtPtr body_;
+    std::vector<StmtPtr> body_;
     StmtPtr pad_;
     int pointerSlot_;
     int selectorSlot_;
