@@ -868,10 +868,26 @@ StmtPtr Parser::statement() {
 // The chain is nested if/else rather than labels and jumps, because that is a
 // shape the backends already walk.
 StmtPtr Parser::tryStatement(std::size_t pos) {
-    if (target_.microsoftNames())
+    // **The two ABIs disagree about who picks the handler**, so this reads one
+    // grammar and builds two shapes. Itanium hands the frame an exception
+    // pointer and a selector and lets the frame's own code decide, which is
+    // the if/else chain below. Microsoft decides in the runtime, from tables,
+    // and *calls* the chosen handler as a function of its own - so there the
+    // handlers are kept whole and none of __cxa_begin_catch, the selector or
+    // _Unwind_Resume is built at all.
+    const bool microsoft = target_.microsoftNames();
+    // **Refused until the frame is the right shape, and that is measured.**
+    // Everything below builds, and on Windows it emits funclets, the FH3
+    // tables and unwind data the assembler and linker accept - a `try` that
+    // does not throw runs correctly there. A throw dies at 0xC0000409,
+    // because the FuncInfo's offsets cannot describe this frame: see the
+    // rung 6.5b section in CLAUDE.md. Letting it through would compile a
+    // program that ends itself the first time it is right about anything.
+    if (microsoft)
         src_.fail(pos, "'try' is not supported yet for x86_64-windows - the "
-                       "Microsoft ABI's tables are a different design and not "
-                       "a different spelling of this one");
+                       "handler funclets and their tables are emitted, and "
+                       "the frame they describe is not the one this target "
+                       "builds yet; see rung 6.5b");
     functionHasTry_ = true;
     if (inTryBody_)
         src_.fail(pos, "a 'try' inside another one is not supported yet - the "
@@ -901,6 +917,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         StmtPtr stmt;
     };
     std::vector<Handler> handlers;
+    std::vector<MsHandler> msHandlers;
     std::vector<int> indices;
     std::vector<std::string> types;
     bool sawCatchAll = false;
@@ -941,6 +958,42 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         const int scope = enterBlock();
         std::vector<StmtPtr> steps;
 
+        // **The Microsoft handler is the block and nothing else.** The runtime
+        // has already chosen it, already made the caught object in the frame
+        // slot the table names, and will end the catch itself when the funclet
+        // returns - so every one of the three calls the Itanium shape wraps
+        // the body in has a counterpart that is not this frame's business.
+        if (microsoft) {
+            MsHandler mh;
+            if (caught != nullptr) {
+                MicrosoftThrow names;
+                std::string why;
+                if (!microsoftThrowNames(caught, caught->size(target_),
+                                         &names, &why))
+                    src_.fail(cpos, "'catch' cannot name this type: " + why);
+                mh.descriptor = names.descriptor;
+                mh.objectSize = caught->size(target_);
+                // The descriptor is emitted by the same pass that emits a
+                // thrown type's, so a type that is only ever *caught* has to
+                // join that list or the handler map would name a symbol
+                // nothing defines.
+                bool had = false;
+                for (std::size_t k = 0; k < current_->thrown.size(); k++)
+                    if (current_->thrown[k] == caught) had = true;
+                if (!had) current_->thrown.push_back(caught);
+                if (!caughtName.empty())
+                    mh.objectSlot = declare(caughtName, caught, cpos);
+            }
+            if (!peek().is("{")) src_.fail(peek().pos, "'catch' takes a block");
+            const bool wasInHandler = inMsHandler_;
+            inMsHandler_ = true;
+            mh.body = block();
+            inMsHandler_ = wasInHandler;
+            leaveScope();
+            msHandlers.push_back(std::move(mh));
+            continue;
+        }
+
         std::vector<ExprPtr> beginArgs;
         ExprPtr ptr(Var::local(".ex.ptr", pointerSlot));
         ptr->setType(voidPtr);
@@ -975,6 +1028,21 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         b->setScope(scope);
         h.stmt = StmtPtr(b);
         handlers.push_back(std::move(h));
+    }
+
+    // Microsoft: no chain to build, because nothing in this frame chooses.
+    if (microsoft) {
+        std::vector<StmtPtr> guardedMs;
+        guardedMs.push_back(std::move(body));
+        Try *t = new Try(std::move(guardedMs), nullptr, pointerSlot,
+                         selectorSlot, std::move(types));
+        t->setHandlers(std::move(msHandlers));
+        // The runtime's scratch word, which the personality routine finds
+        // through the FuncInfo's dispUnwindHelp and the parent sets to -2 on
+        // entry. A frame slot like any other, so that the whole of where it
+        // lives is decided by the code that decides where locals live.
+        t->setUnwindHelpSlot(allocateFrameSlot(voidPtr));
+        return StmtPtr(t);
     }
 
     // Nothing matched: hand it back to the unwinder.
@@ -1025,6 +1093,12 @@ StmtPtr Parser::statementBody() {
         return throwStatement(std::move(value), tpos);
     }
 
+    if (peek().is("return") && inMsHandler_)
+        src_.fail(peek().pos, "'return' inside a 'catch' is not supported yet "
+                              "for x86_64-windows - a handler is compiled as a "
+                              "function of its own there, and leaving it means "
+                              "handing back the address to carry on at in the "
+                              "register a return value would travel in");
     if (consume("return")) {
         std::size_t pos = peek().pos;
         if (consume(";")) {

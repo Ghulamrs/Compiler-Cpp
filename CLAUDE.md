@@ -1706,6 +1706,61 @@ in `rax`. Because cxx1 addresses every local as `[rbp-N]`, a handler body
 compiles inside a funclet exactly as it would inline, which is the one thing
 about this that is easier here than it looks.
 
+### 6.5b steps 2 and 3 as they stand: emitted, and the frame is wrong
+
+**What works on the Windows box.** Handler funclets are emitted in `text$x`
+with unwind data of their own naming `__CxxFrameHandler3` and the parent's
+FuncInfo; the parent's UNWIND_INFO carries the handler flags and the FuncInfo
+pointer; and the four FH3 tables are written. It assembles, links, and **a
+`try` that does not throw runs correctly** - `before / no throw / after`,
+exit 0. So the shape is right and nothing about it disturbs the ordinary path.
+
+**A throw dies at 0xC0000409**, and the cause is measured rather than
+suspected. It is the thing the plan said would be wrong first.
+
+**Where the establisher frame is, when there is a frame register.** Windows
+computes it as `rbp - FrameOffset*16`, and every `disp` in the FuncInfo -
+`dispUnwindHelp`, `dispCatchObj` - is a *positive* offset up from there.
+Measured twice with cl:
+
+| | cl, no frame pointer | cl, `_alloca` forces one | cxx1 |
+| --- | --- | --- | --- |
+| prologue | `sub rsp,56` | `push rbp; sub rsp,64; lea rbp,[rsp+32]` | `push rbp; mov rbp,rsp; sub rsp,N` |
+| FrameOffset | none | 2, so `rbp = rsp_after + 32` | 0 |
+| establisher | `rsp_after` | `rbp - 32` = `rsp_after` | **`rbp - 0` = `rbp`** |
+| a local | `$T2` at `[rsp+40]` | `$T2` at `[rbp+16]` | at `[rbp-k]` |
+| its disp | 40 | 48 = 16 + 32 | **-k** |
+
+**cl's locals are above the establisher and cxx1's are below it.** cxx1 takes
+`rbp` *before* allocating the frame, so every local is at a negative offset
+from the establisher and a FuncInfo cannot say so - the fields are unsigned
+displacements. `disp = frameSize - slot`, which is what is emitted now,
+describes a frame this compiler does not build.
+
+**The fix is a change to the Windows frame, not to the tables.** The prologue
+has to become `push rbp; sub rsp,N; mov rbp,rsp`, so that `rbp` *is* the
+establisher and FrameOffset stays 0 honestly; and every local on that target
+then has to be addressed `[rbp + (frameSize - slot)]` rather than `[rbp -
+slot]`. That is one change in the prologue and one in how the Windows backend
+spells a frame slot, and it touches every function on the target rather than
+only the ones with a `try` - so it wants the whole suite behind it, which is
+the same argument step 1 made for writing unwind data for every function.
+
+**`try` is refused on this target until then**, deliberately: what is there
+now compiles a program that ends itself the first time an exception is
+thrown, which is worse than saying no.
+
+**One bug found and fixed on the way, worth not repeating.** The funclet's own
+`sub rsp, 32` was written as unwind code `042H`. `UWOP_ALLOC_SMALL` is 2 with
+`(size/8 - 1)` in the high nibble, so 32 bytes is `032H`; `042H` claims 40 and
+leaves anything unwinding *through* a handler landing in the wrong place.
+
+**`tools/windows/catch-check.cmd`** is the check this rung is for, and the
+mirror of `throw-check.cmd`: that one has cl catch what cxx1 threw and says
+nothing about this frame, while this compiles both halves with cxx1 and so
+tests the funclet, the tables and the unwind data together. It either prints
+what it should or the program ends.
+
 ### 6.5b step 1 as it actually landed: unwind data by hand
 
 **Four assembler rules, each found by being stopped by it**, and none of them

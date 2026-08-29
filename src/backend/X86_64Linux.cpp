@@ -1353,12 +1353,14 @@ void X86_64Linux::emit(const Function &fn) {
         dwarfFns_.push_back(d);
         resetBlocks(fn.blocks());
         a_->defLabel(d.begin);
-    } else if (fn.hasLandingPads()) {
+    } else if (fn.hasLandingPads() && !usesFunclets()) {
         // The call-site table measures from here, whether or not there is
-        // debug information.
+        // debug information. A funclet target has no call-site table and no
+        // use for the label - and MASM will not take one shaped like this.
         a_->defLabel(".Lfunc.begin." + fn.symbol());
     }
     clearCallSites();
+    clearMsTries();
 
     markLine(fn.pos());
     a_->prologue(fn.frameSize(),
@@ -1497,10 +1499,10 @@ void X86_64Linux::emit(const Function &fn) {
     a_->ins("pop", reg("%rbp"));
     a_->ins("ret");
     // Before .cfi_endproc, because the last call-site range measures to it.
-    if (!lineSource() && !callSites().empty())
+    if (!lineSource() && !callSites().empty() && !usesFunclets())
         a_->defLabel(".Lfunc.end." + fn.symbol());
     a_->functionEnd(fn.symbol());
-    if (!callSites().empty()) emitLsda(fn.symbol());
+    emitExceptionTables(fn);
     if (lineSource()) {
         a_->defLabel(".Lfunc.end." + fn.symbol());
 

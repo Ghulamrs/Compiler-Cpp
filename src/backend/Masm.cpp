@@ -277,10 +277,18 @@ void MasmSpelling::functionBegin(const std::string &name, bool exported) {
     o_ += "$LNbeg$"; o_ += mangle(name); o_ += ":\n";
 }
 
+void MasmSpelling::raw(const std::string &text) {
+    flushPending();
+    o_ += text;
+}
+
 void MasmSpelling::prologue(int frameSize, const std::string &lsda) {
-    // Windows has no landing pads yet - the parser refuses `try` for this
-    // target - so nothing names a handler here.
-    (void)lsda;
+    // The caller passes a non-empty name when the function has handlers. What
+    // it *is* does not matter here - Itanium's exception-table label means
+    // nothing to MASM - only that there is one, which decides the flags in
+    // the unwind header and whether a FuncInfo follows the codes.
+    hasEh_ = !lsda.empty();
+    frameSize_ = frameSize;
     const std::string m = mangle(fnName_);
 
     o_ += "  push rbp\n";
@@ -351,17 +359,29 @@ void MasmSpelling::functionEnd(const std::string &name) {
     // stood when it was set. The codes are last-first, which is the order an
     // unwinder undoes them in.
     o_ += ".xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
-    o_ += "$unwind$" + m + " DB 01H\n";
+    // Version 1, and the flags in the top five bits. 0x19 is version 1 with
+    // UNW_FLAG_EHANDLER and UNW_FLAG_UHANDLER, which is what cl writes for a
+    // function with a `try` - measured. Without them the runtime unwinds
+    // straight past the frame and never looks at the FuncInfo.
+    o_ += "$unwind$" + m + (hasEh_ ? " DB 019H\n" : " DB 01H\n");
     o_ += "  DB $LNprolog$" + m + "-$LNbeg$" + m + "\n";
     o_ += "  DB " + std::to_string(unwindCodes_) + "\n";
     o_ += "  DB 05H\n";
     o_ += unwindData_;
+    // The codes are padded to an even count, and the handler pointers go
+    // after that padding rather than after the codes.
     if (unwindCodes_ % 2 != 0) o_ += "  DW 0\n";
+    if (hasEh_) {
+        referenced_.insert("__CxxFrameHandler3");
+        o_ += "  DD imagerel __CxxFrameHandler3\n";
+        o_ += "  DD imagerel $cppxdata$" + m + "\n";
+    }
     o_ += ".xdata ENDS\n\n";
     o_ += ".CODE\n";
 
     unwindData_.clear();
     unwindCodes_ = 0;
+    hasEh_ = false;
 }
 
 void MasmSpelling::globl(const std::string &name) { exported_.insert(name); }
@@ -503,6 +523,164 @@ void MasmSpelling::postamble(std::ostream &sink) {
 // inside the image; `ORG $+4` is the padding cl writes for the vbtable field.
 // The segments are cl's too: the descriptor in data$r, the rest in xdata$x,
 // each COMDAT so that two objects throwing an int fold into one.
+// -2 into the runtime's scratch word, which is what says "this frame has not
+// entered anything yet". cl writes it as the first instruction of a function
+// with a `try`; written here at the head of the guarded range instead, which
+// is the same thing for as long as the range it protects is the only one that
+// reads it.
+void MasmCodeGen::storeUnwindHelp(int slot) {
+    masm_.raw("  mov QWORD PTR [rbp-" + std::to_string(slot) + "], -2\n");
+}
+
+// **A funclet is a slice of the ordinary output, lifted.** Walking the handler
+// appends its code like any other, so remembering where that began and cutting
+// back to it afterwards gives the body exactly - and the code generator needs
+// to know nothing about any of this.
+std::string MasmCodeGen::beginFunclet() {
+    masm_.raw("");                       // nothing pending inside the slice
+    funcletMark_ = out_.size();
+    funcletSymbol_ = masm_.mangledName() + "$catch$" +
+                     std::to_string(funcletIndex_++);
+    return funcletSymbol_;
+}
+
+// The funclet's own frame, and the two things that make it work: `rdx` is the
+// establisher frame - the parent's rsp after its prologue - so adding the
+// parent's frame size back recovers the rbp every local was written against,
+// and the handler body then compiles as though it were inline. And a funclet
+// *returns* the address to carry on at, in rax, rather than jumping there.
+void MasmCodeGen::endFunclet(const std::string &resume) {
+    masm_.raw("");
+    std::string body = out_.substr(funcletMark_);
+    out_.resize(funcletMark_);
+
+    const std::string sym = funcletSymbol_;
+    std::string f;
+    f += "\ntext$x SEGMENT\n";
+    f += sym + " PROC\n";
+    f += "$LNbeg$" + sym + ":\n";
+    f += "  mov QWORD PTR [rsp+16], rdx\n";
+    f += "  push rbp\n";
+    f += "$LNpush$" + sym + ":\n";
+    f += "  sub rsp, 32\n";
+    f += "$LNprolog$" + sym + ":\n";
+    f += "  lea rbp, QWORD PTR [rdx+" + std::to_string(masm_.frameSize_) + "]\n";
+    f += body;
+    f += "  lea rax, " + masm_.labelName(resume) + "\n";
+    f += "  add rsp, 32\n";
+    f += "  pop rbp\n";
+    f += "  ret 0\n";
+    f += "$LNend$" + sym + ":\n";
+    f += sym + " ENDP\n";
+    f += "text$x ENDS\n";
+
+    // A funclet carries unwind data of its own, naming the same handler and
+    // *the parent's* FuncInfo - the two share one description of the try.
+    f += "\n.pdata SEGMENT READONLY ALIGN(4) 'DATA'\n";
+    f += "$pdata$" + sym + " DD imagerel $LNbeg$" + sym + "\n";
+    f += "  DD imagerel $LNend$" + sym + "\n";
+    f += "  DD imagerel $unwind$" + sym + "\n";
+    f += ".pdata ENDS\n";
+    f += ".xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
+    f += "$unwind$" + sym + " DB 019H\n";
+    f += "  DB $LNprolog$" + sym + "-$LNbeg$" + sym + "\n";
+    f += "  DB 02H\n";
+    f += "  DB 00H\n";
+    // UWOP_ALLOC_SMALL for 32 bytes: the code is 2 with (size/8 - 1) in the
+    // high nibble, so (32/8 - 1) = 3 gives 032H. 042H would claim 40 and
+    // leave the runtime unwinding through this funclet to the wrong place.
+    f += "  DB $LNprolog$" + sym + "-$LNbeg$" + sym + "\n";
+    f += "  DB 032H\n";
+    f += "  DB $LNpush$" + sym + "-$LNbeg$" + sym + "\n";
+    f += "  DB 050H\n";
+    f += "  DD imagerel __CxxFrameHandler3\n";
+    f += "  DD imagerel $cppxdata$" + masm_.mangledName() + "\n";
+    f += ".xdata ENDS\n";
+    funclets_ += f;
+}
+
+// The four FH3 tables, written after the function they describe.
+//
+// **Every offset here is measured from the stack pointer as it stands after
+// the prologue** - the establisher frame - and cxx1 writes locals as [rbp-N]
+// with rbp taken *before* the frame was allocated. The two are one frame
+// apart, so a slot at [rbp-N] is at frameSize-N from the establisher, and
+// that subtraction is the whole of the translation. Measured with cl on a
+// function that establishes rbp: its $T2 at [rbp+16] with rbp = establisher
+// + 32 is dispUnwindHelp 0x30, and 16 + 32 is 48.
+void MasmCodeGen::emitExceptionTables(const Function &fn) {
+    if (msTries().empty()) {
+        if (!callSites().empty()) emitLsda(fn.symbol());
+        out_ += funclets_;
+        funclets_.clear();
+        funcletIndex_ = 0;
+        return;
+    }
+
+    const std::string m = masm_.mangledName();
+    const int frame = masm_.frameSize_;
+    std::string o;
+    o += funclets_;
+    funclets_.clear();
+    funcletIndex_ = 0;
+
+    // One try only for now; the parser refuses a nested one for its own
+    // reasons, and more than one in a row wants a state per try rather than
+    // the two this writes.
+    const MsTryRegion &r = msTries()[0];
+
+    o += "\n.xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
+    o += "$cppxdata$" + m + " DD 019930522H\n";
+    o += "  DD 02H\n";                      // maxState: in the try, in a catch
+    o += "  DD imagerel $stateUnwindMap$" + m + "\n";
+    o += "  DD 01H\n";
+    o += "  DD imagerel $tryMap$" + m + "\n";
+    o += "  DD " + std::to_string(3 + r.handlers.size()) + "\n";
+    o += "  DD imagerel $ip2state$" + m + "\n";
+    o += "  DD " + std::to_string(frame - r.unwindHelpSlot) + "\n";
+    o += "  DD 00H\n";                      // no exception specification
+    o += "  DD 01H\n";                      // EHFlags: compiled with /EHsc
+
+    // No cleanups yet, so every state unwinds to nothing and runs nothing.
+    o += "$stateUnwindMap$" + m + " DD 0ffffffffH\n  DD 00H\n";
+    o += "  DD 0ffffffffH\n  DD 00H\n";
+
+    o += "$tryMap$" + m + " DD 00H\n";      // tryLow
+    o += "  DD 00H\n";                      // tryHigh
+    o += "  DD 01H\n";                      // catchHigh
+    o += "  DD " + std::to_string(r.handlers.size()) + "\n";
+    o += "  DD imagerel $handlerMap$0$" + m + "\n";
+
+    o += "$handlerMap$0$" + m;
+    for (std::size_t i = 0; i < r.handlers.size(); i++) {
+        const MsHandlerRow &h = r.handlers[i];
+        // 0x40 is HT_IsCatchAll, and a catch-all names no type.
+        o += (i == 0 ? " DD " : "  DD ");
+        o += h.descriptor.empty() ? "040H\n" : "00H\n";
+        o += h.descriptor.empty() ? "  DD 00H\n"
+                                  : "  DD imagerel " + h.descriptor + "\n";
+        o += "  DD " + std::to_string(h.objectSlot == 0
+                                          ? 0 : frame - h.objectSlot) + "\n";
+        o += "  DD imagerel " + h.funclet + "\n";
+        o += "  DD " + std::to_string(frame) + "\n";
+    }
+
+    // Where each state begins. -1 is "outside any try", 0 is inside it, and 1
+    // is inside a handler - which is why a funclet needs a row of its own.
+    o += "$ip2state$" + m + " DD imagerel $LNbeg$" + m + "\n";
+    o += "  DD 0ffffffffH\n";
+    o += "  DD imagerel " + masm_.labelName(r.begin) + "\n";
+    o += "  DD 00H\n";
+    o += "  DD imagerel " + masm_.labelName(r.end) + "\n";
+    o += "  DD 0ffffffffH\n";
+    for (std::size_t i = 0; i < r.handlers.size(); i++) {
+        o += "  DD imagerel " + r.handlers[i].funclet + "\n";
+        o += "  DD 01H\n";
+    }
+    o += ".xdata ENDS\n\n.CODE\n";
+    out_ += o;
+}
+
 void MasmCodeGen::emitThrowInfo(const Program &program) {
     if (program.thrown.empty()) return;
     std::string &o = out_;

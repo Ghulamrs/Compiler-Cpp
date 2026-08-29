@@ -507,6 +507,19 @@ struct Param {
 // has to be last. **An empty *list* is a cleanup**: a region with no handler
 // at all, whose pad destroys what has been built and hands the exception back
 // to the unwinder.
+// **One `catch`, as the Microsoft ABI wants it.** There is no landing pad on
+// that target and no selector to compare: the runtime reads the tables, picks
+// the handler itself and *calls* it as a function of its own. So a handler is
+// kept whole here rather than folded into an if/else chain, and what the
+// tables need beside its body is the type it catches and where in the frame
+// the caught object goes.
+struct MsHandler {
+    std::string descriptor;    // ??_R0H@8 and the like; empty for catch (...)
+    int objectSlot = 0;        // frame slot for the caught object, 0 if unnamed
+    int objectSize = 0;
+    StmtPtr body;
+};
+
 class Try final : public Stmt {
 public:
     // The body is a *list* rather than a block, because a cleanup region
@@ -519,10 +532,26 @@ public:
           pointerSlot_(pointerSlot), selectorSlot_(selectorSlot),
           types_(std::move(types)) {}
     const std::vector<StmtPtr> &body() const { return body_; }
+
+    // **Null on Windows.** The two ABIs disagree about who chooses the
+    // handler - Itanium hands the frame a selector and lets its own code
+    // decide, Microsoft decides in the runtime and calls a funclet - so one
+    // target fills in the pad and the other the handler list, and never both.
+    bool hasPad() const { return pad_ != nullptr; }
     const Stmt &pad() const { return *pad_; }
     int pointerSlot() const { return pointerSlot_; }
     int selectorSlot() const { return selectorSlot_; }
     const std::vector<std::string> &types() const { return types_; }
+
+    const std::vector<MsHandler> &handlers() const { return handlers_; }
+    void setHandlers(std::vector<MsHandler> h) { handlers_ = std::move(h); }
+
+    // Where the runtime's four-word scratch area sits in this frame. Written
+    // as -2 on entry by the parent and read by the personality routine
+    // through the FuncInfo's dispUnwindHelp.
+    int unwindHelpSlot() const { return unwindHelpSlot_; }
+    void setUnwindHelpSlot(int s) { unwindHelpSlot_ = s; }
+
     void accept(Visitor &v) const override { v.visit(*this); }
 private:
     std::vector<StmtPtr> body_;
@@ -530,6 +559,8 @@ private:
     int pointerSlot_;
     int selectorSlot_;
     std::vector<std::string> types_;
+    std::vector<MsHandler> handlers_;
+    int unwindHelpSlot_ = 0;
 };
 
 struct Local {

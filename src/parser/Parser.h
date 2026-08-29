@@ -830,6 +830,12 @@ private:
     // Set while a try's body is being read, so a try inside one is refused
     // rather than laid out as an overlapping range the table cannot hold.
     bool inTryBody_ = false;
+    // Inside a Microsoft `catch` body, which is compiled as a funclet - a
+    // function of its own. Leaving one is not a jump but a *return* of the
+    // address to carry on at, and that address travels in the register a
+    // return value would use, so a `return` inside a handler needs machinery
+    // this does not have yet and is refused by name.
+    bool inMsHandler_ = false;
     // Set when this function has a landing pad, so its prologue names the
     // personality routine and the table.
     bool functionHasPads_ = false;

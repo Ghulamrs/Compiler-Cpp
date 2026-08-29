@@ -195,6 +195,7 @@ void Walker::visit(const Break &n) { markLine(n); jump(jumps_.back().brk); }
 // by the parser.
 void Walker::visit(const Try &n) {
     markLine(n);
+    if (usesFunclets()) { msTryStatement(n); return; }
     const int id = nextLabel();
     const std::string begin = label("try", id);
     const std::string end = label("tryend", id);
@@ -212,6 +213,43 @@ void Walker::visit(const Try &n) {
     defineLabel(done);
 
     callSite(begin, end, pad, n.types());
+}
+
+// **The Microsoft shape, and what is missing from it is the point.** There is
+// no pad, no selector and no jump over a handler, because no handler is here:
+// the body is walked where it stands, each handler becomes a function of its
+// own, and the runtime is told in a table which to call. What this frame
+// contributes is three labels - where the guarded range starts and ends, and
+// where a handler that has run should return to.
+void Walker::msTryStatement(const Try &n) {
+    const int id = nextLabel();
+    MsTryRegion r;
+    r.begin = label("try", id);
+    r.end = label("tryend", id);
+    r.resume = label("caught", id);
+    r.unwindHelpSlot = n.unwindHelpSlot();
+
+    storeUnwindHelp(n.unwindHelpSlot());
+    defineLabel(r.begin);
+    for (std::size_t i = 0; i < n.body().size(); i++) n.body()[i]->accept(*this);
+    defineLabel(r.end);
+    defineLabel(r.resume);
+
+    // The funclets come after the range they belong to has been closed, so
+    // that nothing they emit lands between `begin` and `end` - those two
+    // labels bound the addresses the runtime matches a thrown object against,
+    // and a handler's own code must not be inside them.
+    for (std::size_t i = 0; i < n.handlers().size(); i++) {
+        const MsHandler &h = n.handlers()[i];
+        MsHandlerRow row;
+        row.descriptor = h.descriptor;
+        row.objectSlot = h.objectSlot;
+        row.funclet = beginFunclet();
+        h.body->accept(*this);
+        endFunclet(r.resume);
+        r.handlers.push_back(row);
+    }
+    msTry(r);
 }
 
 void Walker::visit(const Continue &n) {

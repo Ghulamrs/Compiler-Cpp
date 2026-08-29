@@ -70,6 +70,13 @@ protected:
     // The `.gcc_except_table` for the function just emitted. Its shape is
     // documented beside the arm64 one; only the spelling differs here.
     void emitLsda(const std::string &symbol);
+
+    // Whatever this target writes after a function to describe its handlers.
+    // Itanium writes one .gcc_except_table; the Microsoft ABI writes funclets
+    // and four tables, so the hook is the shape rather than the table.
+    virtual void emitExceptionTables(const Function &fn) {
+        if (!callSites().empty()) emitLsda(fn.symbol());
+    }
     std::vector<std::string> lsdaTypes_;
     std::vector<std::string> lsdaStubs_;
     bool lsdaPersonality_ = false;

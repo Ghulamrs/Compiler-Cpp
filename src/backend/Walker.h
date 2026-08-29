@@ -36,6 +36,8 @@ public:
 
 protected:
 
+    void msTryStatement(const Try &n);
+
     void markLine(const Stmt &n);
 
     void markLine(std::size_t pos);
@@ -87,6 +89,45 @@ protected:
     const std::vector<CallSite> &callSites() const { return callSites_; }
     void clearCallSites() { callSites_.clear(); }
 
+    // **Does this target call handlers, or jump to them?** Itanium unwinds to
+    // a landing pad *inside* the frame and lets the frame's own code choose;
+    // the Microsoft runtime chooses from tables and calls the handler as a
+    // separate function. That is one question, asked once, and everything
+    // else about a `try` is the same shape on both.
+    virtual bool usesFunclets() const { return false; }
+
+    // Open a handler funclet and answer the symbol it was given; close it,
+    // naming the address in the parent to continue at, which a funclet
+    // returns in rax. Between the two, the handler's body is walked exactly
+    // as it would be inline - every local is [rbp-N] and the funclet sets rbp
+    // from the parent frame pointer it is handed, so nothing else has to know.
+    // Write -2 into the runtime's scratch word. The personality routine reads
+    // it through the FuncInfo's dispUnwindHelp to know how far this frame had
+    // got, and -2 is the value that means "not inside anything yet".
+    virtual void storeUnwindHelp(int slot) { (void)slot; }
+
+    virtual std::string beginFunclet() { return std::string(); }
+    virtual void endFunclet(const std::string &resume) { (void)resume; }
+
+    // One `try` as the Microsoft tables describe it: the range guarded, where
+    // to continue after a handler, the frame slot the runtime scribbles in,
+    // and one row per handler.
+    struct MsHandlerRow {
+        std::string descriptor;   // empty for catch (...)
+        int objectSlot = 0;
+        std::string funclet;
+    };
+    struct MsTryRegion {
+        std::string begin;
+        std::string end;
+        std::string resume;
+        int unwindHelpSlot = 0;
+        std::vector<MsHandlerRow> handlers;
+    };
+    void msTry(const MsTryRegion &r) { msTries_.push_back(r); }
+    const std::vector<MsTryRegion> &msTries() const { return msTries_; }
+    void clearMsTries() { msTries_.clear(); }
+
     void resetBlocks(const std::vector<int> &parents);
 
     void openBlock(int scope);
@@ -100,6 +141,7 @@ protected:
 private:
     int labels_ = 0;
     std::vector<CallSite> callSites_;
+    std::vector<MsTryRegion> msTries_;
     const Source *lines_ = nullptr;
     std::string compDir_;
     std::vector<DwarfBlock> blocks_;
