@@ -22,6 +22,27 @@
 
 int alignTo(int n, int a) { return (n + a - 1) / a * a; }
 
+// Recognised by the lexer, with no rule in this parser yet. Naming the
+// keyword is the whole point: without this the word reaches expression
+// parsing as an unknown identifier and the error lands on whatever follows
+// it, which is never where the reader is looking.
+const char *notYetSupported(const std::string &word) {
+    static const char *const pending[] = {
+        "alignas", "alignof", "and", "and_eq", "asm",
+        "bitand", "bitor", "catch", "char16_t", "char32_t", "compl",
+        "constexpr", "const_cast", "dynamic_cast",
+        "explicit", "export", "friend", "inline", "mutable", "namespace",
+        "noexcept", "not", "not_eq", "nullptr", "operator", "or",
+        "or_eq", "reinterpret_cast",
+        "static_assert", "static_cast", "template", "thread_local",
+        "typeid", "using", "virtual",
+        "xor", "xor_eq"
+    };
+    for (const char *k : pending)
+        if (word == k) return k;
+    return nullptr;
+}
+
 bool isNullConstant(const Expr &e) {
     const Num *n = dynamic_cast<const Num *>(&e);
     return n != nullptr && n->type()->isInteger() && n->value() == 0;
@@ -60,8 +81,16 @@ void Parser::expect(const char *s) {
 }
 
 std::string Parser::expectIdent(const char *what) {
-    if (peek().kind != TokenKind::Ident)
+    if (peek().kind != TokenKind::Ident) {
+        // A keyword standing where a name was wanted is a feature this parser
+        // has not grown rather than a slip of the finger, and "expected a
+        // name" points at the word without saying what is wrong with it.
+        // `int operator+(int);` is the case this was written for.
+        if (const char *pending = notYetSupported(peek().text))
+            src_.fail(peek().pos, std::string("'") + pending +
+                                  "' is not supported yet");
         src_.fail(peek().pos, std::string("expected ") + what);
+    }
     std::string name = peek().text;
     at_++;
     return name;

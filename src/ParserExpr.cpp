@@ -91,27 +91,6 @@ ExprPtr Parser::comparison(BinOp op, ExprPtr lhs, ExprPtr rhs) {
     return n;
 }
 
-// Recognised by the lexer, with no rule in this parser yet. Naming the
-// keyword is the whole point: without this the word reaches expression
-// parsing as an unknown identifier and the error lands on whatever follows
-// it, which is never where the reader is looking.
-static const char *notYetSupported(const std::string &word) {
-    static const char *const pending[] = {
-        "alignas", "alignof", "and", "and_eq", "asm",
-        "bitand", "bitor", "catch", "char16_t", "char32_t", "compl",
-        "constexpr", "const_cast", "dynamic_cast",
-        "explicit", "export", "friend", "inline", "mutable", "namespace",
-        "noexcept", "not", "not_eq", "nullptr", "operator", "or",
-        "or_eq", "reinterpret_cast",
-        "static_assert", "static_cast", "template", "thread_local",
-        "typeid", "using", "virtual",
-        "xor", "xor_eq"
-    };
-    for (const char *k : pending)
-        if (word == k) return k;
-    return nullptr;
-}
-
 ExprPtr Parser::primary(Program *program) {
     if (peek().is("true") || peek().is("false")) {
         bool value = peek().is("true");

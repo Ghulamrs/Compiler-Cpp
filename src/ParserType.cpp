@@ -769,6 +769,14 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         const Type *deduced = types_.deducedType();
         return quals->isConst ? types_.withConst(deduced) : deduced;
     }
+    // Same reason as in expectIdent, and this is the end a member declaration
+    // reaches: `friend`, `mutable`, `explicit`, `using` and `static_assert`
+    // all begin one in C++ and none of them begins one here, so without this
+    // each is reported as a missing type at the keyword - which names the
+    // right token and tells the reader nothing about it.
+    if (const char *pending = notYetSupported(peek().text))
+        src_.fail(peek().pos, std::string("'") + pending +
+                              "' is not supported yet");
     if (*storage != StorageNone || quals->isConst || quals->isVolatile)
         src_.fail(start, "this declaration has no type; write one");
     src_.fail(start, "expected a type");

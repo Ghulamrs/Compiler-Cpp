@@ -58,6 +58,34 @@ live in `Parser.cpp`, declared in `src/ParserInternal.h`. That header is the
 whole cost of the split, and it is deliberately short: if a later change wants
 to add a fourth entry, consider moving the function instead.
 
+## Refusing by name reaches declarations now, not only expressions
+
+`notYetSupported` is the list of keywords the lexer knows and this parser has
+no rule for, and it existed so that the word is *named* instead of the error
+landing on whatever follows it. It had one caller, in `primary()`, so it only
+ever worked for a keyword written in an expression.
+
+Every keyword that begins a **declaration** slipped past it. Asked about
+`friend int peek(const Account &a);` in a class body, cxx1 said `expected a
+type` and pointed at `friend` - the right token, and nothing about what is
+wrong with it. The same for `mutable`, `explicit`, `using` and
+`static_assert`; and `int operator+(const Vec &o);`, where the type reads fine
+and it is the name that is a keyword, ended in `expectIdent` saying `expected
+a name`.
+
+Two more callers fixed all seven, at the two places the generic messages were
+raised: the end of `unqualifiedSpecifiers`, which is where a member
+declaration that begins with an unknown keyword arrives, and `expectIdent`,
+which is where one that begins with a type but is *named* by a keyword
+arrives. Both now answer `'friend' is not supported yet` and so on.
+
+**None of this implements any of them.** `friend` in particular is not on the
+ladder and never was: it is not a member, it declares a function at namespace
+scope and grants it access, so it wants a friend list on the class that
+`checkAccessible` consults as well as a declaration path that puts the
+function outside the class it is written in. What changed is only that the
+compiler now says which word it cannot read.
+
 ## Where this came from
 
 Forked from `../Compiler-C` on 2026-08-26, at the whole-tree level rather than
