@@ -1479,9 +1479,9 @@ is the difference between writing a struct and writing a compressor.
 
 **In order, then:**
 
-1. Hand-written `pdata`/`xdata` for a function with a `try`, replacing
-   `PROC FRAME` for that function alone. Checkable on its own: the function
-   still runs and a debugger still walks out of it.
+1. **Done.** Hand-written `.pdata`/`.xdata`, and for *every* function rather
+   than only the ones with a handler - one path, exercised by the whole suite,
+   rather than a second one that only the new feature walks. See below.
 2. One funclet per handler, with the parent frame arriving in `rdx`.
 3. The FH3 tables - UnwindMapEntry, TryBlockMapEntry, HandlerType,
    IPtoStateMap - and the state variable in the parent's frame that the
@@ -1490,6 +1490,36 @@ is the difference between writing a struct and writing a compressor.
    on this target.
 
 Expect this to lag and do not promise otherwise.
+
+### 6.5b step 1 as it actually landed: unwind data by hand
+
+**Four assembler rules, each found by being stopped by it**, and none of them
+in cl's listing - which is where the temptation is to look:
+
+- **A label inside a `PROC` is local to it.** MASM scopes them by default, so
+  the unwind data - which lives outside the procedure and measures into it -
+  could not name the labels the prologue defines. `OPTION NOSCOPED`.
+- **A segment cannot be called `.pdata` by default.** MASM will not take an
+  identifier beginning with a dot. `OPTION DOTNAME`.
+- **And it has to be called `.pdata`.** A segment called `pdata` is a segment
+  called pdata: the linker builds the image's exception directory from
+  `.pdata`, and without the dot the runtime finds no unwind record for the
+  frame at all. This is the one that cost the most, because everything
+  *assembled and linked and ran* - it only showed when an exception tried to
+  leave a cxx1 frame. `dumpbin /summary` is what said it: `pdata` and `xdata`
+  sitting beside `.text$mn`.
+- **The attributes have to match** the ones the real sections carry, or the
+  linker warns about two `.pdata` sections that disagree: `READONLY ALIGN(4)`.
+
+**Every offset in the unwind codes is a label difference**, not a counted
+byte. An unwind code records where in the prologue its instruction *ends*, and
+`sub rsp, 40` is four bytes where `sub rsp, 400` is seven - the assembler
+chooses, so the assembler is asked. Counting them here would be a second
+encoder that has to agree with ml64 forever.
+
+cxx1's prologue has one shape, so the codes do too: `UWOP_PUSH_NONVOL` for
+rbp, `UWOP_SET_FPREG`, and an allocation that is `UWOP_ALLOC_SMALL` up to 128
+bytes and `UWOP_ALLOC_LARGE` past it.
 
 ### 6.5a as it actually landed: `throw` on Windows
 

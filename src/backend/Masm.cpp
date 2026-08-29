@@ -261,27 +261,107 @@ void MasmSpelling::functionBegin(const std::string &name, bool exported) {
     flushPending();
     if (seg_ != Code) { o_ += "\n.CODE\n"; seg_ = Code; }
 
-    o_ += mangle(name); o_ += " PROC FRAME\n";
+    // **`PROC`, not `PROC FRAME`, and the unwind data written by hand.**
+    //
+    // PROC FRAME is the easy way to get .pdata and .xdata, and it is a dead
+    // end: a function with an exception handler carries the handler's address
+    // *and its data* inside the same UNWIND_INFO, and no MASM directive
+    // reaches the second of those. cl does not use PROC FRAME either - it
+    // writes $pdata$ and $unwind$ itself, which is what this does now.
+    //
+    // Done for every function rather than only the ones with a handler on
+    // purpose: one path, exercised by the whole suite, rather than a second
+    // one that only the new feature walks.
+    fnName_ = name;
+    o_ += mangle(name); o_ += " PROC\n";
+    o_ += "$LNbeg$"; o_ += mangle(name); o_ += ":\n";
 }
 
 void MasmSpelling::prologue(int frameSize, const std::string &lsda) {
     // Windows has no landing pads yet - the parser refuses `try` for this
-    // target - and its unwind data is the PROC FRAME directives below.
+    // target - so nothing names a handler here.
     (void)lsda;
-    o_ += "  push rbp\n";
-    o_ += "  .PUSHREG rbp\n";
-    o_ += "  mov rbp, rsp\n";
+    const std::string m = mangle(fnName_);
 
-    o_ += "  .SETFRAME rbp, 0\n";
+    o_ += "  push rbp\n";
+    o_ += "$LNpush$" + m + ":\n";
+    o_ += "  mov rbp, rsp\n";
+    o_ += "$LNset$" + m + ":\n";
     if (frameSize > 0) {
         o_ += "  sub rsp, "; appendNum(o_, frameSize); o_ += '\n';
-        o_ += "  .ALLOCSTACK "; appendNum(o_, frameSize); o_ += '\n';
     }
-    o_ += "  .ENDPROLOG\n";
+    o_ += "$LNprolog$" + m + ":\n";
+
+    // Last first. UWOP_ALLOC_SMALL is 2, with (size/8 - 1) in the high
+    // nibble, and reaches 128 bytes; past that UWOP_ALLOC_LARGE is 1 with a
+    // slot of its own holding size/8.
+    unwindCodes_ = 0;
+    unwindData_.clear();
+    if (frameSize > 0) {
+        unwindData_ += "  DB $LNprolog$" + m + "-$LNbeg$" + m + "\n";
+        if (frameSize <= 128 && frameSize % 8 == 0) {
+            char buf[8];
+            std::snprintf(buf, sizeof buf, "%02XH",
+                          ((frameSize / 8 - 1) << 4) | 2);
+            unwindData_ += "  DB 0"; unwindData_ += buf; unwindData_ += "\n";
+            unwindCodes_ += 1;
+        } else {
+            unwindData_ += "  DB 01H\n";
+            unwindData_ += "  DW " + std::to_string((frameSize + 7) / 8) + "\n";
+            unwindCodes_ += 2;
+        }
+    }
+    // UWOP_SET_FPREG is 3; the frame offset lives in the header.
+    unwindData_ += "  DB $LNset$" + m + "-$LNbeg$" + m + "\n";
+    unwindData_ += "  DB 03H\n";
+    unwindCodes_ += 1;
+    // UWOP_PUSH_NONVOL is 0 with the register in the high nibble - rbp is 5.
+    unwindData_ += "  DB $LNpush$" + m + "-$LNbeg$" + m + "\n";
+    unwindData_ += "  DB 050H\n";
+    unwindCodes_ += 1;
 }
 
+// **Every offset here is a label difference, not a counted byte.** An unwind
+// code records where in the prologue its instruction *ends*, and `sub rsp, 40`
+// is four bytes where `sub rsp, 400` is seven - the assembler chooses, so the
+// assembler is asked. Counting them here would be a second encoder that has
+// to agree with ml64 forever.
 void MasmSpelling::functionEnd(const std::string &name) {
-    o_ += mangle(name); o_ += " ENDP\n\n";
+    const std::string m = mangle(name);
+    // **The dot is the whole of it.** A segment called `pdata` is a segment
+    // called pdata; the linker builds the image's exception directory from
+    // `.pdata`, and without the dot the runtime finds no unwind record for
+    // the frame at all - measured, dumpbin showed `pdata` and `xdata` beside
+    // `.text$mn`. cl's listing writes them undotted, which is the third thing
+    // in that listing that is a record of what cl means rather than something
+    // that assembles.
+    o_ += "$LNend$" + m + ":\n";
+    o_ += m + " ENDP\n";
+
+    // READONLY and the alignment, or the linker finds two .pdata
+    // sections with different attributes and says so.
+    o_ += "\n.pdata SEGMENT READONLY ALIGN(4) 'DATA'\n";
+    o_ += "$pdata$" + m + " DD imagerel $LNbeg$" + m + "\n";
+    o_ += "  DD imagerel $LNend$" + m + "\n";
+    o_ += "  DD imagerel $unwind$" + m + "\n";
+    o_ += ".pdata ENDS\n";
+
+    // UNWIND_INFO: version 1 with no flags, the prologue's size, how many
+    // codes follow, and the frame register - rbp, at offset 0 from where rsp
+    // stood when it was set. The codes are last-first, which is the order an
+    // unwinder undoes them in.
+    o_ += ".xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
+    o_ += "$unwind$" + m + " DB 01H\n";
+    o_ += "  DB $LNprolog$" + m + "-$LNbeg$" + m + "\n";
+    o_ += "  DB " + std::to_string(unwindCodes_) + "\n";
+    o_ += "  DB 05H\n";
+    o_ += unwindData_;
+    if (unwindCodes_ % 2 != 0) o_ += "  DW 0\n";
+    o_ += ".xdata ENDS\n\n";
+    o_ += ".CODE\n";
+
+    unwindData_.clear();
+    unwindCodes_ = 0;
 }
 
 void MasmSpelling::globl(const std::string &name) { exported_.insert(name); }
@@ -375,6 +455,19 @@ void MasmSpelling::preamble(std::ostream &sink) {
     sink << "; The instruction selection is the same one the Linux backend makes;\n";
     sink << "; only the spelling is Microsoft's. See src/backend/Masm.cpp.\n\n";
 
+    // **A label inside a PROC is local to it unless this says otherwise.**
+    // MASM scopes them by default, so the unwind data - which lives outside
+    // the procedure and measures into it - could not name the labels the
+    // prologue defines. Every label this compiler writes already carries the
+    // function's own symbol, so there is nothing for the wider scope to
+    // collide with.
+    // **DOTNAME lets a segment be called `.pdata`, and NOSCOPED lets the
+    // unwind data name the labels inside a procedure.** Both are needed for
+    // the same reason: the exception tables live outside the function and
+    // measure into it, and MASM's defaults assume nothing does that.
+    sink << "OPTION DOTNAME\n";
+    sink << "OPTION NOSCOPED\n\n";
+
     for (const std::string &g : unreserved_)
         sink << "OPTION NOKEYWORD:<" << g << ">\n";
     if (!unreserved_.empty()) sink << "\n";
@@ -427,7 +520,7 @@ void MasmCodeGen::emitThrowInfo(const Program &program) {
         // file-local works because the runtime matches a type descriptor by
         // its *name string* rather than by its address, which is the same
         // rule that lets a throw cross a DLL boundary at all.
-        o += "data$r SEGMENT\n";
+        o += ".data$r SEGMENT READONLY ALIGN(8) 'DATA'\n";
         // **cl's listing writes `FLAT:` here and ml64 rejects it.** That
         // prefix is 32-bit MASM's way of naming a flat-model address; the
         // 64-bit assembler has no such keyword, so the listing is a record of
@@ -435,9 +528,9 @@ void MasmCodeGen::emitThrowInfo(const Program &program) {
         o += n.descriptor + " DQ ??_7type_info@@6B@\n";
         o += "  DQ 0\n";
         o += "  DB '" + n.decorated + "', 00H\n";
-        o += "data$r ENDS\n";
+        o += ".data$r ENDS\n";
 
-        o += "xdata$x SEGMENT\n";
+        o += ".xdata$x SEGMENT READONLY ALIGN(8) 'DATA'\n";
         o += n.catchable + " DD 01H\n";
         o += "  DD imagerel " + n.descriptor + "\n";
         o += "  DD 00H\n";
@@ -451,7 +544,7 @@ void MasmCodeGen::emitThrowInfo(const Program &program) {
         o += "  DD 00H\n";
         o += "  DD 00H\n";
         o += "  DD imagerel " + n.array + "\n";
-        o += "xdata$x ENDS\n";
+        o += ".xdata$x ENDS\n";
     }
 }
 

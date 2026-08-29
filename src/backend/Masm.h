@@ -20,6 +20,11 @@ public:
     void defLabel(const std::string &l) override;
     void functionBegin(const std::string &name, bool exported) override;
     void prologue(int frameSize, const std::string &lsda) override;
+    // The unwind codes the prologue described, written out by functionEnd -
+    // which is where the labels they measure against exist.
+    std::string unwindData_;
+    int unwindCodes_ = 0;
+    std::string fnName_;
     void functionEnd(const std::string &name) override;
 
     void globl(const std::string &name) override;
