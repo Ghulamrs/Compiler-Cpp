@@ -338,6 +338,50 @@ ExprPtr Parser::destructorCall(ExprPtr address, const Signature &dtor,
 // The statements that *do* the constructing are outside every region on
 // purpose: an exception from a constructor leaves that object unbuilt, and
 // the region before it destroys what came earlier.
+// The Microsoft shape of the same thing. One region per object built, as on
+// Itanium - but each region's cleanup destroys only what *it* added, because
+// the runtime walks the chain: the state for region k names region k-1 as
+// where to go next, and that one destroys its own object in turn. Destroying
+// everything alive in each, which is what the Itanium pad does because it
+// resumes rather than chaining, would destroy the earlier objects once per
+// region.
+std::vector<StmtPtr> Parser::wrapMsCleanups(
+    std::vector<StmtPtr> body,
+    const std::vector<std::pair<std::size_t, std::size_t> > &built,
+    std::size_t aliveAtEntry, std::size_t pos) {
+    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+    const int pointerSlot = allocateFrameSlot(voidPtr);
+    const int selectorSlot = allocateFrameSlot(types_.intType());
+    const int helpSlot = allocateFrameSlot(voidPtr);
+    functionHasPads_ = true;
+
+    std::vector<StmtPtr> out;
+    for (std::size_t i = 0; i < built[0].first; i++)
+        out.push_back(std::move(body[i]));
+
+    for (std::size_t k = 0; k < built.size(); k++) {
+        const std::size_t from = built[k].first;
+        const std::size_t to = k + 1 < built.size() ? built[k + 1].first
+                                                    : body.size();
+        std::vector<StmtPtr> guarded;
+        for (std::size_t i = from; i < to; i++) guarded.push_back(std::move(body[i]));
+        if (guarded.empty()) continue;
+
+        std::vector<StmtPtr> steps;
+        emitDestructors(steps, k == 0 ? aliveAtEntry : built[k - 1].second,
+                        pos, -1, built[k].second);
+        Block *b = new Block(std::move(steps));
+        b->setScope(-1);
+
+        Try *t = new Try(std::move(guarded), nullptr, pointerSlot,
+                         selectorSlot, std::vector<std::string>());
+        t->setCleanup(StmtPtr(b));
+        t->setUnwindHelpSlot(helpSlot);
+        out.push_back(StmtPtr(t));
+    }
+    return out;
+}
+
 std::vector<StmtPtr> Parser::wrapCleanups(
     std::vector<StmtPtr> body,
     const std::vector<std::pair<std::size_t, std::size_t> > &built,

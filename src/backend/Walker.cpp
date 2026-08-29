@@ -230,10 +230,20 @@ void Walker::msTryStatement(const Try &n) {
     r.unwindHelpSlot = n.unwindHelpSlot();
 
     storeUnwindHelp(n.unwindHelpSlot());
+    r.isCleanup = n.cleanup() != nullptr;
+
     defineLabel(r.begin);
     for (std::size_t i = 0; i < n.body().size(); i++) n.body()[i]->accept(*this);
     defineLabel(r.end);
     defineLabel(r.resume);
+
+    if (r.isCleanup) {
+        r.cleanupFunclet = beginFunclet();
+        n.cleanup()->accept(*this);
+        endCleanupFunclet();
+        msTry(r);
+        return;
+    }
 
     // The funclets come after the range they belong to has been closed, so
     // that nothing they emit lands between `begin` and `end` - those two

@@ -106,6 +106,11 @@ protected:
     // got, and -2 is the value that means "not inside anything yet".
     virtual void storeUnwindHelp(int slot) { (void)slot; }
 
+    // A cleanup funclet is opened the same way and closed differently: it
+    // returns nothing, because nothing continues here - the runtime goes on
+    // unwinding once the destructors have run.
+    virtual void endCleanupFunclet() {}
+
     virtual std::string beginFunclet() { return std::string(); }
     virtual void endFunclet(const std::string &resume) { (void)resume; }
 
@@ -123,6 +128,10 @@ protected:
         std::string resume;
         int unwindHelpSlot = 0;
         std::vector<MsHandlerRow> handlers;
+        // A cleanup region instead of a try: no handler, one funclet that
+        // runs destructors while the exception carries on past this frame.
+        bool isCleanup = false;
+        std::string cleanupFunclet;
     };
     void msTry(const MsTryRegion &r) { msTries_.push_back(r); }
     const std::vector<MsTryRegion> &msTries() const { return msTries_; }

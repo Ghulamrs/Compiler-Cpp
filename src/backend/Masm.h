@@ -34,6 +34,9 @@ public:
     // header and whether __CxxFrameHandler3 and a FuncInfo follow the codes.
     bool hasEh_ = false;
     void raw(const std::string &text);
+    // Written by postamble, after every chunk the code generator built. The
+    // funclets' .pdata goes here: see funcletPdata_ in MasmCodeGen.
+    std::string trailer_;
     std::string mangledName() { return mangle(fnName_); }
     // A label written by the Walker, spelled the way this file spells
     // one. Raw emission has to go through the same door as defLabel,
@@ -89,17 +92,26 @@ private:
     bool localsAboveFrameBase() const override { return true; }
     std::string beginFunclet() override;
     void endFunclet(const std::string &resume) override;
+    void endCleanupFunclet() override;
+    void closeFunclet(const std::string &tail);
     void storeUnwindHelp(int slot) override;
     void emitExceptionTables(const Function &fn) override;
+    void emitCleanupTables(const Function &fn);
 
     // A funclet is written by walking the handler into the ordinary output
     // and then lifting the text back out: everything a handler body emits is
     // appended in order, so the slice from where it started to where it ended
     // *is* the funclet, and moving it costs no second code path.
     std::string funclets_;
+    // The funclets' .pdata goes to MasmSpelling::trailer_, written after
+    // every function: a .pdata contribution has to be sorted by the address
+    // it describes, every funclet lives in .text$x which the linker lays
+    // after .text, and emitting each funclet's entry beside its parent
+    // interleaves the two orders - LNK1223, invalid .pdata contributions.
     std::size_t funcletMark_ = 0;
     int funcletIndex_ = 0;
     std::string funcletSymbol_;
+    const char *funcletKind_ = "$catch$";
     bool writesDwarf() const override { return false; }
     // The four objects the Microsoft ABI wants per thrown type. Emitted here
     // because no other target has anything like them.

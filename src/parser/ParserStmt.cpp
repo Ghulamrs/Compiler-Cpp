@@ -823,17 +823,15 @@ StmtPtr Parser::block() {
     // the block again: what a scope built is exactly what it added.
     emitDestructors(body, aliveAtEntry, peek().pos);
 
-    // **Windows makes no cleanup regions and needs none.** `throw` is refused
-    // for that target, so nothing can unwind through one of its frames, and
-    // the destructors on the normal path are unchanged. Making them anyway
-    // would put a landing pad in a backend whose tables cannot describe one.
-    if (!built.empty() && !target_.microsoftNames()) {
+    if (!built.empty()) {
         if (functionHasTry_ || inTryBody_)
             src_.fail(pos, "a local with a destructor and a 'try' in one "
                            "function is not supported yet - each is a range in "
                            "the call-site table and one would have to split "
                            "the other");
-        body = wrapCleanups(std::move(body), built, aliveAtEntry, pos);
+        body = target_.microsoftNames()
+                   ? wrapMsCleanups(std::move(body), built, aliveAtEntry, pos)
+                   : wrapCleanups(std::move(body), built, aliveAtEntry, pos);
     }
     alive_.resize(aliveAtEntry);
 

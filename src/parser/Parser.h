@@ -716,6 +716,10 @@ private:
                        std::size_t pos);
     // The block's statements with each stretch that has objects alive turned
     // into a cleanup region of its own.
+    std::vector<StmtPtr> wrapMsCleanups(
+        std::vector<StmtPtr> body,
+        const std::vector<std::pair<std::size_t, std::size_t> > &built,
+        std::size_t aliveAtEntry, std::size_t pos);
     std::vector<StmtPtr> wrapCleanups(
         std::vector<StmtPtr> body,
         const std::vector<std::pair<std::size_t, std::size_t> > &built,

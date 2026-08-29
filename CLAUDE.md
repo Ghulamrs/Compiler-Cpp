@@ -1732,6 +1732,46 @@ suite said so immediately: **eight Windows cases failed with wrong values and
 no crash**, which is what a stack slot read one frame away looks like. One
 choke point at the renderer catches every shape by construction.
 
+### 6.5b step 4: cleanups, and rung 6.5 with it
+
+**`cleanup.cpp` runs on all three targets now** - its `.notarget` is gone.
+Destructors run as an exception passes through a Windows frame, which is what
+makes RAII mean anything there.
+
+**A cleanup is a *state*, not a try block.** Nothing is caught: the runtime
+runs some destructors and carries on. It is told so with one state per region
+whose *action* is a funclet and whose `toState` is the region before it, so
+unwinding walks the chain backwards one object at a time.
+
+**Each funclet destroys only what its own region built**, and that is the
+difference from the Itanium pad rather than a detail. The Itanium pad
+*resumes* - it does not chain - so it destroys everything alive at that point.
+Copying that shape here would destroy the earlier objects once per region.
+
+**The `.pdata` has to be sorted, and funclets break the order.** A `.pdata`
+contribution is sorted by the address it describes; every funclet lives in
+`.text$x`, which the linker lays after `.text`, so all of them come after all
+of the ordinary functions. Emitting each funclet's entry beside its parent
+interleaves the two orders and the linker says **LNK1223: invalid .pdata
+contributions** - which is what it said as soon as more than one function had
+a funclet, and cleanups made that the common case. They go to
+`MasmSpelling::trailer_` and are written after everything else.
+
+**A cleanup funclet returns nothing.** A handler hands back the address to
+carry on at; a cleanup has nowhere to carry on *to*, the runtime going on
+unwinding once it returns.
+
+**`tools/mangled-names` asks clang with `-fexceptions` on Windows now**, which
+it could not while cxx1 had no tables for that target. What made the
+comparison possible was dropping the **funclet names from both sides**: this
+compiler writes `main$catch$0` and cl writes `?catch$1@?0?main@4HA` and
+`?dtor$2@...`, and those are *file-local* symbols nothing links against - a
+difference between the two spellings is a naming style rather than an ABI
+fault, and whether the handlers work is what `catch-check` and the run suite
+answer. Every name that crosses an object boundary is still compared, and on
+this target that is now done for cases with exceptions in them for the first
+time.
+
 ### 6.5b steps 2 and 3: done - cxx1 catches on Windows
 
 **`catch-check.cmd` prints `before / caught 7 / after`**, and it runs inside

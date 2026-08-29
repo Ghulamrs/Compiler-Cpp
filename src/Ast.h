@@ -546,6 +546,14 @@ public:
     const std::vector<MsHandler> &handlers() const { return handlers_; }
     void setHandlers(std::vector<MsHandler> h) { handlers_ = std::move(h); }
 
+    // **A cleanup region, where the Microsoft ABI wants a state rather than a
+    // handler.** Nothing is caught here: an exception passing through runs
+    // these destructors and carries on. What this holds is what *this* region
+    // built and no more - the runtime chains to the region before it, so
+    // destroying everything alive would destroy the earlier objects twice.
+    const Stmt *cleanup() const { return cleanup_.get(); }
+    void setCleanup(StmtPtr c) { cleanup_ = std::move(c); }
+
     // Where the runtime's four-word scratch area sits in this frame. Written
     // as -2 on entry by the parent and read by the personality routine
     // through the FuncInfo's dispUnwindHelp.
@@ -560,6 +568,7 @@ private:
     int selectorSlot_;
     std::vector<std::string> types_;
     std::vector<MsHandler> handlers_;
+    StmtPtr cleanup_;
     int unwindHelpSlot_ = 0;
 };
 

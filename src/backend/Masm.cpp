@@ -530,6 +530,8 @@ void MasmSpelling::postamble(std::ostream &sink) {
 
     if (!pending_.empty())
         give_up(pending_, "a data label left dangling at the end of the file");
+    sink << trailer_;
+    trailer_.clear();
     sink << "\nEND\n";
 }
 
@@ -566,7 +568,7 @@ void MasmCodeGen::storeUnwindHelp(int slot) {
 std::string MasmCodeGen::beginFunclet() {
     masm_.raw("");                       // nothing pending inside the slice
     funcletMark_ = out_.size();
-    funcletSymbol_ = masm_.mangledName() + "$catch$" +
+    funcletSymbol_ = masm_.mangledName() + funcletKind_ +
                      std::to_string(funcletIndex_++);
     return funcletSymbol_;
 }
@@ -576,7 +578,19 @@ std::string MasmCodeGen::beginFunclet() {
 // parent's frame size back recovers the rbp every local was written against,
 // and the handler body then compiles as though it were inline. And a funclet
 // *returns* the address to carry on at, in rax, rather than jumping there.
+// A cleanup funclet runs its destructors and returns, and there is nothing to
+// return *to*: the runtime carries on unwinding, so unlike a handler this
+// hands back no continuation address.
+void MasmCodeGen::endCleanupFunclet() {
+    closeFunclet(std::string());
+    funcletKind_ = "$catch$";
+}
+
 void MasmCodeGen::endFunclet(const std::string &resume) {
+    closeFunclet("  lea rax, " + masm_.labelName(resume) + "\n");
+}
+
+void MasmCodeGen::closeFunclet(const std::string &tail) {
     masm_.raw("");
     std::string body = out_.substr(funcletMark_);
     out_.resize(funcletMark_);
@@ -610,7 +624,7 @@ void MasmCodeGen::endFunclet(const std::string &resume) {
     // parent's locals with no adjustment at all.
     f += "  mov rbp, rdx\n";
     f += body;
-    f += "  lea rax, " + masm_.labelName(resume) + "\n";
+    f += tail;
     f += "  add rsp, 32\n";
     f += "  pop rbp\n";
     f += "  ret 0\n";
@@ -620,11 +634,13 @@ void MasmCodeGen::endFunclet(const std::string &resume) {
 
     // A funclet carries unwind data of its own, naming the same handler and
     // *the parent's* FuncInfo - the two share one description of the try.
-    f += "\n.pdata SEGMENT READONLY ALIGN(4) 'DATA'\n";
-    f += "$pdata$" + sym + " DD imagerel $LNbeg$" + sym + "\n";
-    f += "  DD imagerel $LNend$" + sym + "\n";
-    f += "  DD imagerel $unwind$" + sym + "\n";
-    f += ".pdata ENDS\n";
+    // Its .pdata goes to a pile written after every function, for the sorting
+    // reason recorded beside funcletPdata_.
+    masm_.trailer_ += "\n.pdata SEGMENT READONLY ALIGN(4) 'DATA'\n";
+    masm_.trailer_ += "$pdata$" + sym + " DD imagerel $LNbeg$" + sym + "\n";
+    masm_.trailer_ += "  DD imagerel $LNend$" + sym + "\n";
+    masm_.trailer_ += "  DD imagerel $unwind$" + sym + "\n";
+    masm_.trailer_ += ".pdata ENDS\n";
     f += ".xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
     f += "$unwind$" + sym + " DB 019H\n";
     f += "  DB $LNprolog$" + sym + "-$LNbeg$" + sym + "\n";
@@ -652,6 +668,54 @@ void MasmCodeGen::endFunclet(const std::string &resume) {
 // that subtraction is the whole of the translation. Measured with cl on a
 // function that establishes rbp: its $T2 at [rbp+16] with rbp = establisher
 // + 32 is dispUnwindHelp 0x30, and 16 + 32 is 48.
+// **A cleanup is a state, not a try block.** Nothing is caught here: an
+// exception passing through this frame runs some destructors and carries on.
+// The runtime is told so with a state per region whose *action* is the funclet
+// that destroys what that region built, and whose `toState` is the region
+// before it - so unwinding walks the chain backwards, one object at a time,
+// which is why each funclet destroys only its own.
+void MasmCodeGen::emitCleanupTables(const Function &fn) {
+    (void)fn;
+    const std::string m = masm_.mangledName();
+    const int frame = masm_.frameSize_;
+    const std::size_t states = msTries().size();
+
+    std::string o;
+    o += funclets_;
+    funclets_.clear();
+    funcletIndex_ = 0;
+
+    o += "\n.xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
+    o += "$cppxdata$" + m + " DD 019930522H\n";
+    o += "  DD " + std::to_string(states) + "\n";
+    o += "  DD imagerel $stateUnwindMap$" + m + "\n";
+    o += "  DD 00H\n";                      // no try blocks
+    o += "  DD 00H\n";                      // and so no try map
+    o += "  DD " + std::to_string(states + 1) + "\n";
+    o += "  DD imagerel $ip2state$" + m + "\n";
+    o += "  DD " + std::to_string(frame - msTries()[0].unwindHelpSlot) + "\n";
+    o += "  DD 00H\n";
+    o += "  DD 01H\n";
+
+    o += "$stateUnwindMap$" + m;
+    for (std::size_t k = 0; k < states; k++) {
+        o += (k == 0 ? " DD " : "  DD ");
+        // toState: the region before this one, and -1 for the first, which is
+        // what says "nothing further in this frame".
+        o += (k == 0 ? std::string("0ffffffffH") : std::to_string(k - 1)) + "\n";
+        o += "  DD imagerel " + msTries()[k].cleanupFunclet + "\n";
+    }
+
+    o += "$ip2state$" + m + " DD imagerel $LNbeg$" + m + "\n";
+    o += "  DD 0ffffffffH\n";
+    for (std::size_t k = 0; k < states; k++) {
+        o += "  DD imagerel " + masm_.labelName(msTries()[k].begin) + "\n";
+        o += "  DD " + std::to_string(k) + "\n";
+    }
+    o += ".xdata ENDS\n\n.CODE\n";
+    out_ += o;
+}
+
 void MasmCodeGen::emitExceptionTables(const Function &fn) {
     if (msTries().empty()) {
         if (!callSites().empty()) emitLsda(fn.symbol());
@@ -663,6 +727,13 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
 
     const std::string m = masm_.mangledName();
     const int frame = masm_.frameSize_;
+
+    // **Cleanups and handlers never share a function**, which the parser
+    // enforces on every target: a local with a destructor and a `try` in one
+    // function is refused, because each is a range and one would have to
+    // split the other. So this is two shapes rather than one with both.
+    if (msTries()[0].isCleanup) { emitCleanupTables(fn); return; }
+
     const std::size_t tries = msTries().size();
     std::string o;
     o += funclets_;
