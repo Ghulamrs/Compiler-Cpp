@@ -1439,12 +1439,57 @@ from.
 **6.5 - Windows.** `__CxxFrameHandler4` and MSVC's own tables, which are a
 different design from the Itanium one rather than a different spelling of it.
 **Its first half - `throw` - has landed; see the section below.** What is left
-is `try`/`catch`, and that is where the design really diverges: MSVC compiles
-each handler and each cleanup into a *funclet*, a separate function with its
-own entry, and describes the whole thing with a FuncInfo state table that
-`__CxxFrameHandler` walks. Itanium's landing pad is one block inside the
-function and its table maps ranges to it. Expect this to lag and do not
-promise otherwise.
+is `try`/`catch`, planned in detail here from cl's own output and not started.
+
+### 6.5b: what cl emits for one try/catch, measured
+
+    main            PROC                  - no FRAME. cl writes its own
+                                            unwind data rather than letting
+                                            the assembler do it
+    $pdata$main     DD imagerel $LN9      - start, end, and the unwind info
+    $unwind$main    DD 010419H, 06204H    - the prologue codes, then
+                    DD imagerel __CxxFrameHandler4
+                    DD imagerel $cppxdata$main
+    $cppxdata$main  DB 018H + three imagerel pointers
+    $stateUnwindMap$main, $tryMap$main, $handlerMap$main, $ip2state$main
+    main$catch$0    PROC in segment text$x - the handler, a function of its own
+
+**The first finding decides the shape of the work: `PROC FRAME` cannot be
+used for a function with a handler.** MASM's `PROC FRAME:handler` emits the
+handler's address, and the *handler data* - the pointer to the FuncInfo -
+goes immediately after it in the same UNWIND_INFO, where no MASM directive
+can reach. cl does not use `PROC FRAME` at all here; it writes `$pdata$` and
+`$unwind$` by hand. **So cxx1 has to do the same for any function with a
+`try`**, which means teaching the Windows backend to emit unwind codes itself
+rather than through `.PUSHREG` and `.ALLOCSTACK`. That is a real change to a
+part that has worked since it was written, and it is the first step.
+
+**A handler is a funclet - a separate function.** `main$catch$0` lives in
+`text$x`, takes the parent's frame pointer in `rdx`, saves it, addresses the
+caught object relative to it, and *returns the address to continue at* in
+`rax`. Nothing in cxx1's code generator makes a second function out of a
+block today, and the funclet must see the parent's frame slots at the offsets
+the parent gave them.
+
+**Use `__CxxFrameHandler3`, not 4.** cl defaults to 4, whose tables are a
+*compressed* encoding - the `DB 04H, 08H, 010H` above is a variable-length
+format rather than a struct. FH3 is still supported by the runtime and its
+FuncInfo is the classic documented layout of fixed-width fields. Emitting FH3
+is the difference between writing a struct and writing a compressor.
+
+**In order, then:**
+
+1. Hand-written `pdata`/`xdata` for a function with a `try`, replacing
+   `PROC FRAME` for that function alone. Checkable on its own: the function
+   still runs and a debugger still walks out of it.
+2. One funclet per handler, with the parent frame arriving in `rdx`.
+3. The FH3 tables - UnwindMapEntry, TryBlockMapEntry, HandlerType,
+   IPtoStateMap - and the state variable in the parent's frame that the
+   runtime reads through `dispUnwindHelp`.
+4. Cleanups, which are funclets too, and are what let 6.4's destructors run
+   on this target.
+
+Expect this to lag and do not promise otherwise.
 
 ### 6.5a as it actually landed: `throw` on Windows
 
