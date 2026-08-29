@@ -103,7 +103,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | **done**, 2026-08-29 |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.4 and Windows `throw` **done**, 2026-08-29 |
-| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1 and 7.3 **done**, 2026-08-29 |
+| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1-7.3 **done**, 2026-08-29 |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
 punctuators, `__cplusplus`, `bool`/`true`/`false`, class and enum tags as type
@@ -1784,11 +1784,24 @@ class-with-constructors one included, to save a parse that costs nothing.
 return type. Both said so with the standard named, because the answer to "why
 not" is a version number rather than a gap.
 
-**7.2 - `decltype`.** The type of an expression without evaluating it. The
-parser already types every expression, so the work is the *rules*, which are
-where the surprises are: `decltype(x)` is the declared type of `x` while
-`decltype((x))` is a reference, and an rvalue gives a plain type where an
-lvalue gives `T &`. It wants 7.4's references to say the second half at all.
+**7.2 has landed**, and the prediction was right about where the work is: the
+parser already types every expression, so all of it was in the rules.
+
+**The rule is about tokens, not about the tree they build.**
+[dcl.type.simple]: an unparenthesised name answers what that entity was
+*declared* as; anything else answers the expression's type with a `&` added
+when it is an lvalue. `decltype(n)` is int and `decltype((n))` is `int &` -
+the same characters but for one pair of parentheses - so the shape of the
+tokens has to be read before the expression is parsed.
+
+**A reference variable is what forces the lookup rather than the tree.** Every
+mention of one is lowered here to a dereference, so the *expression* `ref` has
+type int where the declaration said `int &`. Asking the symbol table is the
+only way to answer what was written.
+
+`isLvalue` was already here, written for reference binding, and answered the
+second half unchanged - the third time in this rung that the feature was a
+rule the compiler already had.
 
 **7.3 has landed for arrays.** [stmt.ranged] says what `for (T x : a)` means
 by writing another loop, and every node that loop needs was already here - so

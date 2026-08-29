@@ -140,7 +140,10 @@ bool Parser::atTypeName() const {
                                      "const", "volatile",
                                      // It says the next thing is a type, and
                                      // saying so is the whole of what it does.
-                                     "typename" };
+                                     "typename",
+                                     // And this one *is* a type, written as a
+                                     // question about an expression.
+                                     "decltype" };
     for (const char *k : t)
         if (peek().is(k)) return true;
     if (peek().kind != TokenKind::Ident) return false;
@@ -2348,6 +2351,8 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
 
         return memberTypeWalk(cls);
     }
+
+    if (peek().is("decltype")) return decltypeSpecifier();
 
     if (peek().is("struct")) { at_++; return structOrUnionSpecifier(Kind::Struct); }
     if (peek().is("class"))  { at_++; return structOrUnionSpecifier(Kind::Struct, true); }
@@ -5184,7 +5189,7 @@ static const char *notYetSupported(const std::string &word) {
     static const char *const pending[] = {
         "alignas", "alignof", "and", "and_eq", "asm",
         "bitand", "bitor", "catch", "char16_t", "char32_t", "compl",
-        "constexpr", "const_cast", "decltype", "dynamic_cast",
+        "constexpr", "const_cast", "dynamic_cast",
         "explicit", "export", "friend", "inline", "mutable", "namespace",
         "noexcept", "not", "not_eq", "nullptr", "operator", "or",
         "or_eq", "reinterpret_cast",
@@ -6095,6 +6100,52 @@ static bool isLvalue(const Expr &e) {
     if (const Comma *c = dynamic_cast<const Comma *>(&e))
         return isLvalue(c->right());
     return false;
+}
+
+// `x`, `p.q`, `p->q->r` and nothing else - the shape [dcl.type.simple] calls
+// an id-expression or a class member access, which answers with a declared
+// type rather than an expression's. A single pair of parentheses around it
+// changes the answer, which is why this reads tokens rather than the tree.
+bool Parser::atNamePath() const {
+    if (peek().kind != TokenKind::Ident) return false;
+    std::size_t k = 1;
+    for (;;) {
+        if (peekAt(k).is(")")) return true;
+        if (!peekAt(k).is(".") && !peekAt(k).is("->")) return false;
+        if (peekAt(k + 1).kind != TokenKind::Ident) return false;
+        k += 2;
+    }
+}
+
+const Type *Parser::decltypeSpecifier() {
+    const std::size_t pos = peek().pos;
+    at_++;
+    expect("(");
+    const bool namePath = atNamePath();
+
+    // **A name on its own is looked up, not evaluated.** A reference variable
+    // is the case that needs it: every mention of one is lowered to a
+    // dereference, so the expression `r` has type T where `r` was declared
+    // `T &` - and `decltype(r)` has to answer what the declaration said.
+    if (namePath && peekAt(1).is(")")) {
+        const std::string name = peek().text;
+        const Type *declared = nullptr;
+        if (const Local *l = findLocal(name)) declared = l->type;
+        else if (const GlobalSym *g = findGlobal(name)) declared = g->type;
+        if (declared != nullptr) {
+            at_ += 2;
+            return declared;
+        }
+    }
+
+    ExprPtr e = expr();
+    expect(")");
+    const Type *t = e->type();
+    if (t == nullptr)
+        src_.fail(pos, "'decltype' needs an expression with a type, and this "
+                       "one has none");
+    if (namePath) return t;
+    return isLvalue(*e) ? types_.referenceTo(t) : t;
 }
 
 // A reference is used by going through the address in its slot, and every

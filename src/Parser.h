@@ -394,6 +394,15 @@ private:
     //
     // A declaration followed by `:` rather than `;`, which takes a scan to
     // tell from `for (int x = a ? b : c; ...)` - the `?` has to be counted.
+    // ---- Rung 7.2: `decltype` ----
+    //
+    // [dcl.type.simple]: an unparenthesised name answers what that entity was
+    // *declared* as; anything else answers the expression's type, with a `&`
+    // added when it is an lvalue. That is the whole of the difference between
+    // `decltype(x)` and `decltype((x))`, and it is why the shape of the
+    // tokens has to be looked at and not only the expression they build.
+    const Type *decltypeSpecifier();
+    bool atNamePath() const;
     bool atRangeFor() const;
     StmtPtr rangeForStatement(int scope);
     // The argument list at a use: `<int, 3>` read into types and values.
