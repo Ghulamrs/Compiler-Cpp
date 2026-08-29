@@ -265,7 +265,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | **done**, 2026-08-29 |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.4 and Windows `throw` **done**, 2026-08-29 |
-| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1-7.4 and 7.5a **done**, 2026-08-29 |
+| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1-7.5 **done**, 2026-08-29 |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
 punctuators, `__cplusplus`, `bool`/`true`/`false`, class and enum tags as type
@@ -2162,6 +2162,47 @@ program, and stopping at the import boundary. `tests/names.sh` filters
 `$`-prefixed symbols, so the case reported a difference that was about the
 assembler and not about `constexpr`. The case renames the variable and says
 why.
+
+**7.5b has landed, and rung 7.5 with it. The plan called it "the real work:
+an interpreter over the AST", and it is not one** - because of a restriction
+this compiler's target version happens to impose. **C++11 lets a `constexpr`
+function body be one return statement and nothing else**: no local, no loop,
+no second statement. So running the function is *folding one expression* with
+the parameters standing for the arguments. There is no program counter, no
+statement dispatch and no state to carry, and recursion falls out of `fold`
+already being recursive. C++14 relaxed the rule, and had this compiler
+targeted C++14 the plan would have been right.
+
+What it took was three things. `fold` gained a `Call` case: look the callee up
+by its **mangled symbol**, fold the arguments, push a frame, fold the stored
+expression, pop. A frame stack, because inside a call a local `Var` names a
+parameter of a function whose frame does not exist - what it is worth is what
+the call was given. And the expression itself, kept as a `const Expr *` into
+the `Function` the `Program` owns, recorded before the body is moved into it.
+
+**The arguments are folded in the caller's frame, before the push.** `fact(n -
+1)` reads the caller's `n`; folded after, it would read the callee's parameter
+sitting in the same slot. And there is a depth limit of 256, said out loud
+where it is reached - [expr.const] lets an implementation have one, and a
+compiler that recurses forever instead is worse than one that says no.
+
+**Two mangling consequences, both measured against clang and neither
+guessable.**
+
+`constexpr` sets `isConst` because on an *object* that is what it means, and
+on a **function** the const has to come back off: cl and clang both spell
+`constexpr int sq(int)` as `?sq@@YAHH@Z`, which is `H` for `int` and not `?BH`
+for `const int`.
+
+And **a `constexpr` non-static member function is implicitly `const` in
+C++11** - clang spells `Board::twice` as `_ZNK5Board5twiceEi` where cxx1 spelt
+it `_ZN5Board5twiceEi`, and two object files with those names would not have
+found each other. C++14 removed the rule, which is why clang *warns* about it
+under `-std=c++11` rather than being silent, and why a compiler pinned to
+C++11 has to keep it. It has to be applied in **two** places - the class body
+and the out-of-line path - because a member defined inside its class is
+declared by the first and defined by the second when its held body is
+replayed, and one without the other makes a class refuse its own member.
 
 **7.6 - lambdas**, last because they need the most from the rest: a closure is
 a class with a call operator, generated where the lambda is written, holding

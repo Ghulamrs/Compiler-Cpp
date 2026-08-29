@@ -301,7 +301,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         }
 
         StorageClass msc;
-        const Type *base = specifiers(&msc);
+        Qualifiers mquals;
+        const Type *base = specifiers(&msc, &mquals);
 
         // **A typedef inside a class names a type and declares no member.**
         // It is keyed "S::value", which is the same qualified key a nested
@@ -384,6 +385,17 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             // to re-read, or a function type reached through a typedef.
             const bool memberIsFunction = peek().is("(") || d.paramsAt != 0 ||
                                           d.type->isFunction();
+
+            // **`constexpr` on a member function, taken off the return type
+            // here as well.** The out-of-line path does the same for a free
+            // function; a member written inside the class is declared here and
+            // *defined* through that path when its held body is replayed, so
+            // without this the two disagree and the class refuses its own
+            // member - "declared to return 'const int' and this says 'int'".
+            if (mquals.isConstexpr && memberIsFunction &&
+                !d.type->isFunction())
+                d.type = types_.withoutConst(d.type);
+
             if (!memberIsFunction && d.type->isReference())
                 src_.fail(d.pos, "'" + d.name + "' is a reference member, and "
                                  "binding one needs a constructor - not "
@@ -458,6 +470,16 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 d.type = types_.functionType(d.type, std::move(mparams), mvariadic);
                 bool constThis = false;
                 if (consume("const")) constThis = true;
+                // **A `constexpr` member function is implicitly const in
+                // C++11**, and that is a mangling difference rather than a
+                // nicety: clang spells this one `_ZNK1B5twiceEi` and cxx1
+                // spelled it `_ZN1B5twiceEi`, so an object file from each
+                // would not have found the other's. Measured, not read.
+                //
+                // C++14 removed the rule, which is why clang warns about it
+                // under -std=c++11 rather than being silent - and why a
+                // compiler pinned to C++11, as this one is, has to keep it.
+                if (mquals.isConstexpr) constThis = true;
 
                 // **The body is held, not parsed.** It has to be able to see
                 // members declared after it, so nothing in it can be read

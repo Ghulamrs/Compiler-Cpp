@@ -921,6 +921,30 @@ private:
 
     Init parseInitialiser();
     bool constantInitialiser(const Type *t, const Init &in, long long *out) const;
+
+    // **A `constexpr` function, kept so that fold() can run it.**
+    // [dcl.constexpr] in C++11 lets the body be one return statement and
+    // nothing else - no loop, no local, no second statement - which is what
+    // makes evaluating a call an expression fold rather than an interpreter
+    // with a program counter. C++14 relaxed that and is out of scope here, so
+    // the restriction is a gift: `value` is that one expression and running
+    // the function is folding it with the parameters standing for arguments.
+    //
+    // The function is still compiled and still callable at run time. This is
+    // an *extra* way to reach it, taken only where a constant is required.
+    struct ConstexprFn {
+        const Expr *value = nullptr;   // owned by the Function in the Program
+        std::vector<int> slots;        // parameter frame slots, in order
+        std::size_t pos = 0;
+    };
+    std::map<std::string, ConstexprFn> constexprFns_;   // by mangled symbol
+
+    // One frame per call being folded, holding what each parameter slot is
+    // worth. Mutable because fold() is const and answering a call means
+    // remembering its arguments for as long as the body is being read.
+    mutable std::vector<std::vector<std::pair<int, long long> > > constexprFrames_;
+
+    const Expr *singleReturnValue(const Stmt &body) const;
     ExprPtr targetFor(const std::string &name, const std::vector<InitStep> &path);
 
     void initStore(const std::string &name, std::vector<InitStep> &path,

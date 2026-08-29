@@ -508,6 +508,18 @@ bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
     // expression may be asked for. Locals first, because a local of the same
     // name shadows the global - the same order every other lookup uses.
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
+        // **Inside a constexpr call, a local name is a parameter.** The body
+        // being folded belongs to another function entirely, so its Vars name
+        // slots in a frame that does not exist - what they are worth is what
+        // the call was given, and that is on the top of this stack. Only the
+        // top: a recursive call pushes its own, and the same slot numbers mean
+        // that call's arguments while it is being read.
+        if (v->isLocal() && !constexprFrames_.empty()) {
+            const std::vector<std::pair<int, long long> > &frame =
+                constexprFrames_.back();
+            for (std::size_t i = 0; i < frame.size(); i++)
+                if (frame[i].first == v->offset()) { *out = frame[i].second; return true; }
+        }
         if (v->isLocal()) {
             if (const Local *l = findLocal(v->name()))
                 if (l->isConstantValue) { *out = l->constantValue; return true; }
@@ -516,6 +528,47 @@ bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
         if (const GlobalSym *g = findGlobal(v->name()))
             if (g->isConstantValue) { *out = g->constantValue; return true; }
         return false;
+    }
+    // **A call to a constexpr function.** C++11 lets its body be one return
+    // statement, so running it is folding that expression with the parameters
+    // standing for the arguments - no statements to step through, no state to
+    // carry, and recursion falls out of the folding being recursive already.
+    //
+    // A call to anything else simply does not fold, which is the answer the
+    // contexts that ask want: an array bound says it is not a constant
+    // expression and names the place, rather than this deciding what to say.
+    if (const Call *c = dynamic_cast<const Call *>(&e)) {
+        auto it = constexprFns_.find(c->symbol());
+        if (it == constexprFns_.end()) return false;
+        const ConstexprFn &fn = it->second;
+        if (fn.value == nullptr || c->args().size() != fn.slots.size())
+            return false;
+
+        // A recursion that does not end is a compiler that does not either.
+        // The standard lets an implementation set a limit and say so; this is
+        // that limit, and it is said where it is reached.
+        if (constexprFrames_.size() >= 256)
+            src_.fail(pos, "this constant expression is more than 256 calls "
+                           "deep - a 'constexpr' function that never stops "
+                           "recursing cannot be worked out while compiling");
+
+        std::vector<std::pair<int, long long> > frame;
+        for (std::size_t i = 0; i < c->args().size(); i++) {
+            long long v = 0;
+            // **Folded outside the new frame, in the caller's.** An argument
+            // is an expression where the call is written, so `fact(n - 1)`
+            // reads the *caller's* n; folding it after the push would read
+            // the callee's parameter of the same slot instead.
+            if (!fold(*c->args()[i], &v, pos)) return false;
+            frame.push_back(std::make_pair(fn.slots[i], v));
+        }
+        constexprFrames_.push_back(frame);
+        long long result = 0;
+        const bool ok = fold(*fn.value, &result, pos);
+        constexprFrames_.pop_back();
+        if (!ok) return false;
+        *out = result;
+        return true;
     }
     if (const Num *n = dynamic_cast<const Num *>(&e)) {
         if (n->type()->isFloating()) return false;
@@ -612,6 +665,27 @@ bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
 // floating constant expression, since every context that wants one - array
 // bounds, case labels, enumerators, non-type template arguments - wants an
 // integer.
+// The one expression a C++11 `constexpr` function body is allowed to be.
+// Answers null for anything else, and the caller turns that into the
+// diagnostic - which has to name the restriction, because a body that would
+// be perfectly ordinary in C++14 is refused here.
+//
+// A block wrapping a block is unwrapped: nothing in this parser makes one for
+// a plain `{ return e; }`, but a body that has been wrapped for cleanups or a
+// constructor's member initialisers would be, and being tolerant costs a loop.
+const Expr *Parser::singleReturnValue(const Stmt &body) const {
+    const Stmt *at = &body;
+    for (;;) {
+        const Block *b = dynamic_cast<const Block *>(at);
+        if (b == nullptr) break;
+        if (b->body().size() != 1) return nullptr;
+        at = b->body()[0].get();
+    }
+    const Return *r = dynamic_cast<const Return *>(at);
+    if (r == nullptr || !r->hasValue()) return nullptr;
+    return &r->value();
+}
+
 bool Parser::constantInitialiser(const Type *t, const Init &in,
                                  long long *out) const {
     if (t == nullptr || !t->isConst() || !t->isInteger()) return false;
@@ -1204,12 +1278,18 @@ void Parser::topLevel(Program &program) {
     // declaration written out (`peek().is("(")`), one whose parameters have
     // been recorded to re-read (`paramsAt`), and one declared through a
     // typedef, whose type really is a function type.
-    if (quals.isConstexpr &&
-        (peek().is("(") || d.paramsAt != 0 || d.type->isFunction()))
-        src_.fail(d.pos, "'constexpr' on a function is not supported yet - "
-                         "evaluating a call while compiling needs an "
-                         "interpreter this compiler does not have; on a "
-                         "variable it works");
+    const bool constexprFunction =
+        quals.isConstexpr &&
+        (peek().is("(") || d.paramsAt != 0 || d.type->isFunction());
+
+    // **`constexpr` does not make the return type const**, and it is measured
+    // rather than reasoned: cl and clang both spell `constexpr int sq(int)` as
+    // ?sq@@YAHH@Z, which is `H` for int and not `?BH` for const int. The
+    // keyword sets isConst because on an *object* that is exactly what it
+    // means; on a function it must be taken off again or every constexpr
+    // function would carry a name no other compiler writes.
+    if (constexprFunction && !d.type->isFunction())
+        d.type = types_.withoutConst(d.type);
 
     // `int Counter::total = 0;` - a static member's definition. A member
     // *function*'s definition is spelled the same way up to here and is told
@@ -1482,6 +1562,12 @@ void Parser::topLevel(Program &program) {
     // Point::get() are two functions.
     bool constThis = false;
     if (memberOf != nullptr && consume("const")) constThis = true;
+    // The same C++11 rule the class body applies: a `constexpr` member
+    // function is implicitly const. This is the path a member *defined* inside
+    // its class comes back through when its held body is replayed, so leaving
+    // it out here makes the definition disagree with its own declaration -
+    // "'B' declares no member 'twice' with these parameters".
+    if (memberOf != nullptr && constexprFunction) constThis = true;
 
     if (consume(";")) {
         if (memberOf != nullptr)
@@ -1785,6 +1871,26 @@ void Parser::topLevel(Program &program) {
     const Signature &defined = memberOf != nullptr
                              ? *member
                              : lookupSignature(d.name, params, variadic, d.pos);
+
+    // Recorded before `body` is moved into the Function - the expression the
+    // pointer names is heap-allocated and goes on living there, which is what
+    // makes it safe to keep. Only a definition has one; a `constexpr`
+    // declaration with no body is a promise nothing can be folded through
+    // yet, and calling it in a constant expression says so where it is called.
+    if (constexprFunction && body != nullptr) {
+        const Expr *value = singleReturnValue(*body);
+        if (value == nullptr)
+            src_.fail(d.pos, "'" + d.name + "' is 'constexpr', so in C++11 its "
+                             "body has to be a single return statement and "
+                             "nothing else - that restriction is what lets its "
+                             "value be worked out while compiling");
+        ConstexprFn fn;
+        fn.value = value;
+        fn.pos = d.pos;
+        for (std::size_t i = 0; i < paramSlots.size(); i++)
+            fn.slots.push_back(paramSlots[i].offset);
+        constexprFns_[defined.symbol] = fn;
+    }
     currentClass_ = nullptr;
     program.functions.push_back(Function(d.name, emittedReturn, std::move(paramSlots),
                                          std::move(body), frame,
