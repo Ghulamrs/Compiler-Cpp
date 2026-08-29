@@ -62,6 +62,29 @@ bool microsoftTemplateFunctionName(const std::string &name, const Type *fn,
 // has to emit the object too, and this refuses those by name.
 bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem);
 
+// **What the Microsoft ABI wants before it will let you throw**: not one
+// pointer but a chain of four objects, each naming the next.
+//
+//   _TI1H          the ThrowInfo the runtime is handed
+//   _CTA1H         the array of types this exception can be caught as
+//   _CT??_R0H@84   one catchable type: its descriptor, its size, how to copy
+//   ??_R0H@8       the RTTI type descriptor, whose name is '.' and the type
+//
+// All four are measured from cl. `decorated` is what goes in the descriptor -
+// `.H` for int - and `size` is the object's, which the catchable type
+// carries. Refuses anything but a fundamental type, for the same reason the
+// Itanium side does: a class would need a descriptor cxx1 does not emit.
+struct MicrosoftThrow {
+    std::string descriptor;
+    std::string catchable;
+    std::string array;
+    std::string info;
+    std::string decorated;
+    int size = 0;
+};
+bool microsoftThrowNames(const Type *t, int size, MicrosoftThrow *out,
+                         std::string *problem);
+
 bool microsoftFunctionName(const std::string &name, const Type *fn, bool internal,
                            std::string *out, std::string *problem);
 

@@ -62,8 +62,13 @@ public:
     MasmCodeGen(std::ostream &sink, const Target &target, const Abi &abi)
         : X86_64Linux(sink, target, abi), masm_(out_) { a_ = &masm_; }
 
+    void run(const Program &program) override;
+
 private:
     bool writesDwarf() const override { return false; }
+    // The four objects the Microsoft ABI wants per thrown type. Emitted here
+    // because no other target has anything like them.
+    void emitThrowInfo(const Program &program);
 
     MasmSpelling masm_;
 };

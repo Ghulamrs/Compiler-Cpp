@@ -1,5 +1,7 @@
 #include "Masm.h"
 
+#include "../Mangle.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <ostream>
@@ -390,4 +392,86 @@ void MasmSpelling::postamble(std::ostream &sink) {
     if (!pending_.empty())
         give_up(pending_, "a data label left dangling at the end of the file");
     sink << "\nEND\n";
+}
+
+// **The chain the Microsoft ABI wants before anything may be thrown**, all of
+// it measured from cl's own listing rather than read off a description:
+//
+//   ??_R0H@8       the RTTI type descriptor - the type_info vftable, a spare
+//                  word, and the decorated name, which for a fundamental type
+//                  is a '.' and the type's own letter
+//   _CT??_R0H@84   one catchable type: properties, the descriptor, where the
+//                  object sits, the virtual-base fields it does not use, its
+//                  size, and the copy function a scalar does not need
+//   _CTA1H         the array of those - a count and one entry
+//   _TI1H          the ThrowInfo itself, whose fourth word is the array
+//
+// Every cross-reference is `imagerel`, which is what makes them relocatable
+// inside the image; `ORG $+4` is the padding cl writes for the vbtable field.
+// The segments are cl's too: the descriptor in data$r, the rest in xdata$x,
+// each COMDAT so that two objects throwing an int fold into one.
+void MasmCodeGen::emitThrowInfo(const Program &program) {
+    if (program.thrown.empty()) return;
+    std::string &o = out_;
+    o += "\nEXTRN ??_7type_info@@6B@:QWORD\n";
+    for (std::size_t i = 0; i < program.thrown.size(); i++) {
+        const Type *t = program.thrown[i];
+        MicrosoftThrow n;
+        std::string why;
+        if (!microsoftThrowNames(t, t->size(target_), &n, &why)) continue;
+
+        // **Not PUBLIC, and that is the interesting part.** cl puts each of
+        // these in a COMDAT so that two objects throwing an int fold into
+        // one; MASM has no way to say COMDAT, so a public copy here collides
+        // with cl's at the link - measured, LNK2005 on ??_R0H@8. Keeping them
+        // file-local works because the runtime matches a type descriptor by
+        // its *name string* rather than by its address, which is the same
+        // rule that lets a throw cross a DLL boundary at all.
+        o += "data$r SEGMENT\n";
+        // **cl's listing writes `FLAT:` here and ml64 rejects it.** That
+        // prefix is 32-bit MASM's way of naming a flat-model address; the
+        // 64-bit assembler has no such keyword, so the listing is a record of
+        // what cl *means* rather than something that assembles as it stands.
+        o += n.descriptor + " DQ ??_7type_info@@6B@\n";
+        o += "  DQ 0\n";
+        o += "  DB '" + n.decorated + "', 00H\n";
+        o += "data$r ENDS\n";
+
+        o += "xdata$x SEGMENT\n";
+        o += n.catchable + " DD 01H\n";
+        o += "  DD imagerel " + n.descriptor + "\n";
+        o += "  DD 00H\n";
+        o += "  DD 0ffffffffH\n";
+        o += "  ORG $+4\n";
+        o += "  DD 0" + std::to_string(n.size) + "H\n";
+        o += "  DD 00H\n";
+        o += n.array + " DD 01H\n";
+        o += "  DD imagerel " + n.catchable + "\n";
+        o += n.info + " DD 00H\n";
+        o += "  DD 00H\n";
+        o += "  DD 00H\n";
+        o += "  DD imagerel " + n.array + "\n";
+        o += "xdata$x ENDS\n";
+    }
+}
+
+// The ThrowInfo names are defined in this file, so the spelling must not put
+// them in the EXTERN list it writes for everything a call mentions.
+void MasmCodeGen::run(const Program &program) {
+    std::vector<std::string> mine;
+    for (std::size_t i = 0; i < program.thrown.size(); i++) {
+        MicrosoftThrow n;
+        std::string why;
+        if (!microsoftThrowNames(program.thrown[i],
+                                 program.thrown[i]->size(target_), &n, &why))
+            continue;
+        mine.push_back(n.info);
+    }
+    masm_.predefine(mine);
+    // **Before the code, not after it.** The base run() flushes what it has
+    // built to the sink when it finishes, so anything appended afterwards is
+    // written to a buffer nobody reads. MASM makes two passes, so a `lea` of
+    // a ThrowInfo defined above it resolves either way round.
+    emitThrowInfo(program);
+    X86_64Linux::run(program);
 }

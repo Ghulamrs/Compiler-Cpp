@@ -619,4 +619,10 @@ struct Program {
     std::vector<Function> functions;
     std::vector<Global> globals;
     std::vector<StringLit> strings;
+    // **The types this file throws**, which only the Microsoft backend reads:
+    // that ABI wants a chain of four objects per thrown type emitted into the
+    // object, where Itanium names one that the standard library already
+    // carries. Collected by the parser because it is the only thing that
+    // knows a `throw` happened.
+    std::vector<const Type *> thrown;
 };

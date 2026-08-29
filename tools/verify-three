@@ -103,6 +103,18 @@ if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then
             fail=$((fail + 1))
         fi
     done
+    # The Windows half of tools/unwind-check: something cxx1 threw, caught by
+    # cl. A run rather than a diff, for the same reason.
+    if ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\throw-check.cmd $REMOTE" \
+           > "$OUT/throw.txt" 2>&1 &&
+       [ "$(tr -d '\r' < "$OUT/throw.txt" | tail -2)" = "int 7
+double 2.5" ]; then
+        echo "  throw-check: a cxx1 throw was caught by cl"
+    else
+        echo "  throw-check: FAILED"
+        tail -4 "$OUT/throw.txt" | sed 's/^/      /'
+        fail=$((fail + 1))
+    fi
     echo "windows cases: $pass passed, $fail failed"
     [ "$fail" -eq 0 ] || STATUS=1
     rm -rf "$OUT"

@@ -790,6 +790,7 @@ private:
     bool functionHasTry_ = false;
     // `throw x;` - rung 6.2. Answers the statement it lowers to.
     StmtPtr throwStatement(ExprPtr value, std::size_t pos);
+    StmtPtr microsoftThrow(ExprPtr value, std::size_t pos);
     // A call to something in the runtime, named by its symbol and needing no
     // declaration - the same shape callAllocator has used for operator new.
     ExprPtr runtimeCall(const char *symbol, const Type *returns,

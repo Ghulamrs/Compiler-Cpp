@@ -6728,6 +6728,57 @@ ExprPtr Parser::runtimeCall(const char *symbol, const Type *returns,
     return n;
 }
 
+// **The Microsoft ABI throws from the stack, not from the heap.**
+//
+//     T tmp = x;
+//     _CxxThrowException(&tmp, &_TI1<letter>);
+//
+// where Itanium asks the runtime for memory first. The exception object is an
+// ordinary local here, and what carries its identity is the ThrowInfo chain -
+// four objects the *backend* emits, listed on the Program so that only the
+// backend which needs them sees them.
+StmtPtr Parser::microsoftThrow(ExprPtr value, std::size_t pos) {
+    const Type *thrown = value->type()->unqualified();
+    MicrosoftThrow names;
+    std::string why;
+    if (!microsoftThrowNames(thrown, thrown->size(target_), &names, &why))
+        src_.fail(pos, "'throw' cannot name the type of this: " + why);
+
+    bool had = false;
+    for (std::size_t i = 0; i < current_->thrown.size(); i++)
+        if (current_->thrown[i] == thrown) had = true;
+    if (!had) current_->thrown.push_back(thrown);
+
+    const int slot = allocateFrameSlot(thrown);
+    const std::string temp = ".ex" + std::to_string(refTemps_++);
+    ExprPtr held(Var::local(temp, slot));
+    held->setType(thrown);
+    ExprPtr store(new Assign(std::move(held), convert(std::move(value), thrown)));
+    store->setType(thrown);
+
+    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+    std::vector<ExprPtr> args;
+    ExprPtr object(Var::local(temp, slot));
+    object->setType(thrown);
+    ExprPtr address(new Unary('&', std::move(object)));
+    address->setType(voidPtr);
+    args.push_back(std::move(address));
+
+    Var *ti = Var::global(names.info);
+    ti->setSymbol(names.info);
+    ExprPtr tiRef(ti);
+    tiRef->setType(types_.get(Kind::Char));
+    ExprPtr tiAddr(new Unary('&', std::move(tiRef)));
+    tiAddr->setType(voidPtr);
+    args.push_back(std::move(tiAddr));
+
+    ExprPtr thrower = runtimeCall("_CxxThrowException", types_.get(Kind::Void),
+                                  std::move(args));
+    ExprPtr whole(new Comma(std::move(store), std::move(thrower)));
+    whole->setType(types_.get(Kind::Void));
+    return StmtPtr(new ExprStmt(std::move(whole)));
+}
+
 // **`throw x;` is three calls and a store, and no new machinery.**
 //
 //     void *e = __cxa_allocate_exception(sizeof x);
@@ -6745,6 +6796,8 @@ ExprPtr Parser::runtimeCall(const char *symbol, const Type *returns,
 // else by name.
 StmtPtr Parser::throwStatement(ExprPtr value, std::size_t pos) {
     const Type *thrown = value->type()->unqualified();
+    if (target_.microsoftNames()) return microsoftThrow(std::move(value), pos);
+
     std::string info, why;
     if (!itaniumTypeInfoName(thrown, &info, &why))
         src_.fail(pos, "'throw' cannot name the type of this: " + why);
@@ -8419,15 +8472,6 @@ StmtPtr Parser::statementBody() {
         if (peek().is(";"))
             src_.fail(tpos, "a rethrow - 'throw' with nothing after it - is "
                             "not supported yet");
-        // **Windows lags here and the reason is a shape, not an omission.**
-        // The Microsoft ABI hands _CxxThrowException a ThrowInfo, which
-        // points at a catchable-type array, which points at a copy record,
-        // which points at the RTTI descriptor - four objects and an
-        // image-relative relocation, where Itanium wants one pointer.
-        if (target_.microsoftNames())
-            src_.fail(tpos, "'throw' is not supported yet for x86_64-windows - "
-                            "the Microsoft ABI wants a ThrowInfo chain this "
-                            "compiler does not emit");
         ExprPtr value = decay(expr());
         expect(";");
         return throwStatement(std::move(value), tpos);

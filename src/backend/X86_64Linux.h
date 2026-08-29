@@ -37,7 +37,7 @@ private:
 class X86_64Linux : public Walker {
 public:
     X86_64Linux(std::ostream &sink, const Target &target, const Abi &abi)
-        : sink_(sink), target_(target), abi_(abi) {}
+        : target_(target), sink_(sink), abi_(abi) {}
 
     using Walker::visit;
     void run(const Program &program) override;
@@ -73,6 +73,9 @@ protected:
     std::vector<std::string> lsdaTypes_;
     std::vector<std::string> lsdaStubs_;
     bool lsdaPersonality_ = false;
+    // Reachable from the MASM subclass, which needs the target to size the
+    // objects the Microsoft ABI wants a throw to carry.
+    const Target &target_;
 
 private:
     std::vector<std::string> chunks_;
@@ -81,7 +84,6 @@ private:
     std::ostream &sink_;
     GnuSpelling gnu_{out_};
 
-    const Target &target_;
     const Abi &abi_;
     int depth_ = 0;
     std::string returnLabel_;

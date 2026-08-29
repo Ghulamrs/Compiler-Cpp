@@ -1,1 +1,0 @@
-x86_64-windows  `throw` is refused outright for this target - the ThrowInfo chain is rung 6.5 - so the compiler never reaches the question this case is about, which is which types it can name

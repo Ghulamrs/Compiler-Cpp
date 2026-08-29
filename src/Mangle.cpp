@@ -796,6 +796,29 @@ bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem) 
     return true;
 }
 
+bool microsoftThrowNames(const Type *t, int size, MicrosoftThrow *out,
+                         std::string *problem) {
+    const char *letter = microsoftBuiltin(t->kind());
+    if (letter == nullptr) {
+        *problem = "only a fundamental type has a type descriptor this "
+                   "compiler can name; one for '" + t->describe() + "' would "
+                   "have to be emitted here, and that is its own step";
+        return false;
+    }
+    // The type's own letter runs through all four names, which is what makes
+    // them agree without anything having to be passed between them. Measured
+    // with cl: int is ??_R0H@8, _CT??_R0H@84, _CTA1H, _TI1H, and double is
+    // the same with N and a size of 8.
+    const std::string code = letter;
+    out->size = size;
+    out->decorated = "." + code;
+    out->descriptor = "??_R0" + code + "@8";
+    out->catchable = "_CT" + out->descriptor + std::to_string(size);
+    out->array = "_CTA1" + code;
+    out->info = "_TI1" + code;
+    return true;
+}
+
 bool itaniumTemplateFunctionName(const std::string &name, const Type *pattern,
                                  const std::vector<TemplateArg> &args,
                                  bool internal,

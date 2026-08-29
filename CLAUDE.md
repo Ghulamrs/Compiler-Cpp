@@ -102,7 +102,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
-| 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.4 **done**, 2026-08-29 |
+| 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.4 and Windows `throw` **done**, 2026-08-29 |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
@@ -1438,7 +1438,47 @@ from.
 
 **6.5 - Windows.** `__CxxFrameHandler4` and MSVC's own tables, which are a
 different design from the Itanium one rather than a different spelling of it.
-Expect this to lag and do not promise otherwise.
+**Its first half - `throw` - has landed; see the section below.** What is left
+is `try`/`catch`, and that is where the design really diverges: MSVC compiles
+each handler and each cleanup into a *funclet*, a separate function with its
+own entry, and describes the whole thing with a FuncInfo state table that
+`__CxxFrameHandler` walks. Itanium's landing pad is one block inside the
+function and its table maps ranges to it. Expect this to lag and do not
+promise otherwise.
+
+### 6.5a as it actually landed: `throw` on Windows
+
+**The Microsoft ABI throws from the stack and carries its identity in four
+objects**, where Itanium asks the runtime for memory and names one pointer:
+
+    ??_R0H@8       the RTTI type descriptor - the type_info vftable, a spare
+                   word, and the decorated name, `.H` for int
+    _CT??_R0H@84   one catchable type: the descriptor, the object's size, the
+                   virtual-base fields a scalar does not use
+    _CTA1H         the array of those, with its count
+    _TI1H          the ThrowInfo the runtime is handed
+
+All measured from cl's listing, and the type's own letter runs through every
+name, which is what makes them agree without anything being passed between
+them. `Program::thrown` carries the list from the parser to the one backend
+that needs it.
+
+**Two things cl's listing shows but does not mean literally.** It writes
+`DQ FLAT:??_7type_info@@6B@`, and `FLAT:` is 32-bit MASM's way of naming a
+flat-model address - ml64 has no such keyword and rejects it. And it marks
+each object `; COMDAT`, which is cl's object writer rather than assemblable
+syntax: MASM cannot say COMDAT at all.
+
+**So the four objects are file-local rather than PUBLIC**, and that is the
+decision worth knowing. A public copy collides with cl's at the link -
+measured, `LNK2005` on `??_R0H@8`. Keeping them private works because the
+runtime matches a type descriptor by its **name string** rather than by its
+address, which is the same rule that lets a throw cross a DLL boundary.
+
+**Checked by a run**: `tools/windows/throw-check.cmd` has cxx1 compile the
+thrower and cl the catcher, and `tools/verify-three` runs it with the cases.
+An int and a double, because the object's size and the type that names it are
+what that tests.
 
 ### 6.4 as it actually landed
 

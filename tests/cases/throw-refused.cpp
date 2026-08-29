@@ -5,8 +5,11 @@
 // already carries that object - naming it is all a compiler has to do. For a
 // class, or a pointer, the compiler has to *emit* one, and cxx1 has no RTTI
 // at all: the vtable's typeinfo slot is a plain zero and `typeid` is refused.
-// So this is refused by name rather than thrown with a null type nobody can
-// catch, which is what a wrong type_info amounts to.
+// So this is refused by name rather than thrown with a type nobody can catch.
+//
+// **Both ABIs refuse it and each says why in its own terms** - Itanium that
+// the library carries no such type_info, Microsoft that it can name no such
+// type descriptor - so what the case records is the half they share.
 struct E { int v; };
 void f() { E e; e.v = 1; throw e; }
 int main() { f(); return 0; }
