@@ -268,6 +268,19 @@ private:
     // It answers a shallow type instead, carrying the name and the arguments
     // and nothing else, which is all either caller reads.
     bool patternOnly_ = false;
+
+    // **A trial, and everything it has to put back.** Forming a candidate's
+    // signature reads tokens, pushes classes and binds parameters; if it
+    // fails half way through, none of that may be left behind for the next
+    // candidate to trip over.
+    struct Trial {
+        Parser *p;
+        std::size_t at;
+        std::size_t classes;
+        bool pattern;
+        explicit Trial(Parser *parser);
+        ~Trial();
+    };
     const Signature &instantiate(const TemplateDecl &decl,
                                  const std::vector<const Type *> &binding,
                                  const std::vector<long long> &values,
@@ -530,6 +543,7 @@ private:
     const Type *findTypedef(const std::string &name) const;
     void declareTypeName(const std::string &name, const Type *type);
     const EnumConst *findEnum(const std::string &name) const;
+    const Type *memberTypeWalk(const Type *t);
     const Type *structOrUnionSpecifier(Kind kind, bool isClass = false);
     void checkAccessible(const Type *object, const Member &m, std::size_t pos) const;
     // A constructor is keyed in the function table under "Point::Point", so

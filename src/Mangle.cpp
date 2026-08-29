@@ -302,6 +302,20 @@ private:
             return;
         }
 
+        // `N <owner> <len><name> E` - measured: `Value<T>::type` in a return
+        // type is `N5ValueIT_E4typeE` and `T::type` is `NT_4typeE`. It is a
+        // nested-name like any other, and the only new thing is what stands
+        // in the prefix.
+        if (t->kind() == Kind::DependentMember) {
+            out += 'N';
+            type(t->pointee());
+            out += std::to_string(t->tag().size());
+            out += t->tag();
+            out += 'E';
+            subs_.push_back(Sub{ t, std::string() });
+            return;
+        }
+
         // **`T_` is the first parameter and `T0_` the second** - the same
         // seq-id shape the substitution table uses, and a candidate in that
         // table itself, which is what makes the second mention of T an S.

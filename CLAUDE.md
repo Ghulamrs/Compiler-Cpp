@@ -101,7 +101,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 2 | References, overloading, **Itanium/MSVC mangling**, `new`/`delete` | **done**, 2026-08-28 |
 | 3 | `class`: members, access, ctors/dtors, `this`, RAII | **done**, 2026-08-28 |
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | in progress |
-| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1-5.7a **done**, 2026-08-29; SFINAE and variadic refused by name |
+| 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | in progress: 5.1-5.7b **done**, 2026-08-29; variadic refused by name |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | |
 
@@ -905,13 +905,9 @@ step and each is large. **Partial specialization has landed** - see its
 section below. The other two are still unwritten and refused by name, and what
 each will want is now clearer:
 
-**SFINAE** needs a substitution that can *fail* rather than refuse. Every
-`src_.fail` reached while a candidate's signature is being formed would have
-to become a rejection of that candidate instead, which is a different error
-discipline from the one the rest of this compiler has - errors at the point of
-interception, and no recovery. The narrow version worth taking first is
-`enable_if`: a failure inside a template argument's *type* only, not inside a
-body, which is where the standard puts the line anyway.
+**SFINAE has landed** - see its section below. What it needed was a
+substitution that can *fail* rather than refuse, and the line held exactly
+where the plan said: a failure inside a signature, not inside a body.
 
 **Variadic templates** need a parameter that stands for a list, which the
 pattern types cannot say: `Kind::TemplateParam` holds one index. A pack is
@@ -1308,6 +1304,77 @@ classes, one name, and whichever body was emitted answered for both. Silent,
 and only on Windows. Itanium spells it with a K and always had.
 
 Suites 78 / 125 / 42; the C corpus is unchanged.
+
+### 5.7b as it actually landed: SFINAE
+
+**[temp.deduct]/8 is the one place in this compiler where a failure
+recovers.** A trial is a stretch of parsing whose failure is an answer:
+`Source::fail` throws inside one instead of printing and exiting, and the
+candidate that was being formed is dropped. Everywhere else the rule stands -
+errors at the point of interception, and nothing recovers. Making that the
+*only* exception is what keeps the two disciplines from bleeding into each
+other.
+
+**A trial has to put back everything a half-formed signature touched**: the
+token position, the class stack, the pattern flag, and above all the bound
+parameter names, or the next candidate reads a table that still says T means
+int. That last one is an RAII guard inside `readTemplateDeclaration` rather
+than a `catch`, because it must also run on the ordinary path.
+
+**Three things had to exist first, and none of them is SFINAE:**
+
+- **A typedef inside a class.** Keyed "S::value", which is the qualified key a
+  nested class already uses, so every lookup that finds a nested class finds
+  this too.
+- **`Value<T>::type` as a type**, which is the `Outer::Inner` walk with a
+  class that was made rather than named in front of it. And `T::type`, which
+  the old walk could not spell at all: it built the key by joining strings,
+  where the first component here is a typedef *for* a class rather than its
+  tag.
+- **`typename` read and dropped.** It tells a C++ parser that a dependent
+  qualified name is a type, which matters only where a template body is parsed
+  before its arguments are known - and this one replays a body at
+  instantiation. Accepted rather than refused so that a file written for clang
+  compiles here too, which is what the whole oracle method rests on.
+
+**`Kind::DependentMember` exists because Itanium spells the pattern.**
+`_Z4takeIiEN5ValueIT_E4typeES1_` says `Value<T>::type` where the substituted
+signature says int and has forgotten where it came from. `NT_4typeE` is the
+other shape. Microsoft needs none of it - it writes the substituted signature
+and always did. Measured on both.
+
+**Where it stops is a mangling wall, not a parsing one.** A signature that
+depends on its parameters through an *expression* - `enable_if<sizeof(T) == 4,
+int>::type` - is spelled by Itanium as the expression itself,
+`N9enable_ifIXeqstT_Li4EEiE4typeE`. Nothing here can write that, so it is
+refused where it is written. Mangling from the substituted signature instead
+would compile and run correctly and produce a name no other compiler agrees
+with, and a name that links with nothing is worse than a refusal that says
+why.
+
+**Two more silent bugs closed on the way, and neither is about SFINAE.**
+
+`templates_` holds one entry per name, so a second template of that name
+replaced nothing and simply disappeared - a missing overload with no
+diagnostic. Refused by name now. Overloading function templates is its own
+step, and it is what would let SFINAE choose between two templates rather than
+between a template and an ordinary function.
+
+**And an empty class passed by value took a register it should not have, and
+crashed on one target only.** The SysV eightbyte lanes started out SSE and
+only a non-floating member cleared one, which says nothing about a lane no
+member covers - an empty class kept them all, went in xmm0 through a `movss`
+reading four bytes of a one-byte object, and segfaulted on the Linux box.
+arm64 and Windows classify differently and were unaffected: the house bug
+class, found by a case that only reached it because a class with a typedef and
+no data is exactly what SFINAE is written with. clang settles it -
+`take2(E{}, 7)` puts the 7 in `%edi`, so the class consumed nothing - and the
+fix is an empty lane list, which every loop that walks lanes already treats as
+nothing to move. **Checked by a link**: objects cxx1 compiled link with g++'s
+in both directions and print what the all-g++ build prints, including the case
+with the empty class sitting between other arguments.
+
+Suites 83 / 134 / 45; the C corpus is unchanged.
 
 ## Decisions already taken
 

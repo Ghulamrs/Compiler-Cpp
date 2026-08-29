@@ -28,7 +28,14 @@ enum class Kind {
     // specialization's name spells `T_` where the substituted signature has
     // lost all record of where the int came from. Nothing but the manglers
     // ever sees one; a parameter has no size, no alignment and no value.
-    TemplateParam
+    TemplateParam,
+    // **A member type of something that is not known yet** - `T::type`, or
+    // `Value<T>::type`. Like TemplateParam it exists only in a pattern, and
+    // for the same reason: Itanium spells a function template's return type
+    // from the pattern, and `_Z4takeIiEN5ValueIT_E4typeES1_` says
+    // `Value<T>::type` where the substituted signature says int and has
+    // forgotten where it came from.
+    DependentMember
 };
 
 class Target;
@@ -344,6 +351,8 @@ public:
     // other derived type, so two mentions of T in one signature are one
     // pointer and the substitution table sees them as the repeat they are.
     const Type *templateParam(int index);
+    // `owner::name`, where owner is a pattern. Interned on the pair.
+    const Type *dependentMember(const Type *owner, const std::string &name);
 
     Type *structType(Kind kind, const std::string &tag);
     Type *anonymousStruct(Kind kind);

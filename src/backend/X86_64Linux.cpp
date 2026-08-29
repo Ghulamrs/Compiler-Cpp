@@ -32,28 +32,52 @@ int LinuxX86_64Target::sizeOf(Kind k) const {
 int LinuxX86_64Target::alignOf(Kind k) const { return sizeOf(k); }
 
 static void classifyInto(const Type *t, int base, std::vector<bool> &sse,
-                         const Target &target) {
+                         std::vector<bool> &reached, const Target &target) {
     if (t->isStructOrUnion()) {
-        for (const Member &m : t->members()) classifyInto(m.type, base + m.offset, sse, target);
+        for (const Member &m : t->members())
+            classifyInto(m.type, base + m.offset, sse, reached, target);
         return;
     }
     if (t->isArray()) {
         int step = t->pointee()->size(target);
         for (long long i = 0; i < t->length(); i++)
-            classifyInto(t->pointee(), base + static_cast<int>(i) * step, sse, target);
+            classifyInto(t->pointee(), base + static_cast<int>(i) * step, sse,
+                         reached, target);
         return;
     }
-    if (t->isFloating()) return;
 
     int from = base / 8;
     int to = (base + t->size(target) - 1) / 8;
-    for (int i = from; i <= to && i < static_cast<int>(sse.size()); i++) sse[i] = false;
+    for (int i = from; i <= to && i < static_cast<int>(sse.size()); i++) {
+        reached[i] = true;
+        if (!t->isFloating()) sse[i] = false;
+    }
 }
 
 std::vector<bool> classifyEightbytes(const Type *t, const Target &target) {
     int size = t->size(target);
-    std::vector<bool> sse(static_cast<std::size_t>((size + 7) / 8), true);
-    classifyInto(t, 0, sse, target);
+    const std::size_t lanes = static_cast<std::size_t>((size + 7) / 8);
+    std::vector<bool> sse(lanes, true);
+    std::vector<bool> reached(lanes, false);
+    classifyInto(t, 0, sse, reached, target);
+
+    // **A class with no data members takes no register at all.** The SysV
+    // ABI calls an eightbyte that nothing reaches NO_CLASS, and clang bears
+    // that out: `take2(E{}, 7)` puts the 7 in %edi, so the empty class
+    // consumed nothing. Answering an empty lane list is what says so - every
+    // loop that walks these lanes then moves nothing and takes no slot.
+    //
+    // Before this the lanes started out SSE and only a non-floating member
+    // cleared one, so an empty class kept all of them: it went in xmm0
+    // through a `movss`, four bytes read out of a one-byte object, which
+    // segfaulted on the Linux box. arm64 and Windows classify differently and
+    // were unaffected - the house bug class exactly.
+    bool any = false;
+    for (std::size_t i = 0; i < lanes; i++) if (reached[i]) any = true;
+    if (!any) return std::vector<bool>();
+
+    for (std::size_t i = 0; i < lanes; i++)
+        if (!reached[i]) sse[i] = false;
     return sse;
 }
 

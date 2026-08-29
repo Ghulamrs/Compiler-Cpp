@@ -72,6 +72,10 @@ Source::Place Source::locate(std::size_t pos) const {
 }
 
 void Source::fail(std::size_t pos, const std::string &message) const {
+    // Inside a trial nothing is printed and nothing exits: the caller asked a
+    // question and this is the answer to it.
+    if (trials_ > 0) throw SubstitutionFailure{ message };
+
     if (pos > text_.size()) pos = text_.size();
 
     int lineNo = 1;

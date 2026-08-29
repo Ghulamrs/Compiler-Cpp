@@ -143,6 +143,19 @@ const Type *TypeTable::templateParam(int index) {
     return derived_.back();
 }
 
+// The owner is kept in pointee_ and the member's name in tag_, neither of
+// which a dependent member uses for anything else.
+const Type *TypeTable::dependentMember(const Type *owner,
+                                       const std::string &name) {
+    for (Type *d : derived_)
+        if (!d->isConst() && d->kind() == Kind::DependentMember &&
+            d->pointee() == owner && d->tag() == name)
+            return d;
+    derived_.push_back(new Type(Kind::DependentMember, owner, -1));
+    derived_.back()->tag_ = name;
+    return derived_.back();
+}
+
 const Type *TypeTable::arrayOf(const Type *t, long long length) {
     for (Type *d : derived_)
         if (!d->const_ && d->kind() == Kind::Array && d->pointee() == t &&
@@ -298,6 +311,7 @@ const char *Type::name() const {
     case Kind::Function:  return "function";
     case Kind::LValueRef: return "reference";
     case Kind::TemplateParam: return "template parameter";
+    case Kind::DependentMember: return "dependent member type";
     }
     return "?";
 }

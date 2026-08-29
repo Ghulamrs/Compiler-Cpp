@@ -3,6 +3,11 @@
 #include <string>
 #include <vector>
 
+// Thrown by fail() inside a trial, and caught by whoever began it.
+struct SubstitutionFailure {
+    std::string why;
+};
+
 class Source {
 public:
     struct Line {
@@ -30,7 +35,18 @@ public:
 
     [[noreturn]] void fail(std::size_t pos, const std::string &message) const;
 
+    // **A trial: a stretch of parsing whose failure is an answer, not the
+    // end.** [temp.deduct]/8 - if substituting a template's arguments into
+    // its signature makes something ill-formed, the specialization is removed
+    // from consideration and no diagnostic is issued. That is the one place
+    // in this compiler where a failure must not stop it, and it is deliberately
+    // the only one: everywhere else an error is reported where it is
+    // intercepted and nothing recovers.
+    void beginTrial() const { trials_++; }
+    void endTrial() const { trials_--; }
+
 private:
+    mutable int trials_ = 0;
     std::string name_;
     std::string text_;
     std::vector<std::string> files_;

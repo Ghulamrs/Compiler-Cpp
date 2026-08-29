@@ -137,7 +137,10 @@ bool Parser::atTypeName() const {
                                      "long", "signed", "unsigned", "wchar_t",
                                      "float", "double",
                                      "struct", "union", "enum",
-                                     "const", "volatile" };
+                                     "const", "volatile",
+                                     // It says the next thing is a type, and
+                                     // saying so is the whole of what it does.
+                                     "typename" };
     for (const char *k : t)
         if (peek().is(k)) return true;
     if (peek().kind != TokenKind::Ident) return false;
@@ -394,8 +397,16 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
                                             std::string *name,
                                             std::string *qualifier) {
     const std::size_t resume = at_;
-    std::vector<Shadow> undo;
-    bindTemplateParameters(decl.params, binding, values, &undo);
+    // **Put back even if this throws.** Forming a signature is what a trial
+    // runs, and a failed one must leave the parameter names unbound for the
+    // next candidate. The guard is the only thing standing between a
+    // substitution failure and a table that still says T means int.
+    struct Unbind {
+        Parser *p;
+        std::vector<Shadow> undo;
+        ~Unbind() { p->unbindTemplateParameters(undo); }
+    } guard{ this, std::vector<Shadow>() };
+    bindTemplateParameters(decl.params, binding, values, &guard.undo);
     const bool wasPattern = patternOnly_;
     for (std::size_t i = 0; i < binding.size(); i++)
         if (binding[i] != nullptr && binding[i]->kind() == Kind::TemplateParam)
@@ -427,7 +438,6 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
     }
 
     patternOnly_ = wasPattern;
-    unbindTemplateParameters(undo);
     at_ = resume;
     *name = d.name;
     if (qualifier != nullptr) *qualifier = d.qualifier;
@@ -565,6 +575,14 @@ bool Parser::templateDeclaration() {
     } else if (decl.defined && !it->second.defined) {
         decl.outOfLine = it->second.outOfLine;
         it->second = decl;
+    } else if (decl.defined) {
+        // **One template per name, and the second is refused rather than
+        // dropped.** This table holds one entry per name, so a second
+        // definition used to replace nothing and simply disappear - a
+        // silently missing overload. Overloading function templates is its
+        // own step; until then the reader is told where it stopped.
+        src_.fail(decl.pos, "'" + decl.name + "' is already a template, and "
+                            "two templates of one name are not supported yet");
     }
     return true;
 }
@@ -1082,6 +1100,19 @@ static bool mentionsParam(const Type *t, std::size_t i) {
     return false;
 }
 
+Parser::Trial::Trial(Parser *parser)
+    : p(parser), at(parser->at_), classes(parser->classStack_.size()),
+      pattern(parser->patternOnly_) {
+    p->src_.beginTrial();
+}
+
+Parser::Trial::~Trial() {
+    p->src_.endTrial();
+    p->at_ = at;
+    p->classStack_.resize(classes);
+    p->patternOnly_ = pattern;
+}
+
 // [temp.deduct.type]. A pattern that is a pointer matches a pointer and
 // nothing else - there is no conversion here for a mismatch to be forgiven
 // by, which is what makes this stricter than deduction from a call.
@@ -1424,7 +1455,23 @@ ExprPtr Parser::templateCall(Program *program) {
                 a.type = deduced[i];
                 args.push_back(a);
             }
-            instantiate(decl, deduced, values, args, pos);
+            // **[temp.deduct]/8, which is what SFINAE is.** The arguments
+            // deduce, but substituting them into the signature may make
+            // something ill-formed - `enable_if<false, int>::type` names no
+            // type - and that removes the specialization from consideration
+            // rather than ending the compile. It is the only failure in this
+            // compiler that recovers, and it recovers exactly this far: a
+            // failure inside a *body* is still an error, because a body is
+            // not part of the signature and the standard does not put it in
+            // the immediate context either.
+            try {
+                Trial trial(this);
+                instantiate(decl, deduced, values, args, pos);
+            } catch (const SubstitutionFailure &f) {
+                if (overloadsOf(name) == nullptr)
+                    src_.fail(pos, "'" + name + "' is a function template and "
+                                   "its arguments do not substitute: " + f.why);
+            }
         }
 
         const Signature &sig = resolveOverload(name, callArgs, pos);
@@ -1469,6 +1516,36 @@ void Parser::refuseTemplateId() {
     src_.fail(pos, "'" + name + "' is a " +
                    (templates_[name].isClass ? "class" : "function") +
                    " template, and instantiating one is not supported yet");
+}
+
+// `T::type`, `Value<T>::type`, `Holder<int>::value` - a member type reached
+// through something that is already a type.
+//
+// **In a pattern the answer is a dependent member and not a lookup.** The
+// owner is a template parameter or a class made from one, so there is nothing
+// to look in yet; Itanium wants the pattern spelled anyway, and
+// `N5ValueIT_E4typeE` is what it wants. Everywhere else the member is looked
+// up for real - and *not finding it is the failure SFINAE is made of*, which
+// is why this says so through src_.fail rather than answering null.
+const Type *Parser::memberTypeWalk(const Type *t) {
+    while (peek().is("::") && peekAt(1).kind == TokenKind::Ident) {
+        const std::string member = peekAt(1).text;
+        if (patternOnly_ &&
+            (t->kind() == Kind::TemplateParam || t->kind() == Kind::DependentMember ||
+             (t->isStructOrUnion() && t->isSpecialization()))) {
+            at_ += 2;
+            t = types_.dependentMember(t, member);
+            continue;
+        }
+        if (!t->isStructOrUnion()) break;
+        const Type *found = lookupInClass(t, member);
+        if (found == nullptr)
+            src_.fail(peekAt(1).pos, "'" + t->tag() + "' has no member type "
+                                     "called '" + member + "'");
+        at_ += 2;
+        t = found;
+    }
+    return t;
 }
 
 const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
@@ -1712,6 +1789,27 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
         StorageClass msc;
         const Type *base = specifiers(&msc);
+
+        // **A typedef inside a class names a type and declares no member.**
+        // It is keyed "S::value", which is the same qualified key a nested
+        // class already uses - so it is found from inside the class through
+        // classStack_, from a member's body through currentClass_, and from
+        // outside as `S::value` through the walk that reads `Outer::Inner`.
+        if (msc == StorageTypedef) {
+            if (tag.empty())
+                src_.fail(peek().pos, "a typedef needs a class with a name - "
+                                      "this one is anonymous");
+            do {
+                Declared td = declarator(base);
+                typedefFunctionSuffix(td);
+                if (td.name.empty())
+                    src_.fail(td.pos, "this typedef names nothing");
+                declareTypeName(tag + "::" + td.name, td.type);
+            } while (consume(","));
+            expect(";");
+            continue;
+        }
+
         if (msc != StorageNone && msc != StorageStatic)
             src_.fail(peek().pos, "'static' is the only storage class a member "
                                   "may have");
@@ -2038,6 +2136,18 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
           peekAt(1).text == inlineOwnerName_)))
         return types_.get(Kind::Void);
 
+    // **`typename` is a hint this compiler does not need, so it is read and
+    // dropped.** It exists to tell a C++ parser that a dependent qualified
+    // name is a type, which matters only where a template body is parsed
+    // before its arguments are known - and this one replays a body at
+    // instantiation, where the name is looked up like any other. Accepted
+    // rather than refused so that a file written for clang compiles here too.
+    if (consume("typename")) {
+        if (peek().kind != TokenKind::Ident)
+            src_.fail(peek().pos, "'typename' introduces a qualified type "
+                                  "name, and this is not one");
+    }
+
     // A class template with its arguments *is* a type. A function template
     // named where a type was expected is not, and is refused by name.
     if (peek().kind == TokenKind::Ident && isTemplateName(peek().text) &&
@@ -2046,7 +2156,9 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         if (!decl.isClass) refuseTemplateId();
         const std::size_t tpos = peek().pos;
         at_++;
-        return instantiateClass(decl, tpos);
+        const Type *cls = instantiateClass(decl, tpos);
+
+        return memberTypeWalk(cls);
     }
 
     if (peek().is("struct")) { at_++; return structOrUnionSpecifier(Kind::Struct); }
@@ -2085,7 +2197,10 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
                 return found;
             }
         }
-        if (const Type *t = findTypedef(peek().text)) { at_++; return t; }
+        if (const Type *t = findTypedef(peek().text)) {
+            at_++;
+            return memberTypeWalk(t);
+        }
     }
 
     int isVoid = 0, isBool = 0, isChar = 0, isShort = 0, isInt = 0, isLong = 0;
@@ -4764,7 +4879,7 @@ static const char *notYetSupported(const std::string &word) {
         "noexcept", "not", "not_eq", "nullptr", "operator", "or",
         "or_eq", "reinterpret_cast",
         "static_assert", "static_cast", "template", "thread_local",
-        "throw", "try", "typeid", "typename", "using", "virtual",
+        "throw", "try", "typeid", "using", "virtual",
         "xor", "xor_eq"
     };
     for (const char *k : pending)
@@ -6273,6 +6388,18 @@ ExprPtr Parser::unary() {
                                    "', which is a bit-field");
             measured = operand->type();
         }
+        // **A signature that depends on its parameters through an
+        // *expression* cannot be given a name.** Itanium spells a
+        // specialization's return type from the pattern, and a pattern
+        // holding `sizeof(T) == 4` is spelled as the expression itself -
+        // `N9enable_ifIXeqstT_Li4EEiE4typeE`, measured with clang. Nothing
+        // here can write that, so it is refused where it is written rather
+        // than left to reach a type that has no size.
+        if (patternOnly_ && (measured->kind() == Kind::TemplateParam ||
+                             measured->kind() == Kind::DependentMember))
+            src_.fail(pos, "'sizeof' of a template parameter in a signature is "
+                           "not supported yet - the linker name would have to "
+                           "spell the expression, and that is its own step");
         if (!measured->isComplete())
             src_.fail(pos, "sizeof needs a complete type");
         ExprPtr n(new Num(static_cast<long long>(measured->size(target_))));
