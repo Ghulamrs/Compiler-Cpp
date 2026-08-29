@@ -1093,6 +1093,11 @@ const Type *Parser::deduceAuto(const Type *declared, const std::string &name,
     const Type *from = init->type();
     at_ = resume;
 
+    return deduceAutoFrom(declared, from, name, pos);
+}
+
+const Type *Parser::deduceAutoFrom(const Type *declared, const Type *from,
+                                   const std::string &name, std::size_t pos) {
     std::vector<const Type *> binding(1, static_cast<const Type *>(nullptr));
     std::string why;
     if (!deduceOne(declared, from, &binding, &why) || binding[0] == nullptr)
@@ -8089,11 +8094,163 @@ StmtPtr Parser::declarationBody() {
     return StmtPtr(new Block(std::move(inits)));
 }
 
+// **A declaration followed by `:` rather than `;`.** Telling that from
+// `for (int x = a ? b : c; ...)` is the whole difficulty: a `?` claims the
+// next `:`, so they are counted. `::` is one token from the lexer and cannot
+// be mistaken for this one.
+bool Parser::atRangeFor() const {
+    int depth = 0;
+    int question = 0;
+    for (std::size_t k = 0; ; k++) {
+        const Token &t = peekAt(k);
+        if (t.kind == TokenKind::End) return false;
+        if (t.is("(") || t.is("[")) { depth++; continue; }
+        if (t.is(")") || t.is("]")) {
+            if (depth == 0) return false;
+            depth--;
+            continue;
+        }
+        if (depth != 0) continue;
+        if (t.is(";")) return false;
+        if (t.is("?")) { question++; continue; }
+        if (t.is(":")) {
+            if (question > 0) { question--; continue; }
+            return true;
+        }
+    }
+}
+
+// **[stmt.ranged] is a rewrite, and this does the rewrite.** The standard
+// says what `for (T x : a)` means by writing another loop, and every node
+// that loop needs was already here:
+//
+//     T *__b = a;            the array, decayed
+//     T *__e = __b + N;
+//     for (; __b != __e; __b = __b + 1) { T x = *__b; <body> }
+//
+// The range is evaluated exactly once, which is what binding it to a name
+// buys in the standard's version and what assigning it to `__b` buys here.
+StmtPtr Parser::rangeForStatement(int scope) {
+    StorageClass sc;
+    Qualifiers quals;
+    const Type *base = specifiers(&sc, &quals);
+    Declared d = declarator(base);
+    expect(":");
+
+    const std::size_t rpos = peek().pos;
+    ExprPtr range = expr();
+    expect(")");
+
+    const Type *rt = range->type();
+    if (!rt->isArray())
+        src_.fail(rpos, "a range-based 'for' over anything but an array is "
+                        "not supported yet - a class would need its begin() "
+                        "and end() looked up and called, which is its own "
+                        "step");
+    if (rt->length() < 0)
+        src_.fail(rpos, "this array has no length, so there is nothing to "
+                        "stop at");
+    if (d.type->isReference())
+        src_.fail(d.pos, "a reference in a range-based 'for' is not supported "
+                         "yet - the loop variable is copied for now");
+
+    const Type *elem = rt->pointee();
+    const Type *elemPtr = types_.pointerTo(elem);
+    if (mentionsDeduced(d.type))
+        d.type = deduceAutoFrom(d.type, elem, d.name, d.pos);
+
+    // `T *__b = a;` - the array decayed, evaluated here and nowhere else.
+    const int bSlot = declare(".rb" + std::to_string(refTemps_), elemPtr, rpos);
+    const std::string bName = ".rb" + std::to_string(refTemps_++);
+    ExprPtr b(Var::local(bName, bSlot));
+    b->setType(elemPtr);
+    std::vector<StmtPtr> setup;
+    ExprPtr startAt(new Assign(std::move(b), decay(std::move(range))));
+    startAt->setType(elemPtr);
+    setup.push_back(StmtPtr(new ExprStmt(std::move(startAt))));
+
+    // `T *__e = __b + N;`
+    const int eSlot = declare(".re" + std::to_string(refTemps_), elemPtr, rpos);
+    const std::string eName = ".re" + std::to_string(refTemps_++);
+    ExprPtr from(Var::local(bName, bSlot));
+    from->setType(elemPtr);
+    ExprPtr count(new Num(rt->length()));
+    count->setType(types_.get(target_.sizeType()));
+    // **Through `arithmetic`, not a bare Binary.** `p + 1` on an `int *`
+    // advances four bytes, and that scaling lives in the helper the ordinary
+    // expression path uses. Building the node by hand and stamping a type on
+    // it produced a loop that read the array one byte at a time - the first
+    // element right and every one after it garbage, which is what a missing
+    // scale looks like.
+    ExprPtr past = arithmetic(BinOp::Add, std::move(from), std::move(count),
+                              rpos);
+    ExprPtr e(Var::local(eName, eSlot));
+    e->setType(elemPtr);
+    ExprPtr stopAt(new Assign(std::move(e), std::move(past)));
+    stopAt->setType(elemPtr);
+    setup.push_back(StmtPtr(new ExprStmt(std::move(stopAt))));
+
+    // `__b != __e`
+    ExprPtr atB(Var::local(bName, bSlot));
+    atB->setType(elemPtr);
+    ExprPtr atE(Var::local(eName, eSlot));
+    atE->setType(elemPtr);
+    ExprPtr cond = comparison(BinOp::Ne, std::move(atB), std::move(atE));
+
+    // `__b = __b + 1`
+    ExprPtr stepFrom(Var::local(bName, bSlot));
+    stepFrom->setType(elemPtr);
+    ExprPtr one(new Num(1LL));
+    one->setType(types_.get(target_.sizeType()));
+    ExprPtr next = arithmetic(BinOp::Add, std::move(stepFrom), std::move(one),
+                              rpos);
+    ExprPtr stepTo(Var::local(bName, bSlot));
+    stepTo->setType(elemPtr);
+    ExprPtr step(new Assign(std::move(stepTo), std::move(next)));
+    step->setType(elemPtr);
+
+    // The body, with the loop variable built from `*__b` in front of it.
+    enterScope();
+    const int inner = enterBlock();
+    const int vSlot = declare(d.name, d.type, d.pos);
+    ExprPtr through(Var::local(bName, bSlot));
+    through->setType(elemPtr);
+    ExprPtr at(new Unary('*', std::move(through)));
+    at->setType(elem);
+    ExprPtr var(Var::local(d.name, vSlot));
+    var->setType(d.type);
+    ExprPtr take(new Assign(std::move(var), convert(std::move(at), d.type)));
+    take->setType(d.type);
+
+    std::vector<StmtPtr> body;
+    body.push_back(StmtPtr(new ExprStmt(std::move(take))));
+    loopDepth_++;
+    body.push_back(statement());
+    loopDepth_--;
+    leaveBlock();
+    leaveScope();
+    Block *inside = new Block(std::move(body));
+    inside->setScope(inner);
+
+    For *f = new For(StmtPtr(), std::move(cond), std::move(step),
+                     StmtPtr(inside));
+    f->setScope(scope);
+    setup.push_back(StmtPtr(f));
+
+    leaveBlock();
+    leaveScope();
+    Block *whole = new Block(std::move(setup));
+    whole->setScope(-1);
+    return StmtPtr(whole);
+}
+
 StmtPtr Parser::forStatement() {
     expect("for");
     expect("(");
     enterScope();
     int scope = enterBlock();
+
+    if (atRangeFor()) return rangeForStatement(scope);
 
     StmtPtr init;
     if (!consume(";")) {

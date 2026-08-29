@@ -386,6 +386,16 @@ private:
     // answers the declared type with `auto` replaced.
     const Type *deduceAuto(const Type *declared, const std::string &name,
                            std::size_t pos);
+    // The same deduction against a type already in hand, for a `for` whose
+    // initialiser is built rather than written.
+    const Type *deduceAutoFrom(const Type *declared, const Type *from,
+                               const std::string &name, std::size_t pos);
+    // ---- Rung 7.3: the range-based `for` ----
+    //
+    // A declaration followed by `:` rather than `;`, which takes a scan to
+    // tell from `for (int x = a ? b : c; ...)` - the `?` has to be counted.
+    bool atRangeFor() const;
+    StmtPtr rangeForStatement(int scope);
     // The argument list at a use: `<int, 3>` read into types and values.
     void templateArguments(const TemplateDecl &decl,
                            std::vector<const Type *> *binding,

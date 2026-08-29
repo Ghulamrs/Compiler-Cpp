@@ -103,7 +103,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | **done**, 2026-08-29 |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.4 and Windows `throw` **done**, 2026-08-29 |
-| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1 **done**, 2026-08-29 |
+| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1 and 7.3 **done**, 2026-08-29 |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
 punctuators, `__cplusplus`, `bool`/`true`/`false`, class and enum tags as type
@@ -1790,10 +1790,25 @@ where the surprises are: `decltype(x)` is the declared type of `x` while
 `decltype((x))` is a reference, and an rvalue gives a plain type where an
 lvalue gives `T &`. It wants 7.4's references to say the second half at all.
 
-**7.3 - range-for**, which lowers to an ordinary `for` over `begin`/`end` or
-over an array's bounds, and is mostly reuse once `auto` names the loop
-variable. Worth taking early because it is the one that makes the others
-feel like C++.
+**7.3 has landed for arrays.** [stmt.ranged] says what `for (T x : a)` means
+by writing another loop, and every node that loop needs was already here - so
+this performs the rewrite rather than adding a construct. The range is
+evaluated once, which is what binding it to a name buys in the standard's
+version and what assigning it to `__b` buys here.
+
+**Telling it from an ordinary `for` takes a scan, and a `?` claims the next
+`:`.** `for (int i = 0, n = c ? 2 : 5; ...)` has a colon and is not a
+range-for, so the question marks are counted.
+
+**Build through `arithmetic`, never a bare `Binary`.** `p + 1` on an `int *`
+advances four bytes and that scaling lives in the helper the ordinary
+expression path uses; a node built by hand with a type stamped on it read the
+array one byte at a time - first element right, every one after it garbage,
+which is what a missing scale looks like.
+
+Refused by name: a class range, which needs `begin` and `end` found on the
+class and called where an array's bounds are in its type; and a reference
+loop variable, which needs the binding machinery a reference declaration has.
 
 **7.4 - move semantics**, and this is the large one. `&&` as a type, the
 value categories that decide when one binds, an extra rank in overload
