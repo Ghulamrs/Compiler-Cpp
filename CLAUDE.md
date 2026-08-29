@@ -103,7 +103,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | **done**, 2026-08-29 |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | in progress: 6.1-6.4 and Windows `throw` **done**, 2026-08-29 |
-| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1-7.3 **done**, 2026-08-29 |
+| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1-7.3 and 7.4a **done**, 2026-08-29 |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
 punctuators, `__cplusplus`, `bool`/`true`/`false`, class and enum tags as type
@@ -1823,11 +1823,24 @@ Refused by name: a class range, which needs `begin` and `end` found on the
 class and called where an array's bounds are in its type; and a reference
 loop variable, which needs the binding machinery a reference declaration has.
 
-**7.4 - move semantics**, and this is the large one. `&&` as a type, the
-value categories that decide when one binds, an extra rank in overload
-resolution, and the implicit move constructor and move assignment beside the
-four special members rung 3 already writes. It changes overload resolution,
-which is why nothing else in the rung should be waiting on it.
+**7.4a has landed: `&&` as a type, and the binding rule.** What is left of
+7.4 is the *move members* - a move constructor and move assignment beside the
+four rung 3 already writes - and `static_cast<T &&>`, without which an lvalue
+can never be offered to one.
+
+**An rvalue reference is the same machine as an lvalue one.** Both are a slot
+holding an address, both are read by dereferencing it, so `isReference()`
+answers for either and almost nothing outside binding and mangling had to
+learn it exists. What differs is what may bind: `T &&` takes a value with
+nowhere to live, `T &` an object that has somewhere.
+
+**Which reference takes an argument is a question about the argument, not
+about a conversion.** An rvalue reference is not viable for an object with an
+address; where both are viable it is the better match. Those two lines in
+`rankArgument` are the whole of how a move gets chosen over a copy.
+
+Measured: Itanium writes `O` where an lvalue reference is `R`, and the
+Microsoft ABI `$$Q` where it writes `A`.
 
 **7.5 - `constexpr`.** The constant evaluator has been here since rung 1 -
 `fold` is what array bounds and enumerators use - so `constexpr` on a

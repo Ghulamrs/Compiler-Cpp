@@ -21,6 +21,13 @@ enum class Kind {
     // from Void to Function, and a reference is never one of those - it is
     // always a reference *to* something and so always derived.
     LValueRef,
+    // **An rvalue reference, and it is the same machine as an lvalue one.**
+    // Both are a slot holding an address, both are read by dereferencing it,
+    // and `isReference()` answers for either - which is why almost nothing
+    // outside binding and mangling had to learn this exists. What differs is
+    // what may bind: `T &&` takes a value with nowhere to live, `T &` takes
+    // an object that has one.
+    RValueRef,
     // **The expansion of a parameter pack**, `Ts...`, which appears in a
     // pattern where the pack's own members appear in the substituted
     // signature. Itanium writes `Dp` and then the parameter - `DpT0_` - and
@@ -124,7 +131,10 @@ public:
     // as one: it holds an address and occupies a pointer's worth of storage,
     // and every use of it goes through that address without saying so. The
     // parser lowers it away, so no backend ever sees this kind.
-    bool isReference() const { return kind_ == Kind::LValueRef; }
+    bool isReference() const {
+        return kind_ == Kind::LValueRef || kind_ == Kind::RValueRef;
+    }
+    bool isRValueReference() const { return kind_ == Kind::RValueRef; }
     const Type *referent() const { return pointee_; }
     bool isArray() const { return kind_ == Kind::Array; }
     bool isScalar() const { return isArithmetic() || isPointer(); }
@@ -360,6 +370,7 @@ public:
     const Type *withoutConst(const Type *t);
     const Type *pointerTo(const Type *t);
     const Type *referenceTo(const Type *t);
+    const Type *rvalueReferenceTo(const Type *t);
     const Type *arrayOf(const Type *t, long long length);
     const Type *functionType(const Type *returns,
                              std::vector<const Type *> params, bool variadic);

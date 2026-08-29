@@ -351,7 +351,12 @@ private:
         if (const char *b = itaniumBuiltin(t->kind())) { out += b; return; }
 
         if (t->isPointer())        { out += 'P'; type(t->pointee()); }
-        else if (t->isReference()) { out += 'R'; type(t->referent()); }
+        // `R` for an lvalue reference and `O` for an rvalue one - measured:
+        // `f(int &&)` is _Z1fOi where `g(const int &)` is _Z1gRKi.
+        else if (t->isReference()) {
+            out += t->isRValueReference() ? 'O' : 'R';
+            type(t->referent());
+        }
         else if (t->isArray()) {
             out += 'A';
             out += std::to_string(t->length());
@@ -722,7 +727,15 @@ private:
 
         if (t->isPointer())        { out += qualifiedItself(t) ? 'Q' : 'P';
                                      pointee(t->pointee()); return; }
-        if (t->isReference())      { out += 'A'; pointee(t->referent()); return; }
+        // `$$Q` where an lvalue reference writes `A`, and the qualifier that
+        // follows is the same one either way - measured with clang for the
+        // Microsoft target: `?f@@YAH$$QEAH@Z` beside `?g@@YAHAEBH@Z`.
+        if (t->isReference()) {
+            if (t->isRValueReference()) out += "$$Q";
+            else                        out += 'A';
+            pointee(t->referent());
+            return;
+        }
         if (t->isArray()) {
             out += 'Y';
             std::vector<long long> dims;

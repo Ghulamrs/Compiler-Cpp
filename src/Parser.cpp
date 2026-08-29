@@ -2517,9 +2517,17 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
     // A reference binds after every star - 'int *&r' is a reference to a
     // pointer - and there is nothing to write on the other side of it,
     // because a reference is not an object for a pointer to point at.
-    if (peek().is("&&"))
-        src_.fail(peek().pos, "an rvalue reference '&&' is not supported yet - "
-                              "it comes with move semantics");
+    // **`&&` binds like `&` and differs in what it will take.** The lowering
+    // is the same - a slot holding an address, every mention a dereference -
+    // so nothing below this line had to be told the difference.
+    if (consume("&&")) {
+        base = types_.rvalueReferenceTo(base);
+        if (peek().is("&") || peek().is("&&"))
+            src_.fail(peek().pos, "there is no reference to a reference");
+        if (peek().is("*"))
+            src_.fail(peek().pos, "there is no pointer to a reference");
+        return declarator(base, nameOptional, insideParens);
+    }
     if (consume("&")) {
         base = types_.referenceTo(base);
         if (peek().is("&") || peek().is("&&"))
@@ -2858,6 +2866,9 @@ static bool isPromotion(const Type *from, const Type *to) {
     return to->kind() == Kind::Double && from->kind() == Kind::Float;
 }
 
+// Defined below, beside the reference binding it was written for.
+static bool isLvalue(const Expr &e);
+
 Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     const Type *given = arg.type();
 
@@ -2871,6 +2882,17 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
         const Type *want = param->pointee();
         if (want->unqualified() != given->unqualified()) return Rank::None;
         if (!want->isConst() && given->isConst()) return Rank::None;
+
+        // **Which reference will take this argument is a question about the
+        // argument, not about a conversion.** An rvalue reference is not
+        // viable for an object that has an address; and where both are
+        // viable, for a value that has none, it is the better match - which
+        // is what makes `f(T &&)` win over `f(const T &)` for a temporary
+        // and is the whole of how a move is chosen.
+        if (param->isRValueReference() && isLvalue(arg)) return Rank::None;
+        if (param->isRValueReference()) return Rank::Identity;
+        if (!isLvalue(arg)) return Rank::Qualification;
+
         return want->isConst() && !given->isConst() ? Rank::Qualification
                                                     : Rank::Identity;
     }
@@ -6188,6 +6210,17 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
             noAddressName = v->name();
         }
 
+    // **An rvalue reference takes exactly what an lvalue one will not.**
+    // [dcl.init.ref]: `T &&` binds to a value with nowhere to live and
+    // refuses an object that has somewhere - which is the whole of what it
+    // says about a caller, and the reason a move can take an object apart
+    // without anyone noticing.
+    if (ref->isRValueReference() && isLvalue(*init))
+        src_.fail(pos, what + " is '" + ref->describe() + "' and this is an "
+                       "object with an address of its own - an rvalue "
+                       "reference binds only to a value that has none, so "
+                       "that taking it apart harms nobody");
+
     // The direct binding: an addressable lvalue of exactly the type named,
     // which the reference then *is*. Everything else either makes a temporary
     // below or is refused.
@@ -6206,7 +6239,9 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
     // may have one - [dcl.init.ref]/5. A write through the other kind would
     // land in a copy nobody can read back, so the two cases are refused
     // separately: a type that does not match, and a value with no address.
-    if (!referent->isConst()) {
+    // A temporary is what an rvalue reference is *for*, so unlike a plain
+    // `T &` it is allowed one without being const.
+    if (!referent->isConst() && !ref->isRValueReference()) {
         if (noAddressBecause != nullptr)
             src_.fail(pos, "'" + noAddressName + "' is " + noAddressBecause +
                            ", and has no address for a reference to hold - a "
