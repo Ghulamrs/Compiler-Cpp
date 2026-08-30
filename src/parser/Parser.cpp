@@ -34,7 +34,7 @@ const char *notYetSupported(const std::string &word) {
         "explicit", "export", "friend", "inline", "mutable", "namespace",
         "noexcept", "not", "not_eq", "operator", "or",
         "or_eq", "reinterpret_cast",
-        "static_assert", "template", "thread_local",
+        "template", "thread_local",
         "typeid", "using", "virtual",
         "xor", "xor_eq"
     };

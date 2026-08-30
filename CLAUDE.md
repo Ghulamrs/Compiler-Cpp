@@ -3561,6 +3561,53 @@ member *function* has no null value yet by any spelling - `= 0` is refused in
 the same words - because it is two words on both ABIs and zeroing it is a
 struct store rather than a scalar one.
 
+## static_assert, a declaration that declares nothing
+
+The condition is folded in the parser and a zero is a diagnostic carrying the
+program's own words. **Nothing reaches the AST**, so no backend, no emitter and
+no mangler heard about this feature - which is what makes it one function,
+`staticAssertion()`, called from three loops rather than three implementations.
+Those three are file scope (`topLevel`), a block (`statementBody`, where it
+becomes the empty statement the way a using-directive does) and a class body
+(the member loop in `ParserType.cpp`) - three places in two files, and the rule
+is one rule.
+
+`fold` already existed, for array bounds and enumerators and `case` labels, so
+the constant evaluation is not new work. What is new is one parse and three
+call sites.
+
+### The message is required, and that was measured rather than read
+
+C++17 made it optional; C++11 did not. **clang accepts the one-argument form
+under `-std=c++11`** and only calls it an extension under `-pedantic-errors` -
+so a default clang build would have said the form was fine. It is refused here
+for the same reason `namespace N::M {}` is: a file that builds here must not
+stop building on the C++11 compiler it was written for.
+
+### What it deliberately does not accept
+
+The condition has to be an **integral** constant expression, which is narrower
+than the standard's "contextually converted constant expression of type bool".
+`static_assert(1.5, "")` and `static_assert("abc", "")` are both legal and both
+refused. Neither is a thing anybody writes, and `fold` answers about integers -
+widening it is constant-evaluation work, not static_assert work.
+
+The message must be written out as a literal, adjacent pieces included. A
+`const char *` initialised beside it is refused, because the message is printed
+by the compiler and there is no program running to read a variable.
+
+### A trap in the *test*, not the compiler
+
+`tests/cases/static-assert.cpp` asserts about a `constexpr` function and a
+file-scope `const int`. clang emits **neither** symbol: a constexpr function
+nobody odr-uses folds away, and so does a const int every reader of which is a
+constant expression - a `printf` argument included. `names.sh` then reports
+cxx1 emitting symbols clang did not, which looks like a naming failure and is a
+difference about *emission*. The case calls the function and takes the
+variable's address so both compilers emit both. Worth remembering the shape:
+**when the names suite reports a symbol cxx1 has and clang does not, ask what
+clang folded away before looking for a mangling bug.**
+
 ## Build
 
 ```

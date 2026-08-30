@@ -537,6 +537,65 @@ StmtPtr Parser::forStatement() {
     return StmtPtr(f);
 }
 
+// **`static_assert(cond, "message");` - a declaration that declares nothing and
+// emits nothing.** All of it happens here: the condition is folded, and a zero
+// is a diagnostic carrying the program's own words. Nothing reaches the AST, so
+// no backend and no emitter had to learn it exists.
+//
+// **The message is required.** C++17 made it optional and C++11 did not, so
+// the one-argument form is refused by name - accepting it would make a file
+// that builds here stop building on the C++11 compiler it was written for,
+// which is the same reason `namespace N::M {}` is refused.
+//
+// **The condition has to be an integral constant expression**, which is
+// narrower than the standard's "contextually converted constant expression of
+// type bool" - `static_assert(1.5, "")` and a string literal are both legal
+// and both refused here. Neither is a thing anybody writes, and `fold` answers
+// about integers; widening it is constant-evaluation work rather than
+// static_assert work.
+//
+// Written as one function because the three places a static_assert may appear
+// - file scope, a block, and a class body - are three different loops in three
+// different files, and the rule is one rule.
+bool Parser::staticAssertion() {
+    if (!peek().is("static_assert")) return false;
+    const std::size_t pos = peek().pos;
+    at_++;
+    expect("(");
+
+    const std::size_t condAt = peek().pos;
+    ExprPtr cond = decay(conditional());
+    long long value;
+    if (!fold(*cond, &value, condAt))
+        src_.fail(condAt, "the condition of a 'static_assert' has to be a "
+                          "constant the compiler can work out here, and this "
+                          "is not one");
+
+    if (peek().is(")"))
+        src_.fail(peek().pos, "a 'static_assert' with no message is C++17 - "
+                              "write the message this one would have printed, "
+                              "'static_assert(cond, \"why\")'");
+    expect(",");
+
+    if (peek().kind != TokenKind::Str)
+        src_.fail(peek().pos, "the message of a 'static_assert' has to be "
+                              "written out as a string literal - it is printed "
+                              "by the compiler, so there is no program running "
+                              "to read a variable");
+    std::string message = peek().text;
+    at_++;
+    while (peek().kind == TokenKind::Str) {   // "a" "b" is one literal
+        message += peek().text;
+        at_++;
+    }
+
+    expect(")");
+    expect(";");
+
+    if (value == 0) src_.fail(pos, "static assertion failed: " + message);
+    return true;
+}
+
 long long Parser::constantExpression(const char *what) {
     std::size_t pos = peek().pos;
     ExprPtr e = decay(conditional());
@@ -1113,6 +1172,10 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
 }
 
 StmtPtr Parser::statementBody() {
+    // A static_assert declares nothing and builds nothing, so the statement it
+    // becomes is the empty one - the same shape the using-directive takes.
+    if (staticAssertion()) return StmtPtr(new Block({}));
+
     // **`using namespace N;` inside a block**, which is the same directive as
     // the one at file scope and differs only in when it stops applying: at the
     // end of this block, which `block()` undoes by truncating the list. It
@@ -1376,6 +1439,8 @@ void Parser::topLevel(Program &program) {
         namespaceStack_.pop_back();
         return;
     }
+
+    if (staticAssertion()) return;
 
     // `using namespace N;` - the names in N answer an unqualified lookup from
     // here on. A using-*declaration*, `using N::f;`, names one thing and is a

@@ -1196,6 +1196,7 @@ private:
     StmtPtr declaration();
     void resolveGotos();
 
+    bool staticAssertion();
     long long constantExpression(const char *what);
     bool fold(const Expr &e, long long *out, std::size_t pos) const;
 

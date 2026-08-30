@@ -347,6 +347,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             continue;
         }
 
+        if (staticAssertion()) continue;
+
         if ((peek().is("public") || peek().is("private") || peek().is("protected")) &&
             peekAt(1).is(":")) {
             access = peek().is("public")  ? Access::Public
