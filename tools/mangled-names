@@ -56,7 +56,14 @@ trap 'rm -rf "$OUT"' EXIT
 # operand starting with '*'. Virtual dispatch is exactly that - `call *%r11` -
 # and without the guard the register was scraped as a name and reported as a
 # symbol cxx1 had and clang did not.
+# **`OPTION PROC:PRIVATE` is not a function called OPTION.** The PROC rule
+# below reads `<name> PROC` as a definition, and MASM's own directives are
+# written the same shape - so the preamble that stops MASM exporting every
+# PROC was scraped as a symbol and reported as a difference in all 78 cases.
+# Directives are dropped before anything else looks at the line.
 names() {
+    grep -vE '^[[:space:]]*OPTION[[:space:]]' "$1" > "$1.nodirective"
+    set -- "$1.nodirective"
     sed -n \
         -e 's/^[[:space:]]*\.globl[[:space:]]*//p' \
         -e 's/^[[:space:]]*PUBLIC[[:space:]]*//p' \

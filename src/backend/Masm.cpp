@@ -512,7 +512,21 @@ void MasmSpelling::preamble(std::ostream &sink) {
     // the same reason: the exception tables live outside the function and
     // measure into it, and MASM's defaults assume nothing does that.
     sink << "OPTION DOTNAME\n";
-    sink << "OPTION NOSCOPED\n\n";
+    sink << "OPTION NOSCOPED\n";
+    // **MASM exports every PROC unless told otherwise**, and that quietly
+    // undid the one thing this backend was already getting right. The PUBLIC
+    // list below is correct - a `static` function is left out of it, exactly
+    // as the Itanium side leaves the L out of a name - but MASM's default is
+    // OPTION PROC:PUBLIC, so the PROC directive exported it anyway and a
+    // `static` function came out of the object as an External symbol. Two
+    // translation units each with their own `static int total(...)` would
+    // have collided at the link.
+    //
+    // Invisible to `tools/mangled-names`, and that is the lesson: the *name*
+    // was right and agreed with clang. What disagreed was the storage class
+    // beside it, which only a symbol table shows - found by asking cl on the
+    // Windows box, which is what tools/windows/names-vs-cl.cmd now does.
+    sink << "OPTION PROC:PRIVATE\n\n";
 
     for (const std::string &g : unreserved_)
         sink << "OPTION NOKEYWORD:<" << g << ">\n";

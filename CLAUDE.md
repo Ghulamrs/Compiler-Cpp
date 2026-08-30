@@ -2935,6 +2935,55 @@ it deliberately, having measured, or not at all.
 demand - 36 MB of the tree between them. `.DS_Store` files are ignored too and
 were swept.
 
+## The names are asked of cl now, on the box where cl lives
+
+`tools/windows/names-vs-cl.cmd`, run by `verify-three` and reported as
+**windows names vs cl**. For every case it builds an object with cxx1 and one
+with cl, dumps both symbol tables, and the Mac diffs them.
+
+**Why, when `names.sh` already checks the names.** That one asks clang with
+`-target x86_64-pc-windows-msvc`, which is a second implementation of the
+Microsoft ABI. This page has said for a while that a Microsoft question goes to
+cl first and clang second - and yet every mangled name this compiler emits was
+checked only against the second, on a Mac, by a compiler nobody links with.
+
+**It found a real defect on its first run, and one no name comparison could
+have found.** Every `static` function came out of the object as an **External**
+symbol: two translation units each with their own `static int total(...)` would
+have collided at the link. The *names* were right and agreed with clang - what
+was wrong was the storage class beside them, which only a symbol table shows.
+
+The cause is a MASM default. cxx1's `PUBLIC` list was correct all along and
+left a `static` function out of it, exactly as the Itanium side leaves the `L`
+out of the name - but **MASM exports every `PROC` unless told otherwise**, so
+the directive exported it anyway. `OPTION PROC:PRIVATE` in the preamble, and
+70 of 78 cases now agree with cl where 37 did.
+
+**`tools/mangled-names` had to be taught to ignore directives** in the same
+change: its PROC rule reads `<name> PROC` as a definition, and
+`OPTION PROC:PRIVATE` has that shape - so the line that fixed the bug was
+scraped as a symbol called `OPTION` and reported as a difference in all 78
+cases at once. A sweeping failure in a tool that has been stable for weeks is
+worth suspecting *the tool* over the change.
+
+**A `.nocl` file records a difference against cl**, as `.nonames` records one
+against clang, and the reason is printed rather than swallowed. The eight are
+worth knowing apart:
+
+* `constexpr-function` - **a language-version difference, not an ABI one.** cl
+  has no C++11 mode, its floor being `/std:c++14`, and C++11's rule that a
+  `constexpr` member function is implicitly const was removed in C++14. So
+  cxx1 writes `?twice@Board@@QEBAHH@Z` and cl writes `QEAA`, and both are right
+  for the language they are reading. clang at `-std=c++11` agrees with cxx1.
+* `local-class`, `local-class-main` - cl inlines the local classes' members
+  away and emits nothing; cxx1 has no COMDAT and emits a real function. The
+  same difference `docs/CONFORMANCE.md` records as "an inline member function
+  is a strong symbol".
+* `array-of-class` - cl calls its own vector constructor iterator `??_H`; cxx1
+  emits the loop inline. Nothing outside the object can tell.
+* `destructor`, `implicit-move`, `cleanup`, `try-catch-value` - a deleting
+  destructor cl writes, and this target's exception funclets.
+
 ## Decisions already taken
 
 **Conform to the platform ABI; do not invent one.** Itanium C++ ABI on Linux
