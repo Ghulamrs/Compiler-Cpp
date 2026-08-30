@@ -15,6 +15,7 @@ StmtPtr Parser::constructLocal(const Declared &d, int offset,
                                std::vector<ExprPtr> args) {
     const std::string key = constructorKey(d.type->tag());
     const Signature &ctor = resolveOverload(key, args, d.pos);
+    applyDefaults(ctor, args, d.pos);
 
     if (ctor.access != Access::Public && currentClass_ != d.type->unqualified() &&
         !isFriendOf(d.type))
@@ -682,6 +683,8 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
                        "linker can hold: " + why);
 
     set.push_back(functions_.size());
+    if (!pendingDefaults_.empty()) defaultArgs_[out] = pendingDefaults_;
+    pendingDefaults_.clear();
     functions_.push_back(Signature{ cls, out, types_.get(Kind::Void), params,
                                     false, false, pos, false, cls, false, access });
 }
@@ -1867,6 +1870,8 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
 
     const std::string symbol = memberSymbol(cls, d.name, fn, access, constThis,
                                             d.pos, isVirtual);
+    if (!pendingDefaults_.empty()) defaultArgs_[symbol] = pendingDefaults_;
+    pendingDefaults_.clear();
     set.push_back(functions_.size());
     functions_.push_back(Signature{
         d.name, symbol,
@@ -2001,6 +2006,9 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
                                     returns, params, variadic, defining, pos,
                                     cName, std::string(), false,
                                     Access::Public });
+    if (!pendingDefaults_.empty())
+        defaultArgs_[functions_.back().symbol] = pendingDefaults_;
+    pendingDefaults_.clear();
 }
 
 const std::vector<std::size_t> *
@@ -2097,9 +2105,30 @@ bool Parser::packParameter(std::vector<const Type *> *types,
     return true;
 }
 
+// To the ',' or ')' that ends a default argument, counting brackets so that a
+// call or a subscript written inside one keeps its own commas. `<` is not
+// counted: a template-id with two arguments in a default would end it early,
+// which is refused where the default is read rather than mis-parsed here.
+void Parser::skipDefaultArgument() {
+    int depth = 0;
+    for (;;) {
+        const Token &t = peek();
+        if (t.kind == TokenKind::End)
+            src_.fail(t.pos, "this default argument never ends");
+        if (t.is("(") || t.is("[") || t.is("{")) depth++;
+        else if (t.is(")") || t.is("]") || t.is("}")) {
+            if (depth == 0) return;         // the ')' closing the parameters
+            depth--;
+        } else if (t.is(",") && depth == 0) return;
+        at_++;
+    }
+}
+
 void Parser::parameterTypes(std::vector<const Type *> &params, bool &variadic) {
     expect("(");
     variadic = false;
+    pendingDefaults_.clear();
+    std::size_t closed = peek().pos;
     if (consume(")")) return;
     if (peek().is("void") && peekAt(1).is(")")) { at_ += 2; return; }
 
@@ -2121,8 +2150,42 @@ void Parser::parameterTypes(std::vector<const Type *> &params, bool &variadic) {
         if (pd.type->isVoid())
             src_.fail(pd.pos, "'void' is only a parameter list on its own");
         params.push_back(types_.withoutConst(pd.type));
+
+        // `int b = 3`. The tokens are left where they are and their position
+        // recorded; a call that omits the argument reads them again.
+        pendingDefaults_.resize(params.size(), 0);
+        if (consume("=")) {
+            if (peek().is("{"))
+                src_.fail(peek().pos, "a braced default argument is not "
+                                      "supported yet - write the value");
+            pendingDefaults_.back() = at_;
+            skipDefaultArgument();
+            if (at_ == pendingDefaults_.back())
+                src_.fail(peek().pos, "this parameter says '=' and then gives "
+                                      "no default");
+        }
+        closed = peek().pos;
         if (consume(")")) break;
         expect(",");
+    }
+
+    requireDefaultsAreASuffix(pendingDefaults_, closed);
+}
+
+// [dcl.fct.default]/4: once a parameter has a default, every one after it must
+// have one too - a call fills them in from the right, so a parameter with no
+// default behind one that has it could never be reached. Said where the list
+// is read; left to the call site the reader would be told only that no
+// function of that name takes these arguments.
+void Parser::requireDefaultsAreASuffix(const std::vector<std::size_t> &defaults,
+                                       std::size_t pos) {
+    bool seen = false;
+    for (std::size_t i = 0; i < defaults.size(); i++) {
+        if (defaults[i] != 0) { seen = true; continue; }
+        if (seen)
+            src_.fail(pos, "every parameter after one with a default needs a "
+                           "default of its own - a call fills them in from the "
+                           "right, so there would be no way to reach this one");
     }
 }
 

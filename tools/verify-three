@@ -36,13 +36,32 @@ COPYFILE_DISABLE=1 tar -C "$ROOT" --no-xattrs -czf "$TAR" \
     --exclude 'tests/out-*' --exclude '*.exe' --exclude .DS_Store \
     src tests lib tools docs msvc Makefile CLAUDE.md README.md build 2>/dev/null
 
+# **The Linux build goes through `./build`, which caps it.** That script runs
+# make inside a 300 MB cgroup scope and says so plainly when no cgroup is
+# available, and it exists because an unbounded job once drove this 419 MiB
+# instance into swap until sshd could not fork. It sat unused for weeks while
+# this script ran a bare `make -j4` on the same box - a safety net nobody was
+# under - and on 2026-08-30 the box thrashed for exactly that reason: a killed
+# run left its `make` orphaned on the far side, a second run overlapped it, and
+# eight cc1plus competed for 419 MB with zram at 100%. Under the cap the
+# runaway is killed alone and the box stays up.
+#
+# **-j2 and not -j4**, and the arithmetic is worth keeping: one cc1plus on the
+# big parser files peaks near 50 MB, so two fit inside 300 MB with room, and
+# four sit at the cap's edge where a legitimate build would be killed and
+# reported as a verification failure. Raise it deliberately, having measured,
+# or not at all.
+#
+# Killing this script does not stop the far side: the ssh closes and the build
+# runs on as an orphan. Clear it before starting another -
+# `ssh ... 'pkill -9 -x cc1plus; pkill -9 -x make'`.
 if [ "$WHICH" = all ] || [ "$WHICH" = linux ]; then
     echo "=== linux ($LINUX) ==="
     scp -q -i "$KEY" -o BatchMode=yes "$TAR" "$LINUX:/tmp/cxx1src.tgz" || STATUS=1
     ssh -i "$KEY" -o BatchMode=yes "$LINUX" '
         rm -rf ~/cxx1-verify && mkdir -p ~/cxx1-verify &&
         tar -C ~/cxx1-verify -xzf /tmp/cxx1src.tgz &&
-        cd ~/cxx1-verify && make -j4 >/dev/null && make test' || STATUS=1
+        cd ~/cxx1-verify && ./build -j2 >/dev/null && make test' || STATUS=1
 fi
 
 if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then

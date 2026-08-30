@@ -328,6 +328,7 @@ ExprPtr Parser::primary(Program *program) {
         std::vector<ExprPtr> args;
         parseArguments(args);
         const Signature &sig = resolveOverload(name, args, opos);
+        applyDefaults(sig, args, opos);
         return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params,
                             sig.variadic, opos, std::move(args));
     }
@@ -589,6 +590,7 @@ ExprPtr Parser::primary(Program *program) {
             std::vector<ExprPtr> args;
             parseArguments(args);
             const Signature &sig = resolveOverload(name, args, pos);
+            applyDefaults(sig, args, pos);
             return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params,
                                 sig.variadic, pos, std::move(args));
         }
@@ -1975,6 +1977,7 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
     std::string key = owner->tag() + "::" + name;
 
     const Signature &sig = resolveOverload(key, args, pos, cls);
+    applyDefaults(sig, args, pos);
 
     // Now there IS an inside, and this is where it starts to mean something:
     // a private member is reachable from another member of the same class.

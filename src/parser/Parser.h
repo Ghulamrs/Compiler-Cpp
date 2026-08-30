@@ -947,6 +947,32 @@ private:
                          std::size_t pos, std::vector<ExprPtr> args);
 
     void parameterTypes(std::vector<const Type *> &params, bool &variadic);
+
+    // **A default argument is kept as a place in the token stream, not as a
+    // parsed expression.** [dcl.fct.default] evaluates it afresh at every call
+    // that leaves the argument out, so one tree could not be handed to two
+    // call sites anyway without a general clone this parser does not have -
+    // and re-reading tokens is what it already does for a member function's
+    // held body. `pendingDefaults_` carries them the short distance from the
+    // parameter list to whichever declare() records the function, the way the
+    // class-instantiation fields carry a tag; `defaultArgs_` keys them by the
+    // linkage name, so a redeclaration cannot give the same function two sets.
+    std::vector<std::size_t> pendingDefaults_;
+    std::map<std::string, std::vector<std::size_t> > defaultArgs_;
+    // Past one default argument: to the ',' or ')' that ends it, counting
+    // brackets so that a call or a subscript inside it keeps its commas.
+    void skipDefaultArgument();
+    // [dcl.fct.default]/4: the defaults have to be a suffix of the parameter
+    // list. Asked by both parameter-list parsers - the one for declarations
+    // and the one a definition has of its own - because a definition may
+    // carry the defaults where the declaration did not.
+    void requireDefaultsAreASuffix(const std::vector<std::size_t> &defaults,
+                                   std::size_t pos);
+    // The lowest number of arguments a call may give this function.
+    std::size_t leastArguments(const Signature &f) const;
+    // Fill in what the call left out, by re-reading each default expression.
+    void applyDefaults(const Signature &f, std::vector<ExprPtr> &args,
+                       std::size_t pos);
     void blockFunctionDeclaration(const Declared &d);
 
     ExprPtr finishCall(const std::string &name, const std::string &symbol,

@@ -334,6 +334,7 @@ ExprPtr Parser::incDec(ExprPtr target, bool increment, bool prefix, std::size_t 
             args.push_back(std::move(target));
             if (!prefix) args.push_back(std::move(dummy));
             const Signature &sig = resolveOverload(name, args, pos);
+            applyDefaults(sig, args, pos);
             return completeCall(name, sig.symbol, nullptr, sig.returns,
                                 sig.params, sig.variadic, pos, std::move(args));
         }

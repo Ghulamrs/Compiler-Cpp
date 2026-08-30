@@ -2807,6 +2807,48 @@ a pointer to a pointer with no object under it. The test is the *shape* and not
 the type - `&p` where p is a variable holding a function pointer is an ordinary
 address-of and still is.
 
+## Default arguments, and the scope they are read in
+
+**A default is kept as a place in the token stream, not as a parsed tree.**
+[dcl.fct.default]/9 evaluates it afresh at every call that leaves the argument
+out, so one tree could not have been handed to two call sites anyway without a
+general clone this parser does not have - and re-reading a recorded range of
+tokens is what it already does for a member function's held body. The place is
+recorded where the parameter list is read and the expression is parsed again at
+each call that needs it.
+
+**Three parameter-list parsers had to learn it**, which is the shape of this
+file rather than of the feature: `parameterTypes` for declarations, the loop
+`topLevel` keeps for definitions, and constructors through `declareConstructor`.
+`pendingDefaults_` carries them the short distance to whichever `declare()`
+records the function, the way the class-instantiation fields already carry a
+tag, and `defaultArgs_` keys them by the **linkage name** so a redeclaration
+cannot give one function two sets.
+
+**In `topLevel` the handover sits before the prototype branch and not after
+it.** That branch declares the function and returns, and
+`int f(int a, int b = 3);` declared there and defined further down is the
+ordinary way to write one - put the handover after it and exactly the common
+form is the one that does not work.
+
+**The caller's locals are put aside while a default is read**, and this is the
+part worth keeping. The expression is parsed at the *call*, so a local in the
+calling function could quietly capture a name the default meant globally. A
+default at namespace scope may name globals, enumerators and static members and
+may **not** name a local or another parameter - so hiding the locals is what the
+declaration's scope actually is from here. `tests/cases/default-argument` pins
+it with a `shadow()` whose local `base` shadows the global the default uses.
+
+**Overload resolution now ranks a candidate against fewer arguments than it has
+parameters**, the count a call may give being a range: `leastArguments` counts
+the parameters with no default, and only the arguments actually written are
+ranked - a default is the same expression for every candidate that has one and
+cannot tell two of them apart.
+
+[dcl.fct.default]/4 - the defaults must be a suffix - is one shared check called
+from both parameter-list parsers, because a definition may carry them where the
+declaration did not.
+
 ## Ordinary C++ this refuses, and none of it is on the ladder
 
 **The gap this section exists to close.** `docs/CONFORMANCE.md` holds what
@@ -2846,6 +2888,52 @@ because each was a surprise. **A fourth was found with them and is fixed**:
 calling an operator function by its name - `a.operator+(b)`, `operator+(a, b)`
 - was refused with `'operator' is not supported yet` about a feature this
 compiler has. See "Operator overloading".
+
+## What is in `tools/`, and what was inherited and is dead
+
+Audited 2026-08-30, because a fork carries its parent's scaffolding and nobody
+notices until somebody runs one and it fails at a path that has not existed
+since the fork.
+
+| tool | state |
+| --- | --- |
+| `verify-three` | the three-box rule with a command behind it |
+| `mangled-names` | cxx1's names beside clang's, all three targets |
+| `cl-measure` | asks cl on the Windows box about the Microsoft ABI |
+| `unwind-check` | rung 6's tables |
+| `windows/` | the Windows half of `verify-three`, kept in the repo on purpose |
+| `backend-overlap` | python3; how much of the two code generators is the same algorithm twice. Still works, mentioned nowhere until now |
+| `gen-corpus` | python3; generates a corpus of a given size. Still works; its comments cite a `tests/challenge.sh` that did not come across |
+
+**Three were removed rather than left to rot**: `against-gcc`, `ccc` and
+`cc1-as-clang`, all inherited from Compiler-C and all driving `$ROOT/cc1` - a
+binary this repository has never had, since the one here is `cxx1.exe`. `ccc`
+also pointed at a `docs/STATUS.md` that did not come across either. None of
+them could run; keeping them meant the next reader had to work that out again.
+
+**`tests/c-corpus/` is not obsolete and is not a pass rate.** Compiler-C's 425
+cases, inherited and untriaged - much of it is valid C++11 and much is not.
+Its status is above, under the fork; leave it until somebody triages it case by
+case.
+
+**`./build` was live, correct and orphaned, and `verify-three` goes through it
+now.** It caps a build at 300 MB through `systemd-run` and says so plainly when
+no cgroup is available, and it was written after an unbounded `dnf` drove the
+419 MiB Linux box into swap until sshd could not fork. Nothing referenced it,
+and `verify-three` - the only thing that ever builds on that box - ran a bare
+`make -j4`: a safety net nobody was under. That is exactly what thrashed on
+2026-08-30, when a killed run left its `make` orphaned on the far side, a
+second run overlapped it, and eight `cc1plus` competed for 419 MB with zram at
+100%. Under the cap the runaway is killed alone and the box stays up.
+
+**-j2 and not -j4.** One `cc1plus` on the big parser files peaks near 50 MB, so
+two fit inside 300 MB with room and four sit at the cap's edge - where a
+legitimate build would be killed and reported as a verification failure. Raise
+it deliberately, having measured, or not at all.
+
+`obj/` and `tests/out-*/` are build output, gitignored, and regenerate on
+demand - 36 MB of the tree between them. `.DS_Store` files are ignored too and
+were swept.
 
 ## Decisions already taken
 

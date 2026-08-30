@@ -421,6 +421,52 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
     return member[best] ? OperatorChoice::Member : OperatorChoice::NonMember;
 }
 
+// The fewest arguments a call may give: every parameter that has no default.
+// [dcl.fct.default] requires the defaults to be a suffix, so this is a count
+// and not a set.
+std::size_t Parser::leastArguments(const Signature &f) const {
+    std::map<std::string, std::vector<std::size_t> >::const_iterator it =
+        defaultArgs_.find(f.symbol);
+    if (it == defaultArgs_.end()) return f.params.size();
+    std::size_t least = f.params.size();
+    while (least > 0 && least <= it->second.size() && it->second[least - 1] != 0)
+        least--;
+    return least;
+}
+
+// **Each default is read again, here, at the call that left it out** -
+// [dcl.fct.default]/9 evaluates it afresh every time, so this is the rule and
+// not a shortcut around keeping one tree.
+//
+// The caller's locals are put aside while it is read. A default argument at
+// namespace scope cannot name a local or another parameter - it may name
+// globals, enumerators and static members - so hiding them is what the
+// declaration's scope actually is from here, and it stops a local of the same
+// name in the *calling* function from quietly capturing the default.
+void Parser::applyDefaults(const Signature &f, std::vector<ExprPtr> &args,
+                           std::size_t pos) {
+    if (args.size() >= f.params.size()) return;
+    std::map<std::string, std::vector<std::size_t> >::const_iterator it =
+        defaultArgs_.find(f.symbol);
+    if (it == defaultArgs_.end()) return;
+
+    const std::size_t resume = at_;
+    std::vector<Local> hidden;
+    hidden.swap(locals_);
+    std::vector<std::size_t> starts;
+    starts.swap(scopeStarts_);
+    for (std::size_t i = args.size(); i < f.params.size(); i++) {
+        if (i >= it->second.size() || it->second[i] == 0)
+            src_.fail(pos, "'" + f.name + "' has no default for parameter " +
+                           std::to_string(i + 1));
+        at_ = it->second[i];
+        args.push_back(assign());
+    }
+    at_ = resume;
+    locals_.swap(hidden);
+    scopeStarts_.swap(starts);
+}
+
 const Parser::Signature &Parser::resolveOverload(const std::string &name,
                                                  const std::vector<ExprPtr> &args,
                                                  std::size_t pos,
@@ -449,8 +495,11 @@ const Parser::Signature &Parser::resolveOverload(const std::string &name,
 
     for (std::size_t k = 0; k < set->size(); k++) {
         const Signature &f = functions_[(*set)[k]];
-        if (f.variadic ? args.size() < f.params.size()
-                       : args.size() != f.params.size()) continue;
+        // A default makes the parameter optional, so the count a call may
+        // give is a range rather than one number.
+        if (f.variadic ? args.size() < leastArguments(f)
+                       : (args.size() > f.params.size() ||
+                          args.size() < leastArguments(f))) continue;
 
         // **The implicit object parameter goes first**, and ranking it is what
         // separates `get()` from `get() const`. Binding it is a reference
@@ -467,6 +516,9 @@ const Parser::Signature &Parser::resolveOverload(const std::string &name,
 
         const std::size_t first = r.size();
         r.resize(first + args.size(), Rank::Ellipsis);
+        // Only the arguments written are ranked; the defaults are the same
+        // expression for every candidate that has them and cannot separate
+        // two of them.
         bool ok = true;
         for (std::size_t i = 0; i < args.size() && ok; i++) {
             if (i >= f.params.size()) continue;      // reached by the ellipsis

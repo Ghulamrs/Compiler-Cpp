@@ -1552,6 +1552,7 @@ void Parser::topLevel(Program &program) {
         currentClass_ = memberOf;
     }
 
+    std::vector<std::size_t> defaults;
     if (!consume(")")) {
         if (peek().is("void") && peekAt(1).is(")")) {
             at_ += 2;
@@ -1647,12 +1648,38 @@ void Parser::topLevel(Program &program) {
                 paramSlots.push_back(Param{ held->isReference()
                                             ? types_.pointerTo(held->referent())
                                             : held, off });
+                // A default written on the *definition*. The parameter list
+                // here is read by this loop and not by parameterTypes, so the
+                // same recording has to happen twice - and it is recorded the
+                // same way, as a place in the token stream.
+                defaults.resize(params.size(), 0);
+                if (consume("=")) {
+                    if (peek().is("{"))
+                        src_.fail(peek().pos, "a braced default argument is not "
+                                              "supported yet - write the value");
+                    defaults.back() = at_;
+                    skipDefaultArgument();
+                }
                 if (consume(")")) break;
                 expect(",");
             }
         }
     }
     if (resumeAt != 0) at_ = resumeAt;
+
+    // Hand what this parameter list collected to whichever declare() runs
+    // below, the same way parameterTypes hands over its own. **Before the
+    // prototype branch and not after it**: `int f(int a, int b = 3);` declared
+    // here and defined further down is the ordinary way to write one, and that
+    // branch returns as soon as it has declared the function.
+    bool sawDefault = false;
+    for (std::size_t i = 0; i < defaults.size(); i++)
+        if (defaults[i] != 0) sawDefault = true;
+    if (sawDefault) {
+        requireDefaultsAreASuffix(defaults, d.pos);
+        pendingDefaults_ = defaults;
+    }
+
 
     if (peek().is("(") || peek().is("[")) {
         bool fn = peek().is("(");
