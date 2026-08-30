@@ -3144,8 +3144,19 @@ so it printed `5 5 15 16 6 10` on two boxes and `6 6 18 19 6 10` on the third.
 Both are right; the case was wrong, and only the third box could say so. A
 mutation among arguments belongs in a statement of its own.
 
-Still refused by name: `mutable`, and an inner `[=]` or `[&]` reaching for the
-capture of the lambda around it - by then that name is a member of the outer
+**`mutable` is the whole of the difference between a const call operator and a
+non-const one**, and that is all it turned out to be: [expr.prim.lambda] makes
+a closure's `operator()` const unless the lambda says otherwise, so a by-value
+capture cannot be written through without it. One flag on the declaration and
+one token in the synthesised body - and what is written is the closure's *own*
+copy, the enclosing variable being untouched, which is what capturing by value
+means. `[&]` is how you write through to the original and already did.
+
+The keyword is still refused on a *data member*, which is a different feature
+and stays on the list of words this parser knows and has no rule for.
+
+Still refused by name: an inner `[=]` or `[&]` reaching for the capture of the
+lambda around it - by then that name is a member of the outer
 closure and not a local, so the scan has nothing to take.
 
 ## Reference data members, refused since rung 3

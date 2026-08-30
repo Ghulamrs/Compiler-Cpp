@@ -631,10 +631,16 @@ ExprPtr Parser::lambdaExpression() {
     if (variadic)
         src_.fail(pos, "a lambda cannot be variadic");
 
-    if (peek().is("mutable"))
-        src_.fail(peek().pos, "'mutable' on a lambda is not supported yet - "
-                              "the call operator is const and a mutable one "
-                              "would be the other kind");
+    // **`mutable` is the whole of the difference between a const call operator
+    // and a non-const one**, and that is all it is: [expr.prim.lambda] makes
+    // the closure's `operator()` const unless the lambda says otherwise, so a
+    // by-value capture cannot be written through without it. What changes is
+    // one flag on the declaration and one token in the synthesised body.
+    //
+    // What is written is the closure's *own* copy. The enclosing variable is
+    // untouched, which is the point of capturing by value at all - `[&]` is
+    // how you write through to the original, and that already works.
+    const bool isMutable = consume("mutable");
 
     const Type *returns = nullptr;
     if (consume("->")) {
@@ -745,7 +751,7 @@ ExprPtr Parser::lambdaExpression() {
     d.name = "operator()";
     d.type = types_.functionType(returns, params, false);
     d.pos = pos;
-    declareMember(tag, d, true, Access::Public, false, false);
+    declareMember(tag, d, !isMutable, Access::Public, false, false);
 
     // The tokens the replay will read. Appended rather than spliced: an index
     // into tokens_ is what PendingBody keeps, and an index survives the vector
@@ -762,7 +768,9 @@ ExprPtr Parser::lambdaExpression() {
     t.kind = TokenKind::Punct;  t.text = "(";          tokens_.push_back(t);
     for (std::size_t i = paramsFrom; i < paramsTo; i++) tokens_.push_back(tokens_[i]);
     t.kind = TokenKind::Punct;  t.text = ")";          tokens_.push_back(t);
-    t.kind = TokenKind::Keyword; t.text = "const";     tokens_.push_back(t);
+    if (!isMutable) {
+        t.kind = TokenKind::Keyword; t.text = "const"; tokens_.push_back(t);
+    }
     for (std::size_t i = bodyFrom; i < bodyTo; i++) tokens_.push_back(tokens_[i]);
     t.kind = TokenKind::End;    t.text = "";           tokens_.push_back(t);
 
