@@ -266,7 +266,62 @@ starts. No half-built pipelines waiting on a later phase.
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | **done**, 2026-08-29 |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | **done** on all three targets, 2026-08-30 - `return` inside a `catch` is refused on Windows |
-| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | **done**, 2026-08-30 - 7.6 lambdas take no captures yet |
+| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | **done**, 2026-08-30 - every C++11 capture included |
+
+## Where this stands, 2026-08-30
+
+**The ladder is walked.** All eight rungs compile, assemble, link and run on
+x86_64-linux, x86_64-windows and arm64-darwin. Suites at the last commit:
+
+| | run | emit | names vs clang | overload | names vs cl |
+| --- | --- | --- | --- | --- | --- |
+| Mac | 190 | 292 | 98 | 26 | - |
+| Linux | 190 | 292 | - | - | - |
+| Windows | 188 | - | - | - | 80 |
+
+Since the ladder finished, the work has been **C++11 features that were never
+rungs** - each one measured against clang, and against cl for a Microsoft-ABI
+question, before anything was written:
+
+| Feature | Landed | What it turned on |
+| --- | --- | --- |
+| `namespace`, `using namespace` | 2026-08-30 | scopes in a tag, and lookup as a search |
+| `nullptr` | 2026-08-30 | a null constant that is not the integer 0 |
+| `static_assert` | 2026-08-30 | a declaration that declares nothing |
+| `explicit` | 2026-08-30 | copy-initialization, in its three places |
+| `const_cast`, `reinterpret_cast` | 2026-08-30 | the const line between the two |
+| `noexcept` | 2026-08-30 | the specifier and the operator |
+
+Each has a section further down saying what was measured and what was
+deliberately not built.
+
+### What to do next, and why in this order
+
+**The two try/catch limits come first**, and they were promoted from footnotes
+to a prerequisite by `noexcept`: a local with a destructor and a `try` in one
+function is refused, and on x86_64-windows a handler is a funclet that cannot
+`return`. Both are recorded under rung 6 as their own gaps. They now also block
+enforcing a `noexcept` specification at run time - which is the one entry in
+`docs/CONFORMANCE.md` whose fix is otherwise small - so lifting them buys two
+things rather than one.
+
+Then, roughly by what else depends on it:
+
+* **Conversion functions** (`operator int()`, `explicit operator bool()`).
+  There are none at all, which is why `explicit` on one is refused naming the
+  conversion function rather than the keyword.
+* **A mem-initialiser calling a class member's constructor with an argument** -
+  `H() : t(3) {}` where `t` is a class. Refused today whether or not anything
+  is `explicit`.
+* **Parenthesised direct-init of a scalar**, `int n(5);`. Small, and it is what
+  makes `bool b(nullptr);` unreachable - the one measured `nullptr` case that
+  cannot be written here.
+* **`T(3);` as a bare statement**, and **a null pointer to member function**,
+  which has no value by any spelling because it is two words on both ABIs.
+
+**`dynamic_cast` is a rung of its own, not a fourth branch beside the other
+casts**: it needs a `type_info` beside each vtable, the inheritance graph it
+carries, and the `__cxa_` call that walks it. None of that is emitted today.
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
 punctuators, `__cplusplus`, `bool`/`true`/`false`, class and enum tags as type
