@@ -2442,6 +2442,18 @@ against cl, and with self-hosting off the table it is the only oracle here.
 A green suite proves nothing until you prove what it ran against. Rebuild from
 clean before believing a number, and record the commit it was measured at.
 
+**Check `origin/main` before starting, not after.** This tree moves fast enough
+that a clone taken days ago is a different compiler: rungs 5, 6 and most of 7
+landed in the four days after rung 4, and the parser became nine files under
+`src/parser/` in the middle of it. A session that began from a stale clone
+re-fixed a bug `bd63799` had already fixed, wrote a second copy of
+`tests/cases/virtual-inline` under another name, and produced a patch against
+`src/Parser.cpp` - a path that no longer exists. None of it was detectable from
+inside that clone, where the suite was green and the bug reproduced exactly as
+reported. `git fetch origin main && git log --oneline HEAD..origin/main` costs a
+second and answers it; run it before the first edit rather than when the patch
+will not apply.
+
 **cl on the Windows box is the primary venue for measuring the Microsoft
 ABI.** clang will spell Microsoft names on any machine and stays useful for
 that, but it is a second implementation of that ABI where cl is the ABI, and
