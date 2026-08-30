@@ -3155,8 +3155,28 @@ means. `[&]` is how you write through to the original and already did.
 The keyword is still refused on a *data member*, which is a different feature
 and stays on the list of words this parser knows and has no rule for.
 
-Still refused by name: an inner `[=]` or `[&]` reaching for the capture of the
-lambda around it - by then that name is a member of the outer
+### A lambda inside a lambda, taking the capture of the one around it
+
+**The name is not a local by then**, which is the whole difficulty. The outer
+lambda's capture is a member of the outer *closure*, so `findLocal` answers
+nothing. `outerCaptureAccess` reaches through the outer `this`, and it is asked
+in three places that have to agree: where a named capture is looked up, where
+the `[=]`/`[&]` scan decides what to take, and where the closure object is built
+and the copy is actually made. Miss the third and the class is right and the
+object is uninitialised - the same shape as the bug captures had when they
+first landed.
+
+**The tag needed a counter, and the reason is not obvious.** A closure is named
+after the function that writes it - but inside a replay that function is
+`operator()`, so every level of nesting built `operator()::$_0` and the third
+was told its own call operator was declared twice. The *owners* differ, each
+closure's operator() having its own linkage name, so the owner decides and a
+counter separates the display tags. It is the disambiguation local classes
+already had, which is why it was three lines: **a general rule written once for
+one feature paid for a second.**
+
+With that, every capture C++11 has is here: by value, by reference, `[=]`,
+`[&]`, `[this]`, `mutable`, and nesting to any depth. - by then that name is a member of the outer
 closure and not a local, so the scan has nothing to take.
 
 ## Reference data members, refused since rung 3

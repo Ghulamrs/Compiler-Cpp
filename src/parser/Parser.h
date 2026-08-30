@@ -827,6 +827,13 @@ private:
     // [expr.prim.lambda]/7 gives the call operator the context's access - and
     // both access checks have to ask the same question or they disagree.
     bool insideAccessOf(const Type *cls) const;
+    // A name that is a *capture of the lambda around this one*: by the time an
+    // inner lambda is read, the outer one's capture is a member of the outer
+    // closure and not a local at all. Answers the expression that reads it -
+    // `this->name`, `this` being the outer closure - or null when the name is
+    // not that. Asked where a capture is looked up and again where the closure
+    // object is built, which must agree.
+    ExprPtr outerCaptureAccess(const std::string &name);
     // **One closure type per lambda written, however often it is read.** 7.1
     // reads an `auto` initialiser twice - once to learn the type, once to
     // build it - so `auto f = [](int a){...};` reached here twice and made two

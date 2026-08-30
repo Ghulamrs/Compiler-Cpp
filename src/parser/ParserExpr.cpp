@@ -600,10 +600,18 @@ ExprPtr Parser::lambdaExpression() {
         const std::size_t cpos = peek().pos;
         const std::string cname = expectIdent("a captured name");
         const Local *have = findLocal(cname);
-        if (have == nullptr)
-            src_.fail(cpos, "'" + cname + "' is not a local of the function "
-                            "around this lambda, so there is nothing here to "
-                            "capture");
+        const Type *fromOuter = nullptr;
+        if (have == nullptr) {
+            // A capture of the lambda around this one, which is a member of
+            // that closure by now rather than a local.
+            if (ExprPtr reach = outerCaptureAccess(cname))
+                fromOuter = reach->type();
+            if (fromOuter == nullptr)
+                src_.fail(cpos, "'" + cname + "' is not a local of the function "
+                                "around this lambda, nor a capture of a lambda "
+                                "around it, so there is nothing here to "
+                                "capture");
+        }
         capNames.push_back(cname);
         // **By reference the closure holds a reference member**, which needs
         // the layout rule reference members have: the slot is a pointer where
@@ -611,9 +619,9 @@ ExprPtr Parser::lambdaExpression() {
         // capturing a reference *by value* copies what it refers to, which
         // needs nothing at all, every mention of a reference here being
         // already lowered to a dereference.
-        const Type *base = have->type->isReference()
-                         ? have->type->referent()->unqualified()
-                         : have->type->unqualified();
+        const Type *raw = have != nullptr ? have->type : fromOuter;
+        const Type *base = raw->isReference()
+                         ? raw->referent()->unqualified() : raw->unqualified();
         capTypes.push_back(byRef ? types_.referenceTo(base) : base);
         if (!peek().is("]")) expect(",");
     }
@@ -683,27 +691,19 @@ ExprPtr Parser::lambdaExpression() {
                 if (capNames[k] == n) { had = true; break; }
             if (had) continue;
             const Local *have = findLocal(n);
-            if (have == nullptr) {
-                // **A lambda inside a lambda, reading the outer one's
-                // capture.** By the time the inner one is read, that name is a
-                // *member* of the outer closure and not a local at all, so
-                // there is nothing here for this scan to copy. Refused by name
-                // rather than left to fail further in with "'k' is a member and
-                // there is no object here to read it from", which is true and
-                // tells the reader nothing about the lambda they wrote.
-                if (currentClass_ != nullptr &&
-                    currentClass_->findMember(n) != nullptr)
-                    src_.fail(tokens_[i].pos,
-                              "'" + n + "' is a capture of the lambda around "
-                              "this one, and taking it into an inner '[=]' is "
-                              "not supported yet - name it in the inner "
-                              "capture list and it is copied like any other");
-                continue;
+            const Type *raw = have != nullptr ? have->type : nullptr;
+            if (raw == nullptr) {
+                // **A lambda inside a lambda, taking the outer one's
+                // capture.** By the time the inner one is read that name is a
+                // member of the outer closure, so it is reached through the
+                // outer `this` rather than found among the locals.
+                if (ExprPtr reach = outerCaptureAccess(n)) raw = reach->type();
+                if (raw == nullptr) continue;
             }
             capNames.push_back(n);
-            const Type *base = have->type->isReference()
-                             ? have->type->referent()->unqualified()
-                             : have->type->unqualified();
+            const Type *base = raw->isReference()
+                             ? raw->referent()->unqualified()
+                             : raw->unqualified();
             capTypes.push_back(captureAllByRef ? types_.referenceTo(base) : base);
         }
     }
@@ -717,8 +717,23 @@ ExprPtr Parser::lambdaExpression() {
     // does not have to be, a closure type having no name the standard obliges
     // anybody to match.
     const std::string local = "$_" + std::to_string(lambdaCount_++);
-    const std::string tag = currentFunctionName_.empty()
-                          ? local : currentFunctionName_ + "::" + local;
+    // **The tag has to be unique and the function's *name* is not enough.**
+    // Inside a replay `currentFunctionName_` is `operator()`, so every level of
+    // a nested lambda built `operator()::$_0` and the third one was told its
+    // own call operator was declared twice. The owners differ - each closure's
+    // operator() has its own linkage name - so the owner is what decides, and
+    // a counter separates the display tags, exactly as a local class does it.
+    std::string tag = currentFunctionName_.empty()
+                    ? local : currentFunctionName_ + "::" + local;
+    if (!currentFunction_.empty()) {
+        for (int n = 2; ; n++) {
+            std::map<std::string, std::string>::const_iterator had =
+                localClassOwner_.find(tag);
+            if (had == localClassOwner_.end() || had->second == currentFunction_)
+                break;
+            tag = currentFunctionName_ + "$" + std::to_string(n) + "::" + local;
+        }
+    }
     Type *closure = types_.structType(Kind::Struct, tag);
     closure->setLocalName(local);
     closure->setDeclaredClass(false);
@@ -821,6 +836,7 @@ ExprPtr Parser::buildClosure(const MadeLambda &made, std::size_t pos) {
             src->setType(self != nullptr ? self->type : made.types[i]);
         } else {
             src = objectRef(made.names[i]);
+            if (src == nullptr) src = outerCaptureAccess(made.names[i]);
         }
         if (src == nullptr)
             src_.fail(pos, "'" + made.names[i] + "' went missing between the "
@@ -880,6 +896,31 @@ ExprPtr Parser::capturedThisPointer() {
                                  0, 0));
     acc->setType(types_.pointerTo(outer->second));
     return acc;
+}
+
+// A capture of the lambda around this one, read from inside it. By the time an
+// inner lambda is parsed the outer one's capture is a member of the outer
+// closure, so `findLocal` answers nothing and the capture machinery has to look
+// here instead. Null for every name that is not that, which is most of them.
+ExprPtr Parser::outerCaptureAccess(const std::string &name) {
+    if (currentClass_ == nullptr) return nullptr;
+    const Type *closure = currentClass_->unqualified();
+    if (closureOuter_.find(closure->tag()) == closureOuter_.end() &&
+        localClassOwner_.find(closure->tag()) == localClassOwner_.end())
+        return nullptr;
+    const Member *m = closure->findMember(name);
+    if (m == nullptr) return nullptr;
+    const Local *self = findLocal("this");
+    if (self == nullptr) return nullptr;
+
+    ExprPtr me(Var::local("this", self->offset));
+    me->setType(self->type);
+    ExprPtr obj(new Unary('*', std::move(me)));
+    obj->setType(closure);
+    ExprPtr acc(new MemberAccess(std::move(obj), name, m->offset, m->width,
+                                 m->bitOffset));
+    acc->setType(m->type);
+    return useReference(std::move(acc));
 }
 
 ExprPtr Parser::primary(Program *program) {
