@@ -338,6 +338,46 @@ bool Parser::betterCandidate(const std::vector<Rank> &a,
 // candidate - a member that beat every non-member also beat every other
 // member. What is bought here is the comparison *between* the halves, which is
 // the part that was missing and the part clang refuses programs over.
+// **[basic.lookup.argdep], as much of it as an operand's own namespace needs.**
+// `a + b` where both are `N::V` has to find `N::operator+`, and no other rule
+// brings it into scope: the call site is outside N and wrote no qualification,
+// which is the whole point of writing the operator beside the class. So the
+// namespaces of the operand types are searched as well as the ones the call
+// site is written in.
+//
+// **What this deliberately is not**: the standard's associated set also
+// carries base classes, template arguments and enclosing classes, and it makes
+// the found functions candidates rather than a fallback list. This takes the
+// operand's own namespace and nothing else, which covers the case the rule
+// exists for. `docs/CONFORMANCE.md` records the difference.
+std::vector<std::string> Parser::lookupKeys(const std::string &name,
+                                            const Type *left,
+                                            const Type *right) const {
+    std::vector<std::string> keys;
+    auto add = [&](const std::string &k) {
+        if (!hasFunctionNamed(k)) return;
+        for (std::size_t i = 0; i < keys.size(); i++)
+            if (keys[i] == k) return;
+        keys.push_back(k);
+    };
+    add(name);
+    add(qualifyForLookup(name, &Parser::hasFunctionNamed));
+
+    const Type *operands[2] = { left, right };
+    for (std::size_t i = 0; i < 2; i++) {
+        const Type *t = operands[i];
+        while (t != nullptr && (t->isPointer() || t->isReference()))
+            t = t->pointee();
+        if (t == nullptr) continue;
+        t = t->unqualified();
+        if (!t->isStructOrUnion() || !t->inNamespace()) continue;
+        const std::string &tag = t->tag();
+        const std::size_t cut = tag.rfind("::");
+        if (cut != std::string::npos) add(tag.substr(0, cut) + "::" + name);
+    }
+    return keys;
+}
+
 Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
                                                const Expr &left,
                                                const Expr *right,
@@ -381,7 +421,10 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
         }
     }
 
-    if (const std::vector<std::size_t> *set = overloadsOf(name))
+    const std::vector<std::string> keys =
+        lookupKeys(name, lt, right != nullptr ? right->type() : nullptr);
+    for (std::size_t ki = 0; ki < keys.size(); ki++)
+    if (const std::vector<std::size_t> *set = overloadsOf(keys[ki]))
         for (std::size_t k = 0; k < set->size(); k++) {
             const Signature &f = functions_[(*set)[k]];
             if (f.params.size() != written + 1) continue;
@@ -467,10 +510,25 @@ void Parser::applyDefaults(const Signature &f, std::vector<ExprPtr> &args,
     scopeStarts_.swap(starts);
 }
 
-const Parser::Signature &Parser::resolveOverload(const std::string &name,
+const Parser::Signature &Parser::resolveOverload(const std::string &written,
                                                  const std::vector<ExprPtr> &args,
                                                  std::size_t pos,
                                                  const Type *object) {
+    // An unqualified name inside a namespace names that namespace's function
+    // if it has one - the enclosing scopes are tried from the innermost out,
+    // then whatever a `using namespace` has opened.
+    std::string name = object != nullptr
+                     ? written
+                     : qualifyForLookup(written, &Parser::hasFunctionNamed);
+    // An argument's own namespace is searched too - `twice(s)` finds
+    // `N::twice` when `s` is an `N::S`. Only where nothing else answered, so a
+    // name that is in scope is never quietly outranked by a far one.
+    if (object == nullptr && overloadsOf(name) == nullptr && !args.empty()) {
+        const std::vector<std::string> keys =
+            lookupKeys(written, args[0]->type(),
+                       args.size() > 1 ? args[1]->type() : nullptr);
+        if (!keys.empty()) name = keys.back();
+    }
     const std::vector<std::size_t> *set = overloadsOf(name);
     if (set == nullptr) {
         // **`C(...)` where C is a class** is a temporary, not a call to a

@@ -138,9 +138,7 @@ void Parser::registerDestructor(const std::string &cls, std::size_t pos,
 std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
                                         const Type *memberOf, int thisSlot) {
     const bool ms = target_.microsoftNames();
-    const std::string table = ms ? "??_7" + cls + "@@6B@"
-                                 : "_ZTV" + std::to_string(cls.size()) +
-                                   cls;
+    const std::string table = vtableSymbol(cls, ms);
     const Type *entry = types_.pointerTo(types_.get(Kind::Void));
     const Type *entries = types_.pointerTo(entry);
 
@@ -560,8 +558,7 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
 
     const std::vector<VSlot> &slots = vtables_[tag];
     const bool ms = target_.microsoftNames();
-    const std::string symbol = ms ? "??_7" + tag + "@@6B@"
-                                  : "_ZTV" + std::to_string(tag.size()) + tag;
+    const std::string symbol = vtableSymbol(tag, ms);
 
     for (std::size_t i = 0; i < current_->globals.size(); i++)
         if (current_->globals[i].symbol == symbol) return;   // one per class
@@ -1982,7 +1979,16 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
     // the specialization, keyed and mangled as "twice<int>". Its entry was
     // made when the call asked for it, so this finds that one and marks it
     // defined rather than computing a second symbol.
-    const std::string &key = instantiationName(name);
+    // **The namespace goes on here, once.** Every table below is keyed by the
+    // qualified name, so a namespace costs a prefix at the declaration and a
+    // search at the use, and no table had to change. `main` and anything with
+    // C linkage keep the name they were written with - a namespace does not
+    // reach either.
+    const std::string plain = instantiationName(name);
+    const std::string qualified =
+        (cLinkage_ > 0 || plain == "main" || namespaceStack_.empty())
+            ? plain : namespacePrefix() + plain;
+    const std::string &key = qualified;
     checkOperatorDeclarable(key, params.size(), false, pos);
     const bool cName = cLinkage_ > 0 || key == "main";
     std::vector<std::size_t> &set = functionIndex_[key];
@@ -2060,7 +2066,13 @@ const Parser::Signature &
 Parser::lookupSignature(const std::string &name,
                         const std::vector<const Type *> &params,
                         bool variadic, std::size_t pos) const {
-    if (const std::vector<std::size_t> *set = overloadsOf(instantiationName(name))) {
+    // The same qualification the declaration used, or a definition written
+    // inside a namespace cannot find the prototype it is defining.
+    const std::string key = name.find("::") != std::string::npos
+                          ? name
+                          : qualifyForLookup(instantiationName(name),
+                                             &Parser::hasFunctionNamed);
+    if (const std::vector<std::size_t> *set = overloadsOf(key)) {
         for (std::size_t k = 0; k < set->size(); k++) {
             const Signature &f = functions_[(*set)[k]];
             if (f.params.size() != params.size() || f.variadic != variadic) continue;

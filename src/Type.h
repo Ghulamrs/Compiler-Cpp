@@ -201,6 +201,17 @@ public:
     }
     void setLocalName(std::string n) { local_ = std::move(n); }
 
+    // **A class written inside a namespace**, whose tag carries the namespaces
+    // for the same reason a nested class's carries its enclosing classes -
+    // except that there is no Type to point `enclosing()` at, because a
+    // namespace is not one. Asked by the manglers, which have to tell "N::S"
+    // apart from a local class's "f::L": the first is a scope both ABIs write
+    // and the second is a name they spell whole.
+    bool inNamespace() const {
+        return unqual_ ? unqual_->inNamespace() : inNamespace_;
+    }
+    void setInNamespace() { inNamespace_ = true; }
+
     // A class made by instantiating a class template. The name and arguments
     // are kept because the tag - "Box<int,3>" - is the parser's key and not
     // anything a linker has ever seen.
@@ -368,6 +379,7 @@ private:
 
     std::string tag_;
     std::string local_;
+    bool inNamespace_ = false;
     // Set on a class that is a template specialization. `local_` is
     // "Box<int,3>" there, which no ABI writes: Itanium wants `3BoxIiLi3EE`
     // and Microsoft `?$Box@H$02@`, both built from these two.

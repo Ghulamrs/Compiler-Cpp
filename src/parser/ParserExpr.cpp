@@ -1151,6 +1151,72 @@ ExprPtr Parser::primary(Program *program) {
     // before the identifier is read as a name of its own, and only taken when
     // the class really does have such a member, so `Point::get()` and anything
     // else spelled with a '::' falls through untouched.
+    // **`N::f(...)` and `N::v` - a name qualified by a namespace.** Told from
+    // a class's qualified name by asking which namespaces have been opened:
+    // the two are written identically and mean different lookups. The chain is
+    // eaten while it keeps naming one, so `N::M::g` works, and what is left is
+    // a key every table here already holds.
+    // **`N::S(4)` - a temporary of a class named through its scope.** The
+    // unqualified `S(4)` is caught further down, where the name is already in
+    // hand; a qualified one has to be recognised before either '::' branch
+    // takes it, since to them it is a name followed by a call.
+    if (const std::size_t typeEnd = qualifiedTypeEnd()) {
+        if (peekAt(typeEnd).is("(")) {
+            std::string q = peek().text;
+            for (std::size_t k = 1; k + 1 <= typeEnd - 1; k += 2)
+                q += "::" + peekAt(k + 1).text;
+            const Type *named = findTypedef(q);
+            if (named != nullptr && named->isStructOrUnion()) {
+                const std::size_t qpos = peek().pos;
+                at_ += typeEnd + 1;                 // the name and the '('
+                return classTemporary(named, qpos);
+            }
+        }
+    }
+
+    // **`::f()` - a name asked for at global scope explicitly.** Refused by
+    // name rather than left to "expected an expression", which points at a
+    // '::' and says nothing about why. It matters only where a nearer name
+    // hides the global one, and nothing here hides one yet.
+    if (peek().is("::"))
+        src_.fail(peek().pos, "a name qualified with '::' alone - the global "
+                              "scope - is not supported yet; write the name "
+                              "without it, which finds the same thing while "
+                              "nothing shadows it");
+
+    // ...and `N::S::n` is not this: the chain reaches a *class*, and what
+    // follows the class is a member, which the branch below already knows how
+    // to find. Asked before the namespace is eaten, since eating it loses the
+    // start of the name.
+    if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
+        namespaces_.find(peek().text) != namespaces_.end() &&
+        qualifiedTypeEnd() == 0) {
+        const std::size_t qpos = peek().pos;
+        std::string scope = peek().text;
+        at_ += 2;
+        while (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
+               namespaces_.find(scope + "::" + peek().text) != namespaces_.end()) {
+            scope += "::" + peek().text;
+            at_ += 2;
+        }
+        const std::string full = scope + "::" + expectIdent("a name");
+        if (consume("(")) {
+            std::vector<ExprPtr> args;
+            parseArguments(args);
+            const Signature &sig = resolveOverload(full, args, qpos);
+            applyDefaults(sig, args, qpos);
+            return completeCall(full, sig.symbol, nullptr, sig.returns,
+                                sig.params, sig.variadic, qpos, std::move(args));
+        }
+        if (ExprPtr v = objectRef(full)) return v;
+        if (const EnumConst *e = findEnum(full)) {
+            ExprPtr n(new Num(e->value));
+            n->setType(types_.intType());
+            return n;
+        }
+        src_.fail(qpos, "'" + full + "' was not declared in '" + scope + "'");
+    }
+
     if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
         peekAt(2).kind == TokenKind::Ident) {
         // The longest prefix that names a class and has such a member wins, so

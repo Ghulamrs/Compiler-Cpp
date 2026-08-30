@@ -1033,6 +1033,38 @@ private:
     // the same way a default argument is and for the same reason: it is
     // evaluated once per construction, in a constructor that may not have been
     // read yet. Keyed "Class::member".
+    // **A namespace is a scope that qualifies a name, and nothing else here.**
+    // Every table in this parser is already keyed by a qualified string - a
+    // nested class is "Outer::Inner" - and both ABIs spell a namespace
+    // component exactly as they spell a class one. So a namespace costs a
+    // prefix on the way in and a search on the way out, and no new table.
+    std::vector<std::string> namespaceStack_;
+    // Namespaces named by a `using namespace` still open here, innermost last.
+    std::vector<std::string> usingNamespaces_;
+    // Every namespace ever opened, by full path. A qualified name has to be
+    // told from a class's - `N::f` and `S::f` are written the same and mean
+    // different lookups - and this is what tells them apart.
+    std::set<std::string> namespaces_;
+    std::string namespacePrefix() const {
+        std::string out;
+        for (std::size_t i = 0; i < namespaceStack_.size(); i++)
+            out += namespaceStack_[i] + "::";
+        return out;
+    }
+    // The qualified name to look a written one up under: the enclosing
+    // namespaces from the innermost outwards, then whatever is open by a
+    // `using namespace`, then the name itself. `exists` says which table to
+    // ask, because a function and a variable are kept in different ones.
+    std::string qualifyForLookup(const std::string &name,
+                                 bool (Parser::*exists)(const std::string &) const) const;
+    bool hasFunctionNamed(const std::string &key) const;
+    bool hasGlobalNamed(const std::string &key) const;
+    bool hasTypeNamed(const std::string &key) const;
+    std::size_t qualifiedTypeEnd() const;
+    std::vector<std::string> lookupKeys(const std::string &name,
+                                        const Type *left,
+                                        const Type *right) const;
+
     std::map<std::string, std::size_t> memberInit_;
     // To the ',' or ';' that ends one, counting brackets.
     void skipMemberInitialiser();

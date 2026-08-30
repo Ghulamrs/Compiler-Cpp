@@ -242,3 +242,57 @@ The direction is deliberate. Over-capturing costs a copy; under-capturing fails
 to compile a program that should, and the two are not equally bad. A class with
 a copy constructor that has side effects is the one case where the difference is
 observable, and it is the reason this is written down rather than left implicit.
+
+
+## A `using namespace` hides an outer name instead of competing with it
+
+[basic.lookup.unqual] with a using-directive open is a *merge*: the names a
+directive brings in are considered as if they had been declared where the
+namespace and the using-directive both sit, which is usually the global scope -
+so they stand beside whatever is already there, and two equally good candidates
+are an ambiguity.
+
+cxx1 searches instead of merging. `qualifyForLookup` tries the enclosing
+namespaces innermost-out, then the ones a directive has opened, then the name as
+written, and the first that answers wins.
+
+```cpp
+int f();
+namespace N { int f(); }
+using namespace N;
+int main() { return f(); }   // clang: ambiguous. cxx1: calls N::f
+```
+
+The same shape decides an overload set: where a directive opens a namespace
+holding `f(double)` and the global scope holds `f(int)`, cxx1 ranks only the
+namespace's, so `f(1)` calls `f(double)` rather than choosing between the two.
+
+What it costs is confined to programs that write one name in two scopes and
+then open one of them - and in those, the standard's answer is usually a
+diagnostic rather than a different call, so the failure mode is a program that
+builds here and does not build elsewhere. Refusing outright would be worse: it
+would refuse the ordinary case where nothing is shadowed at all.
+
+Fixing it means candidate sets rather than a first-match search, in the three
+places lookup is done - `qualifyForLookup`, `resolveOverload`, and
+`resolveOperator`. That is the same change argument-dependent lookup wants,
+below, and the two belong in one step.
+
+## Argument-dependent lookup reaches only the operand's own namespace
+
+[basic.lookup.argdep] builds an associated set from an argument's type: its own
+namespace, the namespaces of its base classes, of its template arguments, and of
+its enclosing classes. cxx1's `lookupKeys` takes the first of those and stops,
+and it uses what it finds as a *fallback* - only where ordinary lookup found
+nothing - rather than adding the candidates to one set.
+
+```cpp
+namespace N { struct B { }; int f(B); }
+struct D : N::B { };
+int main() { D d; return f(d); }   // clang: calls N::f. cxx1: 'f' not declared
+```
+
+This is a refusal rather than a wrong answer, which is why it is separated from
+the entry above: a program that needs the wider set is told so. It is here
+because the two rules are one piece of work and the narrow version is a
+deliberate stopping point, not an oversight.

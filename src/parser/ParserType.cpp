@@ -103,6 +103,17 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // makes belongs to the file, not to that function. Without this the
     // instantiation was renamed `f::Holder<int>` and the class stopped being
     // able to find its own constructor.
+    // A class declared in a namespace is keyed by its qualified tag, exactly
+    // as a nested class is - "N::S" beside "Outer::Inner" - which is why the
+    // tables needed nothing and the manglers only needed to split on "::".
+    bool inNamespace = false;
+    if (within == nullptr && !tag.empty() && !namespaceStack_.empty() &&
+        currentFunction_.empty() && specializationOf.empty()) {
+        local = tag;
+        tag = namespacePrefix() + tag;
+        inNamespace = true;
+    }
+
     std::string localOwner;
     if (within == nullptr && defining && !tag.empty() &&
         !currentFunction_.empty() && specializationOf.empty()) {
@@ -130,6 +141,10 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // own body through currentClass_.
         declareTypeName(tag + "::" + specializationOf, type);
     }
+    // A class in a namespace: the manglers want the name without the
+    // namespaces, and there is no enclosing type to point at - a namespace is
+    // not a Type, which is the whole reason its scopes ride in the tag.
+    if (inNamespace) { type->setLocalName(local); type->setInNamespace(); }
     if (within != nullptr && !local.empty()) {
         type->setLocalName(local);
         type->setEnclosing(within);

@@ -844,6 +844,10 @@ StmtPtr Parser::block() {
     std::size_t pos = peek().pos;
     expect("{");
     enterScope();
+    // A `using namespace` written inside this block reaches the '}' and no
+    // further - [namespace.udir]/2 - so the list is cut back to what it held
+    // on the way in.
+    const std::size_t usingAtEntry = usingNamespaces_.size();
     const std::size_t aliveAtEntry = alive_.size();
     bool isBody = atFunctionBody_;
     atFunctionBody_ = false;
@@ -880,6 +884,7 @@ StmtPtr Parser::block() {
                    : wrapCleanups(std::move(body), built, aliveAtEntry, pos);
     }
     alive_.resize(aliveAtEntry);
+    usingNamespaces_.resize(usingAtEntry);
 
     expect("}");
     if (!isBody) leaveBlock();
@@ -1108,6 +1113,25 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
 }
 
 StmtPtr Parser::statementBody() {
+    // **`using namespace N;` inside a block**, which is the same directive as
+    // the one at file scope and differs only in when it stops applying: at the
+    // end of this block, which `block()` undoes by truncating the list. It
+    // declares nothing and builds nothing, so the statement it becomes is the
+    // empty one.
+    if (peek().is("using") && peekAt(1).is("namespace")) {
+        at_ += 2;
+        std::string opened = expectIdent("a namespace name");
+        while (peek().is("::")) {
+            at_++;
+            opened += "::" + expectIdent("a namespace name");
+        }
+        expect(";");
+        if (namespaces_.find(opened) == namespaces_.end())
+            src_.fail(peek().pos, "'" + opened + "' is not a namespace");
+        usingNamespaces_.push_back(opened);
+        return StmtPtr(new Block({}));
+    }
+
     if (peek().is("try")) {
         const std::size_t tpos = peek().pos;
         at_++;
@@ -1322,6 +1346,58 @@ bool Parser::linkageSpecification() {
 }
 
 void Parser::topLevel(Program &program) {
+    // `namespace N { ... }` - a scope that qualifies what is declared in it,
+    // and nothing else. Everything inside is read by this same function, so a
+    // namespace nests, may be reopened, and may hold anything a file may hold.
+    if (peek().is("namespace")) {
+        const std::size_t pos = peek().pos;
+        at_++;
+        if (peek().is("{"))
+            src_.fail(pos, "an unnamed namespace is not supported yet - what it "
+                           "does is give everything inside internal linkage, "
+                           "which 'static' says here");
+        std::string name = expectIdent("a namespace name");
+        // `namespace N::M { }` is C++17; nesting is written out here.
+        if (peek().is("::"))
+            src_.fail(peek().pos, "a nested namespace written 'N::M' is C++17 "
+                                  "- open them one at a time");
+        if (consume("=")) 
+            src_.fail(pos, "a namespace alias is not supported yet");
+        expect("{");
+        namespaceStack_.push_back(name);
+        namespaces_.insert(namespacePrefix().substr(
+                               0, namespacePrefix().size() - 2));
+        while (!peek().is("}")) {
+            if (peek().kind == TokenKind::End)
+                src_.fail(pos, "this namespace never closes");
+            topLevel(program);
+        }
+        at_++;                                  // the '}'
+        namespaceStack_.pop_back();
+        return;
+    }
+
+    // `using namespace N;` - the names in N answer an unqualified lookup from
+    // here on. A using-*declaration*, `using N::f;`, names one thing and is a
+    // different rule; it is refused by name.
+    if (peek().is("using")) {
+        const std::size_t pos = peek().pos;
+        at_++;
+        if (!peek().is("namespace"))
+            src_.fail(pos, "a using-declaration is not supported yet - "
+                           "'using namespace N;' opens a whole namespace and "
+                           "works");
+        at_++;
+        std::string opened = expectIdent("a namespace name");
+        while (peek().is("::")) {
+            at_++;
+            opened += "::" + expectIdent("a namespace name");
+        }
+        expect(";");
+        usingNamespaces_.push_back(opened);
+        return;
+    }
+
     if (linkageSpecification()) return;
     if (templateDeclaration()) return;
 
@@ -1497,7 +1573,14 @@ void Parser::topLevel(Program &program) {
                 continue;
             }
 
-            globalIndex_[d.name] = globals_.size();
+            // A variable declared in a namespace is keyed and mangled by its
+            // qualified name, the same as a function. `extern "C"` does not
+            // reach into one, so a name with C linkage keeps what it was
+            // written with.
+            const std::string gname =
+                (namespaceStack_.empty() || cLinkage_ > 0)
+                    ? d.name : namespacePrefix() + d.name;
+            globalIndex_[gname] = globals_.size();
             bool objectIsConst = d.type->isConst();
             // A const object at namespace scope has internal linkage of its
             // own - [basic.link]/3 - which is why a header may define one and
@@ -1505,12 +1588,12 @@ void Parser::topLevel(Program &program) {
             // name it, so it keeps the name it was written with.
             bool internal = sc == StorageStatic ||
                             (objectIsConst && sc != StorageExtern);
-            std::string symbol = dataSymbol(d.name, d.type, internal, d.pos);
-            globals_.push_back(GlobalSym{ d.name, symbol, d.type, objectIsConst,
+            std::string symbol = dataSymbol(gname, d.type, internal, d.pos);
+            globals_.push_back(GlobalSym{ gname, symbol, d.type, objectIsConst,
                                           sc != StorageExtern, hasInit,
                                           constantKnown, constantValue });
             if (sc != StorageExtern)
-                program.globals.push_back(Global{ d.name, symbol, d.type,
+                program.globals.push_back(Global{ gname, symbol, d.type,
                                                   std::move(pieces), hasInit,
                                                   internal, objectIsConst });
             if (!consume(",")) break;
@@ -1549,6 +1632,12 @@ void Parser::topLevel(Program &program) {
         memberOf = findTypedef(d.qualifier);
         if (memberOf == nullptr || !memberOf->isStructOrUnion())
             src_.fail(d.pos, "'" + d.qualifier + "' is not a class");
+        // `void S::f()` written inside `namespace N` defines `N::S::f`, and
+        // every table downstream is keyed by the qualified tag - the member
+        // lookup, the mangled name, the constructor test against
+        // `localOf(qualifier)`. Take the name the class was found under rather
+        // than the one that was written.
+        d.qualifier = memberOf->tag();
         currentClass_ = memberOf;
     }
 

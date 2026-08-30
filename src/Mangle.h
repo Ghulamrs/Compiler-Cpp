@@ -211,3 +211,9 @@ bool microsoftDataName(const std::string &name, const Type *t,
                        std::string *out, std::string *problem);
 
 std::string itaniumDataName(const std::string &name, bool internal);
+
+// A class's vtable, by tag. The tag may carry namespaces - "N::B" - which both
+// ABIs write as a scope list rather than as part of the name, so the two
+// call sites in the parser cannot just concatenate. Measured: `N::B` is
+// `_ZTVN1N1BE` and `??_7B@N@@6B@`.
+std::string vtableSymbol(const std::string &tag, bool microsoft);

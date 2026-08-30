@@ -144,6 +144,39 @@ const std::string *Parser::localOwnerOf(const std::string &tag) const {
     return it == localClassOwner_.end() ? nullptr : &it->second;
 }
 
+bool Parser::hasFunctionNamed(const std::string &key) const {
+    return functionIndex_.find(key) != functionIndex_.end();
+}
+
+bool Parser::hasGlobalNamed(const std::string &key) const {
+    return globalIndex_.find(key) != globalIndex_.end();
+}
+
+bool Parser::hasTypeNamed(const std::string &key) const {
+    return typedefIndex_.find(key) != typedefIndex_.end();
+}
+
+// **Unqualified lookup inside a namespace, and it is a search and not a rule.**
+// The enclosing namespaces are tried from the innermost outwards, then the ones
+// a `using namespace` has opened, then the name as written - which is
+// [basic.lookup.unqual] closely enough for a compiler with no argument-
+// dependent lookup. The first that names anything wins, and the answer is a key
+// every table here is already able to hold.
+std::string Parser::qualifyForLookup(const std::string &name,
+                                     bool (Parser::*exists)(const std::string &) const) const {
+    if (name.find("::") != std::string::npos) return name;
+    for (std::size_t i = namespaceStack_.size(); i-- > 0; ) {
+        std::string prefix;
+        for (std::size_t k = 0; k <= i; k++) prefix += namespaceStack_[k] + "::";
+        if ((this->*exists)(prefix + name)) return prefix + name;
+    }
+    for (std::size_t i = usingNamespaces_.size(); i-- > 0; ) {
+        const std::string key = usingNamespaces_[i] + "::" + name;
+        if ((this->*exists)(key)) return key;
+    }
+    return name;
+}
+
 const Type *Parser::findTypedef(const std::string &name) const {
     // **A class local to this function is found first, and that is what makes
     // it shadow a global of the same name** - [basic.scope.local], and the
@@ -154,6 +187,16 @@ const Type *Parser::findTypedef(const std::string &name) const {
 
     auto it = typedefIndex_.find(name);
     if (it != typedefIndex_.end()) return typedefs_[it->second].type;
+
+    // A class named without its namespace, from inside that namespace or from
+    // one a `using namespace` has opened.
+    {
+        const std::string key = qualifyForLookup(name, &Parser::hasTypeNamed);
+        if (key != name) {
+            auto q = typedefIndex_.find(key);
+            if (q != typedefIndex_.end()) return typedefs_[q->second].type;
+        }
+    }
 
     // **Not found by its own name, so look in the classes this is inside.**
     // Innermost first: a class body being parsed, then the class whose member
@@ -241,7 +284,28 @@ bool Parser::atTypeName() const {
     auto tmpl = templates_.find(peek().text);
     if (tmpl != templates_.end() && tmpl->second.isClass && peekAt(1).is("<"))
         return true;
-    return findTypedef(peek().text) != nullptr;
+    if (findTypedef(peek().text) != nullptr) return true;
+    // `N::S` names a type as much as `Outer::Inner` does, and neither answers
+    // to the leading name on its own. One of the two leading names is a
+    // namespace and the other a class, and past that first token the walk is
+    // the same one.
+    return qualifiedTypeEnd() != 0;
+}
+
+// How many tokens of an `A::B::C` chain starting here reach a type, or 0 if
+// none does. The longest prefix that names one wins, so `Outer::Inner::shared`
+// stops at Inner and `N::M::S` runs to the end.
+std::size_t Parser::qualifiedTypeEnd() const {
+    if (peek().kind != TokenKind::Ident || !peekAt(1).is("::")) return 0;
+    std::string q = peek().text;
+    std::size_t typeEnd = 0;
+    for (std::size_t k = 1; peekAt(k).is("::") &&
+                            peekAt(k + 1).kind == TokenKind::Ident;
+         k += 2) {
+        q += "::" + peekAt(k + 1).text;
+        if (findTypedef(q) != nullptr) typeEnd = k + 2;
+    }
+    return typeEnd;
 }
 
 bool Parser::atDeclarationStart() const {
@@ -252,7 +316,11 @@ bool Parser::atDeclarationStart() const {
     // start of an expression here - a static member being read or written.
     if (peek().kind == TokenKind::Ident && peekAt(1).is("::")) {
         const Type *named = findTypedef(peek().text);
-        if (named != nullptr && named->isStructOrUnion()) {
+        // A namespace comes here for the same reason a class does: `N::v = 1;`
+        // is a statement and `N::S s;` is a declaration, and only the walk
+        // below tells them apart.
+        if ((named != nullptr && named->isStructOrUnion()) ||
+            namespaces_.find(peek().text) != namespaces_.end()) {
             // ...**unless the qualified name is itself a type**, which makes
             // it a declaration after all: `Outer::Inner x;` declares an x
             // where `Counter::total = 1;` assigns to a static member. Whether
@@ -260,14 +328,7 @@ bool Parser::atDeclarationStart() const {
             // The name is a declaration only where it *stops* at a type.
             // `Outer::Inner x;` declares an x; `Outer::Inner::shared = 1;`
             // goes on past the type to a member, and is a statement.
-            std::string q = peek().text;
-            std::size_t typeEnd = 0;
-            for (std::size_t k = 1; peekAt(k).is("::") &&
-                                    peekAt(k + 1).kind == TokenKind::Ident;
-                 k += 2) {
-                q += "::" + peekAt(k + 1).text;
-                if (findTypedef(q) != nullptr) typeEnd = k + 2;
-            }
+            const std::size_t typeEnd = qualifiedTypeEnd();
             return typeEnd != 0 && !peekAt(typeEnd).is("::");
         }
     }
@@ -443,6 +504,12 @@ const Parser::Local *Parser::findLocal(const std::string &name) const {
 
 const Parser::GlobalSym *Parser::findGlobal(const std::string &name) const {
     auto it = globalIndex_.find(name);
+    if (it != globalIndex_.end()) return &globals_[it->second];
+    // Not under the name as written: an unqualified one inside a namespace
+    // names that namespace's variable if it has one.
+    const std::string key = qualifyForLookup(name, &Parser::hasGlobalNamed);
+    if (key == name) return nullptr;
+    it = globalIndex_.find(key);
     return it == globalIndex_.end() ? nullptr : &globals_[it->second];
 }
 

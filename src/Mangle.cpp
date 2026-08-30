@@ -2,6 +2,21 @@
 
 #include "Operator.h"
 
+// "N::M::f" -> {"N", "M", "f"}. A namespace scope is spelled by both ABIs
+// exactly as a class scope is - measured, `N::f` is `_ZN1N1fEi` and
+// `?f@N@@YAHH@Z` - so the manglers need the components and nothing else.
+static std::vector<std::string> scopeComponents(const std::string &name) {
+    std::vector<std::string> out;
+    std::size_t at = 0;
+    for (;;) {
+        const std::size_t sep = name.find("::", at);
+        if (sep == std::string::npos) { out.push_back(name.substr(at)); break; }
+        out.push_back(name.substr(at, sep - at));
+        at = sep + 2;
+    }
+    return out;
+}
+
 #include "Type.h"
 
 #include <vector>
@@ -94,14 +109,59 @@ public:
     // parameter of type Outer::Inner read `NS_5InnerE` inside a member of
     // Outer - Outer is candidate zero there, so its name is not spelled twice.
     // Measured: clang writes _ZN5Outer3useENS_5InnerE.
+    // **The namespaces in a qualified tag, each a substitution candidate of
+    // its own.** A namespace is not a Type here, so it cannot go in the table
+    // by pointer the way a class does - it goes in by the name it is reached
+    // under, which is the cumulative "N::M" and not just "M", so that two
+    // namespaces of the same leaf name in different parents stay apart.
+    // Measured: `g(N::M::T, N::S)` inside N::M is `_ZN1N1M1gENS0_1TENS_1SE`,
+    // where S_ is N and S0_ is N::M - both candidates, and neither the class.
+    // The class's own name is *not* written here; the caller writes it, since
+    // what it is called differs between a plain class and a specialization.
+    void namespacesOf(const std::string &qualified) {
+        const std::vector<std::string> parts = scopeComponents(qualified);
+        std::vector<std::string> reach;               // N, then N::M, ...
+        std::string sofar;
+        for (std::size_t i = 0; i + 1 < parts.size(); i++) {
+            sofar += sofar.empty() ? parts[i] : "::" + parts[i];
+            reach.push_back(sofar);
+        }
+        // **The longest prefix already in the table stands for the whole of
+        // it.** Writing `S_` for N and then `S0_` for N::M spells the same
+        // scope twice; N::M alone is what clang writes.
+        std::size_t start = 0;
+        for (std::size_t i = reach.size(); i-- > 0; ) {
+            if (!substitutedName(reach[i])) continue;
+            start = i + 1;
+            break;
+        }
+        for (std::size_t i = start; i < reach.size(); i++) {
+            out += std::to_string(parts[i].size());
+            out += parts[i];
+            Sub s;
+            s.name = reach[i];
+            subs_.push_back(s);
+        }
+    }
+
     void prefix(const Type *cls, const std::string &fallback) {
         if (cls == nullptr) {
-            out += std::to_string(fallback.size());
-            out += fallback;
+            // A namespace-qualified tag with no Type to walk: split it, the
+            // same way a free function's name is split.
+            namespacesOf(fallback);
+            const std::string leaf = scopeComponents(fallback).back();
+            out += std::to_string(leaf.size());
+            out += leaf;
             return;
         }
         if (substituted(cls)) return;
         if (cls->enclosing() != nullptr) prefix(cls->enclosing(), std::string());
+        // A class in a namespace has no enclosing Type; its namespaces are in
+        // its tag, and they are written - and made candidates - here. A local
+        // class's tag has a "::" in it too and is *not* this: `f::L` is one
+        // name, not a scope, which is why the flag is asked rather than the
+        // spelling.
+        else if (cls->inNamespace()) namespacesOf(cls->tag());
         if (cls->isSpecialization()) {
             templateId(cls);
         } else {
@@ -197,9 +257,23 @@ public:
 
     void function(const std::string &name, const Type *fn, bool internal) {
         out = internal ? "_ZL" : "_Z";
-        // A non-member operator carries every operand in its parameter list,
-        // so one parameter is the unary form where a member's zero is.
-        writtenName(name, fn->params().size() == 1);
+        // **A name with a scope in it is a nested-name**, `_ZN1N1fEi`, and a
+        // namespace component is written exactly as a class one is.
+        const std::vector<std::string> parts = scopeComponents(name);
+        if (parts.size() > 1) {
+            out += "N";
+            // Every component but the last is a prefix, and a prefix is a
+            // substitution candidate - which is what makes a parameter of type
+            // N::S inside N::f read `NS_1SE` and not `N1N1SE`.
+            namespacesOf(name);
+            writtenName(parts.back(), fn->params().size() == 1);
+            out += "E";
+        } else {
+            // A non-member operator carries every operand in its parameter
+            // list, so one parameter is the unary form where a member's zero
+            // is.
+            writtenName(name, fn->params().size() == 1);
+        }
         const std::vector<const Type *> &params = fn->params();
         if (params.empty() && !fn->isVariadicFn()) { out += "v"; return; }
         for (const Type *p : params) type(p);
@@ -404,7 +478,7 @@ private:
         } else if (t->isStructOrUnion()) {
             // A class inside another is a nested-name here too, and prefix()
             // is what consults the substitution table on the way down.
-            if (t->enclosing() != nullptr) {
+            if (t->enclosing() != nullptr || t->inNamespace()) {
                 if (tagOf(t) == nullptr) return;
                 out += 'N';
                 prefix(t, std::string());
@@ -450,9 +524,22 @@ public:
     // inside it: the embedded name carries its own table.
     void scopeOf(const Type *cls, const std::string &fallback,
                  const std::string &localOwner = std::string()) {
-        if (cls == nullptr) pushName(fallback);
-        else for (const Type *c = cls; c != nullptr; c = c->enclosing())
-            pushName(componentOf(c));
+        // Innermost first. A namespace is not a Type, so once the chain of
+        // enclosing classes runs out the outermost one's tag is split for
+        // whatever namespaces it carries. Measured: `?g@M@N@@YAH...`.
+        if (cls == nullptr) {
+            const std::vector<std::string> parts = scopeComponents(fallback);
+            for (std::size_t i = parts.size(); i-- > 0; ) pushName(parts[i]);
+        } else {
+            for (const Type *c = cls; c != nullptr; c = c->enclosing()) {
+                pushName(componentOf(c));
+                if (c->enclosing() == nullptr && c->inNamespace()) {
+                    const std::vector<std::string> parts = scopeComponents(c->tag());
+                    for (std::size_t i = parts.size() - 1; i-- > 0; )
+                        pushName(parts[i]);
+                }
+            }
+        }
         if (!localOwner.empty()) {
             out += "?1?";
             // A function with no decorated name - main, or extern "C" - is
@@ -579,7 +666,20 @@ public:
     }
 
     void function(const std::string &name, const Type *fn) {
-        if (operatorPrefix(name)) {
+        const std::vector<std::string> parts = scopeComponents(name);
+        if (parts.size() > 1) {
+            // `?g@M@N@@YAHXZ` - the name, then the scopes innermost first,
+            // then the '@' that closes the list. The same shape a member
+            // function has, a namespace being a scope like any other.
+            // An operator written in a namespace keeps its code: measured,
+            // `N::operator+` is `??HN@@YA...` and not `?operator+@N@@YA...`.
+            if (!operatorPrefix(parts.back())) {
+                out = "?";
+                pushName(parts.back());
+            }
+            for (std::size_t i = parts.size() - 1; i-- > 0; ) pushName(parts[i]);
+            out += '@';
+        } else if (operatorPrefix(name)) {
             out += '@';           // the empty list of scopes
         } else {
             out = "?";
@@ -678,7 +778,16 @@ public:
 
     void data(const std::string &name, const Type *t) {
         out = "?";
-        nameComponent(name);
+        // `?v@N@@3HA` - the name, then the namespaces innermost first, then
+        // the '@' that closes the list, exactly as a function's scopes go.
+        const std::vector<std::string> parts = scopeComponents(name);
+        if (parts.size() > 1) {
+            pushName(parts.back());
+            for (std::size_t i = parts.size() - 1; i-- > 0; ) pushName(parts[i]);
+            out += '@';
+        } else {
+            nameComponent(name);
+        }
         out += "3";               // a variable at namespace scope
         dataType(t);
     }
@@ -739,6 +848,17 @@ private:
     void nameComponent(const std::string &n) {
         pushName(n);
         out += '@';               // and the empty scope list
+    }
+
+    // A name whose scopes are written into it - `N::S`, a class in a
+    // namespace, which has no `enclosing()` to walk because a namespace is not
+    // a Type. Innermost first, the same order scopeOf() walks in, and each
+    // component is a back-reference candidate of its own.
+    // Measured: `use(N::S)` is `?use@@YAHUS@N@@@Z`.
+    void qualifiedName(const std::string &n) {
+        const std::vector<std::string> parts = scopeComponents(n);
+        for (std::size_t i = parts.size(); i-- > 0; ) pushName(parts[i]);
+        out += '@';               // closes the scope list
     }
 
     // Numbers: one less than the value as a digit up to ten, and the value
@@ -859,11 +979,12 @@ private:
             out += t->kind() == Kind::Union ? 'T'
                  : t->declaredClass()       ? 'V'
                                             : 'U';
-            if (t->enclosing() != nullptr || t->isSpecialization()) {
+            if (t->enclosing() != nullptr || t->isSpecialization() ||
+                t->inNamespace()) {
                 scopeOf(t, std::string());
                 return;
             }
-            nameComponent(*tag);
+            qualifiedName(*tag);
             return;
         }
         refuse("this type has no Microsoft linkage name yet");
@@ -889,6 +1010,23 @@ bool microsoftFunctionName(const std::string &name, const Type *fn, bool interna
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;
+}
+
+std::string vtableSymbol(const std::string &tag, bool microsoft) {
+    const std::vector<std::string> parts = scopeComponents(tag);
+    if (microsoft) {
+        std::string out = "??_7";
+        for (std::size_t i = parts.size(); i-- > 0; ) { out += parts[i]; out += '@'; }
+        return out + "@6B@";
+    }
+    std::string out = "_ZTV";
+    if (parts.size() > 1) out += 'N';
+    for (const std::string &part : parts) {
+        out += std::to_string(part.size());
+        out += part;
+    }
+    if (parts.size() > 1) out += 'E';
+    return out;
 }
 
 bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem) {
@@ -1082,6 +1220,18 @@ bool microsoftConstructorName(const std::string &cls, const Type *clsType,
 }
 
 std::string itaniumDataName(const std::string &name, bool internal) {
+    // **A variable in a namespace is a nested-name**, `_ZN1N1vE` - measured.
+    // One at file scope keeps the name it was written with, which is what lets
+    // C name it, and that is the case this used to be the whole of.
+    const std::vector<std::string> parts = scopeComponents(name);
+    if (parts.size() > 1) {
+        std::string out = "_ZN";
+        for (std::size_t i = 0; i < parts.size(); i++) {
+            out += std::to_string(parts[i].size());
+            out += parts[i];
+        }
+        return out + "E";
+    }
     if (!internal) return name;
     return "_ZL" + std::to_string(name.size()) + name;
 }

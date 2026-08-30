@@ -3427,6 +3427,72 @@ The lesson is worth more than the fix: **a runner that iterates one kind of
 file will quietly check one kind of thing**, and the count is the only place
 it shows.
 
+## namespace, and the fact that a namespace is not a type
+
+**A namespace has no `Type`, and everything else here follows from that.** A
+nested class is a member of an enclosing class, so `Outer::Inner` has an
+`enclosing()` the manglers walk and the substitution tables recognise by
+pointer. There is no object to point at for `N::S`, so a class declared inside
+a namespace carries its scope in its **tag** - the same string key every table
+in the parser already uses - and the manglers split the tag instead.
+
+That makes one thing ambiguous, and it is worth naming because it cost a green
+suite: a **local** class's tag has a `::` in it too. `f::L` is one name, not a
+scope, and both ABIs spell it whole. Splitting on the spelling turned every
+lambda into `10operator()` and broke two cases that had nothing to do with
+namespaces. `Type::inNamespace()` is a flag set where the tag is built, and the
+manglers ask it rather than looking for a `::`.
+
+**Lookup is a search, written once.** `qualifyForLookup(name, exists)` tries the
+enclosing namespaces innermost-out, then the ones a `using namespace` has
+opened, then the name as written, and returns the first key that answers - where
+"answers" is a predicate passed in, so functions, globals and type names share
+the walk. It is a fallback and not a merge; `docs/CONFORMANCE.md` records what
+that costs.
+
+**Argument-dependent lookup, as far as an operator needs it.** `a + b` where
+both are `N::V` has to find `N::operator+`, and nothing brings it into scope:
+the call site is outside N and wrote no qualification, which is the whole point
+of writing the operator beside its class. `lookupKeys` adds the operand types'
+own namespaces to the names tried, for operators and for ordinary calls alike.
+
+### What was measured
+
+Both ABIs write a namespace exactly the way they write a class scope, which is
+the useful part - nothing new had to be invented, only reached.
+
+```
+N::f(N::S, N::S)            _ZN1N1fENS_1SES0_        ?f@N@@YAHUS@1@0@Z
+N::M::g(N::M::T, N::S)      _ZN1N1M1gENS0_1TENS_1SE  ?g@M@N@@YAHUT@12@US@2@@Z
+outer(N::S, N::M::T)        _Z5outerN1N1SENS_1M1TE   ?outer@@YAHUS@N@@UT@M@2@@Z
+N::B's vtable               _ZTVN1N1BE               ??_7B@N@@6B@
+N::operator+(N::V, N::V)    _ZN1NplENS_1VES0_        ??HN@@YA?AUV@0@U10@0@Z
+```
+
+Two traps in there, both found by the names suite rather than by reading:
+
+**Every namespace prefix is an Itanium substitution candidate, and the longest
+one wins.** `_ZN1N1M1gENS0_1TENS_1SE` has `S_` standing for N and `S0_` for
+`N::M` - so a candidate is registered per cumulative prefix, and writing `S_`
+for N followed by `S0_` for `N::M` spells the same scope twice. A namespace is
+not a `Type`, so these go in the table by name; `substitutedName` already
+existed for template names and took them unchanged.
+
+**An operator written in a namespace keeps its Microsoft code.** `??HN@@YA...`,
+not `?operator+@N@@YA...`. The scoped branch of `Microsoft::function` had been
+written for ordinary names and asked `operatorPrefix` only in the unscoped one.
+
+### What is refused
+
+`namespace { }` (the linkage is the feature, and `static` says it in one word),
+`namespace N::M { }` (C++17), `namespace A = N;`, `using N::f;` - the
+using-*declaration*, which is a different rule from the directive - and a
+leading `::`. Each has a case in `tests/cases`.
+
+`using namespace N;` works at file scope and inside a block, where it reaches
+the closing brace and no further: `block()` truncates the list on the way out,
+which is the whole of the scoping.
+
 ## Build
 
 ```
