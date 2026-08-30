@@ -281,6 +281,261 @@ ExprPtr Parser::staticCast(std::size_t pos) {
     return convert(std::move(v), to);
 }
 
+// `[](int a) { return a * 2; }` - rung 7.6.
+//
+// **A closure is a class with a call operator**, generated where the lambda is
+// written, and both halves of that now exist: a class can be defined inside a
+// function and `operator()` can be reached. What is left is the generating,
+// and three decisions carry it.
+//
+// **The object lives in the enclosing frame.** A lambda expression is a class
+// *temporary*, and this compiler has none - the same gap that refuses
+// `return P(1);`. So the closure is given a frame slot of its own and the
+// expression answers with a `Var` naming it. Its lifetime is the function
+// rather than the full expression, which is longer than [expr.prim.lambda]
+// asks for and harmless while a closure has nothing to destroy.
+//
+// **The body is replayed as a member function**, through the same held-body
+// path a class written inside a function uses - so nothing in the definition
+// machinery had to learn what a lambda is. That needs tokens shaped like a
+// definition, which the lambda's own are not, so they are synthesised:
+// `<ret> operator ( ) ( <params> ) const { <body> }`, built from the lambda's
+// own parameter and body tokens and appended to the stream. An index into
+// `tokens_` survives the vector growing, which is what makes this safe.
+//
+// **The return type is spelled as a hidden typedef.** Synthesising tokens for
+// an arbitrary type is not possible in general - `int` is one token and
+// `const char *` is three and a class is its tag - so the deduced type is
+// registered under a made-up name and that one identifier is written instead.
+const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
+                                       std::size_t paramsTo,
+                                       std::size_t bodyFrom,
+                                       std::size_t bodyTo) {
+    // **The first `return` at the body's own level**, and not only a body that
+    // is nothing but one.
+    //
+    // [expr.prim.lambda]/4 as C++11 wrote it says a body of the form
+    // `{ return e; }` has e's type and *anything else is void* - so
+    // `[](){ auto i = ...; return i(); }` would deduce void and then be
+    // ill-formed for returning an int. clang accepts it under -std=c++11 all
+    // the same, applying the relaxation C++14 made, and real C++11 code is
+    // written expecting that. The oracle is followed here rather than the
+    // letter, which is the one place in this compiler that happens - said out
+    // loud because it is a choice and not an oversight.
+    //
+    // **Depth matters, and a nested lambda is why.** In
+    // `{ auto i = [](){ return 1; }; return i(); }` the first `return` token
+    // belongs to the inner lambda; the outer one's is the first at depth 1.
+    std::size_t i = bodyFrom + 1;                       // past the '{'
+    int depth = 1;
+    while (i < bodyTo && depth > 0) {
+        if (tokens_[i].is("{")) depth++;
+        else if (tokens_[i].is("}")) { depth--; if (depth == 0) break; }
+        else if (depth == 1 && tokens_[i].is("return")) break;
+        i++;
+    }
+    if (i >= bodyTo || !tokens_[i].is("return")) return types_.get(Kind::Void);
+    const std::size_t returnAt = i;
+    i++;
+    if (i < bodyTo && tokens_[i].is(";")) return types_.get(Kind::Void);
+
+    const std::size_t resume = at_;
+    // The parameters have to be in scope for the expression to be read, and
+    // nothing else of the enclosing function should be: a lambda body sees its
+    // own parameters and, without a capture, no local of the function around
+    // it. So the locals are put aside exactly as a default argument does it.
+    std::vector<Local> outer;
+    outer.swap(locals_);
+    std::vector<std::size_t> starts;
+    starts.swap(scopeStarts_);
+    enterScope();
+
+    if (paramsTo > paramsFrom) {
+        const std::size_t save = at_;
+        at_ = paramsFrom - 1;                           // at the '('
+        std::vector<const Type *> ps;
+        bool var = false;
+        // Read the list again, this time declaring each name, so that the
+        // expression below can mention them.
+        at_ = save;
+        std::size_t k = paramsFrom;
+        while (k < paramsTo) {
+            std::size_t from = k;
+            int depth = 0;
+            while (k < paramsTo &&
+                   !(depth == 0 && tokens_[k].is(","))) {
+                if (tokens_[k].is("(")) depth++;
+                if (tokens_[k].is(")")) depth--;
+                k++;
+            }
+            at_ = from;
+            StorageClass psc;
+            Qualifiers pq;
+            const Type *pt = specifiers(&psc, &pq);
+            Declared pd = declarator(pt, true);
+            if (!pd.name.empty()) {
+                inParams_ = true;
+                declare(pd.name, pd.type, pd.pos);
+                inParams_ = false;
+            }
+            (void)ps; (void)var;
+            if (k < paramsTo) k++;                      // the ','
+        }
+    }
+
+    // **The statements before the return are read too, not skipped to.** The
+    // expression may name a local the body declared - `{ auto i = ...;
+    // return i(); }` - and jumping straight to the return leaves that name
+    // undeclared. So the body is parsed from its first statement up to the
+    // return, in this throwaway scope, and everything it builds is discarded.
+    // That is the same reading-twice 7.1 does for an `auto` initialiser.
+    at_ = bodyFrom + 1;                                 // past the '{'
+    // The same choice the block loop makes: a declaration or a statement.
+    // Calling statement() alone reads `auto i = ...;` as an expression and
+    // reports that one was expected.
+    while (at_ < returnAt && !peek().is("}") &&
+           peek().kind != TokenKind::End)
+        if (atDeclarationStart()) declaration(); else statement();
+
+    at_ = returnAt + 1;                                 // past that 'return'
+    const Type *found = types_.get(Kind::Void);
+    ExprPtr e = assign();
+    if (e != nullptr && e->type() != nullptr) found = decayedType(e->type());
+
+    leaveScope();
+    locals_.swap(outer);
+    scopeStarts_.swap(starts);
+    at_ = resume;
+    return found;
+}
+
+ExprPtr Parser::lambdaExpression() {
+    const std::size_t pos = peek().pos;
+    const std::size_t lamAt = at_;
+
+    // Already built on an earlier reading of these same tokens: hand back
+    // another object of the one class rather than making a second.
+    std::map<std::size_t, MadeLambda>::const_iterator had = lambdaAt_.find(lamAt);
+    if (had != lambdaAt_.end()) {
+        at_ = had->second.end;
+        const std::string again = ".lam" + std::to_string(refTemps_++);
+        const int slot = declare(again, had->second.type, pos);
+        ExprPtr made(Var::local(again, slot));
+        made->setType(had->second.type);
+        return made;
+    }
+
+    at_++;                                    // '['
+
+    // Refused by name, and each for its own reason rather than one blanket
+    // message: a capture is what the reader wrote and what they want back.
+    if (!peek().is("]")) {
+        if (peek().is("&") || peek().is("="))
+            src_.fail(peek().pos, "a default capture is not supported yet - "
+                                  "'[&]' and '[=]' capture whatever the body "
+                                  "turns out to name, which is a second pass "
+                                  "over it this parser does not make");
+        if (peek().is("this"))
+            src_.fail(peek().pos, "capturing 'this' is not supported yet");
+        src_.fail(peek().pos, "a lambda capture is not supported yet - a "
+                              "capture is a member of the closure and has to "
+                              "be initialised where the lambda is written, "
+                              "which needs the temporary this compiler has "
+                              "not got; '[]' works now");
+    }
+    at_++;                                    // ']'
+
+    // The parameter list, which may be left out entirely.
+    std::size_t paramsFrom = at_, paramsTo = at_;
+    std::vector<const Type *> params;
+    bool variadic = false;
+    if (peek().is("(")) {
+        paramsFrom = at_ + 1;
+        parameterTypes(params, variadic);
+        paramsTo = at_ - 1;                   // the ')' just consumed
+    }
+    if (variadic)
+        src_.fail(pos, "a lambda cannot be variadic");
+
+    if (peek().is("mutable"))
+        src_.fail(peek().pos, "'mutable' on a lambda is not supported yet - "
+                              "the call operator is const and a mutable one "
+                              "would be the other kind");
+
+    const Type *returns = nullptr;
+    if (consume("->")) {
+        StorageClass rsc;
+        returns = specifiers(&rsc);
+        returns = declarator(returns, true).type;
+    }
+    if (!peek().is("{"))
+        src_.fail(peek().pos, "expected the lambda's body");
+    const std::size_t bodyFrom = at_;
+    skipBracedBlock();                        // leaves at_ past the '}'
+    const std::size_t bodyTo = at_;
+
+    // [expr.prim.lambda]/4: with no trailing return type, a body that is one
+    // `return expression;` has that expression's type and anything else is
+    // void. The expression is read with the parameters in scope and then put
+    // back, which is what 7.1 does for `auto` and for the same reason.
+    if (returns == nullptr) returns = deduceLambdaReturn(paramsFrom, paramsTo,
+                                                         bodyFrom, bodyTo);
+
+    // The closure type. Named `$_0` upward within the enclosing function, which
+    // is what clang calls one - the numbering is not the same as clang's and
+    // does not have to be, a closure type having no name the standard obliges
+    // anybody to match.
+    const std::string local = "$_" + std::to_string(lambdaCount_++);
+    const std::string tag = currentFunctionName_.empty()
+                          ? local : currentFunctionName_ + "::" + local;
+    Type *closure = types_.structType(Kind::Struct, tag);
+    closure->setLocalName(local);
+    closure->setDeclaredClass(false);
+    if (!currentFunction_.empty()) localClassOwner_[tag] = currentFunction_;
+    declareTypeName(tag, closure);
+    std::vector<Member> none;
+    closure->complete(none, 1, 1);            // no captures: an empty object
+
+    // `operator()`, declared as a const member of it.
+    Declared d;
+    d.name = "operator()";
+    d.type = types_.functionType(returns, params, false);
+    d.pos = pos;
+    declareMember(tag, d, true, Access::Public, false, false);
+
+    // The tokens the replay will read. Appended rather than spliced: an index
+    // into tokens_ is what PendingBody keeps, and an index survives the vector
+    // growing where a pointer would not.
+    const std::string retName = "$lret" + std::to_string(lambdaRetSeq_++);
+    declareTypeName(retName, returns);
+    const std::size_t start = tokens_.size();
+    Token t;
+    t.pos = pos;
+    t.kind = TokenKind::Ident;  t.text = retName;      tokens_.push_back(t);
+    t.kind = TokenKind::Keyword; t.text = "operator";  tokens_.push_back(t);
+    t.kind = TokenKind::Punct;  t.text = "(";          tokens_.push_back(t);
+    t.kind = TokenKind::Punct;  t.text = ")";          tokens_.push_back(t);
+    t.kind = TokenKind::Punct;  t.text = "(";          tokens_.push_back(t);
+    for (std::size_t i = paramsFrom; i < paramsTo; i++) tokens_.push_back(tokens_[i]);
+    t.kind = TokenKind::Punct;  t.text = ")";          tokens_.push_back(t);
+    t.kind = TokenKind::Keyword; t.text = "const";     tokens_.push_back(t);
+    for (std::size_t i = bodyFrom; i < bodyTo; i++) tokens_.push_back(tokens_[i]);
+    t.kind = TokenKind::End;    t.text = "";           tokens_.push_back(t);
+
+    std::vector<PendingBody> mine;
+    mine.push_back(PendingBody{ tag, start, local, tag + "::operator()" });
+    replayInlineBodies(std::move(mine));
+
+    // The object itself: a slot in this frame, and the expression is its name.
+    lambdaAt_[lamAt] = MadeLambda{ closure, at_ };
+
+    const std::string name = ".lam" + std::to_string(refTemps_++);
+    const int off = declare(name, closure, pos);
+    ExprPtr obj(Var::local(name, off));
+    obj->setType(closure);
+    return obj;
+}
+
 ExprPtr Parser::primary(Program *program) {
     if (peek().is("static_cast")) {
         std::size_t pos = peek().pos;
@@ -319,6 +574,8 @@ ExprPtr Parser::primary(Program *program) {
     // one place it happens outside a declarator, and without it the keyword
     // fell through to the table of things this parser has no rule for and
     // said `'operator' is not supported yet` about a feature it has.
+    if (peek().is("[")) return lambdaExpression();
+
     if (peek().is("operator")) {
         std::size_t opos = peek().pos;
         const std::string name = operatorName();

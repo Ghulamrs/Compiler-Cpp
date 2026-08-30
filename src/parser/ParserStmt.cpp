@@ -1782,6 +1782,9 @@ void Parser::topLevel(Program &program) {
     }
     currentFunctionName_ = d.name;
     localTypes_.clear();
+    // Closures are numbered within the function that writes them, which is
+    // what clang does - `$_0` upward in each, not once across the file.
+    lambdaCount_ = 0;
     // The mem-initializer list, [class.base.init]. Parsed here because `this`
     // and the parameters are in scope and the body has not begun - which is
     // exactly where the ':' sits in the grammar.

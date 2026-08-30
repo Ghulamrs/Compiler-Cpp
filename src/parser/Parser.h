@@ -788,6 +788,32 @@ private:
     // access and mangling needed to learn nothing about operators to hold
     // one. `declaredName` is `expectIdent` with that case in front of it, and
     // stands wherever a declarator reads a name.
+    // `[](int a) { return a * 2; }` - rung 7.6.
+    ExprPtr lambdaExpression();
+    // [expr.prim.lambda]/4 with no trailing return type: a body that is one
+    // `return expression;` has that expression's type, anything else is void.
+    // The expression is read with the parameters in scope and then put back -
+    // the same read-it-twice 7.1 does for `auto`, and for the same reason:
+    // threading the type out of a body parsed once would mean threading it
+    // through every path the body can take.
+    const Type *deduceLambdaReturn(std::size_t paramsFrom, std::size_t paramsTo,
+                                   std::size_t bodyFrom, std::size_t bodyTo);
+    int lambdaCount_ = 0;
+    // The hidden typedef that spells a closure's return type needs a name no
+    // other lambda will take, so this one never resets where lambdaCount_ does
+    // - two functions each numbering their closures from zero would otherwise
+    // ask for `$lret1` twice and get "typedefed twice, and not to the same
+    // type" from the second.
+    int lambdaRetSeq_ = 0;
+    // **One closure type per lambda written, however often it is read.** 7.1
+    // reads an `auto` initialiser twice - once to learn the type, once to
+    // build it - so `auto f = [](int a){...};` reached here twice and made two
+    // classes, and the declaration then refused its own initialiser: "'f' is
+    // 'struct main::$_0' and this is 'struct main::$_1'". Keyed by the token
+    // the '[' sits at, which is the same on every reading.
+    struct MadeLambda { const Type *type; std::size_t end; };
+    std::map<std::size_t, MadeLambda> lambdaAt_;
+
     std::string operatorName();
     std::string declaredName(const char *what);
 

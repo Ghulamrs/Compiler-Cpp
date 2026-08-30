@@ -266,7 +266,7 @@ starts. No half-built pipelines waiting on a later phase.
 | 4 | Inheritance → virtual functions and vtables → multiple inheritance | **done**, 2026-08-29 |
 | 5 | Templates: function → class → deduction → partial spec → SFINAE → variadic | **done**, 2026-08-29 |
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | **done** on all three targets, 2026-08-30 - `return` inside a `catch` is refused on Windows |
-| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | in progress: 7.1-7.5 **done**, 2026-08-29 |
+| 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | **done**, 2026-08-30 - 7.6 lambdas take no captures yet |
 
 Rung 1 in full: the C++11 keyword table, the `::`, `.*` and `->*`
 punctuators, `__cplusplus`, `bool`/`true`/`false`, class and enum tags as type
@@ -2983,6 +2983,84 @@ worth knowing apart:
   emits the loop inline. Nothing outside the object can tell.
 * `destructor`, `implicit-move`, `cleanup`, `try-catch-value` - a deleting
   destructor cl writes, and this target's exception funclets.
+
+## Rung 7.6: lambdas, and the ladder is walked
+
+**A closure is a class with a call operator, generated where the lambda is
+written**, so this needed both of the pieces that came before it - a class that
+can be defined inside a function, and `operator()`. Three decisions carry the
+rest.
+
+**The object lives in the enclosing frame.** A lambda expression *is* a class
+temporary, and this compiler has none - the same gap that refuses
+`return P(1);`. So the closure gets a frame slot of its own and the expression
+answers with a `Var` naming it. Its lifetime is the function rather than the
+full expression, which is longer than [expr.prim.lambda] asks for and harmless
+while a closure has nothing to destroy. It is also what makes an immediately
+invoked lambda work without any temporary machinery at all.
+
+**The body is replayed as a member function**, through the same held-body path
+a class written inside a function already used - so nothing in the definition
+machinery had to learn what a lambda is. That path wants tokens shaped like a
+definition, which a lambda's are not, so they are synthesised:
+`<ret> operator ( ) ( <params> ) const { <body> }`, built from the lambda's own
+parameter and body tokens and appended to the stream. An *index* into `tokens_`
+survives the vector growing, which is what makes appending safe where a pointer
+would not be.
+
+**The return type is spelled as a hidden typedef.** Synthesising tokens for an
+arbitrary type is not possible in general - `int` is one token, `const char *`
+is three, a class is its tag - so the deduced type is registered under a
+made-up name and that one identifier is written instead. Those names never
+reset where the closure numbering does, or two functions each numbering from
+zero ask for `$lret1` twice.
+
+### Deduction reads the body, and follows clang rather than the letter
+
+[expr.prim.lambda]/4 as C++11 wrote it says a body of the form
+`{ return e; }` has e's type and **anything else is void** - so
+`[](){ auto i = ...; return i(); }` would deduce void and then be ill-formed.
+clang accepts it under `-std=c++11` anyway, applying the relaxation C++14 made,
+and real C++11 code is written expecting that. **The oracle is followed here
+rather than the letter, and this is the one place in this compiler where that
+happens** - said out loud because it is a choice.
+
+So the first `return` **at the body's own brace depth** is what deduces, and
+depth is not a detail: in `{ auto i = [](){ return 1; }; return i(); }` the
+first `return` token belongs to the inner lambda. The statements before it are
+parsed too, in a throwaway scope with the parameters declared and the enclosing
+function's locals put aside - the expression may name a local the body
+declared, and jumping straight to the return leaves it undeclared.
+
+**One closure per lambda written, however often it is read.** 7.1 reads an
+`auto` initialiser twice, so `auto f = [](int a){...};` reached the lambda
+parser twice and made two classes - and the declaration then refused its own
+initialiser, `'f' is 'struct main::$_0' and this is 'struct main::$_1'`. Keyed
+by the token the `[` sits at, which is the same on every reading.
+
+### What it found in the machinery underneath
+
+**`returnType_` belonged to the function being read, and the replay reads a
+different one.** Local classes hid this: a member's body set it to whatever
+that member returned, and the enclosing function's next `return` happened to
+want the same type. A lambda made it visible - a `void` one, and the function
+that wrote it was then told its own `return` was wrong.
+`replayInlineBodies` restores it, with `functionName_` and `atFunctionBody_`.
+
+**The closure numbering does not match clang's and does not have to.**
+[expr.prim.lambda] makes a closure a unique unnamed type. Both compilers write
+`$_N` within the enclosing function; cxx1 numbers in the order they are
+written and clang does not - measured on a file whose *third* lambda came out
+`$_0`. Nothing links against these: the call operator is reached through the
+object and the object never leaves the function that made it.
+`tests/cases/lambda.nonames` records it for all three targets.
+
+**Refused by name: every capture.** A capture is a member of the closure and
+has to be initialised where the lambda is written, which needs the class
+temporary this compiler has not got. `[&]` and `[=]` are refused separately and
+for a different reason - they capture whatever the body turns out to name,
+which is a second pass over it this parser does not make - and so are `[this]`
+and `mutable`. **Captures are the whole of what is left of 7.6.**
 
 ## Decisions already taken
 

@@ -339,6 +339,16 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     const int outerFrameSize = frameSize_;
     const int outerThisOffset = thisOffset_;
     const Type *outerClass = currentClass_;
+    // **The return type belongs to the function being read, and the replay
+    // reads a different one.** Local classes hid this: a member's body set it
+    // to whatever that member returned, and the enclosing function's next
+    // `return` happened to want the same type. A lambda made it visible -
+    // `voidly` returns void, and the function that wrote it was then told its
+    // own `return` was wrong.
+    const Type *outerReturn = returnType_;
+    const int outerLambdaCount = lambdaCount_;   // lambdaRetSeq_ never resets
+    const std::string outerName = functionName_;
+    const bool outerAtBody = atFunctionBody_;
     for (std::size_t i = 0; i < mine.size(); i++) {
         at_ = mine[i].start;
         inlineOwner_ = mine[i].tag;
@@ -360,6 +370,10 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     frameSize_ = outerFrameSize;
     thisOffset_ = outerThisOffset;
     currentClass_ = outerClass;
+    returnType_ = outerReturn;
+    lambdaCount_ = outerLambdaCount;
+    functionName_ = outerName;
+    atFunctionBody_ = outerAtBody;
     at_ = resume;
 }
 
