@@ -714,6 +714,54 @@ static ExprPtr indexBytes(TypeTable &types, ExprPtr decayed, const Type *elem,
     return at;
 }
 
+// `S a[4];` where S has constructors - the default constructor once per
+// element, in a loop.
+//
+// **This was the one construction that silently did not happen.** The branch
+// that builds a class local asks `isStructOrUnion()`, and an array of S is an
+// array, so `S a[4]` fell straight through to an ordinary uninitialised local:
+// it compiled, it linked, it ran, and every element held whatever was on the
+// stack. A member array was fine, because the implicit constructor that builds
+// one goes through the memberwise path, and `new T[n]` was refused by name -
+// only the local declaration had nothing.
+//
+// Every array level is unwrapped at once, so `S a[2][3]` is six elements of S
+// rather than two of `S[3]`: the loop steps by the element's own size, and the
+// intermediate shape has nothing to say about that.
+StmtPtr Parser::constructLocalArray(const Declared &d, int offset,
+                                    int indexSlot) {
+    const Type *elem = d.type;
+    long long count = 1;
+    while (elem->isArray()) { count *= elem->length(); elem = elem->pointee(); }
+    const Type *plain = elem->unqualified();
+
+    const Signature *ctor = defaultConstructorOf(plain);
+    if (ctor == nullptr)
+        src_.fail(d.pos, "'" + plain->describe() + "' has constructors but none "
+                         "that takes nothing, and an array of it has no way to "
+                         "say what to pass");
+    if (ctor->access != Access::Public && currentClass_ != plain &&
+        !isFriendOf(plain))
+        src_.fail(d.pos, "'" + plain->describe() + "' has no public default "
+                         "constructor, and an array of it needs one");
+
+    const Type *ptr = types_.pointerTo(plain);
+    ExprPtr base(Var::local(d.name, offset));
+    base->setType(d.type);
+    ExprPtr at = indexBytes(types_, decay(std::move(base)), plain, indexSlot,
+                            target_);
+
+    std::vector<ExprPtr> args;
+    args.push_back(std::move(at));
+    std::vector<const Type *> ps;
+    ps.push_back(ptr);
+
+    StmtPtr one(new ExprStmt(completeCall(plain->tag(), ctor->symbol, nullptr,
+                                          types_.get(Kind::Void), ps, false,
+                                          d.pos, std::move(args))));
+    return eachElement(indexSlot, count, std::move(one));
+}
+
 const Parser::Signature *Parser::defaultConstructorOf(const Type *cls) const {
     if (cls == nullptr || !cls->isStructOrUnion() || cls->tag().empty())
         return nullptr;

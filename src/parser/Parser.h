@@ -746,6 +746,10 @@ private:
     std::string memberSymbol(const std::string &cls, const std::string &name,
                              const Type *fn, Access access, bool constThis,
                              std::size_t pos, bool isVirtual = false);
+    // `S a[4];` - the default constructor once per element. Separate from
+    // constructLocal because that one builds a single object and names the
+    // class through d.type, which for an array is the array.
+    StmtPtr constructLocalArray(const Declared &d, int offset, int indexSlot);
     ExprPtr memberCall(ExprPtr object, const Type *cls, const std::string &name,
                        std::size_t pos);
     ExprPtr memberCallWith(ExprPtr object, const Type *cls,

@@ -78,6 +78,52 @@ StmtPtr Parser::declarationBody() {
         // one, and that has to be asked before the branch below - `Point p(1)`
         // and a function declaration look the same until the type is known to
         // be a class with constructors.
+        // **An array of a class with constructors.** The branch below asks
+        // isStructOrUnion(), and an array of S is an array - so `S a[4]` fell
+        // through to an ordinary uninitialised local and every element held
+        // whatever was on the stack. It compiled, linked and ran, which made
+        // it the one construction that was silently not happening: a member
+        // array is built by the memberwise path and `new T[n]` is refused by
+        // name, and only this had nothing at all.
+        {
+            const Type *elem = d.type;
+            while (elem != nullptr && elem->isArray()) elem = elem->pointee();
+            const Type *plain = elem == nullptr ? nullptr : elem->unqualified();
+            if (d.type->isArray() && plain != nullptr &&
+                plain->isStructOrUnion() && !plain->tag().empty() &&
+                overloadsOf(constructorKey(plain->tag())) != nullptr) {
+                if (sc == StorageStatic)
+                    src_.fail(d.pos, "'" + d.name + "' is static and its "
+                                     "elements have a constructor - running one "
+                                     "before main is not supported yet");
+                if (peek().is("(") || peek().is("="))
+                    src_.fail(d.pos, "an initialiser for an array of '" +
+                                     plain->describe() + "' is not supported "
+                                     "yet - each element gets the default "
+                                     "constructor");
+                // **Destruction is refused rather than half-built.**
+                // [class.dtor] destroys the elements in reverse, and the place
+                // that emits a scope's destructors is shared with the
+                // exception paths on all three targets. One object per entry
+                // is what it knows; teaching it a count belongs with that
+                // machinery and not beside a declaration. Refused by name here
+                // so that nothing is silently left undestroyed - which is the
+                // failure this whole branch exists to stop.
+                if (destructorOf(plain) != nullptr)
+                    src_.fail(d.pos, "an array of '" + plain->describe() +
+                                     "' is not supported yet because it has a "
+                                     "destructor, and the elements would have "
+                                     "to be destroyed in reverse when the scope "
+                                     "ends - an array of a class with only "
+                                     "constructors works");
+                int off = declare(d.name, d.type, d.pos);
+                int indexSlot = allocateFrameSlot(types_.intType());
+                inits.push_back(constructLocalArray(d, off, indexSlot));
+                if (!consume(",")) break;
+                continue;
+            }
+        }
+
         if (d.type->isStructOrUnion() && !d.type->tag().empty() &&
             overloadsOf(constructorKey(d.type->tag())) != nullptr) {
             if (sc == StorageStatic)

@@ -637,6 +637,13 @@ ExprPtr Parser::primary(Program *program) {
         }
         if (const Signature *sig = findFunction(name)) {
             Var *v = Var::global(name);
+            // **The linkage name, not the written one.** A call already went
+            // through the signature for this; a function named as a *value*
+            // did not, so `int (*p)(int) = g;` emitted `g` where the function
+            // is `_Z1gi` and the program failed at the link. Correct while
+            // this compiler was C and wrong from the moment rung 2 mangled
+            // anything - `extern "C"` kept working, which is why it lasted.
+            v->setSymbol(sig->symbol);
             ExprPtr target(v);
             const Type *fn = types_.functionType(sig->returns, sig->params,
                                                  sig->variadic);
@@ -1334,6 +1341,17 @@ ExprPtr Parser::unary() {
         // Only when the class declared one. A class that did not still has an
         // address, and `&obj` is the address-of it has always been.
         if (ExprPtr call = overloadedUnary("&", v, pos)) return call;
+        // **`&f` and `f` are the same thing for a function.** [conv.func] has
+        // already turned the designator into a pointer by the time it gets
+        // here, so taking its address again built a pointer to a pointer with
+        // no object under it - `int (*)(int) *`, which nothing can be
+        // assigned to. Only the decayed designator is meant: `&p` where p is
+        // a *variable* holding a function pointer is an ordinary address-of
+        // and still is, which is why this asks for the shape and not the type.
+        if (const Unary *decayed = dynamic_cast<const Unary *>(v.get()))
+            if (decayed->op() == '&' && v->type()->isPointer() &&
+                v->type()->pointee()->isFunction())
+                return v;
         if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(v.get()))
             if (m->isBitField())
                 src_.fail(pos, "'" + m->name() + "' is a bit-field, and a "

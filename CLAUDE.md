@@ -2757,6 +2757,56 @@ where the expression is written, with its captures as members and `operator()`
 holding the body. The class it needs can now exist, and so can the call
 operator.
 
+## Two bugs an audit found that no suite would have
+
+Both came from running plain C++ past the compiler and diffing accept/reject
+and *output* against clang - the same method `tests/overload.sh` automates for
+one feature, done by hand across the language. Neither was reachable from any
+existing case, which is the point: a suite only tests what somebody thought to
+write down.
+
+**`S a[4];` ran no constructors at all.** The branch that builds a class local
+asks `isStructOrUnion()`, and an array of S is an array - so it fell through to
+an ordinary uninitialised local. It compiled, linked, ran, and every element
+held whatever was on the stack: clang printed `3 3 3 3` where cxx1 printed
+`-16 -1 1803348728 1`. **The only silent wrong answer found in the whole
+audit**, and ordinary code.
+
+Why nothing caught it: a class array as a *member* is built by the memberwise
+path and always worked, and `new T[n]` is refused by name - only the local
+declaration had nothing. `constructLocalArray` runs the default constructor per
+element through the loop `eachElement` already provided for member arrays, and
+unwraps every array level at once, so `T g[2][3]` is six elements of T rather
+than two of `T[3]`.
+
+**Its destruction is refused by name rather than half-built.** [class.dtor]
+destroys elements in reverse when the scope ends, and `emitDestructors` is
+shared with the exception paths on all three targets - it knows one object per
+entry, and teaching it a count belongs with that machinery rather than beside a
+declaration. So an array of a class with only constructors works and an array
+of one with a destructor says so. Nothing is silently left undestroyed, which
+is the failure the whole branch exists to stop.
+
+**Taking a function's address used the written name, not the linkage name.**
+
+```cpp
+int g(int n) { return n * 2; }
+int (*p)(int) = g;     // emitted `g` where the function is _Z1gi - link failure
+int (*q)(int) = &g;    // typed `int (*)(int) *`, which nothing can be assigned
+```
+
+A *call* went through the signature and so through the symbol; a function named
+as a **value** did not. Correct while this compiler was C, and wrong from the
+moment rung 2 mangled anything - `extern "C"` kept working, which is why it
+lasted this long. One line: `v->setSymbol(sig->symbol)` beside the `Var::global`
+that the name builds.
+
+And `&f` and `f` are the same thing for a function: [conv.func] has already
+turned the designator into a pointer by then, so taking its address again built
+a pointer to a pointer with no object under it. The test is the *shape* and not
+the type - `&p` where p is a variable holding a function pointer is an ordinary
+address-of and still is.
+
 ## Ordinary C++ this refuses, and none of it is on the ladder
 
 **The gap this section exists to close.** `docs/CONFORMANCE.md` holds what
