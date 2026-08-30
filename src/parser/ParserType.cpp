@@ -86,6 +86,37 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         tag = within->tag() + "::" + tag;
     }
 
+    // **[class.local]: a class defined in a function body belongs to that
+    // function.** Two functions may each define `struct L` and they are two
+    // types, and neither name is visible outside the function that wrote it -
+    // where before this the tag went into the one table every class uses and
+    // the second function was told its own class was "defined twice".
+    //
+    // The tag is qualified for uniqueness the way a nested class's is, with
+    // the enclosing function's *source* name so that a diagnostic reads
+    // `struct f::L`. Uniqueness needs more than that where two overloads of
+    // one name each define the same tag, so the owner is checked and a
+    // counter added rather than the two being silently interned as one type.
+    // **A specialization is not a local class even when a function asked for
+    // it.** `Holder<int>` is instantiated on demand, which happens in the
+    // middle of whatever named it - often a function body - and the class it
+    // makes belongs to the file, not to that function. Without this the
+    // instantiation was renamed `f::Holder<int>` and the class stopped being
+    // able to find its own constructor.
+    std::string localOwner;
+    if (within == nullptr && defining && !tag.empty() &&
+        !currentFunction_.empty() && specializationOf.empty()) {
+        localOwner = currentFunction_;
+        std::string qualified = currentFunctionName_ + "::" + tag;
+        for (int n = 2; ; n++) {
+            auto had = localClassOwner_.find(qualified);
+            if (had == localClassOwner_.end() || had->second == localOwner) break;
+            qualified = currentFunctionName_ + "$" + std::to_string(n) + "::" + tag;
+        }
+        local = tag;
+        tag = qualified;
+    }
+
     Type *type = tag.empty() ? types_.anonymousStruct(kind)
                              : types_.structType(kind, tag);
     if (!specializationOf.empty()) {
@@ -108,6 +139,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // keywords are interchangeable here - so the body is what sets it and a
     // mere mention never unsets it.
     if (peek().is("{") || peek().is(":")) type->setDeclaredClass(isClass);
+    if (!localOwner.empty()) {
+        // The single component is what both ABIs spell inside the wrapper,
+        // and the written name is what resolves inside this function - which
+        // is also what shadows a global class of the same name, since the
+        // local scope is asked first.
+        type->setLocalName(local);
+        localClassOwner_[tag] = localOwner;
+        localTypes_[local] = type;
+    }
     if (!tag.empty()) declareTypeName(tag, type);
 
     // `class Derived : public Base {` - the base-clause. Default access is

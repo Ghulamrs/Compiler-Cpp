@@ -112,6 +112,31 @@ bool microsoftMemberName(const std::string &cls, const Type *clsType,
                          const Type *fn, char access, bool constThis,
                          std::string *out, std::string *problem);
 
+// A member function of a class defined inside a function body. Both ABIs spell
+// it by wrapping the *enclosing function's whole name* round the ordinary one,
+// which is what keeps two functions' `struct L` apart in one object file.
+// `owner` is that function's linkage name. All of it measured:
+//
+//   _ZZ1fvEN1L3getEv          Itanium: _ZZ <function> E <the ordinary entity>
+//   ?get@L@?1??f@@YAHXZ@QEAAHXZ   Microsoft: ?1? and the whole name, as a scope
+//
+// **Two owners do not look like the rest and both are ordinary in real code.**
+// A function with no decorated name - `main`, or anything `extern "C"` - is
+// written by Itanium as a plain length-and-letters component (`4main`, no _Z to
+// take off) and by Microsoft as `?main@@9`, the `9` being its way of saying a
+// name carries no type information. A `static` function needs nothing special:
+// its Itanium name is `_ZL4stati` and the L simply comes along inside the
+// wrapper, `_ZZL4statiEN1A3getEv`.
+bool itaniumLocalMemberName(const std::string &owner, const std::string &cls,
+                            const Type *clsType, const std::string &name,
+                            const Type *fn, bool constThis,
+                            std::string *out, std::string *problem);
+
+bool microsoftLocalMemberName(const std::string &owner, const std::string &cls,
+                              const Type *clsType, const std::string &name,
+                              const Type *fn, char access, bool constThis,
+                              std::string *out, std::string *problem);
+
 // A constructor. **Itanium gives one constructor two names** - C1 for a
 // complete object and C2 for a base subobject - and clang emits both. Only C1
 // is spelled here, because C2 is called from a derived class's constructor and

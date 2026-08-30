@@ -1846,11 +1846,23 @@ std::string Parser::memberSymbol(const std::string &cls, const std::string &name
                     : access == Access::Public    ? 'Q'
                     : access == Access::Protected ? 'I'
                                                   : 'A';
+    // A class defined inside a function body: both ABIs wrap the enclosing
+    // function's whole name round the ordinary member name, which is what
+    // keeps two functions' `struct L` from being one symbol.
+    const std::string *owner = localOwnerOf(cls);
+
     std::string out, why;
     bool ok = target_.microsoftNames()
-            ? microsoftMemberName(cls, findTypedef(cls), name, fn, code, constThis, &out, &why)
-            : itaniumMemberName(cls, findTypedef(cls), name, fn, constThis,
-                                &out, &why);
+            ? (owner != nullptr
+                   ? microsoftLocalMemberName(*owner, cls, findTypedef(cls), name,
+                                              fn, code, constThis, &out, &why)
+                   : microsoftMemberName(cls, findTypedef(cls), name, fn, code,
+                                         constThis, &out, &why))
+            : (owner != nullptr
+                   ? itaniumLocalMemberName(*owner, cls, findTypedef(cls), name,
+                                            fn, constThis, &out, &why)
+                   : itaniumMemberName(cls, findTypedef(cls), name, fn, constThis,
+                                       &out, &why));
     if (!ok)
         src_.fail(pos, "'" + cls + "::" + name + "' cannot be given a name the "
                        "linker can hold: " + why);

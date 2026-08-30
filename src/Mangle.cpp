@@ -428,10 +428,25 @@ public:
     // component goes through pushName, so a scope mentioned again later is a
     // back-reference digit: `?use@Outer@@QEAAHUInner@1@@Z` for a parameter of
     // type Outer::Inner, where the 1 is Outer.
-    void scopeOf(const Type *cls, const std::string &fallback) {
+    // `localOwner` is the enclosing function's linkage name when the class is
+    // defined inside one, and empty otherwise. It goes in as one more scope
+    // component - the innermost-first list is class, then function - written
+    // `?1?` and then that whole name. Measured: ?get@L@?1??f@@YAHXZ@QEAAHXZ.
+    //
+    // **It is not pushed as a back-reference**, and neither is anything
+    // inside it: the embedded name carries its own table.
+    void scopeOf(const Type *cls, const std::string &fallback,
+                 const std::string &localOwner = std::string()) {
         if (cls == nullptr) pushName(fallback);
         else for (const Type *c = cls; c != nullptr; c = c->enclosing())
             pushName(componentOf(c));
+        if (!localOwner.empty()) {
+            out += "?1?";
+            // A function with no decorated name - main, or extern "C" - is
+            // written ?name@@9, the 9 saying the name carries no type.
+            if (!localOwner.empty() && localOwner[0] == '?') out += localOwner;
+            else { out += '?'; out += localOwner; out += "@@9"; }
+        }
         out += '@';               // closes the scope list
     }
 
@@ -485,12 +500,13 @@ public:
 
     void memberFunction(const std::string &cls, const Type *clsType,
                         const std::string &name,
-                        const Type *fn, char access, bool constThis) {
+                        const Type *fn, char access, bool constThis,
+                        const std::string &localOwner = std::string()) {
         if (!operatorPrefix(name)) {
             out = "?";
             pushName(name);
         }
-        scopeOf(clsType, cls);
+        scopeOf(clsType, cls, localOwner);
         out += access;            // Q public, I protected, A private
         out += 'E';               // this is __ptr64
         out += constThis ? 'B' : 'A';
@@ -900,6 +916,43 @@ bool itaniumMemberName(const std::string &cls, const Type *clsType,
                        std::string *out, std::string *problem) {
     Itanium m;
     m.memberFunction(cls, clsType, name, fn, constThis);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
+// Itanium wraps the ordinary name rather than building a different one:
+// <local-name> ::= Z <function encoding> E <entity>. So the member is spelled
+// exactly as it would be outside a function, and both it and the enclosing
+// function's name give up their _Z to sit inside the wrapper.
+bool itaniumLocalMemberName(const std::string &owner, const std::string &cls,
+                            const Type *clsType, const std::string &name,
+                            const Type *fn, bool constThis,
+                            std::string *out, std::string *problem) {
+    std::string inner;
+    if (!itaniumMemberName(cls, clsType, name, fn, constThis, &inner, problem))
+        return false;
+
+    std::string function;
+    if (inner.compare(0, 2, "_Z") != 0) { *problem = "an unmangled member"; return false; }
+    if (owner.compare(0, 2, "_Z") == 0) {
+        function = owner.substr(2);
+    } else {
+        // No mangled name to take apart - `main`, or `extern "C"`. Itanium
+        // writes the plain source name as a length-and-letters component,
+        // measured: _ZZ4mainEN1B3getEv.
+        function = std::to_string(owner.size()) + owner;
+    }
+    *out = "_ZZ" + function + "E" + inner.substr(2);
+    return true;
+}
+
+bool microsoftLocalMemberName(const std::string &owner, const std::string &cls,
+                              const Type *clsType, const std::string &name,
+                              const Type *fn, char access, bool constThis,
+                              std::string *out, std::string *problem) {
+    Microsoft m;
+    m.memberFunction(cls, clsType, name, fn, access, constThis, owner);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;

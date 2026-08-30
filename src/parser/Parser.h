@@ -803,8 +803,26 @@ private:
     // member cannot be granted friendship here, because the qualified form
     // that would grant it is refused by name.
     std::string currentFunction_;
+    // The same function's *source* name, which is what a local class is
+    // qualified by so that a diagnostic can say `struct f::L` rather than
+    // spelling a mangled symbol at the reader.
+    std::string currentFunctionName_;
 
     bool isFriendOf(const Type *cls) const;
+
+    // [class.local]. A class defined in a function body belongs to that
+    // function: two functions may each define `struct L` and they are
+    // different types, and neither name is visible outside its own function.
+    // Both facts come from these two tables rather than from anything on the
+    // Type - the tag is qualified for uniqueness, and the written name is
+    // resolved through a scope that is emptied when the function ends.
+    std::map<std::string, const Type *> localTypes_;   // written name -> type
+    std::map<std::string, std::string> localClassOwner_;  // tag -> enclosing symbol
+    // The enclosing function's linkage name, for a class that is local to
+    // one; empty for every other class. Both ABIs spell a local class's
+    // member functions by wrapping the enclosing function's whole name, so
+    // this is what the mangler is missing without it.
+    const std::string *localOwnerOf(const std::string &tag) const;
     // An operator this compiler can *name* but cannot yet reach from an
     // expression is refused where it is declared, not where it is written.
     // The arity is what decides it - `operator-` is two functions and only

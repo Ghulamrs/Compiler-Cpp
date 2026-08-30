@@ -139,7 +139,19 @@ bool Parser::insideClass(const Type *cls) const {
     return false;
 }
 
+const std::string *Parser::localOwnerOf(const std::string &tag) const {
+    auto it = localClassOwner_.find(tag);
+    return it == localClassOwner_.end() ? nullptr : &it->second;
+}
+
 const Type *Parser::findTypedef(const std::string &name) const {
+    // **A class local to this function is found first, and that is what makes
+    // it shadow a global of the same name** - [basic.scope.local], and the
+    // reason the local scope is a table of its own rather than an entry in
+    // the one every other type name lives in.
+    auto local = localTypes_.find(name);
+    if (local != localTypes_.end()) return local->second;
+
     auto it = typedefIndex_.find(name);
     if (it != typedefIndex_.end()) return typedefs_[it->second].type;
 
@@ -298,6 +310,35 @@ void Parser::skipBracedBlock() {
 void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     if (mine.empty()) return;
     const std::size_t resume = at_;
+    // **A replay is a nested parse of a different function**, and this is in
+    // the middle of whatever asked for the class - which may be a declaration
+    // inside a function body. `topLevel` sets up the function it is reading
+    // and clears what it finds, so anything belonging to the *enclosing*
+    // function has to be put back afterwards. That is how a local class with
+    // a member function works at all: the member's body is replayed here,
+    // between the class being closed and the next statement, and without this
+    // the class's own name would be gone by the time `L l;` is read.
+    // Everything `topLevel` sets up per function and clears on the way in.
+    // A local class's member body is replayed *between* the class being
+    // closed and the next statement of the function that wrote it, so
+    // without this the enclosing function loses its parameters and its
+    // locals: `h(int k) { struct M { ... }; M m; m.z = k; }` was told `k` was
+    // not declared, because reading M::get had emptied the table k lived in.
+    // The frame size goes back too, or the enclosing function's later locals
+    // are laid out on top of each other.
+    const std::string outerFunction = currentFunction_;
+    const std::string outerFunctionName = currentFunctionName_;
+    const std::map<std::string, const Type *> outerLocalTypes = localTypes_;
+    const std::vector<Local> outerLocals = locals_;
+    const std::vector<::Local> outerFnVars = fnVars_;
+    const std::vector<std::size_t> outerScopeStarts = scopeStarts_;
+    const std::vector<int> outerBlocks = blocks_;
+    const std::vector<int> outerBlockStack = blockStack_;
+    const std::vector<LabelDef> outerLabels = labels_;
+    const std::vector<LabelDef> outerGotos = gotos_;
+    const int outerFrameSize = frameSize_;
+    const int outerThisOffset = thisOffset_;
+    const Type *outerClass = currentClass_;
     for (std::size_t i = 0; i < mine.size(); i++) {
         at_ = mine[i].start;
         inlineOwner_ = mine[i].tag;
@@ -306,6 +347,19 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
         inlineOwner_.clear();
         inlineOwnerName_.clear();
     }
+    currentFunction_ = outerFunction;
+    currentFunctionName_ = outerFunctionName;
+    localTypes_ = outerLocalTypes;
+    locals_ = outerLocals;
+    fnVars_ = outerFnVars;
+    scopeStarts_ = outerScopeStarts;
+    blocks_ = outerBlocks;
+    blockStack_ = outerBlockStack;
+    labels_ = outerLabels;
+    gotos_ = outerGotos;
+    frameSize_ = outerFrameSize;
+    thisOffset_ = outerThisOffset;
+    currentClass_ = outerClass;
     at_ = resume;
 }
 

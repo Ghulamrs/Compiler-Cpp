@@ -2407,13 +2407,12 @@ replayed, and one without the other makes a class refuse its own member.
 
 **7.6 - lambdas**, last because they need the most from the rest: a closure is
 a class with a call operator, generated where the lambda is written, holding
-its captures as members. It could not be started before `operator()` was
-reachable, and now it is - see "Operator overloading" below. **What is left in
-the way is local classes**, which cxx1 has none of; captures by reference then
-need 7.4's story about lifetime, and a generic lambda would want `auto` in a
-parameter, which is C++14 and out of scope. cxx1 has no local classes at all, so that comes
-first; captures by reference need 7.4's story about lifetime; and a generic
-lambda would need 7.1's `auto` in a parameter, which is C++14 and out of
+its captures as members. Both of the things it was blocked on now exist -
+`operator()` is reachable, and a class can be defined inside a function; see
+"Operator overloading" and "Local classes" below. **What is left is the lambda
+itself**: the closure type, its captures as members, and the body as the call
+operator's. Captures by reference then need 7.4's story about lifetime, and a
+generic lambda would want `auto` in a parameter, which is C++14 and out of
 scope.
 
 ## Operator overloading, and why the names came first
@@ -2670,6 +2669,83 @@ are now files in the corpus.
 clang is required, so this skips where there is none - the Linux box says so
 rather than reporting a pass, exactly as `names.sh` does. It is a Mac suite in
 practice, and that is where the mangling oracle already lives.
+
+## Local classes, the last thing standing between here and lambdas
+
+**[class.local]: a class defined in a function body belongs to that function.**
+Two functions may each define `struct L` and they are two types, and neither
+name is visible outside the function that wrote it. Before this the tag went
+into the one table every class shares, so the second function was told its own
+class was "defined twice" - and a global class of the same name could not be
+shadowed at all.
+
+**The tag is qualified the way a nested class's is**, with the enclosing
+function's *source* name, so a diagnostic reads `struct f::L` rather than
+spelling a mangled symbol at the reader. Where two overloads of one name each
+define the same tag the source name is not enough, so the owner is checked and
+a counter added - two classes silently interned as one is exactly the bug being
+fixed. The written name is resolved through `localTypes_`, a scope emptied when
+the function ends and asked *before* the file's types, which is what makes the
+shadowing work.
+
+**A specialization is not a local class even when a function asked for it.**
+`Holder<int>` is instantiated on demand, in the middle of whatever named it -
+often a function body - and the class it makes belongs to the file. Without
+that exception the instantiation was renamed `f::Holder<int>` and the class
+stopped being able to find its own constructor.
+
+**Both ABIs wrap the enclosing function's whole name round the member's**,
+which is what keeps two functions' `L::get` apart in one object file. Measured:
+
+    _ZZ1fvEN1L3getEv              Itanium: _ZZ <function> E <ordinary entity>
+    ?get@L@?1??f@@YAHXZ@QEAAHXZ   Microsoft: ?1? and the whole name, as a scope
+
+Itanium wraps the ordinary name rather than building a different one, so the
+member is spelled exactly as it would be outside a function and both names give
+up their `_Z` to sit inside the wrapper. The Microsoft form is one more scope
+component, and the embedded name is **not** pushed as a back-reference.
+
+**Two owners are shaped differently and both are ordinary in real code.** A
+function with no decorated name - `main`, or anything `extern "C"` - is written
+by Itanium as a plain length-and-letters component (`4main`, there being no
+`_Z` to take off) and by Microsoft as `?main@@9`, the `9` saying the name
+carries no type information. A `static` function needs nothing special: its
+name is `_ZL4stati` and the L comes along inside the wrapper.
+`tests/cases/local-class-main` holds both.
+
+### The replay is a nested parse, and it was eating the enclosing function
+
+A local class's member bodies are held and replayed the moment the class
+closes - which is *in the middle of* the function that wrote it, through the
+same `topLevel` that sets a function up and clears what it finds. So the
+enclosing function lost its parameters and its locals:
+`h(int k) { struct M { ... }; M m; m.z = k; }` was told `k` was not declared,
+because reading `M::get` had emptied the table `k` lived in. `replayInlineBodies`
+saves and restores the lot now - locals, frame vars, scopes, blocks, labels, the
+frame size, `this`, and the current class - having previously restored only the
+token position.
+
+**And it found a memory bug older than any of this.** The signature a
+definition looks up was held as a `const Signature *` into `functions_`, which
+is a `std::vector`, while the body was read. Anything declared during that body
+can grow the vector and move it. Nothing declared anything there until a class
+could be defined inside a function - its member functions are declared exactly
+then - and `Outer::m` came out under whatever string happened to be at the old
+address: `m` in one build and `a` in the next. Only the symbol is wanted
+afterwards, so only the symbol is kept, by value.
+`tests/cases/local-class-in-member` is that case.
+
+**A stale object file cost an hour of this.** `git stash` to build the previous
+commit and `git stash pop` afterwards leaves mtimes that convince `make`
+nothing changed, so the tree was half-old and crashed in a way neither `-O0`
+nor ASan reproduced - because those were clean builds. `make clean` before
+believing a crash that only one build shows, and see "How correctness is
+established", which says the same thing about green suites.
+
+**What is left for lambdas** is the lambda itself: a closure type generated
+where the expression is written, with its captures as members and `operator()`
+holding the body. The class it needs can now exist, and so can the call
+operator.
 
 ## Decisions already taken
 

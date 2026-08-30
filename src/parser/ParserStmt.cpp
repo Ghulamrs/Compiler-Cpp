@@ -1687,6 +1687,28 @@ void Parser::topLevel(Program &program) {
         // make a member somebody's friend is refused where it is written.
         currentFunction_ = lookupSignature(d.name, params, variadic, d.pos).symbol;
     }
+    // Set for a member's body too, unlike the friend question above, because
+    // a local class inside a member function is spelled by wrapping *that*
+    // function's name - `_ZZN5Outer1mEvEN1A3getEv`, measured. It cannot make a
+    // member look like somebody's friend by accident: a friend list only ever
+    // holds the symbols of free functions, the qualified form that would name
+    // a member being refused where it is written.
+    // **Taken by value, and that is the whole of a bug that predates local
+    // classes.** `member` points into `functions_`, which is a vector: any
+    // declaration made while this function's body is read can grow it and
+    // move it, and the pointer is then reading freed memory. Nothing did
+    // that until a class could be defined inside a function - its member
+    // functions are declared during the body - and `Outer::m` came out
+    // carrying whatever string happened to be at that address, `m` in one
+    // build and `a` in the next. Only the symbol is wanted afterwards, so
+    // only the symbol is kept.
+    std::string definedSymbol;
+    if (member != nullptr) {
+        definedSymbol = member->symbol;
+        currentFunction_ = definedSymbol;
+    }
+    currentFunctionName_ = d.name;
+    localTypes_.clear();
     // The mem-initializer list, [class.base.init]. Parsed here because `this`
     // and the parameters are in scope and the body has not begun - which is
     // exactly where the ':' sits in the grammar.
@@ -1933,9 +1955,8 @@ void Parser::topLevel(Program &program) {
     int frame = alignTo(frameSize_, 16);
     const Type *emittedReturn = d.type->isReference()
                               ? types_.pointerTo(d.type->referent()) : d.type;
-    const Signature &defined = memberOf != nullptr
-                             ? *member
-                             : lookupSignature(d.name, params, variadic, d.pos);
+    if (definedSymbol.empty())
+        definedSymbol = lookupSignature(d.name, params, variadic, d.pos).symbol;
 
     // Recorded before `body` is moved into the Function - the expression the
     // pointer names is heap-allocated and goes on living there, which is what
@@ -1954,16 +1975,18 @@ void Parser::topLevel(Program &program) {
         fn.pos = d.pos;
         for (std::size_t i = 0; i < paramSlots.size(); i++)
             fn.slots.push_back(paramSlots[i].offset);
-        constexprFns_[defined.symbol] = fn;
+        constexprFns_[definedSymbol] = fn;
     }
     currentClass_ = nullptr;
     currentFunction_.clear();
+    currentFunctionName_.clear();
+    localTypes_.clear();
     program.functions.push_back(Function(d.name, emittedReturn, std::move(paramSlots),
                                          std::move(body), frame,
                                          sc == StorageStatic, sretSlot,
                                          variadic, regSaveSlot, d.pos,
                                          std::move(fnVars_)));
-    program.functions.back().setSymbol(defined.symbol);
+    program.functions.back().setSymbol(definedSymbol);
     program.functions.back().setHasLandingPads(functionHasPads_);
     functionHasPads_ = false;
     functionTypeIndex_ = 0;
