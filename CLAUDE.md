@@ -3104,10 +3104,49 @@ members rather than on anything about lambdas - see below. Once those existed
 this was mostly the same code as capturing by value, with `bindReference` in
 place of the assignment and the same pointer-sized slot.
 
-Still refused by name: `[this]`, `mutable`, and an inner `[=]` or `[&]`
-reaching for the capture of the lambda around it - by then that name is a
-member of the outer closure and not a local, so the scan has nothing to take,
-and it is refused by name rather than left to fail further in.
+### `[this]`, and the three lookups that had to learn it
+
+The closure holds a pointer to the enclosing object and the body reaches
+through it. What made this more than a fourth capture is that **inside the call
+operator `currentClass_` is the closure**, so every way of naming something in
+the enclosing class looked in the wrong place - and each is a different piece
+of the parser:
+
+* the word **`this`** meant the closure's own, which is never what the reader
+  wrote. [expr.prim.lambda] says it is the captured one.
+* an unqualified **data member** was searched for in the closure and not found.
+* an unqualified **member call** was searched for the same way, in the branch
+  that runs *before* the free-function one - so `twice()` reported that no such
+  function was declared, saying nothing about members at all. Putting the new
+  check after that branch changed nothing, which is the tell: the free-call
+  branch had already failed.
+
+**A lambda has the access of the function it was written in**,
+[expr.prim.lambda]/7, so a private member is reachable from one. Both access
+checks ask `insideAccessOf` for that now rather than comparing `currentClass_`
+themselves - **they had already drifted apart once in the writing of this**: the
+data-member check learned about closures and the member-function one did not,
+so a private field was readable from a lambda and a private method was not.
+Two checks of the same rule will always drift; one helper is the fix.
+
+**`this` is kept in the deduction scope**, unlike every other local. That
+reading hides the enclosing function's locals - a lambda body sees its own
+parameters and, without a capture, nothing else - but a body naming a member
+reaches it through `this`, and hiding that left `[this](){ return n; }`
+reporting that `n` is a member with no object to read it from, which is what
+the machinery says when `this` has gone missing.
+
+**The Windows box caught a bad case, not a bad compiler.**
+`lambda-capture-this` first put a call that *mutates* the object among the
+`printf` arguments that read it - and the order arguments are evaluated in is
+unspecified. The two Itanium targets go one way and x86_64-windows the other,
+so it printed `5 5 15 16 6 10` on two boxes and `6 6 18 19 6 10` on the third.
+Both are right; the case was wrong, and only the third box could say so. A
+mutation among arguments belongs in a statement of its own.
+
+Still refused by name: `mutable`, and an inner `[=]` or `[&]` reaching for the
+capture of the lambda around it - by then that name is a member of the outer
+closure and not a local, so the scan has nothing to take.
 
 ## Reference data members, refused since rung 3
 

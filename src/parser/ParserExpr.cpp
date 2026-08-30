@@ -346,8 +346,20 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     // nothing else of the enclosing function should be: a lambda body sees its
     // own parameters and, without a capture, no local of the function around
     // it. So the locals are put aside exactly as a default argument does it.
+    //
+    // **`this` is the exception, and it is a local like any other.** A body
+    // that names a member of the enclosing class reaches it through `this`,
+    // and hiding it left `[this](){ return n; }` reporting that `n` is a
+    // member with no object to read it from - which is what the machinery
+    // says when `this` has gone missing.
+    const Local *hadThis = findLocal("this");
+    Local keptThis;
+    const bool haveThis = hadThis != nullptr;
+    if (haveThis) keptThis = *hadThis;
+
     std::vector<Local> outer;
     outer.swap(locals_);
+    if (haveThis) locals_.push_back(keptThis);
     std::vector<std::size_t> starts;
     starts.swap(scopeStarts_);
     enterScope();
@@ -550,6 +562,7 @@ ExprPtr Parser::lambdaExpression() {
     std::vector<int> capOffsets;
     bool captureAllByValue = false;
     bool captureAllByRef = false;
+    const Type *capturedThisFrom = nullptr;
     if (peek().is("=") || peek().is("&")) {
         // `[&]` only where it is the whole list: `[&x]` is one named capture
         // and is read by the loop below.
@@ -567,8 +580,23 @@ ExprPtr Parser::lambdaExpression() {
     while (!peek().is("]")) {
         // `[&x]` - this one by reference, whatever the default is.
         bool byRef = consume("&");
-        if (peek().is("this"))
-            src_.fail(peek().pos, "capturing 'this' is not supported yet");
+        // `[this]` - the closure holds a pointer to the enclosing object, and
+        // an unqualified member name inside the body is reached through it.
+        if (peek().is("this")) {
+            if (byRef)
+                src_.fail(peek().pos, "'&this' is not how 'this' is captured - "
+                                      "write '[this]', which copies the "
+                                      "pointer");
+            if (currentClass_ == nullptr)
+                src_.fail(peek().pos, "'[this]' is only inside a member "
+                                      "function, and this lambda is not in one");
+            at_++;
+            capNames.push_back(capturedThis());
+            capTypes.push_back(types_.pointerTo(currentClass_));
+            capturedThisFrom = currentClass_;
+            if (!peek().is("]")) expect(",");
+            continue;
+        }
         const std::size_t cpos = peek().pos;
         const std::string cname = expectIdent("a captured name");
         const Local *have = findLocal(cname);
@@ -689,6 +717,7 @@ ExprPtr Parser::lambdaExpression() {
     closure->setLocalName(local);
     closure->setDeclaredClass(false);
     if (!currentFunction_.empty()) localClassOwner_[tag] = currentFunction_;
+    if (capturedThisFrom != nullptr) closureOuter_[tag] = capturedThisFrom;
     declareTypeName(tag, closure);
     // Laid out as any class is: each member at the next offset its own
     // alignment allows, and the whole thing aligned to the widest of them.
@@ -775,7 +804,16 @@ ExprPtr Parser::buildClosure(const MadeLambda &made, std::size_t pos) {
         self->setType(made.type);
         ExprPtr dst(new MemberAccess(std::move(self), made.names[i],
                                      made.offsets[i], 0, 0));
-        ExprPtr src = objectRef(made.names[i]);
+        ExprPtr src;
+        if (made.names[i] == capturedThis()) {
+            // The enclosing function's own `this`, copied in as a pointer.
+            const Local *self = findLocal("this");
+            src.reset(Var::local("this", self != nullptr ? self->offset
+                                                         : thisOffset_));
+            src->setType(self != nullptr ? self->type : made.types[i]);
+        } else {
+            src = objectRef(made.names[i]);
+        }
         if (src == nullptr)
             src_.fail(pos, "'" + made.names[i] + "' went missing between the "
                            "capture list and the lambda");
@@ -813,6 +851,29 @@ ExprPtr Parser::buildClosure(const MadeLambda &made, std::size_t pos) {
     return obj;
 }
 
+// The enclosing object's pointer, inside a closure that captured it: the
+// closure's own `this`, then its `$this` member. Null when this is not such a
+// closure, which is every other context.
+ExprPtr Parser::capturedThisPointer() {
+    if (currentClass_ == nullptr) return nullptr;
+    std::map<std::string, const Type *>::const_iterator outer =
+        closureOuter_.find(currentClass_->unqualified()->tag());
+    if (outer == closureOuter_.end()) return nullptr;
+    const Member *held = currentClass_->unqualified()->findMember(capturedThis());
+    if (held == nullptr) return nullptr;
+    const Local *self = findLocal("this");
+    if (self == nullptr) return nullptr;
+
+    ExprPtr me(Var::local("this", self->offset));
+    me->setType(self->type);
+    ExprPtr obj(new Unary('*', std::move(me)));
+    obj->setType(self->type->pointee());
+    ExprPtr acc(new MemberAccess(std::move(obj), capturedThis(), held->offset,
+                                 0, 0));
+    acc->setType(types_.pointerTo(outer->second));
+    return acc;
+}
+
 ExprPtr Parser::primary(Program *program) {
     if (peek().is("static_cast")) {
         std::size_t pos = peek().pos;
@@ -834,6 +895,10 @@ ExprPtr Parser::primary(Program *program) {
     if (peek().is("this")) {
         std::size_t pos = peek().pos;
         at_++;
+        // **Inside a lambda that captured it, `this` is the enclosing
+        // object's** - [expr.prim.lambda]. The closure's own `this` is not
+        // what the reader wrote and is of no use to them.
+        if (ExprPtr held = capturedThisPointer()) return held;
         if (currentClass_ == nullptr)
             src_.fail(pos, "'this' is only inside a member function, and this "
                            "is not one");
@@ -1130,6 +1195,28 @@ ExprPtr Parser::primary(Program *program) {
             }
         }
 
+        // A *member function* of that class, called by its bare name.
+        // The branch further up asks `currentClass_`, which inside the
+        // call operator is the closure, so it finds nothing and the name
+        // is reported undeclared.
+        if (peekAt(1).is("(") && l == nullptr && g == nullptr) {
+            if (ExprPtr outer = capturedThisPointer()) {
+                const Type *of = outer->type()->pointee();
+                bool has = false;
+                for (const Type *c = of; c != nullptr; c = c->base())
+                    if (overloadsOf(c->tag() + "::" + name) != nullptr) {
+                        has = true;
+                        break;
+                    }
+                if (has) {
+                    at_ += 2;                  // the name and its '('
+                    ExprPtr obj(new Unary('*', std::move(outer)));
+                    obj->setType(of);
+                    return memberCall(std::move(obj), of, name, pos);
+                }
+            }
+        }
+
         if (peekAt(1).is("(") && !callsThroughObject) {
             at_ += 2;
             // The arguments first, then the function: with a set to choose
@@ -1173,6 +1260,25 @@ ExprPtr Parser::primary(Program *program) {
                 acc->setType(held->isConst() && !m->type->isReference()
                                  ? types_.withConst(m->type) : m->type);
                 return useReference(std::move(acc));
+            }
+
+            // **A member of the class the lambda was written in**, reached
+            // through the captured pointer. Inside the call operator
+            // `currentClass_` is the *closure*, so the search above looked in
+            // the wrong class entirely - and the name would have been reported
+            // undeclared with nothing to say about the lambda.
+            if (ExprPtr outer = capturedThisPointer()) {
+                const Type *of = outer->type()->pointee();
+                if (const Member *om = of->findMember(name)) {
+                    checkAccessible(of, *om, pos);
+                    ExprPtr obj(new Unary('*', std::move(outer)));
+                    obj->setType(of);
+                    ExprPtr acc(new MemberAccess(std::move(obj), name,
+                                                 om->offset, om->width,
+                                                 om->bitOffset));
+                    acc->setType(om->type);
+                    return useReference(std::move(acc));
+                }
             }
         }
 
@@ -2552,8 +2658,8 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
 
     // Now there IS an inside, and this is where it starts to mean something:
     // a private member is reachable from another member of the same class.
-    if (sig.access != Access::Public && currentClass_ != plain &&
-        currentClass_ != owner && !isFriendOf(plain) && !isFriendOf(owner)) {
+    if (sig.access != Access::Public && !insideAccessOf(plain) &&
+        !insideAccessOf(owner) && !isFriendOf(plain) && !isFriendOf(owner)) {
         const char *how = sig.access == Access::Private ? "private" : "protected";
         src_.fail(pos, "'" + name + "' is " + how + " in '" + plain->describe() +
                        "' - it can be called only from inside the class");
@@ -2679,10 +2785,27 @@ bool Parser::isFriendOf(const Type *cls) const {
     return false;
 }
 
+// **A lambda has the access of the function it was written in** -
+// [expr.prim.lambda]/7 gives the closure's call operator the context's access.
+// Inside one, `currentClass_` is the closure, so without this a lambda in a
+// member function could not read its own class's privates. Both access checks
+// ask this rather than comparing `currentClass_` themselves, because they had
+// already drifted apart once: the data-member check learned about closures and
+// the member-function one did not, so a private field was readable from a
+// lambda and a private method was not.
+bool Parser::insideAccessOf(const Type *cls) const {
+    if (cls == nullptr || currentClass_ == nullptr) return false;
+    const Type *want = cls->unqualified();
+    if (currentClass_ == want) return true;
+    std::map<std::string, const Type *>::const_iterator outer =
+        closureOuter_.find(currentClass_->unqualified()->tag());
+    return outer != closureOuter_.end() && outer->second == want;
+}
+
 void Parser::checkAccessible(const Type *object, const Member &m,
                              std::size_t pos) const {
     if (m.access == Access::Public) return;
-    if (currentClass_ != nullptr && currentClass_ == object->unqualified()) return;
+    if (insideAccessOf(object)) return;
     if (isFriendOf(object)) return;
     const char *how = m.access == Access::Private ? "private" : "protected";
     src_.fail(pos, "'" + m.name + "' is " + how + " in '" + object->describe() +

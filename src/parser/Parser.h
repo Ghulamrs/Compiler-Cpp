@@ -811,6 +811,22 @@ private:
     // ask for `$lret1` twice and get "typedefed twice, and not to the same
     // type" from the second.
     int lambdaRetSeq_ = 0;
+    // The class a closure captured `this` from, by closure tag. Inside the
+    // call operator, `currentClass_` is the *closure* - so an unqualified name
+    // that belongs to the enclosing class, and the word `this` itself, are
+    // found through this and reached through the captured pointer.
+    std::map<std::string, const Type *> closureOuter_;
+    // `$this` - the member a `[this]` capture holds. Not a name any program
+    // can write, which is the point: it must not collide with a capture.
+    static const char *capturedThis() { return "$this"; }
+    // Inside a closure that captured `this`, the pointer it holds - built as
+    // `this->$this`, `this` being the closure. Null anywhere else.
+    ExprPtr capturedThisPointer();
+    // Does the code being parsed have a member's-eye view of this class?
+    // Inside a lambda that is the class it was *written in*, not the closure -
+    // [expr.prim.lambda]/7 gives the call operator the context's access - and
+    // both access checks have to ask the same question or they disagree.
+    bool insideAccessOf(const Type *cls) const;
     // **One closure type per lambda written, however often it is read.** 7.1
     // reads an `auto` initialiser twice - once to learn the type, once to
     // build it - so `auto f = [](int a){...};` reached here twice and made two
