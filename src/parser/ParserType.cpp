@@ -303,6 +303,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // '}' and has no ';' to consume, unlike every other member.
         bool heldBody = false;
 
+        // **`explicit`, and the replay must not start at it** - the same rule
+        // `virtual` follows a few lines down and for the same reason: a held
+        // body is re-read through the out-of-line path, where the keyword is
+        // not written. C++ puts it on the declaration inside the class and
+        // nowhere else.
+        bool isExplicit = false;
+        const std::size_t explicitAt = peek().pos;
+        if (peek().is("explicit")) { isExplicit = true; at_++; itemStart = at_; }
+
         // A constructor has the class's own name and no return type, so it
         // has to be seen before specifiers() is asked for one - the name is a
         // registered type name by now and would be read as the type.
@@ -310,7 +319,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             peek().text == local && peekAt(1).is("(")) {
             std::size_t cpos = peek().pos;
             at_++;
-            declareConstructor(tag, cpos, access);
+            declareConstructor(tag, cpos, access, isExplicit);
+            isExplicit = false;
             if (peek().is("{") || peek().is(":")) {
                 pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
                                                       constructorKey(tag) });
@@ -320,6 +330,20 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             expect(";");
             continue;
         }
+
+        // Anything else it was written on. A conversion function is named
+        // separately because `explicit operator bool()` is the other place the
+        // standard allows it, and saying "a constructor" there would send the
+        // reader looking for the wrong mistake.
+        if (isExplicit)
+            src_.fail(explicitAt,
+                      peek().is("operator")
+                          ? "'explicit' on a conversion function is C++11 and "
+                            "would work here, but a conversion function is not "
+                            "supported yet at all - so there is nothing for it "
+                            "to apply to"
+                          : "'explicit' applies to a constructor, and this "
+                            "declaration is not one");
 
         // **The replay must not start at `virtual`.** A held body is re-read
         // through the ordinary out-of-line path, and out of line the keyword
@@ -1016,6 +1040,12 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
                               "this declaration names a type to convert to "
                               "where every operator that can be overloaded "
                               "here is punctuation");
+    if (peek().is("explicit"))
+        src_.fail(peek().pos, "'explicit' is written on a constructor's "
+                              "declaration inside its class, and nowhere else "
+                              "- not on an out-of-class definition of that "
+                              "same constructor, and not on anything that is "
+                              "not one");
     if (const char *pending = notYetSupported(peek().text))
         src_.fail(peek().pos, std::string("'") + pending +
                               "' is not supported yet");

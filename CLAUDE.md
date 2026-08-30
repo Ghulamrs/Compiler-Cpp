@@ -3608,6 +3608,66 @@ variable's address so both compilers emit both. Worth remembering the shape:
 **when the names suite reports a symbol cxx1 has and clang does not, ask what
 clang folded away before looking for a mangling bug.**
 
+## explicit, which changes nothing about a function
+
+`S s(3);` and `S s = 3;` call the same constructor with the same argument and
+differ in one thing: whether that constructor may be chosen without being asked
+for by name. So `explicit` is **one bool on the signature** - not on the class,
+because it is one constructor of a set that is explicit - checked at each place
+the standard calls copy-initialization. No mangled name, no vtable and no
+emitted code changes.
+
+The check is made **after** overload resolution rather than by hiding the
+constructor from the candidate set. That way the reader is told which
+constructor was found and why it could not be used, instead of that nothing
+matched - which sends them looking for a constructor that is there.
+
+### The three copy-initializations, and only one is written with an '='
+
+This is where the work was, and finding all three took measuring rather than
+reading:
+
+* **`S s = x;`** - the obvious one, in `constructLocal`.
+* **`return s;`** - [class.copy]/31 copy-initializes the caller's object, so a
+  class whose copy constructor is `explicit` **cannot be returned by value at
+  all**. The function is ill-formed on its own, before any caller is looked at.
+  And the rule is checked *even though this compiler elides the copy* - the
+  constructor is selected and checked whether or not it is called.
+* **A by-value parameter** - [dcl.init]/17, in `materialiseCopy`. The least
+  obvious of the three, because nothing at the call site has an '=' in it.
+
+Two of those reach past `constructLocal`, and the elision branch reaches past
+it as well - `S b = make();` builds straight into `b` and calls no copy
+constructor, and is still refused. **Where the rule is checked and where the
+call happens are different places**, which is the shape to remember: a check
+attached to the code that emits the call would have missed all three.
+
+### What it is not able to do here yet
+
+`explicit` on a **conversion function** is the other place C++11 allows it, and
+this compiler has no conversion functions at all - so the refusal names *that*
+rather than saying the keyword applies to constructors, which would send the
+reader to fix the wrong half.
+
+And `explicit` bites in fewer places here than in a full C++ compiler simply
+because cxx1 has fewer implicit conversions: a converting constructor is not
+tried for a function argument or a return value at all, so there is nothing for
+`explicit` to stop there. What it does stop is real; what it would stop is not
+reachable yet.
+
+### A test trap, the second of its kind
+
+For a constructor defined **inside** its class, clang on x86_64-linux emits
+only the base-object `C2` and calls it, where cxx1 emits and calls the
+complete-object `C1`. Both are self-consistent, both link, and each translation
+unit carries its own inline copy - so nothing is broken. But `names.sh` reads
+it as seven disagreements. Defined out of line, both compilers emit both.
+
+That is the same lesson as the constexpr-and-const-int one under
+static_assert, and now it has happened twice: **when the names suite reports a
+disagreement on a case that changes no names, the case is usually asking the
+two compilers a question about emission.**
+
 ## Build
 
 ```

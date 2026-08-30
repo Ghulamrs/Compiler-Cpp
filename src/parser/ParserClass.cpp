@@ -12,10 +12,24 @@
 #include <cstring>
 
 StmtPtr Parser::constructLocal(const Declared &d, int offset,
-                               std::vector<ExprPtr> args) {
+                               std::vector<ExprPtr> args, bool copyInit) {
     const std::string key = constructorKey(d.type->tag());
     const Signature &ctor = resolveOverload(key, args, d.pos);
     applyDefaults(ctor, args, d.pos);
+
+    // **[dcl.init]/16: copy-initialization may not pick an `explicit`
+    // constructor.** `S s(3);` and `S s = 3;` call the same function and
+    // differ only in whether that function is allowed to be chosen without
+    // being asked for by name. This is the whole of what `explicit` does, and
+    // it is checked after resolution rather than by hiding the constructor
+    // from the candidate set - so the reader is told which constructor was
+    // found and why it was not usable, rather than that nothing matched.
+    if (copyInit && ctor.isExplicit)
+        src_.fail(d.pos, "'" + d.type->describe() + "' has a constructor "
+                         "taking these arguments and it is 'explicit', so it "
+                         "will not be chosen for '" + d.name + " = ...' - "
+                         "write '" + d.type->describe() + " " + d.name +
+                         "(...)', which asks for it by name");
 
     if (ctor.access != Access::Public && currentClass_ != d.type->unqualified() &&
         !isFriendOf(d.type))
@@ -646,7 +660,7 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
 // it unchanged, which is what makes Point() and Point(int,int) two entries
 // that a construction chooses between.
 void Parser::declareConstructor(const std::string &cls, std::size_t pos,
-                                Access access) {
+                                Access access, bool isExplicit) {
     std::vector<const Type *> params;
     bool variadic = false;
     parameterTypes(params, variadic);
@@ -684,6 +698,7 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
     pendingDefaults_.clear();
     functions_.push_back(Signature{ cls, out, types_.get(Kind::Void), params,
                                     false, false, pos, false, cls, false, access });
+    functions_.back().isExplicit = isExplicit;
 }
 
 // The class a member is built from: the element type when the member is an

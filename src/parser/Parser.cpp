@@ -31,7 +31,7 @@ const char *notYetSupported(const std::string &word) {
         "alignas", "alignof", "and", "and_eq", "asm",
         "bitand", "bitor", "catch", "char16_t", "char32_t", "compl",
         "const_cast", "dynamic_cast",
-        "explicit", "export", "friend", "inline", "mutable", "namespace",
+        "export", "friend", "inline", "mutable", "namespace",
         "noexcept", "not", "not_eq", "operator", "or",
         "or_eq", "reinterpret_cast",
         "template", "thread_local",

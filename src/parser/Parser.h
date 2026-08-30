@@ -73,6 +73,14 @@ private:
         bool constThis = false;
         Access access = Access::Public;
         bool isVirtual = false;
+        // **`explicit` on a constructor**, which changes nothing about the
+        // function and only about who may pick it: copy-initialization may
+        // not. Kept on the signature rather than on the class, because it is
+        // one constructor of a set that is explicit and not the class.
+        // Written after `access` on purpose: the members up to there are
+        // filled positionally by every `Signature{...}` in the parser, so a
+        // new one in the middle silently shifts them.
+        bool isExplicit = false;
         // **Nobody wrote this one.** An implicitly declared special member is
         // put in the table so overload resolution finds it, and given a body
         // only if something calls it. That second half is what keeps the
@@ -639,7 +647,8 @@ private:
     static std::string constructorKey(const std::string &cls) {
         return cls + "::" + localOf(cls);
     }
-    void declareConstructor(const std::string &cls, std::size_t pos, Access access);
+    void declareConstructor(const std::string &cls, std::size_t pos, Access access,
+                            bool isExplicit);
     void declareDestructor(const std::string &cls, std::size_t pos, Access access,
                            bool isVirtual);
     std::string deletingDestructorSymbol(const std::string &cls);
@@ -731,7 +740,7 @@ private:
                          std::size_t pos, int except = -1,
                          std::size_t to = static_cast<std::size_t>(-1));
     StmtPtr constructLocal(const Declared &d, int offset,
-                           std::vector<ExprPtr> args);
+                           std::vector<ExprPtr> args, bool copyInit = false);
 
     // A static data member: declared inside the class, defined outside it,
     // and reached by all three of `C::n`, `obj.n` and `p->n`.

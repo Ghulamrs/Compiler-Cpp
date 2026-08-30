@@ -1790,6 +1790,20 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
     if (arg->isXvalue()) cc = moveConstructorOf(cls);
     if (cc == nullptr) cc = copyConstructorOf(cls);
 
+    // **[dcl.init]/17 makes this copy-initialization, so the constructor it
+    // picks may not be `explicit`.** A by-value parameter is the third place
+    // that rule bites, after `S b = a;` and `return s;` - and the least
+    // obvious of the three, since nothing at the call site is written with an
+    // `=` in it. The check is here rather than in overload resolution because
+    // the copy is not a candidate set: this path reaches for the copy or move
+    // constructor by name.
+    if (cc != nullptr && cc->isExplicit)
+        src_.fail(pos, what + " is a '" + cls->describe() + "' passed by "
+                       "value, which copy-initialises it from the argument - "
+                       "and that may not pick the 'explicit' constructor this "
+                       "class copies with. Take it by reference, or make the "
+                       "copy constructor not explicit");
+
     // **A class that only has a destructor still goes by address on Itanium**,
     // and the copy the caller makes for it is a move of bytes rather than a
     // call - there is no copy constructor, because copying it is trivial. What

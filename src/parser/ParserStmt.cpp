@@ -131,6 +131,7 @@ StmtPtr Parser::declarationBody() {
                                  "constructor - running one before main is not "
                                  "supported yet");
             std::vector<ExprPtr> args;
+            bool copyInit = false;
             if (consume("(")) {
                 if (peek().is(")"))
                     src_.fail(d.pos, "'" + d.name + "()' declares a function "
@@ -144,11 +145,31 @@ StmtPtr Parser::declarationBody() {
                 // **Copy-initialisation.** `X b = a;` is a constructor called
                 // with one argument, chosen by the ordinary overload rules -
                 // the copy constructor for an `X`, a converting constructor
-                // for anything else. What separates it from `X b(a);` in the
-                // standard is that an `explicit` constructor may not be picked
-                // here, and `explicit` is refused by name until rung 7.
+                // for anything else. What separates it from `X b(a);` is that
+                // an `explicit` constructor may not be picked here, which
+                // `constructLocal` is told below.
+                copyInit = true;
                 args.push_back(assign());
             }
+
+            // **An elided copy still needs a copy constructor that may be
+            // chosen.** [class.copy]/31 selects and checks the constructor
+            // even where the copy itself is elided, so `S b = make();` is
+            // refused when S's copy constructor is `explicit` though nothing
+            // would have called it. Checked here because the two branches
+            // below - copy elision and the trivial-copy store - both reach
+            // past `constructLocal`, which is where the rule otherwise lives.
+            if (copyInit && args.size() == 1 && args[0]->type() != nullptr &&
+                args[0]->type()->unqualified() == d.type->unqualified())
+                if (const Signature *cc = copyConstructorOf(d.type->unqualified()))
+                    if (cc->isExplicit)
+                        src_.fail(d.pos, "'" + d.type->describe() + "' has an "
+                                         "'explicit' copy constructor, so it "
+                                         "will not be chosen for '" + d.name +
+                                         " = ...' - write '" +
+                                         d.type->describe() + " " + d.name +
+                                         "(...)'. The copy may well be elided, "
+                                         "and the rule is checked all the same");
 
             int off = declare(d.name, d.type, d.pos);
 
@@ -185,7 +206,7 @@ StmtPtr Parser::declarationBody() {
                 store->setType(d.type);
                 inits.push_back(StmtPtr(new ExprStmt(std::move(store))));
             } else {
-                inits.push_back(constructLocal(d, off, std::move(args)));
+                inits.push_back(constructLocal(d, off, std::move(args), copyInit));
             }
             flushTemporaries(inits);
             if (destructorOf(d.type) != nullptr)
@@ -1244,6 +1265,24 @@ StmtPtr Parser::statementBody() {
                                "caller could read it");
         } else {
             checkAssignable(*value, returnType_, pos, "this function's return type");
+            // **[class.copy]/31 again: returning by value copy-initializes the
+            // caller's object**, so its copy constructor is selected and
+            // checked even though the copy is elided a few lines below. A
+            // class whose copy constructor is `explicit` cannot be returned by
+            // value at all - the function is ill-formed on its own, before any
+            // caller is looked at, which is the surprising half and the reason
+            // it is checked here rather than at the call.
+            if (returnType_->isStructOrUnion() && value->type() != nullptr &&
+                value->type()->unqualified() == returnType_->unqualified())
+                if (const Signature *cc = copyConstructorOf(returnType_->unqualified()))
+                    if (cc->isExplicit)
+                        src_.fail(pos, "'" + returnType_->describe() + "' has an "
+                                       "'explicit' copy constructor, so it "
+                                       "cannot be returned by value - 'return' "
+                                       "copy-initialises the caller's object, "
+                                       "and that may not pick an explicit "
+                                       "constructor even where the copy is "
+                                       "elided");
             value = convert(std::move(value), returnType_);
         }
         expect(";");
