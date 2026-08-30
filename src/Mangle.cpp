@@ -370,6 +370,15 @@ private:
         if (const char *b = itaniumBuiltin(t->kind())) { out += b; return; }
 
         if (t->isPointer())        { out += 'P'; type(t->pointee()); }
+        // **`M` and then the class and the member's type** - measured,
+        // `int S::*` is `M1Si` and `double S::*` is `M1Sd`. The class goes in
+        // as a type and not as a nested-name, so it takes part in the
+        // substitution table like any other.
+        else if (t->isMemberPointer()) {
+            out += 'M';
+            type(t->unqualified()->enclosing());
+            type(t->unqualified()->pointee());
+        }
         // `R` for an lvalue reference and `O` for an rvalue one - measured:
         // `f(int &&)` is _Z1fOi where `g(const int &)` is _Z1gRKi.
         else if (t->isReference()) {
@@ -784,6 +793,17 @@ private:
 
         if (t->isPointer())        { out += qualifiedItself(t) ? 'Q' : 'P';
                                      pointee(t->pointee()); return; }
+        // **`PEQ` and then the class's scope and the member's type** -
+        // measured, `int S::*` is `PEQS@@H` where an ordinary `int *` is
+        // `PEAH`. The Q sits where a pointer's A does and the class comes
+        // between it and the type.
+        if (t->isMemberPointer()) {
+            const Type *plain = t->unqualified();
+            out += "PEQ";
+            scopeOf(plain->enclosing(), plain->enclosing()->tag());
+            type(plain->pointee());
+            return;
+        }
         // `$$Q` where an lvalue reference writes `A`, and the qualifier that
         // follows is the same one either way - measured with clang for the
         // Microsoft target: `?f@@YAH$$QEAH@Z` beside `?g@@YAHAEBH@Z`.

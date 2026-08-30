@@ -39,6 +39,15 @@ enum class Kind {
     // same kind of stand-in `TemplateParam` is and is replaced the same way -
     // before anything but the deduction has looked at it.
     Deduced,
+    // **A pointer to a data member**, `int S::*`. It is not a pointer to
+    // anything: what it holds is an *offset* into an object of the class, so
+    // `s.*p` is `&s` plus that offset and no backend had to be told this kind
+    // exists. `pointee()` is the member's type and `enclosing()` is the class.
+    //
+    // Its size is the one thing that is not the same everywhere: Itanium
+    // stores a `ptrdiff_t` and Microsoft an `int` for a class with single
+    // inheritance, so 8 and 4 - measured, not read.
+    MemberPointer,
     // **A template parameter, and it is not a type anything is made of.** It
     // exists so that a template's signature can be written down as the
     // *pattern* it was declared as - `T twice(T)` rather than
@@ -317,6 +326,9 @@ public:
     const std::vector<const Type *> &params() const { return params_; }
     bool isVariadicFn() const { return variadic_; }
     bool isFunction() const { return kind_ == Kind::Function; }
+    bool isMemberPointer() const {
+        return unqual_ ? unqual_->isMemberPointer() : kind_ == Kind::MemberPointer;
+    }
     bool isFunctionPointer() const {
         return kind_ == Kind::Pointer && pointee_ != nullptr && pointee_->isFunction();
     }
@@ -369,6 +381,7 @@ public:
     const Type *withConst(const Type *t);
     const Type *withoutConst(const Type *t);
     const Type *pointerTo(const Type *t);
+    const Type *memberPointerTo(const Type *cls, const Type *member);
     const Type *referenceTo(const Type *t);
     const Type *rvalueReferenceTo(const Type *t);
     const Type *arrayOf(const Type *t, long long length);

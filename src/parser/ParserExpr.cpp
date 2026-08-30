@@ -2065,6 +2065,23 @@ ExprPtr Parser::unary() {
         return n;
     }
     if (consume("&")) {
+        // **`&S::x` - a pointer to a member, which is an offset and not an
+        // address.** Read here because nothing else would: the qualified-name
+        // path in `primary` answers for a *static* member, which is an
+        // ordinary object with an ordinary address, and a non-static one has
+        // no address of its own to take at all.
+        if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
+            peekAt(2).kind == TokenKind::Ident) {
+            if (const Type *cls = findTypedef(peek().text))
+                if (cls->isStructOrUnion())
+                    if (const Member *m = cls->findMember(peekAt(2).text)) {
+                        checkAccessible(cls, *m, pos);
+                        at_ += 3;
+                        ExprPtr off(new Num(static_cast<long long>(m->offset)));
+                        off->setType(types_.memberPointerTo(cls, m->type));
+                        return off;
+                    }
+        }
         ExprPtr v = castExpr();
         // Only when the class declared one. A class that did not still has an
         // address, and `&obj` is the address-of it has always been.

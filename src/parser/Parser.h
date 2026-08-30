@@ -1192,6 +1192,11 @@ private:
     ExprPtr add();
     ExprPtr mul();
     ExprPtr castExpr();
+    // `a .* p` and `p ->* q` - [expr.mptr.oper], which sits between a cast and
+    // a multiplication. What it builds is the object's address plus the
+    // offset the member pointer holds, read as the member's type.
+    ExprPtr memberPointerExpr();
+    ExprPtr applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos);
     ExprPtr staticCast(std::size_t pos);
     ExprPtr unary();
     ExprPtr postfix();

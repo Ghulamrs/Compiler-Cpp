@@ -29,13 +29,70 @@ ExprPtr Parser::castExpr() {
     return unary();
 }
 
-ExprPtr Parser::mul() {
+// **What a member pointer holds is an offset**, so `a.*p` is the object's
+// address plus it, read as the member's type - `*(T *)((char *)&a + p)`. The
+// cast to `char *` is what stops the pointer arithmetic scaling by the member's
+// size, which is the one way this can be got wrong and give a wrong answer
+// rather than an error.
+//
+// No backend was told any of this: the whole operator is an add and two casts
+// they already knew.
+ExprPtr Parser::applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos) {
+    const Type *mpt = mp->type()->unqualified();
+    if (!mpt->isMemberPointer())
+        src_.fail(pos, "the right of '.*' has to be a pointer to a member, and "
+                       "this is '" + mp->type()->describe() + "'");
+    const Type *member = mpt->pointee();
+    const Type *bytes = types_.pointerTo(types_.get(Kind::Char));
+
+    ExprPtr asBytes(new Cast(bytes, std::move(addr)));
+    asBytes->setType(bytes);
+    ExprPtr sum(new Binary(BinOp::Add, std::move(asBytes), std::move(mp)));
+    sum->setType(bytes);
+    const Type *to = types_.pointerTo(member);
+    ExprPtr at(new Cast(to, std::move(sum)));
+    at->setType(to);
+    ExprPtr read(new Unary('*', std::move(at)));
+    read->setType(member);
+    return read;
+}
+
+// [expr.mptr.oper]: `.*` and `->*` bind tighter than a multiplication and
+// looser than a cast, which is the level this sits at.
+ExprPtr Parser::memberPointerExpr() {
     ExprPtr n = castExpr();
     for (;;) {
         std::size_t pos = peek().pos;
-        if (consume("*"))      n = arithmetic(BinOp::Mul, std::move(n), castExpr(), pos);
-        else if (consume("/")) n = arithmetic(BinOp::Div, std::move(n), castExpr(), pos);
-        else if (consume("%")) n = arithmetic(BinOp::Mod, std::move(n), castExpr(), pos);
+        if (consume(".*")) {
+            const Type *of = n->type();
+            if (!of->unqualified()->isStructOrUnion())
+                src_.fail(pos, "the left of '.*' has to be an object of class "
+                               "type, and this is '" + of->describe() + "'");
+            ExprPtr addr(new Unary('&', std::move(n)));
+            addr->setType(types_.pointerTo(of->unqualified()));
+            n = applyMemberPointer(std::move(addr), memberPointerExpr(), pos);
+            continue;
+        }
+        if (consume("->*")) {
+            const Type *of = n->type();
+            if (!of->isPointer() ||
+                !of->pointee()->unqualified()->isStructOrUnion())
+                src_.fail(pos, "the left of '->*' has to be a pointer to a "
+                               "class, and this is '" + of->describe() + "'");
+            n = applyMemberPointer(decay(std::move(n)), memberPointerExpr(), pos);
+            continue;
+        }
+        return n;
+    }
+}
+
+ExprPtr Parser::mul() {
+    ExprPtr n = memberPointerExpr();
+    for (;;) {
+        std::size_t pos = peek().pos;
+        if (consume("*"))      n = arithmetic(BinOp::Mul, std::move(n), memberPointerExpr(), pos);
+        else if (consume("/")) n = arithmetic(BinOp::Div, std::move(n), memberPointerExpr(), pos);
+        else if (consume("%")) n = arithmetic(BinOp::Mod, std::move(n), memberPointerExpr(), pos);
         else return n;
     }
 }

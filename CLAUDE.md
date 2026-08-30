@@ -3272,6 +3272,44 @@ is a member initialiser is what exposed it, and `S a[2];` called `S::S()` with
 nothing defining it. A declared-and-never-emitted function is a link error, so
 this one at least announces itself.
 
+## Pointers to data members, and why no backend heard about them
+
+**`int S::*` is not a pointer to anything.** What it holds is an *offset* into
+an object of the class, so `s.*p` is `*(T *)((char *)&s + p)` - an add and two
+casts all three code generators already knew. A new `Kind` in the type system
+and not a line in any backend, which is the same trade a reference took when it
+was lowered to a slot holding an address.
+
+**The cast to `char *` is the one thing that can be got wrong quietly.**
+Without it the add is scaled by the member's size and the answer is wrong
+rather than refused, which is why it is written down here and in the case.
+
+**`&S::x` is read where `&` is**, because nothing else would: the qualified-name
+path in `primary` answers for a *static* member, which is an ordinary object
+with an ordinary address, and a non-static member has no address of its own to
+take at all. The offset is a `Num` with the member-pointer type on it.
+
+**The declarator restarts.** `int S::*p` reaches the `::` loop that qualifies a
+name being defined, and what follows is a star rather than a name - so the
+member-pointer type is built there and `declarator` is called again from the
+star. `int S::**pp` and `int S::*a[3]` then come out right with no rule of their
+own.
+
+**Size is the one thing that is not the same everywhere**: Itanium keeps a
+`ptrdiff_t` and Microsoft an `int` for a class with single inheritance, so 8 and
+4. Measured with clang for both, and `Type::size` already took a target.
+
+**Both manglings measured**: Itanium writes `M` then the class then the member's
+type - `int S::*` is `M1Si` - with the class going in *as a type*, so it takes
+part in the substitution table like any other. Microsoft writes `PEQ` then the
+class's scope then the type, `PEQS@@H`, where an ordinary `int *` is `PEAH`.
+
+**A pointer to a member *function* is refused by name**, and it is a different
+animal: what it holds is not an offset but a function and how to find its
+`this` - a structure of up to four words on the Microsoft ABI and a pair on
+Itanium. Spotted by the shape, which means looking past the name to the `)`
+that closes the parentheses and asking whether a parameter list follows.
+
 ## Decisions already taken
 
 **Conform to the platform ABI; do not invent one.** Itanium C++ ABI on Linux

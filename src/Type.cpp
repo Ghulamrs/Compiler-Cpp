@@ -16,6 +16,10 @@ const Type *TypeTable::get(Kind k) const {
 
 int Type::size(const Target &t) const {
     if (unqual_ != nullptr) return unqual_->size(t);
+    // **A data member pointer is an offset, and the two ABIs keep it in
+    // different widths** - Itanium a ptrdiff_t and Microsoft an int, for a
+    // class with single inheritance. Measured with clang for both targets.
+    if (kind_ == Kind::MemberPointer) return t.microsoftNames() ? 4 : 8;
     if (isReference()) return pointee_->size(t);
     if (kind_ == Kind::Array) return static_cast<int>(length_) * pointee_->size(t);
     if (kind_ == Kind::Struct || kind_ == Kind::Union) return size_;
@@ -24,6 +28,7 @@ int Type::size(const Target &t) const {
 
 int Type::align(const Target &t) const {
     if (unqual_ != nullptr) return unqual_->align(t);
+    if (kind_ == Kind::MemberPointer) return t.microsoftNames() ? 4 : 8;
     if (isReference()) return pointee_->align(t);
     if (kind_ == Kind::Array) return pointee_->align(t);
     if (kind_ == Kind::Struct || kind_ == Kind::Union) return align_;
@@ -51,6 +56,10 @@ std::string Type::describe() const {
     if (kind_ == Kind::Function)
         return pointee_->describe() + " " + parameterList();
     if (kind_ == Kind::Pointer) return pointee_->describe() + " *";
+    if (kind_ == Kind::MemberPointer)
+        return pointee_->describe() + " " +
+               (enclosing_ != nullptr ? enclosing_->tag() : std::string("?")) +
+               "::*";
     // A reference to an array is written round the name, the same way a
     // pointer to a function is: 'int (&)[3]', never 'int [3] &'.
     if (isReference() && pointee_->isArray())
@@ -120,6 +129,19 @@ const Type *TypeTable::pointerTo(const Type *t) {
         if (!d->isConst() && d->kind() == Kind::Pointer && d->pointee() == t)
             return d;
     derived_.push_back(new Type(Kind::Pointer, t, -1));
+    return derived_.back();
+}
+
+// Interned on the pair, so two mentions of `int S::*` are one Type and every
+// table keyed by pointer sees the repeat they are.
+const Type *TypeTable::memberPointerTo(const Type *cls, const Type *member) {
+    for (Type *d : derived_)
+        if (!d->isConst() && d->kind() == Kind::MemberPointer &&
+            d->pointee() == member && d->enclosing() == cls)
+            return d;
+    Type *made = new Type(Kind::MemberPointer, member, -1);
+    made->setEnclosing(cls);
+    derived_.push_back(made);
     return derived_.back();
 }
 
@@ -343,6 +365,7 @@ const char *Type::name() const {
     case Kind::Pointer:   return "pointer";
     case Kind::Array:     return "array";
     case Kind::Function:  return "function";
+    case Kind::MemberPointer: return "pointer to member";
     case Kind::LValueRef: return "reference";
     case Kind::RValueRef: return "rvalue reference";
     case Kind::Deduced:       return "auto";

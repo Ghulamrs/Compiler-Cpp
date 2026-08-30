@@ -1279,6 +1279,56 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
     // `Outer::Inner::get` leaves the qualifier "Outer::Inner", which is the
     // qualified tag every table here is keyed by.
     while (!name.empty() && peek().is("::")) {
+        // **`int S::*p` - a pointer to a member of S.** The `::` here is not
+        // qualifying a name being defined; what follows it is a star. The
+        // declarator restarts from that star with the member-pointer type in
+        // hand, which is how `int S::*p`, `int S::**pp` and `int S::*a[3]` all
+        // come out right without a rule each.
+        if (peekAt(1).is("*")) {
+            const std::string of = qualifier.empty() ? name
+                                                     : qualifier + "::" + name;
+            const Type *cls = findTypedef(of);
+            if (cls == nullptr || !cls->isStructOrUnion())
+                src_.fail(pos, "'" + of + "' is not a class, so '" + of +
+                               "::*' names no member of anything");
+            at_ += 2;                              // the '::' and the '*'
+            // **A pointer to a member *function* is refused by name**, and it
+            // is a different animal: what it holds is not an offset but a
+            // function to call with a `this`, which on the Microsoft ABI is a
+            // structure of up to four words and on Itanium a pair. Data member
+            // pointers are one integer and no backend had to learn anything.
+            // Spotted by the shape - `int (S::*f)()` puts the star inside
+            // parentheses that a parameter list follows - which means looking
+            // past the name to the ')' that closes them.
+            bool functionFollows = false;
+            if (insideParens) {
+                int depth = 0;
+                for (std::size_t k = at_; ; k++) {
+                    const Token &t = peekAt(k - at_);
+                    if (t.kind == TokenKind::End) break;
+                    if (t.is("(")) depth++;
+                    else if (t.is(")")) {
+                        if (depth == 0) {
+                            functionFollows = peekAt(k - at_ + 1).is("(");
+                            break;
+                        }
+                        depth--;
+                    }
+                }
+            }
+            if (functionFollows)
+                src_.fail(pos, "a pointer to a member function is not "
+                               "supported yet - a pointer to a data member "
+                               "works, and holds an offset where this one has "
+                               "to hold a function and how to find its 'this'");
+            const Type *mp = types_.memberPointerTo(cls, base);
+            for (;;) {
+                if (consume("const"))    { mp = types_.withConst(mp); continue; }
+                if (consume("volatile")) continue;
+                break;
+            }
+            return declarator(mp, nameOptional, insideParens);
+        }
         at_++;
         qualifier = qualifier.empty() ? name : qualifier + "::" + name;
         bool destructor = consume("~");
