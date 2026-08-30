@@ -1252,6 +1252,8 @@ private:
     const Type *boundFn_ = nullptr;
     std::size_t boundAt_ = 0;
     ExprPtr staticCast(std::size_t pos);
+    ExprPtr constCast(std::size_t pos);
+    ExprPtr reinterpretCast(std::size_t pos);
     ExprPtr unary();
     ExprPtr postfix();
     ExprPtr primary(Program *program);

@@ -3668,6 +3668,49 @@ static_assert, and now it has happened twice: **when the names suite reports a
 disagreement on a case that changes no names, the case is usually asking the
 two compilers a question about emission.**
 
+## The named casts
+
+`static_cast` was already here. This adds `const_cast` and `reinterpret_cast`,
+and refuses `dynamic_cast` by name.
+
+**Neither of the two generates anything.** Every conversion they allow is
+between things of the same size, so the value is unchanged and what moves is
+the type. What the code here does is *say which claim was made* - which is the
+whole reason C++ gave each a name of its own instead of letting the C cast do
+all of it silently.
+
+### The line between them is const, and it runs both ways
+
+`reinterpret_cast` may not take const off; `const_cast` may not change what is
+pointed at. Letting either do the other's job would make one of them redundant,
+and would let a program take a const off while looking like it was only
+changing a type. Doing both means writing both, in either order. Both halves
+have a refusal case.
+
+`const_cast` also asks that the two types be **similar** in the standard's
+sense: strip the pointers in lockstep, ignore the qualifiers at each step, and
+arrive at the same type. `const int *const *` to `int **` is similar and legal;
+`const int *` to `char *` is not. Only `const` is a qualifier this compiler
+has - `volatile` is parsed and dropped - so that is the only thing either cast
+can move.
+
+### dynamic_cast is a rung, not a missing branch
+
+It asks what an object *actually* is, which only a `type_info` beside its
+vtable can answer, and this compiler emits none for a class on any target. The
+work is the type_info, the inheritance graph it carries, and the `__cxa_` call
+that walks it. Refused by name, and the refusal points at `static_cast`, which
+does the direction that needs no run-time answer.
+
+### `long` is not a portable pointer-sized integer
+
+A `long` is 8 bytes on x86_64-linux and arm64-darwin and **4** on
+x86_64-windows, so `reinterpret_cast<long>(p)` compiles on two targets and is
+refused on the third. `long long` is 8 on all three. This was caught by
+`emit.sh` - which compiles every case for every target and stops at assembly -
+before any box was asked, which is what that suite is for: **a target-dependent
+mistake in a case is cheapest to find on the machine you are sitting at.**
+
 ## Build
 
 ```

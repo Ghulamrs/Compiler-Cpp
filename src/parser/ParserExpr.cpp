@@ -292,6 +292,165 @@ ExprPtr Parser::staticCast(std::size_t pos) {
     return convert(std::move(v), to);
 }
 
+
+// **Two types that differ only in cv-qualifiers, at every level.**
+// [expr.const.cast] calls them "similar": strip the pointers in lockstep,
+// ignore the qualifiers at each step, and the two must arrive at the same
+// type. Only `const` is a qualifier this compiler has - `volatile` is parsed
+// and dropped - so that is the only one either cast can move. `const int *const *` and `int **` are similar; `const int *` and
+// `char *` are not, which is what stops const_cast being a free
+// reinterpretation.
+static bool differOnlyInQualifiers(const Type *a, const Type *b) {
+    for (;;) {
+        a = a->unqualified();
+        b = b->unqualified();
+        if (a == b) return true;
+        if (!a->isPointer() || !b->isPointer()) return false;
+        a = a->pointee();
+        b = b->pointee();
+    }
+}
+
+// `const_cast<T>(e)` - the only cast that may take const off, and the only
+// thing it may do. It generates nothing: the value is unchanged and what moves
+// is the type, which is the whole reason C++ made it a cast of its own rather
+// than letting the C one do it silently.
+ExprPtr Parser::constCast(std::size_t pos) {
+    expect("<");
+    StorageClass sc;
+    const Type *to = specifiers(&sc);
+    to = declarator(to, true).type;
+    if (!atClosingAngle())
+        src_.fail(peek().pos, "expected '>' to close 'const_cast<'");
+    takeClosingAngle();
+    expect("(");
+    ExprPtr v = expr();
+    expect(")");
+
+    if (to->isReference()) {
+        v = useReference(std::move(v));
+        if (!isGlvalue(*v))
+            src_.fail(pos, "'const_cast<" + to->describe() + ">' needs an "
+                           "object, and this is a value with no address of its "
+                           "own - there is no const on it to take off");
+        if (!differOnlyInQualifiers(v->type(), to->referent()))
+            src_.fail(pos, "'const_cast<" + to->describe() + ">' of a '" +
+                           v->type()->describe() + "' - const_cast changes "
+                           "const and volatile and nothing else, and these two "
+                           "are different types");
+        v->setType(to->referent());
+        return v;
+    }
+
+    v = decay(std::move(v));
+    if (!to->isPointer())
+        src_.fail(pos, "'const_cast<" + to->describe() + ">' - const_cast is "
+                       "written on a pointer or a reference, which are the "
+                       "things that carry a const somebody might want off. A "
+                       "value is copied, so its own const never stood in the "
+                       "way");
+    if (!v->type()->isPointer())
+        src_.fail(pos, "'const_cast<" + to->describe() + ">' of a '" +
+                       v->type()->describe() + "', which is not a pointer");
+    if (!differOnlyInQualifiers(v->type(), to))
+        src_.fail(pos, "'const_cast<" + to->describe() + ">' of a '" +
+                       v->type()->describe() + "' - const_cast changes const "
+                       "and volatile and nothing else, and these two point at "
+                       "different types");
+
+    ExprPtr c(new Cast(to, std::move(v)));
+    c->setType(to);
+    return c;
+}
+
+// `reinterpret_cast<T>(e)` - the cast that says "read these bits as something
+// else". It generates nothing either on any target here, because every
+// conversion it allows is between things of the same size; what it does is
+// name the places where that is allowed, and refuse the rest.
+//
+// **It may not take const off**, which is the line between it and const_cast
+// and the reason both exist: `reinterpret_cast<int *>(p)` on a `const int *`
+// is refused by clang and here, and the two casts have to be written together
+// to do it.
+ExprPtr Parser::reinterpretCast(std::size_t pos) {
+    expect("<");
+    StorageClass sc;
+    const Type *to = specifiers(&sc);
+    to = declarator(to, true).type;
+    if (!atClosingAngle())
+        src_.fail(peek().pos, "expected '>' to close 'reinterpret_cast<'");
+    takeClosingAngle();
+    expect("(");
+    ExprPtr v = expr();
+    expect(")");
+
+    auto keepsQualifiers = [&](const Type *from, const Type *want) {
+        for (;;) {
+            if (from->isConst() && !want->isConst()) return false;
+            from = from->unqualified();
+            want = want->unqualified();
+            if (!from->isPointer() || !want->isPointer()) return true;
+            from = from->pointee();
+            want = want->pointee();
+        }
+    };
+
+    // A reference reinterpretation is the same bits under another name - the
+    // object is not moved and its address is not changed, so the operand comes
+    // back with a new type and nothing else.
+    if (to->isReference()) {
+        v = useReference(std::move(v));
+        if (!isGlvalue(*v))
+            src_.fail(pos, "'reinterpret_cast<" + to->describe() + ">' needs "
+                           "an object to reinterpret, and this is a value with "
+                           "no address of its own");
+        if (!keepsQualifiers(v->type(), to->referent()))
+            src_.fail(pos, "'reinterpret_cast<" + to->describe() + ">' of a '" +
+                           v->type()->describe() + "' would take the const "
+                           "off - 'const_cast' is what does that, and the two "
+                           "are written separately on purpose");
+        v->setType(to->referent());
+        return v;
+    }
+
+    v = decay(std::move(v));
+    const Type *from = v->type();
+
+    const bool fromPointer = from->isPointer() || from->isNullPtr();
+    if (to->isPointer() && fromPointer) {
+        if (!keepsQualifiers(from, to))
+            src_.fail(pos, "'reinterpret_cast<" + to->describe() + ">' of a '" +
+                           from->describe() + "' would take the const off - "
+                           "'const_cast' is what does that, and the two are "
+                           "written separately on purpose");
+    } else if (to->isInteger() && fromPointer) {
+        // Measured: clang refuses a cast to an integer too small to hold the
+        // pointer rather than truncating it quietly.
+        if (to->size(target_) < from->size(target_))
+            src_.fail(pos, "'reinterpret_cast<" + to->describe() + ">' of a '" +
+                           from->describe() + "' loses part of the address - "
+                           "the type has to be wide enough to hold it");
+    } else if (to->isPointer() && from->isInteger()) {
+        // An integer becoming an address. Nothing to check: what the program
+        // means by the number is the program's business.
+    } else if (to->unqualified() == from->unqualified()) {
+        // `reinterpret_cast<int>(n)` where n is already an int. Legal, and
+        // does nothing, which is what it should do.
+        return v;
+    } else {
+        src_.fail(pos, "'reinterpret_cast<" + to->describe() + ">' of a '" +
+                       from->describe() + "' - reinterpret_cast reads one set "
+                       "of bits as another kind of pointer or as an integer "
+                       "wide enough to hold an address. A class and a floating "
+                       "point value are not either, and converting between "
+                       "numbers is 'static_cast'");
+    }
+
+    ExprPtr c(new Cast(to, std::move(v)));
+    c->setType(to);
+    return c;
+}
+
 // `[](int a) { return a * 2; }` - rung 7.6.
 //
 // **A closure is a class with a call operator**, generated where the lambda is
@@ -940,6 +1099,31 @@ ExprPtr Parser::primary(Program *program) {
         at_++;
         return staticCast(pos);
     }
+
+    if (peek().is("const_cast")) {
+        std::size_t pos = peek().pos;
+        at_++;
+        return constCast(pos);
+    }
+
+    if (peek().is("reinterpret_cast")) {
+        std::size_t pos = peek().pos;
+        at_++;
+        return reinterpretCast(pos);
+    }
+
+    // **`dynamic_cast` needs run-time type information, and there is none.**
+    // The cast asks what an object *actually* is, which is a question only a
+    // type_info object beside its vtable can answer - and this compiler emits
+    // no type_info for a class, on any of the three targets. It is a rung of
+    // its own, not a missing branch here. `static_cast<Base *>` covers the
+    // direction that needs no such thing.
+    if (peek().is("dynamic_cast"))
+        src_.fail(peek().pos, "'dynamic_cast' asks what an object really is at "
+                              "run time, which needs a type_info beside its "
+                              "vtable - and this compiler emits none for a "
+                              "class yet. Casting *to* a base needs no such "
+                              "thing and 'static_cast' does it");
 
     // **`nullptr` is a zero that knows it is not an integer.** At the machine
     // it is a pointer-sized 0 and nothing else, so the backends hear nothing
