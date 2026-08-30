@@ -81,6 +81,10 @@ private:
         // filled positionally by every `Signature{...}` in the parser, so a
         // new one in the middle silently shifts them.
         bool isExplicit = false;
+        // **`noexcept` on this function**, which in C++11 is not part of its
+        // type - so it changes no name and no overload set, and is recorded
+        // only so that the `noexcept(e)` operator can answer.
+        bool isNoexcept = false;
         // **Nobody wrote this one.** An implicitly declared special member is
         // put in the table so overload resolution finds it, and given a body
         // only if something calls it. That second half is what keeps the
@@ -1206,6 +1210,15 @@ private:
     void resolveGotos();
 
     bool staticAssertion();
+    bool exceptionSpecification();
+    // Set by exceptionSpecification() at each place a parameter list can be
+    // closed, read and cleared by whichever declare* call follows. The same
+    // shape `pendingDefaults_` uses, and for the same reason: the four places
+    // that parse the specification are not the places that build a Signature.
+    bool pendingNoexcept_ = false;
+    // How many potentially-throwing things the expression being parsed has
+    // reached. `noexcept(e)` reads it; nothing else does.
+    int mayThrow_ = 0;
     long long constantExpression(const char *what);
     bool fold(const Expr &e, long long *out, std::size_t pos) const;
 

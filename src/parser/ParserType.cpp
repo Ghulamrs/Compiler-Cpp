@@ -621,6 +621,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 d.type = types_.functionType(d.type, std::move(mparams), mvariadic);
                 bool constThis = false;
                 if (consume("const")) constThis = true;
+                pendingNoexcept_ = exceptionSpecification();
                 // **A `constexpr` member function is implicitly const in
                 // C++11**, and that is a mangling difference rather than a
                 // nicety: clang spells this one `_ZNK1B5twiceEi` and cxx1

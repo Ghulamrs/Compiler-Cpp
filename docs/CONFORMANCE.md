@@ -296,3 +296,45 @@ This is a refusal rather than a wrong answer, which is why it is separated from
 the entry above: a program that needs the wider set is told so. It is here
 because the two rules are one piece of work and the narrow version is a
 deliberate stopping point, not an oversight.
+
+
+## A `noexcept` function that throws propagates instead of terminating
+
+[except.spec]/9: when an exception escapes a function whose specification does
+not allow it, `std::terminate` is called. cxx1 records the promise and does not
+enforce it, so the exception unwinds past the function like any other and an
+outer handler catches it.
+
+```cpp
+void f() noexcept { throw 1; }
+int main() {
+    try { f(); }
+    catch (int e) { return e; }   // clang: terminate. cxx1: returns 1
+    return 0;
+}
+```
+
+**The compile-time half is complete and exact.** `noexcept(e)` answers the same
+as clang everywhere it was measured, and the specification is not part of the
+type in C++11 - so no name, no overload set and no signature match differs. The
+gap is only in what happens when the promise is broken, which is a run-time
+question.
+
+Enforcing it means emitting, for every `noexcept` function, a landing pad that
+calls `__cxa_begin_catch` and then `std::terminate` - which is what clang does,
+under the name `__clang_call_terminate`. The machinery exists here: cxx1 has
+landing pads and `catch (...)` on all three targets. What stops it being a
+small change is that wrapping every such function in an implicit `try` inherits
+two limits that are written down in CLAUDE.md - a local with a destructor and a
+`try` in one function is refused, and on x86_64-windows a handler is a funclet
+that cannot `return`. Those would then fire on ordinary `noexcept` functions
+that have nothing to do with exceptions, refusing programs that work today.
+
+So the order is: lift those two limits first, then this becomes the small
+change it looks like. Recorded rather than half-built, and rather than paid for
+with refusals of correct code.
+
+**What it costs meanwhile.** A program that relies on `noexcept` to stop
+unwinding - which is a program relying on it to crash - keeps running instead.
+Nothing that relies on the *promise* being true is affected, because a program
+that keeps its promise cannot tell the difference.

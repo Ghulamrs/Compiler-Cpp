@@ -32,7 +32,7 @@ const char *notYetSupported(const std::string &word) {
         "bitand", "bitor", "catch", "char16_t", "char32_t", "compl",
 
         "export", "friend", "inline", "mutable", "namespace",
-        "noexcept", "not", "not_eq", "operator", "or",
+        "not", "not_eq", "operator", "or",
         "or_eq",
         "template", "thread_local",
         "typeid", "using", "virtual",

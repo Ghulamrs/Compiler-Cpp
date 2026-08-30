@@ -2079,6 +2079,12 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
                        std::to_string(params.size()) + " argument(s), given " +
                        std::to_string(args.size()));
 
+    // **A call through a pointer promises nothing.** The specification is not
+    // part of the type in C++11, so a `int (*)()` says nothing about whether
+    // what it points at throws - and `noexcept(p())` is false for every
+    // function pointer, which is what clang answers too.
+    if (callee != nullptr) mayThrow_++;
+
     // Temporaries this call makes for its by-value class arguments, and which
     // this call therefore has to destroy once it returns.
     std::vector<std::pair<int, const Type *> > destroy;
@@ -2498,6 +2504,26 @@ ExprPtr Parser::unary() {
         ExprPtr n2(new Num(n));
         n2->setType(types_.get(target_.sizeType()));
         return n2;
+    }
+
+    // **`noexcept(e)` - a question about `e`, answered without running it.**
+    // The operand is parsed for its meaning and then thrown away, the way
+    // `sizeof`'s is: what is kept is whether anything in it could throw, which
+    // `mayThrow_` counted while it was being read. Counting during the parse
+    // rather than walking the tree afterwards is what keeps this to one
+    // number - every call already passes through `resolveOverload` or
+    // `completeCall`, and every `throw` through one place.
+    if (peek().is("noexcept") && peekAt(1).is("(")) {
+        at_ += 2;
+        const int outer = mayThrow_;
+        mayThrow_ = 0;
+        (void) expr();
+        const bool quiet = mayThrow_ == 0;
+        mayThrow_ = outer;
+        expect(")");
+        ExprPtr n(new Num(static_cast<long long>(quiet ? 1 : 0)));
+        n->setType(types_.get(Kind::Bool));
+        return n;
     }
 
     if (peek().is("sizeof")) {

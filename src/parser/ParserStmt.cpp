@@ -617,6 +617,43 @@ bool Parser::staticAssertion() {
     return true;
 }
 
+// **The exception specification, and the one thing it does not touch.** In
+// C++11 it is *not* part of the function's type - measured, `void f() noexcept`
+// and `void f()` both mangle to `_Z1fv` on Itanium and `?f@@YAXXZ` on
+// Microsoft - so nothing about a name, a signature match or an overload set
+// changes here. That is a C++17 rule, and this compiler targets C++11.
+//
+// What it does buy is a compile-time answer: the `noexcept(e)` operator asks
+// whether every function `e` calls has promised not to throw.
+//
+// `throw()` is the C++03 spelling of `noexcept` and is taken as one.
+// `throw(int)` is the *dynamic* exception specification, a different feature
+// that would need a run-time check against a type list - it is refused by name
+// rather than quietly read as `throw()`, which would be a promise the program
+// did not make.
+bool Parser::exceptionSpecification() {
+    if (consume("noexcept")) {
+        if (!consume("(")) return true;
+        const std::size_t at = peek().pos;
+        const long long value = constantExpression("a constant in 'noexcept('");
+        expect(")");
+        (void) at;
+        return value != 0;
+    }
+    if (peek().is("throw") && peekAt(1).is("(")) {
+        const std::size_t at = peek().pos;
+        at_ += 2;
+        if (!consume(")"))
+            src_.fail(at, "a dynamic exception specification - 'throw(T)' - is "
+                          "not supported yet; it needs a run-time check of the "
+                          "thrown type against a list, where 'noexcept' is a "
+                          "promise the compiler only has to record. 'throw()' "
+                          "with nothing in it is 'noexcept' and works");
+        return true;
+    }
+    return false;
+}
+
 long long Parser::constantExpression(const char *what) {
     std::size_t pos = peek().pos;
     ExprPtr e = decay(conditional());
@@ -1228,6 +1265,7 @@ StmtPtr Parser::statementBody() {
         if (peek().is(";"))
             src_.fail(tpos, "a rethrow - 'throw' with nothing after it - is "
                             "not supported yet");
+        mayThrow_++;
         ExprPtr value = decay(expr());
         expect(";");
         return throwStatement(std::move(value), tpos);
@@ -1894,6 +1932,10 @@ void Parser::topLevel(Program &program) {
     // it out here makes the definition disagree with its own declaration -
     // "'B' declares no member 'twice' with these parameters".
     if (memberOf != nullptr && constexprFunction) constThis = true;
+
+    // The exception specification comes after the constness, which is the
+    // order C++ writes them in: `int get() const noexcept`.
+    pendingNoexcept_ = exceptionSpecification();
 
     if (consume(";")) {
         if (memberOf != nullptr)

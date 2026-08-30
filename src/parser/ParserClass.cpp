@@ -73,6 +73,11 @@ void Parser::declareDestructor(const std::string &cls, std::size_t pos,
     parameterTypes(params, variadic);
     if (!params.empty() || variadic)
         src_.fail(pos, "a destructor takes no parameters");
+    // A destructor is `noexcept` in C++11 whether or not it says so
+    // ([except.spec]/14), so what is written here only has to be accepted -
+    // and `~S() noexcept(false)` opts back out, which is why it is read rather
+    // than assumed.
+    pendingNoexcept_ = exceptionSpecification();
 
     if (overloadsOf(destructorKey(cls)) != nullptr)
         src_.fail(pos, "'" + cls + "' has two destructors, and a class has one");
@@ -666,6 +671,9 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
     parameterTypes(params, variadic);
     if (variadic)
         src_.fail(pos, "a constructor cannot take '...'");
+    // Read here rather than at the call site: this is where the parameter list
+    // was consumed, so this is where what follows it can be seen.
+    pendingNoexcept_ = exceptionSpecification();
 
     // A constructor returns nothing, and saying so as void is what lets the
     // rest of the compiler treat the call like any other.
@@ -699,6 +707,8 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
     functions_.push_back(Signature{ cls, out, types_.get(Kind::Void), params,
                                     false, false, pos, false, cls, false, access });
     functions_.back().isExplicit = isExplicit;
+    functions_.back().isNoexcept = pendingNoexcept_;
+    pendingNoexcept_ = false;
 }
 
 // The class a member is built from: the element type when the member is an
@@ -1913,6 +1923,8 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
         d.name, symbol,
         fn->returns(), params, fn->isVariadicFn(), false, d.pos, false,
         cls, constThis, access, isVirtual });
+    functions_.back().isNoexcept = pendingNoexcept_;
+    pendingNoexcept_ = false;
 
     if (!isVirtual) return;
     if (slot < slots.size()) { slots[slot].symbol = symbol; return; }
@@ -2025,10 +2037,24 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
                            f.returns->describe() + "' and this says '" +
                            returns->describe() + "' - two functions cannot "
                            "differ in the return type alone");
+        // **A declaration and its definition must agree about `noexcept`.**
+        // Measured both ways: clang refuses a definition that drops it and one
+        // that adds it. The specification is not part of the type in C++11, so
+        // this is the only thing that holds the two together - without it the
+        // two would silently be one function with whichever promise was seen
+        // last.
+        if (f.isNoexcept != pendingNoexcept_)
+            src_.fail(pos, "'" + key + "' was declared " +
+                           (f.isNoexcept ? "'noexcept'" : "without 'noexcept'") +
+                           " and this says " +
+                           (pendingNoexcept_ ? "'noexcept'" : "nothing") +
+                           " - a declaration and its definition have to make "
+                           "the same promise");
         if (defining) {
             if (f.defined) src_.fail(pos, "'" + key + "' is defined twice");
             f.defined = true;
         }
+        pendingNoexcept_ = false;
         return;
     }
 
@@ -2051,6 +2077,8 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
                                     returns, params, variadic, defining, pos,
                                     cName, std::string(), false,
                                     Access::Public });
+    functions_.back().isNoexcept = pendingNoexcept_;
+    pendingNoexcept_ = false;
     if (!pendingDefaults_.empty())
         defaultArgs_[functions_.back().symbol] = pendingDefaults_;
     pendingDefaults_.clear();

@@ -3711,6 +3711,49 @@ refused on the third. `long long` is 8 on all three. This was caught by
 before any box was asked, which is what that suite is for: **a target-dependent
 mistake in a case is cheapest to find on the machine you are sitting at.**
 
+## noexcept, both of them
+
+**In C++11 the exception specification is not part of the function's type.**
+Measured: `void f() noexcept` and `void f()` both mangle to `_Z1fv` on Itanium
+and `?f@@YAXXZ` on Microsoft. So no name, no overload set and no signature
+match changes - which is most of why this rung is small. C++17 made it part of
+the type; this compiler targets C++11.
+
+Because nothing else holds a declaration and its definition together, **the two
+have to say the same thing**, and that check is the only structural work the
+specifier needs. clang refuses a mismatch in both directions and so does this;
+without it the two would silently be one function carrying whichever promise
+was read last.
+
+`throw()` is the C++03 spelling and is taken as the same promise. `throw(T)` is
+the *dynamic* exception specification - a different feature needing a run-time
+check of the thrown type against a list - and is refused by name rather than
+read as `throw()`, which would be a promise the program did not make.
+
+### The operator counts during the parse
+
+`noexcept(e)` does not run `e`. The operand is parsed for its meaning and
+thrown away, the way `sizeof`'s is, and what is kept is whether anything in it
+could throw. That is counted **while** it is being read rather than by walking
+the tree afterwards, which keeps the whole thing to one integer: every call
+already passes through `resolveOverload` (which knows which function it
+reached) or `completeCall` with a non-null callee (a call through a pointer,
+which promises nothing), and every `throw` through one place.
+
+A call through a function pointer is always potentially-throwing, and that
+falls out of the same rule that made this rung small: the promise is not part
+of the type, so a `int (*)()` says nothing about what it points at.
+
+### The specification is recorded and not enforced
+
+A throw escaping a `noexcept` function propagates here where it should call
+`std::terminate`. **The compile-time half is complete and exact** - the
+operator agrees with clang everywhere it was measured - and the run-time half
+is in `docs/CONFORMANCE.md` with the reason: enforcing it means wrapping every
+such function in an implicit `try`, which would inherit the two try/catch
+limits already recorded here and start refusing programs that work today. Lift
+those first.
+
 ## Build
 
 ```

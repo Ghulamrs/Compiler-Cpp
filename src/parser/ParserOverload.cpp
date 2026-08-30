@@ -622,6 +622,7 @@ const Parser::Signature &Parser::resolveOverload(const std::string &written,
     }
     if (viable.size() == 1) {
         functions_[viable[0]].used = true;
+        if (!functions_[viable[0]].isNoexcept) mayThrow_++;
         return functions_[viable[0]];
     }
 
@@ -641,6 +642,10 @@ const Parser::Signature &Parser::resolveOverload(const std::string &written,
         }
     }
     functions_[viable[best]].used = true;
+    // **Every call is potentially-throwing unless the function promised
+    // otherwise**, and this is the one place a call finds out which function it
+    // reached. `noexcept(e)` reads the count this leaves behind.
+    if (!functions_[viable[best]].isNoexcept) mayThrow_++;
     return functions_[viable[best]];
 }
 
