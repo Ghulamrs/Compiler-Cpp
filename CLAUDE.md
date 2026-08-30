@@ -3055,12 +3055,60 @@ written and clang does not - measured on a file whose *third* lambda came out
 object and the object never leaves the function that made it.
 `tests/cases/lambda.nonames` records it for all three targets.
 
-**Refused by name: every capture.** A capture is a member of the closure and
-has to be initialised where the lambda is written, which needs the class
-temporary this compiler has not got. `[&]` and `[=]` are refused separately and
-for a different reason - they capture whatever the body turns out to name,
-which is a second pass over it this parser does not make - and so are `[this]`
-and `mutable`. **Captures are the whole of what is left of 7.6.**
+### Captures, and rung 7.6 finished
+
+**A capture is a member of the closure**, copied from the enclosing function
+where the lambda is written - and reading one inside the body needed no new
+rule at all: `operator()` is a member function, and an unqualified name in one
+already means `this->name`. The class is laid out as any class is, each member
+at the next offset its alignment allows.
+
+**The copying happens on every reading of the lambda, not only the first**, and
+that is the bug this cost. 7.1 reads an `auto` initialiser twice and the second
+reading takes the cached class - so with the copying beside the building, the
+object the declaration actually kept was never initialised at all. It printed
+`-15 -341155503` where it should have printed `6 7`. `buildClosure` is called
+from both the building path and the cache hit, and the capture list is kept
+beside the type for exactly that.
+
+The captures are declared in the deduction scope too. That reading hides the
+enclosing locals - a lambda body sees its own parameters and, without a
+capture, nothing of the function around it - so a captured name has to be put
+back, or `[k](int a){ return a + k; }` cannot deduce its own return type.
+
+Still refused by name: `[&]` and `[=]`, which capture whatever the body turns
+out to name and would need a second pass over it; `[this]`; `mutable`; and
+capturing a reference by value.
+
+## Class temporaries: one gap, three symptoms
+
+`P(1)` builds a temporary now. It was reachable three ways and refused in all
+of them - as an expression, as `return P(1);`, and as `static_cast<T &&>` of a
+prvalue - which is what made it the most valuable thing left rather than the
+most visible. Lambda captures were a fourth: a capture has to be initialised
+where the lambda is written.
+
+**The object goes in a slot of this frame and the expression answers with its
+name**, the constructor sequenced in front by a comma. That is the shape
+`materialiseCopy` already built for a by-value class parameter; what was
+missing was a way to ask for one by writing the type.
+
+**The shape is `*(P::P(&tmp, 1), &tmp)` and not `(P::P(&tmp, 1), tmp)`.** The
+second reads better and cannot work: `isGlvalue` gives a comma its right
+operand's value category, so the parser would let anyone take its address - and
+**taking the address of a comma is not something the three backends know**.
+`take(P(4))` found that immediately, since passing by value takes an address.
+Writing it as a dereference says the same thing with a shape all three already
+handle, because the address of `*p` is `p`.
+
+The temporary is destroyed at the end of the full expression, [class.temporary]
+/4, which is what `pendingTemps_` was already for.
+
+**What it did not fix**: `T(3);` as a statement on its own - a temporary built
+and discarded. The statement parser reads a type name followed by `(` as a
+declaration and reports `expected ')'`. It is the vexing-parse machinery that
+would have to be told, `tests/cases/constructor-vexing` pins the behaviour that
+makes it delicate, and a discarded temporary is worth less than that risk.
 
 ## Decisions already taken
 

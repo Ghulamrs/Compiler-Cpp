@@ -310,7 +310,9 @@ ExprPtr Parser::staticCast(std::size_t pos) {
 const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
                                        std::size_t paramsTo,
                                        std::size_t bodyFrom,
-                                       std::size_t bodyTo) {
+                                       std::size_t bodyTo,
+                                       const std::vector<std::string> &capNames,
+                                       const std::vector<const Type *> &capTypes) {
     // **The first `return` at the body's own level**, and not only a body that
     // is nothing but one.
     //
@@ -349,6 +351,16 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     std::vector<std::size_t> starts;
     starts.swap(scopeStarts_);
     enterScope();
+
+    // The captures are in scope in the body as well as the parameters - they
+    // are members of the closure by the time it is really parsed, and a member
+    // is what an unqualified name there will find. Declared as locals here
+    // because this reading has no closure to be a member of yet.
+    for (std::size_t c = 0; c < capNames.size(); c++) {
+        inParams_ = true;
+        declare(capNames[c], capTypes[c], bodyFrom);
+        inParams_ = false;
+    }
 
     if (paramsTo > paramsFrom) {
         const std::size_t save = at_;
@@ -409,6 +421,102 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     return found;
 }
 
+// `P(1)` - a temporary of class type.
+//
+// **The object goes in a slot of this frame and the expression answers with
+// its name**, the constructor call sequenced in front by a comma:
+// `(P::P(&tmp, 1), tmp)`. That is the same shape `materialiseCopy` already
+// builds for a by-value class parameter, which is where the pattern comes
+// from - what was missing was a way to ask for one by writing the type.
+//
+// **It was reachable three ways and refused in all of them**, and the refusal
+// named a different thing each time: `P(1)` in an expression, `return P(1);`,
+// and `static_cast<T &&>` of a prvalue. One gap, three symptoms.
+//
+// The temporary is destroyed at the end of the full expression, which is what
+// `pendingTemps_` is for - [class.temporary]/4 - so a class with a destructor
+// gets one call there and not at the end of the function.
+ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
+    const Type *plain = cls->unqualified();
+    std::vector<ExprPtr> args;
+    parseArguments(args);
+
+    const std::string key = constructorKey(plain->tag());
+    if (overloadsOf(key) == nullptr) {
+        // No constructor at all: `P(x)` is then a copy of another P, which is
+        // a move of bytes, and `P()` is an object with nothing to set.
+        if (args.size() > 1)
+            src_.fail(pos, "'" + plain->describe() + "' has no constructor, so "
+                           "'" + plain->tag() + "(...)' can only be a copy of "
+                           "another one - and this gives " +
+                           std::to_string(args.size()) + " arguments");
+        const int slot = allocateFrameSlot(plain);
+        if (destructorOf(plain) != nullptr)
+            pendingTemps_.push_back(std::make_pair(slot, plain));
+        ExprPtr obj(Var::local("$tmp", slot));
+        obj->setType(plain);
+        if (args.empty()) return obj;
+        checkAssignable(*args[0], plain, pos, "this temporary");
+        ExprPtr store(new Assign(std::move(obj), std::move(args[0])));
+        store->setType(plain);
+        ExprPtr again(Var::local("$tmp", slot));
+        again->setType(plain);
+        ExprPtr at(new Unary('&', std::move(again)));
+        at->setType(types_.pointerTo(plain));
+        ExprPtr both(new Comma(std::move(store), std::move(at)));
+        both->setType(types_.pointerTo(plain));
+        ExprPtr made(new Unary('*', std::move(both)));
+        made->setType(plain);
+        return made;
+    }
+
+    const Signature &ctor = resolveOverload(key, args, pos);
+    applyDefaults(ctor, args, pos);
+    if (ctor.access != Access::Public && currentClass_ != plain &&
+        !isFriendOf(plain))
+        src_.fail(pos, "'" + plain->describe() + "' has no public constructor "
+                       "taking these arguments - the one that matches is " +
+                       (ctor.access == Access::Private ? "private" : "protected"));
+
+    const int slot = allocateFrameSlot(plain);
+    if (destructorOf(plain) != nullptr)
+        pendingTemps_.push_back(std::make_pair(slot, plain));
+
+    const Type *ptr = types_.pointerTo(plain);
+    ExprPtr obj(Var::local("$tmp", slot));
+    obj->setType(plain);
+    ExprPtr addr(new Unary('&', std::move(obj)));
+    addr->setType(ptr);
+
+    std::vector<ExprPtr> all;
+    all.push_back(std::move(addr));
+    for (std::size_t i = 0; i < args.size(); i++) all.push_back(std::move(args[i]));
+    std::vector<const Type *> full;
+    full.push_back(ptr);
+    for (std::size_t i = 0; i < ctor.params.size(); i++) full.push_back(ctor.params[i]);
+
+    ExprPtr call = completeCall(plain->tag(), ctor.symbol, nullptr,
+                                types_.get(Kind::Void), full, false, pos,
+                                std::move(all));
+
+    // **A dereference of a pointer, not the object beside a comma.** The
+    // obvious shape is `(ctor(&tmp, ...), tmp)`, and `isGlvalue` says a comma
+    // has its right operand's value category - so the parser would let anyone
+    // take its address, and no backend can: taking the address of a comma is
+    // not something the three code generators know. `*(ctor(&tmp, ...), &tmp)`
+    // says the same thing with a shape they all already handle, because the
+    // address of `*p` is `p` and every one of them knows that.
+    ExprPtr again(Var::local("$tmp", slot));
+    again->setType(plain);
+    ExprPtr at(new Unary('&', std::move(again)));
+    at->setType(ptr);
+    ExprPtr both(new Comma(std::move(call), std::move(at)));
+    both->setType(ptr);
+    ExprPtr made(new Unary('*', std::move(both)));
+    made->setType(plain);
+    return made;
+}
+
 ExprPtr Parser::lambdaExpression() {
     const std::size_t pos = peek().pos;
     const std::size_t lamAt = at_;
@@ -418,30 +526,44 @@ ExprPtr Parser::lambdaExpression() {
     std::map<std::size_t, MadeLambda>::const_iterator had = lambdaAt_.find(lamAt);
     if (had != lambdaAt_.end()) {
         at_ = had->second.end;
-        const std::string again = ".lam" + std::to_string(refTemps_++);
-        const int slot = declare(again, had->second.type, pos);
-        ExprPtr made(Var::local(again, slot));
-        made->setType(had->second.type);
-        return made;
+        return buildClosure(had->second, pos);
     }
 
     at_++;                                    // '['
 
     // Refused by name, and each for its own reason rather than one blanket
     // message: a capture is what the reader wrote and what they want back.
-    if (!peek().is("]")) {
+    // **A capture by value is a member of the closure**, copied from the
+    // enclosing function where the lambda is written. Reading one inside the
+    // body needs no new rule at all: `operator()` is a member function, and an
+    // unqualified name there already means `this->name`.
+    std::vector<std::string> capNames;
+    std::vector<const Type *> capTypes;
+    std::vector<int> capOffsets;
+    while (!peek().is("]")) {
         if (peek().is("&") || peek().is("="))
             src_.fail(peek().pos, "a default capture is not supported yet - "
                                   "'[&]' and '[=]' capture whatever the body "
                                   "turns out to name, which is a second pass "
-                                  "over it this parser does not make");
+                                  "over it this parser does not make; name "
+                                  "what you want captured");
         if (peek().is("this"))
             src_.fail(peek().pos, "capturing 'this' is not supported yet");
-        src_.fail(peek().pos, "a lambda capture is not supported yet - a "
-                              "capture is a member of the closure and has to "
-                              "be initialised where the lambda is written, "
-                              "which needs the temporary this compiler has "
-                              "not got; '[]' works now");
+        const std::size_t cpos = peek().pos;
+        const std::string cname = expectIdent("a captured name");
+        const Local *have = findLocal(cname);
+        if (have == nullptr)
+            src_.fail(cpos, "'" + cname + "' is not a local of the function "
+                            "around this lambda, so there is nothing here to "
+                            "capture");
+        if (have->type->isReference())
+            src_.fail(cpos, "capturing a reference by value is not supported "
+                            "yet - what the closure would hold is the object "
+                            "it refers to, and copying it needs a rule this "
+                            "does not have");
+        capNames.push_back(cname);
+        capTypes.push_back(have->type->unqualified());
+        if (!peek().is("]")) expect(",");
     }
     at_++;                                    // ']'
 
@@ -478,8 +600,9 @@ ExprPtr Parser::lambdaExpression() {
     // `return expression;` has that expression's type and anything else is
     // void. The expression is read with the parameters in scope and then put
     // back, which is what 7.1 does for `auto` and for the same reason.
-    if (returns == nullptr) returns = deduceLambdaReturn(paramsFrom, paramsTo,
-                                                         bodyFrom, bodyTo);
+    if (returns == nullptr)
+        returns = deduceLambdaReturn(paramsFrom, paramsTo, bodyFrom, bodyTo,
+                                     capNames, capTypes);
 
     // The closure type. Named `$_0` upward within the enclosing function, which
     // is what clang calls one - the numbering is not the same as clang's and
@@ -493,8 +616,21 @@ ExprPtr Parser::lambdaExpression() {
     closure->setDeclaredClass(false);
     if (!currentFunction_.empty()) localClassOwner_[tag] = currentFunction_;
     declareTypeName(tag, closure);
-    std::vector<Member> none;
-    closure->complete(none, 1, 1);            // no captures: an empty object
+    // Laid out as any class is: each member at the next offset its own
+    // alignment allows, and the whole thing aligned to the widest of them.
+    std::vector<Member> members;
+    int at = 0, widest = 1;
+    for (std::size_t i = 0; i < capTypes.size(); i++) {
+        const int a = capTypes[i]->align(target_);
+        if (a > widest) widest = a;
+        at = alignTo(at, a);
+        capOffsets.push_back(at);
+        members.push_back(Member{ capNames[i], capTypes[i], at, 0, 0,
+                                  Access::Public });
+        at += capTypes[i]->size(target_);
+    }
+    const int size = members.empty() ? 1 : alignTo(at, widest);
+    closure->complete(members, size, widest);
 
     // `operator()`, declared as a const member of it.
     Declared d;
@@ -527,12 +663,59 @@ ExprPtr Parser::lambdaExpression() {
     replayInlineBodies(std::move(mine));
 
     // The object itself: a slot in this frame, and the expression is its name.
-    lambdaAt_[lamAt] = MadeLambda{ closure, at_ };
+    MadeLambda record;
+    record.type = closure;
+    record.end = at_;
+    record.names = capNames;
+    record.types = capTypes;
+    record.offsets = capOffsets;
+    lambdaAt_[lamAt] = record;
+    return buildClosure(record, pos);
+}
 
+// A slot for the closure, and each capture copied into it. Called on every
+// reading of the lambda and not only the first: 7.1 reads an `auto`
+// initialiser twice, and the second reading takes the cached class - so if the
+// copying lived beside the building, the object the declaration actually kept
+// would hold whatever was on the stack.
+ExprPtr Parser::buildClosure(const MadeLambda &made, std::size_t pos) {
     const std::string name = ".lam" + std::to_string(refTemps_++);
-    const int off = declare(name, closure, pos);
-    ExprPtr obj(Var::local(name, off));
-    obj->setType(closure);
+    const int off = declare(name, made.type, pos);
+    if (made.names.empty()) {
+        ExprPtr obj(Var::local(name, off));
+        obj->setType(made.type);
+        return obj;
+    }
+
+    // `(c.x = x, c.y = y, &c)` and then a dereference of it - the same shape
+    // classTemporary uses, and for the same reason: the address of a comma is
+    // not something the backends take, and the address of `*p` is `p`.
+    ExprPtr chain;
+    for (std::size_t i = 0; i < made.names.size(); i++) {
+        ExprPtr self(Var::local(name, off));
+        self->setType(made.type);
+        ExprPtr dst(new MemberAccess(std::move(self), made.names[i],
+                                     made.offsets[i], 0, 0));
+        dst->setType(made.types[i]);
+        ExprPtr src = objectRef(made.names[i]);
+        if (src == nullptr)
+            src_.fail(pos, "'" + made.names[i] + "' went missing between the "
+                           "capture list and the lambda");
+        ExprPtr store(new Assign(std::move(dst), decay(std::move(src))));
+        store->setType(made.types[i]);
+        if (chain == nullptr) { chain = std::move(store); continue; }
+        ExprPtr both(new Comma(std::move(chain), std::move(store)));
+        both->setType(made.types[i]);
+        chain = std::move(both);
+    }
+    ExprPtr whole(Var::local(name, off));
+    whole->setType(made.type);
+    ExprPtr at2(new Unary('&', std::move(whole)));
+    at2->setType(types_.pointerTo(made.type));
+    ExprPtr seq(new Comma(std::move(chain), std::move(at2)));
+    seq->setType(types_.pointerTo(made.type));
+    ExprPtr obj(new Unary('*', std::move(seq)));
+    obj->setType(made.type);
     return obj;
 }
 
@@ -837,6 +1020,19 @@ ExprPtr Parser::primary(Program *program) {
                 ExprPtr obj(new Unary('*', std::move(me)));
                 obj->setType(self->type->pointee());
                 return memberCall(std::move(obj), self->type->pointee(), name, pos);
+            }
+        }
+
+        // `P(1)` where P names a class: a temporary, not a call to a
+        // function nobody declared. Asked before the call branch below, which
+        // would look the name up in the function table and report it
+        // undeclared - which is what it did until now.
+        if (peekAt(1).is("(") && !callsThroughObject && l == nullptr &&
+            g == nullptr) {
+            const Type *named = findTypedef(name);
+            if (named != nullptr && named->isStructOrUnion()) {
+                at_ += 2;
+                return classTemporary(named, pos);
             }
         }
 

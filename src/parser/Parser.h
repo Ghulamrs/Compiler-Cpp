@@ -789,6 +789,10 @@ private:
     // one. `declaredName` is `expectIdent` with that case in front of it, and
     // stands wherever a declarator reads a name.
     // `[](int a) { return a * 2; }` - rung 7.6.
+    // `P(1)` - a temporary of class type, built into a slot of this frame.
+    // The gap this closes was reachable three ways: as an expression, as
+    // `return P(1);`, and as `static_cast<T &&>` of a prvalue.
+    ExprPtr classTemporary(const Type *cls, std::size_t pos);
     ExprPtr lambdaExpression();
     // [expr.prim.lambda]/4 with no trailing return type: a body that is one
     // `return expression;` has that expression's type, anything else is void.
@@ -797,7 +801,9 @@ private:
     // threading the type out of a body parsed once would mean threading it
     // through every path the body can take.
     const Type *deduceLambdaReturn(std::size_t paramsFrom, std::size_t paramsTo,
-                                   std::size_t bodyFrom, std::size_t bodyTo);
+                                   std::size_t bodyFrom, std::size_t bodyTo,
+                                   const std::vector<std::string> &capNames,
+                                   const std::vector<const Type *> &capTypes);
     int lambdaCount_ = 0;
     // The hidden typedef that spells a closure's return type needs a name no
     // other lambda will take, so this one never resets where lambdaCount_ does
@@ -811,7 +817,18 @@ private:
     // classes, and the declaration then refused its own initialiser: "'f' is
     // 'struct main::$_0' and this is 'struct main::$_1'". Keyed by the token
     // the '[' sits at, which is the same on every reading.
-    struct MadeLambda { const Type *type; std::size_t end; };
+    struct MadeLambda {
+        const Type *type;
+        std::size_t end;
+        // The captures have to be copied in on *every* reading, not only the
+        // one that built the class - the second reading was handing back an
+        // uninitialised closure and the lambda saw whatever was on the stack.
+        std::vector<std::string> names;
+        std::vector<const Type *> types;
+        std::vector<int> offsets;
+    };
+    // One closure object: a frame slot, and each capture copied into it.
+    ExprPtr buildClosure(const MadeLambda &made, std::size_t pos);
     std::map<std::size_t, MadeLambda> lambdaAt_;
 
     std::string operatorName();
