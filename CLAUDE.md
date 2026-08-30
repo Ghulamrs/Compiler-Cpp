@@ -2545,6 +2545,16 @@ the class's own and `memberCall`'s ordinary resolution *is* the resolution,
 arity and all. It is also the only one with no fixed number of operands, which
 is why it is exempt from the arity check rather than listed in it.
 
+**An operator function can be called by its name**, which is [over.oper]/1 and
+was refused for as long as operators have worked here. The name was read in
+declarators and nowhere else, so in an *expression* the keyword fell through to
+the table of words this parser has no rule for and said `'operator' is not
+supported yet` about a feature it had. Two places had to learn it: the
+member-access paths, which read a name after `.` and `->`, and `primary` -
+where the branch has to sit **before** the catch-all keyword refusal, or that
+refusal claims the token first. `tests/cases/operator-by-name` holds all five
+forms.
+
 **The harder half was not the dispatch.** `v(1)` never reached the postfix
 parser: a name followed by `(` was read as a call to a *function* of that name
 before anything looked at what the name held, so an object was reported
@@ -2746,6 +2756,46 @@ established", which says the same thing about green suites.
 where the expression is written, with its captures as members and `operator()`
 holding the body. The class it needs can now exist, and so can the call
 operator.
+
+## Ordinary C++ this refuses, and none of it is on the ladder
+
+**The gap this section exists to close.** `docs/CONFORMANCE.md` holds what
+compiles and is wrong, and the ladder holds the features not written yet -
+each of which is refused *by name*, so a reader who reaches for one is told
+which one. Between the two there is a third kind, and it had no home: small
+pieces of perfectly ordinary C++ that are refused by a message about something
+else, belonging to no rung and named nowhere. They are invisible until
+somebody writes one, which is how all three below were found - by running
+plain C++ past the compiler and reading what came back, rather than by
+reading the ladder.
+
+Found 2026-08-30 and each checked against clang, which accepts all three.
+
+| written | what comes back |
+| --- | --- |
+| `P a(1), b(2);` | `expected ';'` — only the first declarator of a declaration may have constructor arguments |
+| `return P(1);` | `'P(...)' makes a temporary of type 'struct P'` — a class temporary written as a functional cast |
+| `int f(int) { … }` | `a parameter of a definition needs a name` |
+
+**The third has a sharper edge than it looks.** The postfix increment is
+declared `operator++(int)` and *nobody names that parameter* - it exists only
+to tell the two forms apart, so every real program writing one hits this. The
+prototype form is accepted and only the definition is refused, which is the
+inherited C rule: a body needs a name to refer to the parameter by. C++ does
+not require one, and a compiler that means to run other people's code has to
+take it.
+
+**The second is what a constructor is usually written through**, so it is the
+one most likely to stop a real program: `return P(1);`, `f(P(1))` and
+`P p = P(1);` are all it. What it needs is a materialised temporary with a
+lifetime, which is also what `static_cast<T &&>` of a prvalue wants - see rung
+7.4b, where that was refused for the same missing thing.
+
+None of these is hard; they are recorded because nothing else records them and
+because each was a surprise. **A fourth was found with them and is fixed**:
+calling an operator function by its name - `a.operator+(b)`, `operator+(a, b)`
+- was refused with `'operator' is not supported yet` about a feature this
+compiler has. See "Operator overloading".
 
 ## Decisions already taken
 

@@ -312,6 +312,26 @@ ExprPtr Parser::primary(Program *program) {
         return v;
     }
 
+    // **`operator+(a, b)` written out.** [over.oper]/1: an operator function
+    // is an ordinary function and may be called by its name like any other -
+    // and `a.operator+(b)` is how you reach a member operator that an
+    // expression would have chosen differently. Reading the name here is the
+    // one place it happens outside a declarator, and without it the keyword
+    // fell through to the table of things this parser has no rule for and
+    // said `'operator' is not supported yet` about a feature it has.
+    if (peek().is("operator")) {
+        std::size_t opos = peek().pos;
+        const std::string name = operatorName();
+        if (!consume("("))
+            src_.fail(peek().pos, "'" + name + "' is a function here, and a "
+                                  "call needs its arguments");
+        std::vector<ExprPtr> args;
+        parseArguments(args);
+        const Signature &sig = resolveOverload(name, args, opos);
+        return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params,
+                            sig.variadic, opos, std::move(args));
+    }
+
     if (peek().kind == TokenKind::Keyword) {
         if (const char *pending = notYetSupported(peek().text))
             src_.fail(peek().pos, std::string("'") + pending +
@@ -1169,7 +1189,7 @@ ExprPtr Parser::postfix() {
             ExprPtr deref(new Unary('*', std::move(n)));
             deref->setType(obj);
             n = std::move(deref);
-            std::string name = expectIdent("a member name");
+            std::string name = declaredName("a member name");
             if (consume("(")) { n = memberCall(std::move(n), obj, name, pos); continue; }
             // **`p->count` where count is static** names the one shared
             // object, and the expression on the left is still evaluated -
@@ -1216,7 +1236,7 @@ ExprPtr Parser::postfix() {
                 src_.fail(pos, "'.' needs a struct or union, not '" +
                                n->type()->describe() + "'");
             const Type *obj = n->type();
-            std::string name = expectIdent("a member name");
+            std::string name = declaredName("a member name");
             if (consume("(")) { n = memberCall(std::move(n), obj, name, pos); continue; }
             // **`p->count` where count is static** names the one shared
             // object, and the expression on the left is still evaluated -
