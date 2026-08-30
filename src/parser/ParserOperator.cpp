@@ -306,6 +306,43 @@ ExprPtr Parser::compound(BinOp op, ExprPtr target, ExprPtr value, std::size_t po
 }
 
 ExprPtr Parser::incDec(ExprPtr target, bool increment, bool prefix, std::size_t pos) {
+    // **The dummy `int` is how the standard tells the two apart**, and it is
+    // a real parameter rather than a marker: [over.inc] gives the postfix form
+    // an extra int and passes 0 in it, which is why `operator++(int)` is
+    // written with a parameter nobody names and why the argument is built here
+    // rather than being a flag on the call. With it, postfix is the ordinary
+    // two-operand resolution and prefix is the one-operand one.
+    if (target->type()->unqualified()->isStructOrUnion()) {
+        const char *spelling = increment ? "++" : "--";
+        const std::string name = std::string("operator") + spelling;
+        const Type *self = target->type();
+
+        ExprPtr dummy;
+        if (!prefix) {
+            dummy.reset(new Num(0LL));
+            dummy->setType(types_.intType());
+        }
+        switch (resolveOperator(name, *target, dummy.get(), pos)) {
+        case OperatorChoice::Member: {
+            std::vector<ExprPtr> args;
+            if (!prefix) args.push_back(std::move(dummy));
+            return memberCallWith(std::move(target), self, name, pos,
+                                  std::move(args));
+        }
+        case OperatorChoice::NonMember: {
+            std::vector<ExprPtr> args;
+            args.push_back(std::move(target));
+            if (!prefix) args.push_back(std::move(dummy));
+            const Signature &sig = resolveOverload(name, args, pos);
+            return completeCall(name, sig.symbol, nullptr, sig.returns,
+                                sig.params, sig.variadic, pos, std::move(args));
+        }
+        case OperatorChoice::None:
+            src_.fail(pos, std::string("'") + spelling + "' needs a '" + name +
+                           "' for '" + self->describe() + "', and there is none");
+        }
+    }
+
     if (prefix) {
         ExprPtr one(new Num(1LL));
         one->setType(types_.intType());

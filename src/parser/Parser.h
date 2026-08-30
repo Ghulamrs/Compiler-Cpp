@@ -1082,8 +1082,16 @@ private:
     // candidate is best, of all of them" is, and an equally good pair from the
     // two halves is an ambiguity like any other.
     enum class OperatorChoice { None, Member, NonMember };
+    // `right` is null for a unary operator, where the operand is `left` and
+    // a member candidate writes no parameter at all.
     OperatorChoice resolveOperator(const std::string &name, const Expr &left,
-                                   const Expr &right, std::size_t pos);
+                                   const Expr *right, std::size_t pos);
+    // `-v`, `!v`, `*p`, `++v`. Null when the operand is not a class or the
+    // class has no such operator, and the built-in path below is then reached
+    // unchanged - which is what keeps `&obj` the ordinary address-of it has
+    // always been for a class that declares no `operator&`.
+    ExprPtr overloadedUnary(const char *spelling, ExprPtr &operand,
+                            std::size_t pos);
     ExprPtr pointerAdd(ExprPtr p, ExprPtr n);
     ExprPtr pointerSub(ExprPtr l, ExprPtr r, std::size_t pos);
 

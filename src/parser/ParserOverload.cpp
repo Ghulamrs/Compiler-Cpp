@@ -340,8 +340,13 @@ bool Parser::betterCandidate(const std::vector<Rank> &a,
 // the part that was missing and the part clang refuses programs over.
 Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
                                                const Expr &left,
-                                               const Expr &right,
+                                               const Expr *right,
                                                std::size_t pos) {
+    // A unary operator is the same question with one operand: a member takes
+    // the operand as its implicit object and writes no parameter, a
+    // non-member writes one. One rank each way, so the comparison is the same
+    // comparison.
+    const std::size_t written = right != nullptr ? 1u : 0u;
     std::vector<std::vector<Rank> > ranks;
     std::vector<std::size_t> which;      // index into functions_
     std::vector<bool> member;
@@ -355,7 +360,7 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
             if (const std::vector<std::size_t> *set = overloadsOf(key))
                 for (std::size_t k = 0; k < set->size(); k++) {
                     const Signature &f = functions_[(*set)[k]];
-                    if (f.params.size() != 1) continue;
+                    if (f.params.size() != written) continue;
                     // The object parameter binds like any other reference: an
                     // exact match where the constness agrees, a qualification
                     // conversion where a const member takes a non-const
@@ -364,9 +369,11 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
                     std::vector<Rank> r;
                     r.push_back(lt->isConst() == f.constThis ? Rank::Identity
                                                              : Rank::Qualification);
-                    Rank second = rankArgument(right, f.params[0]);
-                    if (second == Rank::None) continue;
-                    r.push_back(second);
+                    if (right != nullptr) {
+                        Rank second = rankArgument(*right, f.params[0]);
+                        if (second == Rank::None) continue;
+                        r.push_back(second);
+                    }
                     ranks.push_back(r);
                     which.push_back((*set)[k]);
                     member.push_back(true);
@@ -377,14 +384,16 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
     if (const std::vector<std::size_t> *set = overloadsOf(name))
         for (std::size_t k = 0; k < set->size(); k++) {
             const Signature &f = functions_[(*set)[k]];
-            if (f.params.size() != 2) continue;
+            if (f.params.size() != written + 1) continue;
             Rank a = rankArgument(left, f.params[0]);
             if (a == Rank::None) continue;
-            Rank b = rankArgument(right, f.params[1]);
-            if (b == Rank::None) continue;
             std::vector<Rank> r;
             r.push_back(a);
-            r.push_back(b);
+            if (right != nullptr) {
+                Rank b = rankArgument(*right, f.params[1]);
+                if (b == Rank::None) continue;
+                r.push_back(b);
+            }
             ranks.push_back(r);
             which.push_back((*set)[k]);
             member.push_back(false);

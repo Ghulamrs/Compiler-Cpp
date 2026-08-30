@@ -105,7 +105,7 @@ ExprPtr Parser::overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
     // order got wrong: a class whose member and a free function are equally
     // good is an ambiguity, and taking the member because it was looked for
     // first accepted a program clang refuses.
-    switch (resolveOperator(name, *lhs, *rhs, pos)) {
+    switch (resolveOperator(name, *lhs, rhs.get(), pos)) {
     case OperatorChoice::Member: {
         std::vector<ExprPtr> args;
         args.push_back(std::move(rhs));
@@ -127,6 +127,43 @@ ExprPtr Parser::overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
                    "' cannot be combined with '" + spelling + "' - one of them "
                    "is a class, and no '" + name + "' is declared that takes "
                    "them");
+    return nullptr;
+}
+
+// `-v`, `!v`, `~v`, `*v`, `&v`, and the two increments. The same merged
+// candidate set as a binary operator, with one operand.
+//
+// **Null means "carry on with the built-in", not "there is a problem".** A
+// class with no `operator&` still has an address, and `&obj` has always been
+// the ordinary address-of; the same is true of `*p` where p is a pointer to a
+// class. So this answers null both when the operand is not a class at all and
+// when it is one that declares no such operator, and each built-in path below
+// then reaches its own type check unchanged - which is also where a class that
+// cannot be negated gets told so.
+ExprPtr Parser::overloadedUnary(const char *spelling, ExprPtr &operand,
+                                std::size_t pos) {
+    if (!operand->type()->unqualified()->isStructOrUnion()) return nullptr;
+
+    // Read before the operand is moved from: memberCallWith wants the type
+    // with its constness still on it, to rank the implicit object parameter.
+    const Type *self = operand->type();
+    const std::string name = std::string("operator") + spelling;
+    switch (resolveOperator(name, *operand, nullptr, pos)) {
+    case OperatorChoice::Member: {
+        std::vector<ExprPtr> args;
+        return memberCallWith(std::move(operand), self, name, pos,
+                              std::move(args));
+    }
+    case OperatorChoice::NonMember: {
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(operand));
+        const Signature &sig = resolveOverload(name, args, pos);
+        return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params,
+                            sig.variadic, pos, std::move(args));
+    }
+    case OperatorChoice::None:
+        break;
+    }
     return nullptr;
 }
 
@@ -481,7 +518,16 @@ ExprPtr Parser::primary(Program *program) {
         const Local *l = findLocal(name);
         const GlobalSym *g = l != nullptr ? nullptr : findGlobal(name);
         const Type *held = l != nullptr ? l->type : (g != nullptr ? g->type : nullptr);
-        bool callsThroughObject = held != nullptr && held->isFunctionPointer();
+        // A name that holds something callable rather than naming a
+        // function: a function pointer, and now an object of class type,
+        // whose `(` is [over.call] and belongs to postfix() either way. Both
+        // have to be kept out of the free-function branches below, which
+        // would look the name up in the function table and report it
+        // undeclared - which is exactly what `v(1)` did before a class could
+        // have a call operator.
+        bool callsThroughObject =
+            held != nullptr && (held->isFunctionPointer() ||
+                                held->unqualified()->isStructOrUnion());
 
         // **An unqualified static member, inside a member function.** It needs
         // no object, which is what lets it be answered here rather than
@@ -1074,6 +1120,23 @@ ExprPtr Parser::postfix() {
     for (;;) {
         std::size_t pos = peek().pos;
 
+        // `f(1, 2)` where f is an object. **[over.call]: the call operator
+        // has to be a non-static member function** - there is no non-member
+        // form of it, unlike every other overloadable operator - so the whole
+        // candidate set is the class's own and memberCall's ordinary
+        // resolution is the resolution. It reads its arguments off the token
+        // stream, which is right here for once, so it is used unsplit.
+        //
+        // This is the operator a closure has, so it is what 7.6 was waiting
+        // for; what is still missing for lambdas is a local class to put one
+        // in.
+        if (peek().is("(") && n->type()->unqualified()->isStructOrUnion()) {
+            const Type *self = n->type();
+            at_++;
+            n = memberCall(std::move(n), self, "operator()", pos);
+            continue;
+        }
+
         if (peek().is("(") && n->type()->isFunctionPointer()) {
             at_++;
             const Type *fn = n->type()->pointee();
@@ -1201,7 +1264,9 @@ ExprPtr Parser::unary() {
     // otherwise passed through untouched and made `+v` the only operator that
     // silently accepted a class.
     if (consume("+")) {
-        ExprPtr v = decay(castExpr());
+        ExprPtr v = castExpr();
+        if (ExprPtr call = overloadedUnary("+", v, pos)) return call;
+        v = decay(std::move(v));
         requireScalar(*v, pos, "unary '+'");
         return v;
     }
@@ -1212,7 +1277,9 @@ ExprPtr Parser::unary() {
         return incDec(unary(), inc, true, pos);
     }
     if (consume("~")) {
-        ExprPtr v = decay(castExpr());
+        ExprPtr v = castExpr();
+        if (ExprPtr call = overloadedUnary("~", v, pos)) return call;
+        v = decay(std::move(v));
         if (!v->type()->isInteger())
             src_.fail(pos, "'~' needs an integer, not '" + v->type()->describe() + "'");
         const Type *t = promote(v->type());
@@ -1223,14 +1290,18 @@ ExprPtr Parser::unary() {
         return n;
     }
     if (consume("!")) {
-        ExprPtr v = decay(castExpr());
+        ExprPtr v = castExpr();
+        if (ExprPtr call = overloadedUnary("!", v, pos)) return call;
+        v = decay(std::move(v));
         requireScalar(*v, pos, "'!'");
         ExprPtr node(new Unary('!', std::move(v)));
         node->setType(types_.intType());
         return node;
     }
     if (consume("-")) {
-        ExprPtr v = decay(castExpr());
+        ExprPtr v = castExpr();
+        if (ExprPtr call = overloadedUnary("-", v, pos)) return call;
+        v = decay(std::move(v));
         if (!v->type()->isArithmetic())
             src_.fail(pos, "unary '-' needs a number, not '" + v->type()->describe() + "'");
         const Type *t = promote(v->type());
@@ -1240,6 +1311,9 @@ ExprPtr Parser::unary() {
     }
     if (consume("&")) {
         ExprPtr v = castExpr();
+        // Only when the class declared one. A class that did not still has an
+        // address, and `&obj` is the address-of it has always been.
+        if (ExprPtr call = overloadedUnary("&", v, pos)) return call;
         if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(v.get()))
             if (m->isBitField())
                 src_.fail(pos, "'" + m->name() + "' is a bit-field, and a "
@@ -1260,7 +1334,9 @@ ExprPtr Parser::unary() {
         return n;
     }
     if (consume("*")) {
-        ExprPtr v = decay(castExpr());
+        ExprPtr v = castExpr();
+        if (ExprPtr call = overloadedUnary("*", v, pos)) return call;
+        v = decay(std::move(v));
         if (!v->type()->isPointer())
             src_.fail(pos, "'*' needs a pointer, not '" + v->type()->describe() + "'");
 

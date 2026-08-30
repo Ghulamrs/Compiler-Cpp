@@ -2407,10 +2407,11 @@ replayed, and one without the other makes a class refuse its own member.
 
 **7.6 - lambdas**, last because they need the most from the rest: a closure is
 a class with a call operator, generated where the lambda is written, holding
-its captures as members. **Which means it cannot be started before operator
-overloading**, and specifically before `operator()` is reachable - see
-"Operator overloading" below, where the names are done and the call operator
-is still refused by name. cxx1 has no local classes at all, so that comes
+its captures as members. It could not be started before `operator()` was
+reachable, and now it is - see "Operator overloading" below. **What is left in
+the way is local classes**, which cxx1 has none of; captures by reference then
+need 7.4's story about lifetime, and a generic lambda would want `auto` in a
+parameter, which is C++14 and out of scope. cxx1 has no local classes at all, so that comes
 first; captures by reference need 7.4's story about lifetime; and a generic
 lambda would need 7.1's `auto` in a parameter, which is C++14 and out of
 scope.
@@ -2511,12 +2512,51 @@ where the parameters are known and not back where the name was read:
 `operator-` with a parameter is subtraction and works, with none it is
 negation and there is no path to it.
 
-Reachable now: `+ - * / % & | ^ << >>` and `== != < <= > >=`, with two
-operands, member or non-member.
+Reachable now: the sixteen binary operators `+ - * / % & | ^ << >>` and
+`== != < <= > >=`; every **unary** form - `+ - * & ! ~` and `++ --` in both
+their prefix and postfix spellings; and `operator()`.
 
-Refused by name: every unary form, `= [] () ++ -- ! ~ , && ||` and the
-compound assignments; `operator new` and `operator delete`; `operator->*`;
-a user-defined literal; and a conversion function. **The conversion function
+Refused by name: `= [] , && ||` and the compound assignments; `operator new`
+and `operator delete`; `operator->*`; a user-defined literal; and a conversion
+function.
+
+### The unary operators, and the two things that are not arithmetic
+
+**`&` is an overload only where the class declared one.** A class that did not
+still has an address, and `&obj` is the address-of it has always been - so
+`overloadedUnary` answers *null* when it finds no candidate and each built-in
+path is reached unchanged, rather than refusing because an operand was a class.
+The same shape covers `*` on a pointer to a class. Only where a candidate
+exists does the operator become a call.
+
+**The postfix increment's dummy `int` is a real parameter, not a marker.**
+[over.inc] gives the postfix form an extra int and passes 0 in it, which is the
+whole of how `v++` is told from `++v` - and it is why `operator++(int)` is
+written with a parameter nobody names. So the argument is *built* at the call
+site, and postfix is then the ordinary two-operand resolution while prefix is
+the one-operand one; one function answers both. It is also the one operator
+whose arity lies to `checkOperatorDeclarable`, which counts two operands for a
+member `operator++(int)` and has to let it through by name.
+
+### `operator()` is the simplest of them, and the one 7.6 was waiting for
+
+**[over.call] makes it a non-static member function and gives it no non-member
+form** - alone among the overloadable operators - so the whole candidate set is
+the class's own and `memberCall`'s ordinary resolution *is* the resolution,
+arity and all. It is also the only one with no fixed number of operands, which
+is why it is exempt from the arity check rather than listed in it.
+
+**The harder half was not the dispatch.** `v(1)` never reached the postfix
+parser: a name followed by `(` was read as a call to a *function* of that name
+before anything looked at what the name held, so an object was reported
+undeclared. `callsThroughObject` already existed for exactly this - it keeps a
+function-pointer variable out of the free-function branch - and a class-typed
+name now takes the same route. One line, and it is the line that made the
+feature work.
+
+A closure is a class with a call operator, so this is the piece 7.6 was blocked
+on. **What remains for lambdas is a local class to put one in**, cxx1 having
+none. **The conversion function
 is caught in the specifier path and not the declarator**, because
 `operator int() const` is a declaration with no type in front of it - reaching
 the end of `unqualifiedSpecifiers` having found `operator` is precisely what a
@@ -2610,13 +2650,15 @@ returns a number of its own, so identical output means identical choices;
 `0 * argument` keeps every parameter used without letting its value reach the
 result.
 
-Sixteen files, covering the four forms the overloading has to work for -
+Twenty files, covering the four forms the overloading has to work for -
 functions, constructors, operators member and non-member, and friend functions
 and friend operators - plus reference binding and value categories from 7.4,
 inheritance in both the member lookup and the ranking, an ambiguity for each
 form, and one file where all three meet: an overloaded *private* constructor
 set reached only from a friend, which is the only place the access check has to
-be got past before the ranking can be asked at all.
+be got past before the ranking can be asked at all. The unary operators, the
+two increments and `operator()` joined them as they landed, ambiguities
+included.
 
 **It found a real bug the moment it was written**, which is the argument for
 it. See the operator-overloading section: the member and non-member halves were

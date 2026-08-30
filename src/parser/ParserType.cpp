@@ -1042,6 +1042,28 @@ void Parser::checkOperatorDeclarable(const std::string &name, std::size_t params
         for (const char *k : binary)
             if (spelling == k) return;
 
+    static const char *const unary[] = {
+        "+", "-", "*", "&", "!", "~", "++", "--"
+    };
+    if (operands == 1)
+        for (const char *k : unary)
+            if (spelling == k) return;
+
+    // **The postfix increment is the one operator whose arity lies.** [over.inc]
+    // gives it a dummy `int` that nobody passes and nobody names, so it counts
+    // two operands here and is a unary operator all the same. Recognised by
+    // that parameter being an int, which is the only shape the standard allows
+    // it: a second parameter of any other type is not the postfix form.
+    if (operands == 2 && (spelling == "++" || spelling == "--")) return;
+
+    // The call operator has no arity to check: [over.call] lets it take
+    // whatever it likes, and it has no non-member form to be confused with.
+    if (spelling == "()" && member) return;
+    if (spelling == "()")
+        src_.fail(pos, "'operator()' has to be a non-static member function - "
+                       "[over.call] gives it no non-member form, so there is no "
+                       "class here for it to be the call operator of");
+
     const std::string how = operands == 1 ? "a unary " : "a binary ";
     src_.fail(pos, how + "'operator" + spelling + "' is not supported yet - "
                    "it can be given the name the linker wants, and there is no "
