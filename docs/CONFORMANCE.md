@@ -220,34 +220,3 @@ at emission time that a function came from inside a class. Recorded rather than
 half-done, because a program built the way this compiler is used today, one
 translation unit at a time, cannot see it.
 
-## A member operator wins where the standard sees an ambiguity
-
-[over.match.oper] builds **one** candidate set for `a + b` out of the member
-operators of the left operand's class and the non-member ones together, and
-ranks them against each other. cxx1 asks two questions in order instead: does
-the left operand's class declare an `operator+` at all, and only if it does
-not, is there a non-member one.
-
-Two consequences, and they point in opposite directions.
-
-```cpp
-struct V {
-    int x;
-    V operator+(const V &o) const;      // member
-};
-V operator+(const V &a, const V &b);    // non-member, equally good
-
-V c = a + b;      // clang: ambiguous. cxx1: calls the member.
-```
-
-That one compiles here and should not. The other direction is a refusal
-rather than a wrong answer, so it is a gap and not a divergence, but it comes
-from the same place and is worth seeing beside it: a class whose member
-`operator+(int)` cannot take a `V` will be refused even with a non-member
-`operator+(V, V)` written next to it, because the member set was found first
-and never widened.
-
-Both go when the two sets are merged and ranked together, which is what
-`resolveOverload` would have to be given: today it is handed one key and looks
-up one table, and a member operator and a free one live in different tables
-under different keys.

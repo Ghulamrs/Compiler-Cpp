@@ -322,6 +322,96 @@ bool Parser::betterCandidate(const std::vector<Rank> &a,
     return !fa.fromTemplate && fb.fromTemplate;
 }
 
+// [over.match.oper]: one candidate set, both halves in it.
+//
+// A member operator and a non-member one are ranked *against each other*, and
+// the shape that makes that possible is that both end up with the same number
+// of ranks. For `a @ b` a member takes `a` as its implicit object parameter
+// and `b` as its one written parameter; a non-member takes both as written
+// parameters. Two operands either way, so the two rank vectors are directly
+// comparable and `betterCandidate` needs to know nothing about which half a
+// candidate came from.
+//
+// **This answers which half won and not which function**, and that is
+// deliberate: the caller then goes down the member path or the free path it
+// already had, each of which resolves within its own set and reaches the same
+// candidate - a member that beat every non-member also beat every other
+// member. What is bought here is the comparison *between* the halves, which is
+// the part that was missing and the part clang refuses programs over.
+Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
+                                               const Expr &left,
+                                               const Expr &right,
+                                               std::size_t pos) {
+    std::vector<std::vector<Rank> > ranks;
+    std::vector<std::size_t> which;      // index into functions_
+    std::vector<bool> member;
+
+    const Type *lt = left.type();
+    const Type *plain = lt->unqualified();
+    if (plain->isStructOrUnion()) {
+        const Type *owner = findMemberOwner(plain, name);
+        if (owner != nullptr) {
+            const std::string key = owner->tag() + "::" + name;
+            if (const std::vector<std::size_t> *set = overloadsOf(key))
+                for (std::size_t k = 0; k < set->size(); k++) {
+                    const Signature &f = functions_[(*set)[k]];
+                    if (f.params.size() != 1) continue;
+                    // The object parameter binds like any other reference: an
+                    // exact match where the constness agrees, a qualification
+                    // conversion where a const member takes a non-const
+                    // object, and no match at all the other way round.
+                    if (lt->isConst() && !f.constThis) continue;
+                    std::vector<Rank> r;
+                    r.push_back(lt->isConst() == f.constThis ? Rank::Identity
+                                                             : Rank::Qualification);
+                    Rank second = rankArgument(right, f.params[0]);
+                    if (second == Rank::None) continue;
+                    r.push_back(second);
+                    ranks.push_back(r);
+                    which.push_back((*set)[k]);
+                    member.push_back(true);
+                }
+        }
+    }
+
+    if (const std::vector<std::size_t> *set = overloadsOf(name))
+        for (std::size_t k = 0; k < set->size(); k++) {
+            const Signature &f = functions_[(*set)[k]];
+            if (f.params.size() != 2) continue;
+            Rank a = rankArgument(left, f.params[0]);
+            if (a == Rank::None) continue;
+            Rank b = rankArgument(right, f.params[1]);
+            if (b == Rank::None) continue;
+            std::vector<Rank> r;
+            r.push_back(a);
+            r.push_back(b);
+            ranks.push_back(r);
+            which.push_back((*set)[k]);
+            member.push_back(false);
+        }
+
+    if (which.empty()) return OperatorChoice::None;
+
+    std::size_t best = 0;
+    for (std::size_t k = 1; k < which.size(); k++)
+        if (betterCandidate(ranks[k], ranks[best],
+                            functions_[which[k]], functions_[which[best]]))
+            best = k;
+    for (std::size_t k = 0; k < which.size(); k++) {
+        if (k == best) continue;
+        if (!betterCandidate(ranks[best], ranks[k],
+                             functions_[which[best]], functions_[which[k]])) {
+            std::string why = "this use of '" + name + "' is ambiguous";
+            for (std::size_t j = 0; j < which.size(); j++)
+                why += std::string("\n    candidate: ") +
+                       (member[j] ? "member " : "") +
+                       describeSignature(functions_[which[j]]);
+            src_.fail(pos, why);
+        }
+    }
+    return member[best] ? OperatorChoice::Member : OperatorChoice::NonMember;
+}
+
 const Parser::Signature &Parser::resolveOverload(const std::string &name,
                                                  const std::vector<ExprPtr> &args,
                                                  std::size_t pos,

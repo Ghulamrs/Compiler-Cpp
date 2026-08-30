@@ -2523,10 +2523,21 @@ the end of `unqualifiedSpecifiers` having found `operator` is precisely what a
 conversion function looks like from there, and saying so beats the generic
 "'operator' is not supported yet" that the keyword table would have given.
 
-`docs/CONFORMANCE.md` records the one thing that compiles and is wrong: where
-the standard sees the member and non-member candidates as an ambiguity, cxx1
-takes the member, because it asks for the two sets in order rather than
-ranking them together.
+**The two halves are ranked together, and at first they were not.** Asking
+"does the class declare this operator" and only then looking at the
+non-members takes the member whenever one exists - which accepts an ambiguity
+clang refuses, and refuses a call a non-member could have taken. Both
+directions were wrong and both are in `tests/overload/`.
+
+`resolveOperator` builds the one candidate set [over.match.oper] asks for. The
+shape that makes it possible: for `a @ b` a member takes `a` as its implicit
+object parameter and `b` as its written one, a non-member takes both as
+written parameters - two operands either way, so the rank vectors are the same
+length and `betterCandidate` needs to know nothing about which half a
+candidate came from. It answers *which half won* rather than which function,
+and the caller then goes down the member or free path it already had; a member
+that beat every non-member also beat every other member, so resolving again
+within one set reaches the same candidate.
 
 ## `friend`, and why it landed beside the operators
 
@@ -2578,6 +2589,45 @@ class body (the held-body replay members use would have to put this one back
 outside the class it was written in), befriending one member function of
 another class (`Other::look` would have to be found before `Box` is
 complete), and a friend declaration that declares no function.
+
+## Overload resolution is checked against clang, not against a recorded answer
+
+`tests/overload.sh` over `tests/overload/`, and it is a suite of its own rather
+than more cases in `tests/cases/` because the question is different. A case
+there carries a `.expected`, which is a decision written down once; here the
+interesting question is not "what does this print" but **"does cxx1 choose the
+function clang chooses"**, and those are the same question only while somebody
+keeps the recorded answer honest. The oracle is asked on every run, so the
+corpus cannot drift away from it.
+
+**It compares the verdict before it compares the output, and that half is what
+catches bugs.** Overload resolution is as much about refusing an ambiguity as
+about picking a winner, so a harness that only diffed the output of programs
+that compiled would call "cxx1 accepted what clang calls ambiguous" a pass.
+Every file is run both ways: clang refuses it and cxx1 must refuse it, or clang
+accepts it and cxx1 must accept it *and* print the same thing. Each overload
+returns a number of its own, so identical output means identical choices;
+`0 * argument` keeps every parameter used without letting its value reach the
+result.
+
+Sixteen files, covering the four forms the overloading has to work for -
+functions, constructors, operators member and non-member, and friend functions
+and friend operators - plus reference binding and value categories from 7.4,
+inheritance in both the member lookup and the ranking, an ambiguity for each
+form, and one file where all three meet: an overloaded *private* constructor
+set reached only from a friend, which is the only place the access check has to
+be got past before the ranking can be asked at all.
+
+**It found a real bug the moment it was written**, which is the argument for
+it. See the operator-overloading section: the member and non-member halves were
+being asked for in order rather than ranked together, and that is wrong in both
+directions - it accepted an ambiguity clang refuses, and refused a call a
+non-member could have taken. `resolveOperator` replaced it and both directions
+are now files in the corpus.
+
+clang is required, so this skips where there is none - the Linux box says so
+rather than reporting a pass, exactly as `names.sh` does. It is a Mac suite in
+practice, and that is where the mangling oracle already lives.
 
 ## Decisions already taken
 
@@ -2660,7 +2710,7 @@ it shows.
 
 ```
 make                 build cxx1.exe with clang++ (Mac) or g++ (Linux)
-make test            run both suites
+make test            run the four suites
 make clean
 ```
 
@@ -2668,7 +2718,8 @@ make clean
 and diffs against its `.expected`; a case with a `.error` file instead must
 fail to compile with that text in the message. `tests/emit.sh` compiles every
 case for all three targets and stops at assembly, so it needs no assembler and
-runs anywhere.
+runs anywhere. `tests/overload.sh` is the fourth and works differently - see
+"Overload resolution is checked against clang, not against a recorded answer".
 
 ```
 tools/verify-three            Mac, Linux box and Windows box

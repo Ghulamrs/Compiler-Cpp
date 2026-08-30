@@ -82,13 +82,13 @@ const char *binOpSpelling(BinOp op) {
 // what a non-member operator is for, and is why the non-member form exists at
 // all.
 //
-// The narrowing to record here rather than hide: C++ builds *one* candidate
-// set out of the members and the non-members together and ranks it. This
-// tries the member set first and falls to the non-members only when the class
-// declares no operator of that name at all - so a class whose member
-// `operator+(int)` cannot take a V will be refused rather than finding a
-// non-member `operator+(V, V)` sitting beside it. Said in docs/CONFORMANCE.md
-// with the rest of what this compiler answers differently.
+// **The two halves are ranked together**, which `resolveOperator` does: a
+// member's implicit object parameter and a non-member's first parameter are
+// both "the left operand", so the rank vectors are the same length and
+// comparable. Asking "is there a member" first and only then looking at the
+// non-members - which is what this did at first - takes the member whenever
+// one exists, which accepts an ambiguity clang refuses and refuses a call a
+// non-member could have taken.
 ExprPtr Parser::overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
                                  std::size_t pos) {
     const Type *lt = lhs->type();
@@ -100,20 +100,27 @@ ExprPtr Parser::overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
     const char *spelling = binOpSpelling(op);
     const std::string name = std::string("operator") + spelling;
 
-    if (lt->unqualified()->isStructOrUnion() &&
-        findMemberOwner(lt->unqualified(), name) != nullptr) {
+    // The member and non-member candidates are ranked *together*, which is
+    // what [over.match.oper] asks for and what asking the two questions in
+    // order got wrong: a class whose member and a free function are equally
+    // good is an ambiguity, and taking the member because it was looked for
+    // first accepted a program clang refuses.
+    switch (resolveOperator(name, *lhs, *rhs, pos)) {
+    case OperatorChoice::Member: {
         std::vector<ExprPtr> args;
         args.push_back(std::move(rhs));
         return memberCallWith(std::move(lhs), lt, name, pos, std::move(args));
     }
-
-    if (overloadsOf(name) != nullptr) {
+    case OperatorChoice::NonMember: {
         std::vector<ExprPtr> args;
         args.push_back(std::move(lhs));
         args.push_back(std::move(rhs));
         const Signature &sig = resolveOverload(name, args, pos);
         return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params,
                             sig.variadic, pos, std::move(args));
+    }
+    case OperatorChoice::None:
+        break;
     }
 
     src_.fail(pos, "'" + lt->describe() + "' and '" + rt->describe() +

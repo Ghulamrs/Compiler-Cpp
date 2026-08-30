@@ -1075,6 +1075,15 @@ private:
     // answers null, and the built-in path below still needs them.
     ExprPtr overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
                              std::size_t pos);
+
+    // Which side of [over.match.oper] won. The standard builds ONE candidate
+    // set out of a class's member operators and the non-member ones and ranks
+    // them together, so "is there a member" is not the question - "which
+    // candidate is best, of all of them" is, and an equally good pair from the
+    // two halves is an ambiguity like any other.
+    enum class OperatorChoice { None, Member, NonMember };
+    OperatorChoice resolveOperator(const std::string &name, const Expr &left,
+                                   const Expr &right, std::size_t pos);
     ExprPtr pointerAdd(ExprPtr p, ExprPtr n);
     ExprPtr pointerSub(ExprPtr l, ExprPtr r, std::size_t pos);
 

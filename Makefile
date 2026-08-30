@@ -120,10 +120,11 @@ test: $(TARGET)
 	@./tests/run.sh
 	@./tests/emit.sh
 	@./tests/names.sh
+	@./tests/overload.sh
 
 help:
 	@echo "make            build cc1 with $(CXX)"
-	@echo "make test       build and run the three suites"
+	@echo "make test       build and run the four suites"
 	@echo "make clean"
 	@echo ""
 	@echo "cc1 emits x86-64 System V assembly. It compiles anywhere this"
