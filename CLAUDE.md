@@ -3076,9 +3076,37 @@ enclosing locals - a lambda body sees its own parameters and, without a
 capture, nothing of the function around it - so a captured name has to be put
 back, or `[k](int a){ return a + k; }` cannot deduce its own return type.
 
-Still refused by name: `[&]` and `[=]`, which capture whatever the body turns
-out to name and would need a second pass over it; `[this]`; `mutable`; and
-capturing a reference by value.
+### `[=]` takes everything the body reads, and finding it is a scan
+
+An earlier refusal said a default capture "would need a second pass over the
+body this parser does not make". It makes one now, and the shape of it matters:
+**a scan of the body's tokens, not a parse.** An identifier that names a local
+of the enclosing function is captured, unless the token before it says it is a
+member name - `p.k`, `p->k` and `N::k` name no local.
+
+**Over-capturing is harmless and under-capturing is not**, which settles every
+doubtful case in that scan. A name the body declares itself shadows the member,
+because a local is looked up before a member, and a parameter does the same -
+so a copy nobody reads is the worst it can do. `docs/CONFORMANCE.md` records
+that a closure can therefore be larger than the standard's minimum.
+
+**A capture goes in a scope of its own**, outside the parameters and the body.
+All three in one scope made `[=](int a)` where the enclosing function also has
+an `a` report that `a` was declared twice, and did the same for a body that
+declares a name it captured. Both are things C++ allows and both now shadow.
+
+**A reference captured by value copies what it refers to**, and needed nothing:
+every mention of a reference here is already lowered to a dereference, so
+`objectRef` hands back the object.
+
+Still refused by name: **`[&]`**, and the reason is layout rather than lambdas
+- capturing by reference means the closure holds a *reference member*, and
+`sizeof` a reference is the size of what it refers to while the slot it needs
+is a pointer, so laying one out inside a class needs a rule the type system
+does not have. Also `[this]`, `mutable`, and an inner `[=]` reaching for the
+capture of the lambda around it - by then that name is a member of the outer
+closure and not a local, so the scan has nothing to copy, and it is refused by
+name rather than left to fail further in.
 
 ## Class temporaries: one gap, three symptoms
 

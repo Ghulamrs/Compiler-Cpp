@@ -220,3 +220,25 @@ at emission time that a function came from inside a class. Recorded rather than
 half-done, because a program built the way this compiler is used today, one
 translation unit at a time, cannot see it.
 
+
+## A `[=]` closure can be larger than it needs to be
+
+[expr.prim.lambda] captures only the entities a lambda *odr-uses*. cxx1 finds
+them by scanning the body's tokens for identifiers that name a local of the
+enclosing function, which is a scan and not a parse - so a name that appears
+without being read, or one the body goes on to shadow with its own declaration
+or with a parameter, is captured all the same.
+
+```cpp
+int k = 5, unused = 99;
+auto f = [=](int a) { return a + k; };   // cxx1 copies `unused` too
+```
+
+What that costs is object size and a copy nobody reads. It cannot change what
+the program means: a name the body declares shadows the member, because a local
+is looked up before a member, and a parameter does the same.
+
+The direction is deliberate. Over-capturing costs a copy; under-capturing fails
+to compile a program that should, and the two are not equally bad. A class with
+a copy constructor that has side effects is the one case where the difference is
+observable, and it is the reason this is written down rather than left implicit.

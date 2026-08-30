@@ -1,9 +1,11 @@
-// `[&]` and `[=]` capture whatever the body turns out to name, which is a
-// second pass over the body this parser does not make. Refused separately from
-// a named capture because the reason is different and the reader wrote
-// something different.
+// `[&]` is still refused, and the reason is about layout rather than about
+// lambdas. Capturing by reference means the closure holds a reference member,
+// and a reference member is refused throughout this compiler because `sizeof`
+// a reference is the size of what it refers to while the slot it needs is a
+// pointer - so laying one out inside a class needs a rule the type system does
+// not have yet. `[=]` and a named capture copy, and both work.
 int main(void) {
-    int k = 1;
-    auto f = [=]() { return k; };
+    int k = 5;
+    auto f = [&]() { return k; };
     return f();
 }

@@ -356,11 +356,18 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     // are members of the closure by the time it is really parsed, and a member
     // is what an unqualified name there will find. Declared as locals here
     // because this reading has no closure to be a member of yet.
+    //
+    // **In a scope of their own, outside the parameters and the body.** A
+    // capture is a member and both of those may shadow one, so putting them
+    // all in one scope made `[=](int a){...}` where the enclosing function
+    // also has an `a` report that `a` was declared twice - and the same for a
+    // body that declares a name it captured.
     for (std::size_t c = 0; c < capNames.size(); c++) {
         inParams_ = true;
         declare(capNames[c], capTypes[c], bodyFrom);
         inParams_ = false;
     }
+    enterScope();
 
     if (paramsTo > paramsFrom) {
         const std::size_t save = at_;
@@ -414,7 +421,8 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     ExprPtr e = assign();
     if (e != nullptr && e->type() != nullptr) found = decayedType(e->type());
 
-    leaveScope();
+    leaveScope();                                       // parameters and body
+    leaveScope();                                       // the captures
     locals_.swap(outer);
     scopeStarts_.swap(starts);
     at_ = resume;
@@ -540,13 +548,24 @@ ExprPtr Parser::lambdaExpression() {
     std::vector<std::string> capNames;
     std::vector<const Type *> capTypes;
     std::vector<int> capOffsets;
+    bool captureAllByValue = false;
+    if (peek().is("=")) {
+        at_++;
+        captureAllByValue = true;
+        if (!peek().is("]"))
+            src_.fail(peek().pos, "naming a capture after '=' is not supported "
+                                  "yet - '[=]' on its own takes everything the "
+                                  "body reads");
+    }
     while (!peek().is("]")) {
-        if (peek().is("&") || peek().is("="))
-            src_.fail(peek().pos, "a default capture is not supported yet - "
-                                  "'[&]' and '[=]' capture whatever the body "
-                                  "turns out to name, which is a second pass "
-                                  "over it this parser does not make; name "
-                                  "what you want captured");
+        if (peek().is("&"))
+            src_.fail(peek().pos, "capturing by reference is not supported yet "
+                                  "- the closure would have to hold a reference "
+                                  "member, and a reference member is refused "
+                                  "here for a reason that is about layout: "
+                                  "sizeof a reference is the size of what it "
+                                  "refers to, and the slot it needs is a "
+                                  "pointer. '[=]' and a named capture copy");
         if (peek().is("this"))
             src_.fail(peek().pos, "capturing 'this' is not supported yet");
         const std::size_t cpos = peek().pos;
@@ -556,13 +575,14 @@ ExprPtr Parser::lambdaExpression() {
             src_.fail(cpos, "'" + cname + "' is not a local of the function "
                             "around this lambda, so there is nothing here to "
                             "capture");
-        if (have->type->isReference())
-            src_.fail(cpos, "capturing a reference by value is not supported "
-                            "yet - what the closure would hold is the object "
-                            "it refers to, and copying it needs a rule this "
-                            "does not have");
         capNames.push_back(cname);
-        capTypes.push_back(have->type->unqualified());
+        // **A reference captured by value copies what it refers to**, which is
+        // what the closure holds - [expr.prim.lambda]. Nothing special is
+        // needed to read it: every mention of a reference here is already
+        // lowered to a dereference, so `objectRef` hands back the object.
+        capTypes.push_back(have->type->isReference()
+                               ? have->type->referent()->unqualified()
+                               : have->type->unqualified());
         if (!peek().is("]")) expect(",");
     }
     at_++;                                    // ']'
@@ -600,6 +620,55 @@ ExprPtr Parser::lambdaExpression() {
     // `return expression;` has that expression's type and anything else is
     // void. The expression is read with the parameters in scope and then put
     // back, which is what 7.1 does for `auto` and for the same reason.
+    // **`[=]` takes everything the body reads that is a local out here**, and
+    // finding that is a scan of the body's tokens - the "second pass over the
+    // body" an earlier refusal said this parser does not make. It makes one
+    // now, and it is a scan and not a parse: an identifier that names a local
+    // of the enclosing function is captured unless it is being used as a
+    // member name, which is what the test on the token before it is for -
+    // `p.k` and `p->k` and `N::k` name no local.
+    //
+    // **Over-capturing is harmless and under-capturing is not**, which decides
+    // every doubtful case here. A name the body declares itself shadows the
+    // member, because a local is looked up before a member; a lambda parameter
+    // does the same. So a copy nobody reads is the worst this can do, and
+    // `docs/CONFORMANCE.md` records that a closure can therefore be larger
+    // than the standard's minimum.
+    if (captureAllByValue) {
+        for (std::size_t i = bodyFrom + 1; i + 1 < bodyTo; i++) {
+            if (tokens_[i].kind != TokenKind::Ident) continue;
+            const Token &before = tokens_[i - 1];
+            if (before.is(".") || before.is("->") || before.is("::")) continue;
+            const std::string &n = tokens_[i].text;
+            bool had = false;
+            for (std::size_t k = 0; k < capNames.size(); k++)
+                if (capNames[k] == n) { had = true; break; }
+            if (had) continue;
+            const Local *have = findLocal(n);
+            if (have == nullptr) {
+                // **A lambda inside a lambda, reading the outer one's
+                // capture.** By the time the inner one is read, that name is a
+                // *member* of the outer closure and not a local at all, so
+                // there is nothing here for this scan to copy. Refused by name
+                // rather than left to fail further in with "'k' is a member and
+                // there is no object here to read it from", which is true and
+                // tells the reader nothing about the lambda they wrote.
+                if (currentClass_ != nullptr &&
+                    currentClass_->findMember(n) != nullptr)
+                    src_.fail(tokens_[i].pos,
+                              "'" + n + "' is a capture of the lambda around "
+                              "this one, and taking it into an inner '[=]' is "
+                              "not supported yet - name it in the inner "
+                              "capture list and it is copied like any other");
+                continue;
+            }
+            capNames.push_back(n);
+            capTypes.push_back(have->type->isReference()
+                                   ? have->type->referent()->unqualified()
+                                   : have->type->unqualified());
+        }
+    }
+
     if (returns == nullptr)
         returns = deduceLambdaReturn(paramsFrom, paramsTo, bodyFrom, bodyTo,
                                      capNames, capTypes);
