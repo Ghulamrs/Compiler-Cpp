@@ -182,6 +182,23 @@ both in either case, which is why `tests/cases/inline-body` is compared for
 Darwin and Windows and skipped for Linux - Darwin's spelling keeps `.globl`
 beside the weak marker and so still agrees name for name.
 
+**A destructor loses a form the same way, and one of the two is in the
+vtable.** Measured over `tests/cases/virtual-inline`, where every special
+member is written inside its class: clang emits `D2` and `D0` and no `D1`
+anywhere, and puts `D2` in the complete-object slot; cxx1 emits all three of
+Itanium's forms and puts `D1` in that slot.
+
+```
+.quad _ZN6AnimalD2Ev      # clang
+.quad _ZN6AnimalD1Ev      # cxx1
+```
+
+Nothing behaves differently for it. `D1` and `D2` are the same code for a class
+with no virtual base, which is why clang is free to emit one and name it twice
+over - the disagreement is in the symbol table and nowhere else. It is recorded
+in `tests/cases/virtual-inline.nonames` as the reason that case skips the Linux
+name comparison.
+
 **The special members the compiler writes are inline in exactly this sense**,
 so they carry both halves of it. clang marks an implicit default, copy or
 assignment `.weak` on Linux and `.weak_def_can_be_hidden` on Darwin, and cxx1
