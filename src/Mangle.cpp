@@ -47,6 +47,8 @@ const char *itaniumBuiltin(Kind k) {
     case Kind::Float:      return "f";
     case Kind::Double:     return "d";
     case Kind::LongDouble: return "e";
+    // Measured: `void f(decltype(nullptr))` is `_Z1fDn`.
+    case Kind::NullPtr:    return "Dn";
     default:               return nullptr;
     }
 }
@@ -69,6 +71,8 @@ const char *microsoftBuiltin(Kind k) {
     case Kind::Float:      return "M";
     case Kind::Double:     return "N";
     case Kind::LongDouble: return "O";
+    // Measured with clang: `void f(decltype(nullptr))` is `?f@@YAX$$T@Z`.
+    case Kind::NullPtr:    return "$$T";
     default:               return nullptr;
     }
 }

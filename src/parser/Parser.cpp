@@ -32,7 +32,7 @@ const char *notYetSupported(const std::string &word) {
         "bitand", "bitor", "catch", "char16_t", "char32_t", "compl",
         "const_cast", "dynamic_cast",
         "explicit", "export", "friend", "inline", "mutable", "namespace",
-        "noexcept", "not", "not_eq", "nullptr", "operator", "or",
+        "noexcept", "not", "not_eq", "operator", "or",
         "or_eq", "reinterpret_cast",
         "static_assert", "template", "thread_local",
         "typeid", "using", "virtual",
@@ -43,7 +43,11 @@ const char *notYetSupported(const std::string &word) {
     return nullptr;
 }
 
+// **A null pointer constant**, which C++11 spells two ways: the integer
+// literal 0, and `nullptr`. [conv.ptr]/1 - and everything that asks this
+// question wants both, which is why `nullptr` needed no new call site here.
 bool isNullConstant(const Expr &e) {
+    if (e.type() != nullptr && e.type()->isNullPtr()) return true;
     const Num *n = dynamic_cast<const Num *>(&e);
     return n != nullptr && n->type()->isInteger() && n->value() == 0;
 }

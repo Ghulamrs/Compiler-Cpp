@@ -18,7 +18,7 @@ int WindowsX86_64Target::sizeOf(Kind k) const {
     case Kind::Double:                                     return 8;
 
     case Kind::LongDouble:                                 return 8;
-    case Kind::Pointer:                                    return 8;
+    case Kind::Pointer: case Kind::NullPtr:                                    return 8;
     default:
         std::fprintf(stderr, "target: no size for this type yet\n");
         std::exit(1);

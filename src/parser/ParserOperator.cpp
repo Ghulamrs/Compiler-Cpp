@@ -482,7 +482,9 @@ ExprPtr Parser::incDec(ExprPtr target, bool increment, bool prefix, std::size_t 
                                  : "the operand of postfix '--'";
     requireAssignable(*target, pos, what);
     const Type *t = target->type();
-    if (!t->isScalar())
+    // std::nullptr_t is a scalar and is still not something to step: it has
+    // one value, so there is no next one.
+    if (!t->isScalar() || t->isNullPtr())
         src_.fail(pos, std::string(what) + " needs a number or a pointer, not '" +
                        t->describe() + "'");
     if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(target.get()))

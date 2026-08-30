@@ -3493,6 +3493,74 @@ leading `::`. Each has a case in `tests/cases`.
 the closing brace and no further: `block()` truncates the list on the way out,
 which is the whole of the scoping.
 
+## nullptr, which the backends never heard about
+
+**At the machine it is a pointer-sized zero and nothing else.** `Num(0)` with a
+type on it is the whole of the code generation, and no backend changed. What
+the type buys is entirely in the front end: a null pointer constant stops being
+spelled the same as the number 0.
+
+That single fact is the feature. `f(0)` picks `f(int)`, because 0 is an int
+that happens to convert; `f(nullptr)` picks `f(char *)`, because
+std::nullptr_t is not an integer and `f(int)` is not viable for it at all. And
+`int n = nullptr;` is a diagnostic rather than a zero.
+
+**Where the kind sits in the enum is load-bearing, twice.** `Kind::NullPtr` is
+between `Void` and `Bool`: TypeTable builds one Type for every value in the
+Void..Function range, so a fundamental type has to be inside it; and
+`isInteger()` is a range check starting at `Bool`, so anything before `Bool` is
+automatically not an integer - which is the one thing this type must never be
+mistaken for.
+
+**Most of the work was already written.** `isNullConstant` was the parser's
+name for "the literal 0 in a pointer context", and it gates comparison, the
+`?:` arms and the conversion. Teaching it that `nullptr` is one too made all
+three work without a new call site.
+
+### The bool rule, which is the part worth not guessing
+
+[conv.bool] gives std::nullptr_t a conversion to bool **for direct-
+initialization only**. An argument is copy-initialized, so `f(bool)` is not a
+candidate for `nullptr` at all - not a candidate that ranks worse. Measured:
+with `f(bool)` alone clang says there is no matching function, and against
+`f(char *)` it picks the pointer with no ambiguity to report. Ranking bool
+beside the pointer conversion would have invented that ambiguity.
+
+Meanwhile std::nullptr_t **is** a scalar ([basic.types]/9), so `!nullptr`,
+`nullptr && x` and `if (nullptr)` all work - a contextual conversion that
+`convert()` lowers to a comparison against zero like any other. The two live
+together because the diagnostic gate for copy-initialization
+(`requireConvertible`) is a different function from the lowering (`convert`),
+and only the second was taught the conversion.
+
+### What was measured
+
+```
+void f(decltype(nullptr))    _Z1fDn                   ?f@@YAX$$T@Z
+sizeof(nullptr)              8
+```
+
+`decltype(nullptr)` is how a program spells the type here; the name
+`std::nullptr_t` needs `<cstddef>` and there are no headers. Diagnostics print
+`std::nullptr_t` all the same, because that is what it is called.
+
+Conversions run both ways at the same rank - `nullptr` reaches any pointer and
+any pointer to data member, and the literal 0 reaches std::nullptr_t - so
+`f(void *)` against `f(char *)` is ambiguous for `nullptr`, and
+`f(decltype(nullptr))` against `f(char *)` is ambiguous for `0`. Both are
+refusals clang makes, and both have a case in `tests/overload/`.
+
+### What is refused
+
+`int n = nullptr;`, `bool b = nullptr;`, ordering (`nullptr < nullptr`,
+`p < nullptr`), arithmetic, `*nullptr`, and `++` on a std::nullptr_t object.
+Each has a case.
+
+One shape it does **not** reach, and not because of nullptr: a pointer to
+member *function* has no null value yet by any spelling - `= 0` is refused in
+the same words - because it is two words on both ABIs and zeroing it is a
+struct store rather than a scalar one.
+
 ## Build
 
 ```

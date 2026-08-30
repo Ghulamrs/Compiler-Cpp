@@ -283,6 +283,26 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     if (to->isPointer() && from->isInteger())
         return isNullConstant(arg) ? Rank::Conversion : Rank::None;
 
+    // **`nullptr` converts to any pointer and to any pointer to member**, and
+    // both are pointer conversions - one rank, so `f(void *)` and `f(char *)`
+    // are ambiguous for it, which is what clang reports.
+    //
+    // **And it does *not* convert to bool here.** [conv.bool] gives
+    // std::nullptr_t a conversion to bool for *direct*-initialization only,
+    // and an argument is copy-initialized - so `f(bool)` is not viable at all
+    // rather than viable and worse. Measured: with `f(bool)` alone clang says
+    // there is no matching function, and against `f(char *)` it picks the
+    // pointer with no ambiguity to report. Ranking bool beside the pointer
+    // conversion would have invented that ambiguity.
+    if (from->isNullPtr() && (to->isPointer() || to->isMemberPointer()))
+        return Rank::Conversion;
+
+    // And the literal 0 converts *to* std::nullptr_t, at the same rank - which
+    // is why `f(0)` against `f(decltype(nullptr))` and `f(char *)` is
+    // ambiguous, measured.
+    if (to->isNullPtr() && from->isInteger())
+        return isNullConstant(arg) ? Rank::Conversion : Rank::None;
+
     return Rank::None;
 }
 
@@ -671,6 +691,16 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
     if (to->isPointer() && ft->isInteger()) {
         if (isNullConstant(from)) return;
         refuse(" - only the constant 0 becomes a pointer on its own");
+    }
+    // `nullptr` converts to any pointer and to any pointer to member. Nothing
+    // is emitted for it: the value already is a pointer-sized zero, and what
+    // the type was carrying was the *front end's* knowledge that this zero is
+    // not the number 0.
+    if (ft->isNullPtr() && (to->isPointer() || to->isMemberPointer())) return;
+    if (to->isNullPtr()) {
+        if (isNullConstant(from)) return;
+        refuse(" - the only values of that type are 'nullptr' and the "
+               "constant 0");
     }
     if (to->isArithmetic() && ft->isPointer())
         refuse(" - a pointer is not a number here, though a cast makes it one");

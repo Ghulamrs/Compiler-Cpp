@@ -209,7 +209,18 @@ ExprPtr Parser::comparison(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos) 
     lhs = decay(std::move(lhs));
     rhs = decay(std::move(rhs));
     ExprPtr n;
-    if (lhs->type()->isPointer() || rhs->type()->isPointer()) {
+    // **`nullptr` may be compared for equality and for nothing else.**
+    // [expr.rel] wants two pointers, and std::nullptr_t is not one - so
+    // `p < nullptr` is a diagnostic in clang, and two `nullptr`s ordered
+    // against each other are as well. Equality is [expr.eq], which takes a
+    // null pointer constant on either side, and two nullptrs are always equal
+    // because there is only one value of the type.
+    const bool null = lhs->type()->isNullPtr() || rhs->type()->isNullPtr();
+    if (null && op != BinOp::Eq && op != BinOp::Ne)
+        src_.fail(pos, "'std::nullptr_t' has one value, so there is nothing to "
+                       "order - only '==' and '!=' are written with 'nullptr'");
+    if (null || lhs->type()->isPointer() || rhs->type()->isPointer() ||
+        lhs->type()->isMemberPointer() || rhs->type()->isMemberPointer()) {
         n = ExprPtr(new Binary(op, std::move(lhs), std::move(rhs)));
     } else {
         const Type *common = usualArithmetic(lhs->type(), rhs->type());
@@ -928,6 +939,19 @@ ExprPtr Parser::primary(Program *program) {
         std::size_t pos = peek().pos;
         at_++;
         return staticCast(pos);
+    }
+
+    // **`nullptr` is a zero that knows it is not an integer.** At the machine
+    // it is a pointer-sized 0 and nothing else, so the backends hear nothing
+    // about it; what the type buys is in the front end, where a null pointer
+    // constant stops being spelled the same as the number 0. That is what
+    // makes `f(int)` lose to `f(char *)` here, and what makes `int n =
+    // nullptr;` a diagnostic rather than a zero.
+    if (peek().is("nullptr")) {
+        at_++;
+        ExprPtr n(new Num(static_cast<long long>(0)));
+        n->setType(types_.get(Kind::NullPtr));
+        return n;
     }
 
     if (peek().is("true") || peek().is("false")) {

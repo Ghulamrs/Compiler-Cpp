@@ -5,6 +5,12 @@
 
 enum class Kind {
     Void,
+    // **`decltype(nullptr)`**, and it sits here rather than beside Pointer for
+    // two reasons. It is a fundamental type, so TypeTable has to build one and
+    // only one of it - which is what the Void..Function range below does - and
+    // it must stay outside the integer range that isInteger() checks, since
+    // the whole point of it is that it is *not* an integer 0.
+    NullPtr,
     // bool sits inside the integer range and at the bottom of it, which is
     // what lets isInteger() stay a range check. Its position in this enum is
     // load-bearing: TypeTable builds one Type per value from Void to Function.
@@ -146,7 +152,16 @@ public:
     bool isRValueReference() const { return kind_ == Kind::RValueRef; }
     const Type *referent() const { return pointee_; }
     bool isArray() const { return kind_ == Kind::Array; }
-    bool isScalar() const { return isArithmetic() || isPointer(); }
+    // [basic.types]/9 counts std::nullptr_t among the scalar types, and that
+    // is what lets `!nullptr` and `nullptr && x` be written - a contextual
+    // conversion to bool, which convert() lowers to a comparison against zero
+    // like any other. It does *not* make `bool b = nullptr;` legal: that is
+    // copy-initialization, and the gate for it is requireConvertible, which
+    // has no rule taking nullptr to bool. [conv.bool] gives that conversion
+    // for direct-initialization only.
+    bool isScalar() const {
+        return isArithmetic() || isPointer() || isNullPtr();
+    }
 
     bool isInteger() const {
         return kind_ >= Kind::Bool && kind_ <= Kind::ULongLong;
@@ -158,6 +173,7 @@ public:
     bool isX87(const Target &t) const;
     bool isArithmetic() const { return isInteger() || isFloating(); }
     bool isVoid() const { return kind_ == Kind::Void; }
+    bool isNullPtr() const { return kind_ == Kind::NullPtr; }
     bool isBool() const { return kind_ == Kind::Bool; }
     bool isStructOrUnion() const { return kind_ == Kind::Struct || kind_ == Kind::Union; }
     bool isComplete() const {

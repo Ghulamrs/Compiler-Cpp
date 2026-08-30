@@ -373,6 +373,10 @@ bool containsX87(const Type *t, const Target &target) {
 const char *Type::name() const {
     switch (kind_) {
     case Kind::Void:      return "void";
+    // What the standard calls it, and what clang prints in a diagnostic. The
+    // *name* `std::nullptr_t` needs <cstddef>, which there is none of here;
+    // `decltype(nullptr)` is how a program spells the type.
+    case Kind::NullPtr:   return "std::nullptr_t";
     case Kind::Bool:      return "bool";
     case Kind::Char:      return "char";
     case Kind::SChar:     return "signed char";
