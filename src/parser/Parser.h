@@ -1197,6 +1197,18 @@ private:
     // offset the member pointer holds, read as the member's type.
     ExprPtr memberPointerExpr();
     ExprPtr applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos);
+    // `&S::f` - the ABI's pair, built into a slot of this frame.
+    ExprPtr boundMemberPointer(const Type *cls, const Signature &f,
+                               std::size_t pos);
+    // **`o.*p` for a member *function* pointer has to carry two things to the
+    // call** - the object's address and the code pointer - and there is no
+    // expression that holds a pair. So `applyMemberPointer` leaves the address
+    // here and answers with the code pointer, and the `(` in `postfix` picks
+    // it up as the first argument. The window is one token wide: `(o.*p)` is
+    // only ever written to be called, and anything else clears it and says so.
+    ExprPtr boundThis_;
+    const Type *boundFn_ = nullptr;
+    std::size_t boundAt_ = 0;
     ExprPtr staticCast(std::size_t pos);
     ExprPtr unary();
     ExprPtr postfix();

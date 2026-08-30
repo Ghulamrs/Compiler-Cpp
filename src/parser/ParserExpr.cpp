@@ -1876,6 +1876,28 @@ ExprPtr Parser::postfix() {
             at_++;
             const Type *fn = n->type()->pointee();
             std::string called = n->type()->describe();
+            // **A member function pointer's object, picked up here.** `o.*p`
+            // left the address behind because no expression holds a pair; this
+            // is the one place it is wanted, and it goes in front of the
+            // written arguments as the `this` the callee expects.
+            if (boundThis_ != nullptr && boundFn_ == fn) {
+                ExprPtr self = std::move(boundThis_);
+                boundFn_ = nullptr;
+                std::vector<ExprPtr> args;
+                args.push_back(std::move(self));
+                std::vector<ExprPtr> written;
+                parseArguments(written);
+                for (std::size_t i = 0; i < written.size(); i++)
+                    args.push_back(std::move(written[i]));
+                std::vector<const Type *> full;
+                full.push_back(types_.pointerTo(types_.get(Kind::Void)));
+                for (std::size_t i = 0; i < fn->params().size(); i++)
+                    full.push_back(fn->params()[i]);
+                n = completeCall(called, std::string(), std::move(n),
+                                 fn->returns(), full, fn->isVariadicFn(), pos,
+                                 std::move(args));
+                continue;
+            }
             n = finishCall(called, called, std::move(n), fn->returns(),
                            fn->params(), fn->isVariadicFn(), pos);
             continue;
@@ -2073,7 +2095,7 @@ ExprPtr Parser::unary() {
         if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
             peekAt(2).kind == TokenKind::Ident) {
             if (const Type *cls = findTypedef(peek().text))
-                if (cls->isStructOrUnion())
+                if (cls->isStructOrUnion()) {
                     if (const Member *m = cls->findMember(peekAt(2).text)) {
                         checkAccessible(cls, *m, pos);
                         at_ += 3;
@@ -2081,6 +2103,32 @@ ExprPtr Parser::unary() {
                         off->setType(types_.memberPointerTo(cls, m->type));
                         return off;
                     }
+                    // `&S::f` for a member function: the ABI's pair, built in
+                    // a slot of this frame the way a class temporary is.
+                    const std::string key = cls->tag() + "::" + peekAt(2).text;
+                    if (const std::vector<std::size_t> *set = overloadsOf(key)) {
+                        if (set->size() > 1)
+                            src_.fail(pos, "'" + key + "' names " +
+                                           std::to_string(set->size()) +
+                                           " functions, and which one this is "
+                                           "cannot be told from the use alone");
+                        const Signature &f = functions_[(*set)[0]];
+                        // **A virtual one is refused by name.** Itanium keeps
+                        // its vtable index in the low bit of the first word
+                        // and branches on that at every call; Microsoft calls
+                        // a thunk the compiler emits. Neither is written, and
+                        // a non-virtual pointer that quietly called the wrong
+                        // override would be worse than saying so.
+                        if (f.isVirtual)
+                            src_.fail(pos, "'" + key + "' is virtual, and a "
+                                           "pointer to a virtual member "
+                                           "function is not supported yet - it "
+                                           "holds a vtable index where this "
+                                           "holds an address");
+                        at_ += 3;
+                        return boundMemberPointer(cls, f, pos);
+                    }
+                }
         }
         ExprPtr v = castExpr();
         // Only when the class declared one. A class that did not still has an

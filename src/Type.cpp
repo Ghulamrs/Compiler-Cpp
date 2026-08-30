@@ -56,6 +56,10 @@ std::string Type::describe() const {
     if (kind_ == Kind::Function)
         return pointee_->describe() + " " + parameterList();
     if (kind_ == Kind::Pointer) return pointee_->describe() + " *";
+    if (memberFn_)
+        return pointee_->returns()->describe() + " (" +
+               (enclosing_ != nullptr ? enclosing_->tag() : std::string("?")) +
+               "::*)" + pointee_->parameterList();
     if (kind_ == Kind::MemberPointer)
         return pointee_->describe() + " " +
                (enclosing_ != nullptr ? enclosing_->tag() : std::string("?")) +
@@ -136,11 +140,35 @@ const Type *TypeTable::pointerTo(const Type *t) {
 // table keyed by pointer sees the repeat they are.
 const Type *TypeTable::memberPointerTo(const Type *cls, const Type *member) {
     for (Type *d : derived_)
-        if (!d->isConst() && d->kind() == Kind::MemberPointer &&
-            d->pointee() == member && d->enclosing() == cls)
+        if (!d->isConst() && d->pointee() == member && d->enclosing() == cls &&
+            (d->kind() == Kind::MemberPointer || d->isMemberFunctionPointer()))
             return d;
     Type *made = new Type(Kind::MemberPointer, member, -1);
     made->setEnclosing(cls);
+    derived_.push_back(made);
+    return derived_.back();
+}
+
+// A pointer to a member *function*, built with the shape of a struct so that
+// every backend already knows how to copy, pass and return one - see
+// Type::isMemberFunctionPointer. The members are what the ABI actually keeps:
+// a code address, and on Itanium a `this` adjustment beside it.
+const Type *TypeTable::memberFunctionPointerTo(const Type *cls, const Type *fn,
+                                               bool microsoft) {
+    for (Type *d : derived_)
+        if (!d->isConst() && d->isMemberFunctionPointer() &&
+            d->pointee() == fn && d->enclosing() == cls)
+            return d;
+    Type *made = new Type(Kind::Struct, fn, -1);
+    made->setEnclosing(cls);
+    made->setMemberFunctionPointer();
+    const Type *word = pointerTo(get(Kind::Void));
+    std::vector<Member> ms;
+    ms.push_back(Member{ "$fn", word, 0, 0, 0, Access::Public });
+    if (!microsoft)
+        ms.push_back(Member{ "$adj", get(Kind::LongLong), 8, 0, 0,
+                             Access::Public });
+    made->complete(ms, microsoft ? 8 : 16, 8);
     derived_.push_back(made);
     return derived_.back();
 }

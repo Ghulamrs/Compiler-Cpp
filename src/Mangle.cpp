@@ -374,7 +374,11 @@ private:
         // `int S::*` is `M1Si` and `double S::*` is `M1Sd`. The class goes in
         // as a type and not as a nested-name, so it takes part in the
         // substitution table like any other.
-        else if (t->isMemberPointer()) {
+        else if (t->isMemberPointer() || t->isMemberFunctionPointer()) {
+            // The same `M` for both: measured, `int S::*` is `M1Si` and
+            // `int (S::*)()` is `M1SFivE`. A member function pointer wears the
+            // shape of a struct so the backends can copy it, so it is asked
+            // about separately - the kind says Struct and only the flag knows.
             out += 'M';
             type(t->unqualified()->enclosing());
             type(t->unqualified()->pointee());
@@ -802,6 +806,23 @@ private:
             out += "PEQ";
             scopeOf(plain->enclosing(), plain->enclosing()->tag());
             type(plain->pointee());
+            return;
+        }
+        // **`P8` and then the class, where a data member pointer writes
+        // `PEQ`** - measured, `int (S::*)()` is `P8S@@EAAHXZ`. The `EAA` is
+        // the same near/__cdecl/non-const `this` a member function's own name
+        // carries, and the signature follows exactly as one.
+        if (t->isMemberFunctionPointer()) {
+            const Type *plain = t->unqualified();
+            const Type *fn = plain->pointee();
+            out += "P8";
+            scopeOf(plain->enclosing(), plain->enclosing()->tag());
+            out += "EAA";
+            returnType(fn->returns());
+            const std::vector<const Type *> &ps = fn->params();
+            if (ps.empty() && !fn->isVariadicFn()) { out += "XZ"; return; }
+            for (const Type *one : ps) argument(one);
+            out += fn->isVariadicFn() ? "ZZ" : "@Z";
             return;
         }
         // `$$Q` where an lvalue reference writes `A`, and the qualifier that

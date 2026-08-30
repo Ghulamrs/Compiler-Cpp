@@ -37,8 +37,78 @@ ExprPtr Parser::castExpr() {
 //
 // No backend was told any of this: the whole operator is an add and two casts
 // they already knew.
+// `&S::f` - the pair the ABI keeps, built into a slot of this frame: the
+// function's address, and on Itanium a `this` adjustment beside it which is
+// zero for every case this compiler accepts. The shape is the one
+// classTemporary uses, a dereference of a comma, because the address of a comma
+// is not something the backends take and the address of `*p` is `p`.
+ExprPtr Parser::boundMemberPointer(const Type *cls, const Signature &f,
+                                   std::size_t pos) {
+    const Type *fn = types_.functionType(f.returns, f.params, f.variadic);
+    const Type *mp = types_.memberFunctionPointerTo(cls, fn,
+                                                    target_.microsoftNames());
+    const int slot = allocateFrameSlot(mp);
+    const Type *word = types_.pointerTo(types_.get(Kind::Void));
+
+    Var *code = Var::global(f.name);
+    code->setSymbol(f.symbol);
+    ExprPtr target(code);
+    target->setType(fn);
+    ExprPtr addr(new Unary('&', std::move(target)));
+    addr->setType(types_.pointerTo(fn));
+    ExprPtr asWord(new Cast(word, std::move(addr)));
+    asWord->setType(word);
+
+    ExprPtr obj(Var::local("$mfp", slot));
+    obj->setType(mp);
+    const Member *fnSlot = mp->findMember("$fn");
+    ExprPtr dst(new MemberAccess(std::move(obj), "$fn", fnSlot->offset, 0, 0));
+    dst->setType(word);
+    ExprPtr store(new Assign(std::move(dst), std::move(asWord)));
+    store->setType(word);
+
+    ExprPtr chain = std::move(store);
+    if (const Member *adj = mp->findMember("$adj")) {
+        ExprPtr self(Var::local("$mfp", slot));
+        self->setType(mp);
+        ExprPtr zeroAt(new MemberAccess(std::move(self), "$adj", adj->offset,
+                                        0, 0));
+        zeroAt->setType(adj->type);
+        ExprPtr zero(new Num(0LL));
+        zero->setType(adj->type);
+        ExprPtr put(new Assign(std::move(zeroAt), std::move(zero)));
+        put->setType(adj->type);
+        ExprPtr both(new Comma(std::move(chain), std::move(put)));
+        both->setType(adj->type);
+        chain = std::move(both);
+    }
+
+    ExprPtr whole(Var::local("$mfp", slot));
+    whole->setType(mp);
+    ExprPtr at(new Unary('&', std::move(whole)));
+    at->setType(types_.pointerTo(mp));
+    ExprPtr seq(new Comma(std::move(chain), std::move(at)));
+    seq->setType(types_.pointerTo(mp));
+    ExprPtr made(new Unary('*', std::move(seq)));
+    made->setType(mp);
+    (void)pos;
+    return made;
+}
+
 ExprPtr Parser::applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos) {
     const Type *mpt = mp->type()->unqualified();
+    // A pointer to a member *function*: read the code pointer out of it and
+    // leave the object's address for the call to pick up.
+    if (mpt->isMemberFunctionPointer()) {
+        const Member *slot = mpt->findMember("$fn");
+        ExprPtr held(new MemberAccess(std::move(mp), "$fn", slot->offset, 0, 0));
+        const Type *fnPtr = types_.pointerTo(mpt->pointee());
+        held->setType(fnPtr);
+        boundThis_ = std::move(addr);
+        boundFn_ = mpt->pointee();
+        boundAt_ = pos;
+        return held;
+    }
     if (!mpt->isMemberPointer())
         src_.fail(pos, "the right of '.*' has to be a pointer to a member, and "
                        "this is '" + mp->type()->describe() + "'");

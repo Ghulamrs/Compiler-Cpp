@@ -329,6 +329,21 @@ public:
     bool isMemberPointer() const {
         return unqual_ ? unqual_->isMemberPointer() : kind_ == Kind::MemberPointer;
     }
+    // **A pointer to a member *function* wears the shape of a struct.** It has
+    // to: Itanium keeps a pair - a code address and a `this` adjustment, 16
+    // bytes - and Microsoft a single code pointer, and every backend already
+    // knows how to copy, pass and return an aggregate. Giving it a new kind
+    // instead would have meant teaching three code generators the same lesson
+    // they had already learnt for classes, at each of the dozen places they
+    // ask `isStructOrUnion()`.
+    //
+    // So `kind_` is Struct and this flag is what tells `describe()` and the
+    // manglers what they are really looking at. `pointee()` is the function
+    // type and `enclosing()` is the class.
+    bool isMemberFunctionPointer() const {
+        return unqual_ ? unqual_->isMemberFunctionPointer() : memberFn_;
+    }
+    void setMemberFunctionPointer() { memberFn_ = true; }
     bool isFunctionPointer() const {
         return kind_ == Kind::Pointer && pointee_ != nullptr && pointee_->isFunction();
     }
@@ -361,6 +376,7 @@ private:
     const Type *enclosing_ = nullptr;
     Access nestedAccess_ = Access::Public;
     bool isClass_ = false;
+    bool memberFn_ = false;
     int dataSize_ = 0;
     bool polymorphic_ = false;
     bool nonTrivialCopy_ = false;
@@ -382,6 +398,8 @@ public:
     const Type *withoutConst(const Type *t);
     const Type *pointerTo(const Type *t);
     const Type *memberPointerTo(const Type *cls, const Type *member);
+    const Type *memberFunctionPointerTo(const Type *cls, const Type *fn,
+                                        bool microsoft);
     const Type *referenceTo(const Type *t);
     const Type *rvalueReferenceTo(const Type *t);
     const Type *arrayOf(const Type *t, long long length);

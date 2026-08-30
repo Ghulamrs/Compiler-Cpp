@@ -3304,11 +3304,51 @@ type - `int S::*` is `M1Si` - with the class going in *as a type*, so it takes
 part in the substitution table like any other. Microsoft writes `PEQ` then the
 class's scope then the type, `PEQS@@H`, where an ordinary `int *` is `PEAH`.
 
-**A pointer to a member *function* is refused by name**, and it is a different
-animal: what it holds is not an offset but a function and how to find its
-`this` - a structure of up to four words on the Microsoft ABI and a pair on
-Itanium. Spotted by the shape, which means looking past the name to the `)`
-that closes the parentheses and asking whether a parameter list follows.
+### And pointers to member functions, which are a different animal
+
+Not an offset but a code address and how to find the `this`. Measured: Itanium
+keeps a **pair**, 16 bytes; Microsoft keeps a single code pointer, 8. The two
+ABIs disagree about the shape and not merely the spelling.
+
+**It wears the shape of a struct, and that is the whole trick.** Giving it a
+kind of its own would have meant teaching three backends to copy, pass and
+return one, at each of the dozen places they ask `isStructOrUnion()` - the
+by-value machinery rungs 3 and 4 depend on. Giving it the *shape* of a struct
+meant teaching them nothing: `kind_` is Struct with the ABI's own members, and
+a flag is what tells `describe()` and the manglers what it really is.
+
+**The object and the code pointer have to reach the call together**, and no
+expression here holds a pair. So `o.*p` answers with the code pointer and
+leaves the address in the parser for the `(` in `postfix` to pick up as the
+first argument. The window is one token wide, which is what makes it safe:
+`(o.*p)` is only ever written in order to be called.
+
+**The parenthesised-declarator branch had to learn the shape.** `int (*p)()`
+and `int (S::*p)()` are the same thing to it - what is inside the parentheses
+points at something, so what follows them is a parameter list and not an array
+bound. Without that, `int (S::*f)()` built `int` and handed the inner
+declarator the wrong base. Once it was told, the member-pointer code needed no
+look-ahead at all: **the base says which of the two kinds this is.**
+
+Both manglings measured: Itanium writes `M` then the class then the function
+type - `M1SFivE`, the same `M` a data member pointer uses - and Microsoft `P8`
+then the class then an ordinary member signature, `P8S@@EAAHXZ`, where a data
+member pointer writes `PEQ`.
+
+**A case must not print `sizeof` of one of these.** It is 16 on the Itanium
+targets and 8 on x86_64-windows, both right, so a case that prints it passes on
+two boxes out of three - and `member-function-pointer` did, until the Windows
+box said so. That is the second time in one session a target-dependent value
+was baked into an expected output, the first being an evaluation order; both
+were caught by the third machine and by nothing else.
+
+**Refused by name: a pointer to a *virtual* member function**, which keeps a
+vtable index in the low bit on Itanium and branches on it at every call, and
+calls a compiler-emitted thunk on Microsoft. And **a pointer to a *const*
+member function**: the constness of `this` is decided where the member is
+declared and is not part of a function type here, so taking the word would make
+a pointer that could be given a non-const member's address and then called on a
+const object.
 
 ## Decisions already taken
 

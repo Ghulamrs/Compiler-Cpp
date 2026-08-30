@@ -1195,7 +1195,14 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
     if (peek().is("(")) {
         std::size_t open = at_;
         at_++;
-        bool wrapsAPointer = peek().is("*");
+        // `int (*p)()` and `int (S::*p)()` are the same shape to this branch:
+        // what is inside the parentheses points at something, so what follows
+        // them is a parameter list and not an array bound. Without the second
+        // half, `int (S::*f)()` built int rather than a function type and the
+        // inner declarator was handed the wrong base.
+        const bool wrapsMemberPointer = peek().kind == TokenKind::Ident &&
+                                        peekAt(1).is("::") && peekAt(2).is("*");
+        bool wrapsAPointer = peek().is("*") || wrapsMemberPointer;
 
         declarator(types_.intType(), true, true);
         expect(")");
@@ -1206,6 +1213,18 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
             std::vector<const Type *> params;
             bool variadic = false;
             parameterTypes(params, variadic);
+            // **`int (S::*f)() const` is a different type and is refused by
+            // name.** A function type here carries no constness - the `this` a
+            // member function takes is decided where the member is declared,
+            // not in the type system - so taking the word would make a pointer
+            // that could be given a non-const member's address and then called
+            // on a const object.
+            if (wrapsMemberPointer && peek().is("const"))
+                src_.fail(peek().pos, "a pointer to a *const* member function "
+                                      "is not supported yet - the constness of "
+                                      "'this' is not part of a function type "
+                                      "here, so this one cannot be told from "
+                                      "the other");
             outer = types_.functionType(base, std::move(params), variadic);
         } else {
             outer = arraySuffix(base, posOuter);
@@ -1300,28 +1319,18 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
             // Spotted by the shape - `int (S::*f)()` puts the star inside
             // parentheses that a parameter list follows - which means looking
             // past the name to the ')' that closes them.
-            bool functionFollows = false;
-            if (insideParens) {
-                int depth = 0;
-                for (std::size_t k = at_; ; k++) {
-                    const Token &t = peekAt(k - at_);
-                    if (t.kind == TokenKind::End) break;
-                    if (t.is("(")) depth++;
-                    else if (t.is(")")) {
-                        if (depth == 0) {
-                            functionFollows = peekAt(k - at_ + 1).is("(");
-                            break;
-                        }
-                        depth--;
-                    }
-                }
+            // **A function base means a pointer to a member function.** By the
+            // time this runs the parenthesised-declarator branch above has
+            // already built the function type from the parameter list that
+            // follows the parentheses, so there is nothing to look ahead for -
+            // the base says which of the two this is.
+            const Type *mp;
+            if (base->isFunction()) {
+                mp = types_.memberFunctionPointerTo(cls, base,
+                                                    target_.microsoftNames());
+            } else {
+                mp = types_.memberPointerTo(cls, base);
             }
-            if (functionFollows)
-                src_.fail(pos, "a pointer to a member function is not "
-                               "supported yet - a pointer to a data member "
-                               "works, and holds an offset where this one has "
-                               "to hold a function and how to find its 'this'");
-            const Type *mp = types_.memberPointerTo(cls, base);
             for (;;) {
                 if (consume("const"))    { mp = types_.withConst(mp); continue; }
                 if (consume("volatile")) continue;
