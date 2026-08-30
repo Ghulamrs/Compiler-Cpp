@@ -1797,6 +1797,10 @@ void Parser::topLevel(Program &program) {
     // says, and an emitter that followed the list would make the program mean
     // something the standard says it does not.
     std::vector<StmtPtr> memberInits;
+    // Which members this constructor's own list covers. Kept out here because
+    // the initialisers the class wrote are applied to the rest, below, and the
+    // list itself is scoped to the block that reads it.
+    std::set<std::string> namedInInit;
     std::map<std::string, std::vector<ExprPtr> > baseArgs;
     const bool isCtor = memberOf != nullptr && d.name == localOf(d.qualifier);
     if (memberOf != nullptr && peek().is(":")) {
@@ -1832,6 +1836,7 @@ void Parser::topLevel(Program &program) {
                     src_.fail(epos, "'" + entry + "' takes one value here, "
                                     "given " + std::to_string(args.size()));
                 memberExprs[entry] = std::move(args);
+                namedInInit.insert(entry);
                 where[entry] = epos;
             } else if (entry == d.qualifier) {
                 src_.fail(epos, "a delegating constructor is not supported "
@@ -1884,6 +1889,24 @@ void Parser::topLevel(Program &program) {
             assign->setType(m->type);
             memberInits.push_back(StmtPtr(new ExprStmt(std::move(assign))));
         }
+    }
+
+    // **[class.base.init]/9: a member this constructor did not name is
+    // initialised by the initialiser the class gave it.** So it applies to
+    // every constructor and not only the implicit one, and the list this
+    // constructor wrote takes precedence member by member rather than all or
+    // nothing - `S(int a) : x(a) { }` on a class with `int x = 1; int y = 2;`
+    // sets x from a and y from 2.
+    //
+    // Appended after the list, which is declaration order for the members that
+    // were named; a member the list skipped has nothing before it that could
+    // read it, so the two orders cannot be told apart.
+    if (memberOf != nullptr && isCtor) {
+        std::vector<StmtPtr> rest = memberInitialisers(d.qualifier, memberOf,
+                                                       thisOffset_, namedInInit,
+                                                       d.pos);
+        for (std::size_t i = 0; i < rest.size(); i++)
+            memberInits.push_back(std::move(rest[i]));
     }
 
     returnType_ = d.type;

@@ -635,6 +635,18 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             long long at = (kind == Kind::Union) ? 0 : alignTo(byteCursor, a);
             members.push_back(Member{ d.name, d.type, static_cast<int>(at), 0, 0,
                                       access });
+            // `int x = 5;` - C++11's initialiser on the member itself. The
+            // tokens stay where they are and their place is recorded; every
+            // constructor that does not name this member in its own list reads
+            // them again.
+            if (peek().is("=")) {
+                at_++;
+                if (peek().is("{"))
+                    src_.fail(peek().pos, "a braced member initialiser is not "
+                                          "supported yet - write the value");
+                memberInit_[tag + "::" + d.name] = at_;
+                skipMemberInitialiser();
+            }
             long long endBits = (at + slot->size(target_)) * 8;
             if (kind == Kind::Union) { if (endBits > widestBits) widestBits = endBits; }
             else bitCursor = endBits;

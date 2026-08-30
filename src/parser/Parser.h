@@ -6,6 +6,7 @@
 #include "../Type.h"
 
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -1028,6 +1029,20 @@ private:
     // Past one default argument: to the ',' or ')' that ends it, counting
     // brackets so that a call or a subscript inside it keeps its commas.
     void skipDefaultArgument();
+    // **A member's own initialiser is kept as a place in the token stream**,
+    // the same way a default argument is and for the same reason: it is
+    // evaluated once per construction, in a constructor that may not have been
+    // read yet. Keyed "Class::member".
+    std::map<std::string, std::size_t> memberInit_;
+    // To the ',' or ';' that ends one, counting brackets.
+    void skipMemberInitialiser();
+    // The statements a constructor of this class needs for the members it did
+    // not initialise itself - [class.base.init]/9, where an initialiser the
+    // class wrote stands in for a mem-initialiser nobody wrote.
+    std::vector<StmtPtr> memberInitialisers(const std::string &tag,
+                                            const Type *type, int thisSlot,
+                                            const std::set<std::string> &already,
+                                            std::size_t pos);
     // [dcl.fct.default]/4: the defaults have to be a suffix of the parameter
     // list. Asked by both parameter-list parsers - the one for declarations
     // and the one a definition has of its own - because a definition may

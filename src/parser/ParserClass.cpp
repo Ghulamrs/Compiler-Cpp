@@ -747,6 +747,12 @@ StmtPtr Parser::constructLocalArray(const Declared &d, int offset,
         !isFriendOf(plain))
         src_.fail(d.pos, "'" + plain->describe() + "' has no public default "
                          "constructor, and an array of it needs one");
+    // **Marked used, or an implicit one is declared and never emitted.** Every
+    // other path to a constructor goes through `resolveOverload`, which marks
+    // it; this one looks the default up directly and has to say so itself. A
+    // class whose only reason for having a constructor is a member initialiser
+    // is where it showed - `S a[2];` called `S::S()` and nothing defined it.
+    functions_[static_cast<std::size_t>(ctor - &functions_[0])].used = true;
 
     const Type *ptr = types_.pointerTo(plain);
     ExprPtr base(Var::local(d.name, offset));
@@ -867,7 +873,15 @@ void Parser::declareImplicitSpecials(const std::string &tag, const Type *type,
     declareImplicitMoveCtor(tag, type, pos, wroteCopyOrDtor);
     if (wroteConstructor) return;
 
+    // **An initialiser on a member is work**, and this is where a class with
+    // nothing but `int x = 5;` gets a default constructor at all: without one
+    // there is no function to put the store in, and `S s;` would leave x
+    // holding whatever was on the stack.
     bool work = type->polymorphic();
+    for (std::size_t i = 0; i < type->members().size() && !work; i++)
+        if (memberInit_.find(tag + "::" + type->members()[i].name) !=
+            memberInit_.end())
+            work = true;
     const std::vector<Type::BaseSpec> &bs = type->bases();
     for (std::size_t i = 0; i < bs.size() && !work; i++)
         if (!bs[i].type->tag().empty() &&
@@ -1298,6 +1312,16 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
         std::vector<StmtPtr> vp = storeVptrs(cls, type, thisSlot);
         for (std::size_t i = 0; i < vp.size(); i++)
             body.push_back(std::move(vp[i]));
+    }
+
+    // The initialisers the class wrote on its own members. This constructor
+    // names none of them, so every one applies.
+    {
+        std::set<std::string> none;
+        std::vector<StmtPtr> mine = memberInitialisers(cls, type, thisSlot,
+                                                       none, pos);
+        for (std::size_t i = 0; i < mine.size(); i++)
+            body.push_back(std::move(mine[i]));
     }
 
     const std::vector<Member> &ms = type->members();
@@ -2122,6 +2146,72 @@ void Parser::skipDefaultArgument() {
         } else if (t.is(",") && depth == 0) return;
         at_++;
     }
+}
+
+// To the ',' or ';' that ends a member's own initialiser, counting brackets so
+// that a call or a braced list written inside one keeps its own commas.
+void Parser::skipMemberInitialiser() {
+    int depth = 0;
+    for (;;) {
+        const Token &t = peek();
+        if (t.kind == TokenKind::End)
+            src_.fail(t.pos, "this member initialiser never ends");
+        if (t.is("(") || t.is("[") || t.is("{")) depth++;
+        else if (t.is(")") || t.is("]") || t.is("}")) {
+            if (depth == 0) return;
+            depth--;
+        } else if (depth == 0 && (t.is(",") || t.is(";"))) return;
+        at_++;
+    }
+}
+
+// **[class.base.init]/9: a member the constructor did not name is initialised
+// by the initialiser the class gave it.** So this is asked once per
+// constructor, with the set that constructor's mem-initialiser list already
+// covers, and it answers the assignments for the rest.
+//
+// The expression is read again here, at each constructor that needs it - which
+// is what the standard asks for, an initialiser being evaluated once per
+// construction and not once per class. The enclosing locals are put aside
+// while it is read, the same as a default argument: a member's initialiser may
+// name a global or an enumerator and cannot name a local of whatever function
+// happens to be compiling.
+std::vector<StmtPtr> Parser::memberInitialisers(const std::string &tag,
+                                                const Type *type, int thisSlot,
+                                                const std::set<std::string> &already,
+                                                std::size_t pos) {
+    std::vector<StmtPtr> out;
+    const std::vector<Member> &ms = type->members();
+    const std::size_t resume = at_;
+    std::vector<Local> outer;
+    bool swapped = false;
+
+    for (std::size_t i = 0; i < ms.size(); i++) {
+        std::map<std::string, std::size_t>::const_iterator it =
+            memberInit_.find(tag + "::" + ms[i].name);
+        if (it == memberInit_.end()) continue;
+        if (already.find(ms[i].name) != already.end()) continue;
+
+        if (!swapped) { outer.swap(locals_); swapped = true; }
+        at_ = it->second;
+        ExprPtr value = decay(assign());
+        checkAssignable(*value, ms[i].type, pos, "'" + ms[i].name + "'");
+        value = convert(std::move(value), ms[i].type);
+
+        ExprPtr me(Var::local("this", thisSlot));
+        me->setType(types_.pointerTo(type));
+        ExprPtr obj(new Unary('*', std::move(me)));
+        obj->setType(type);
+        ExprPtr field(new MemberAccess(std::move(obj), ms[i].name, ms[i].offset,
+                                       ms[i].width, ms[i].bitOffset));
+        field->setType(ms[i].type);
+        ExprPtr store(new Assign(std::move(field), std::move(value)));
+        store->setType(ms[i].type);
+        out.push_back(StmtPtr(new ExprStmt(std::move(store))));
+    }
+    if (swapped) locals_.swap(outer);
+    at_ = resume;
+    return out;
 }
 
 void Parser::parameterTypes(std::vector<const Type *> &params, bool &variadic) {

@@ -3240,6 +3240,38 @@ declaration and reports `expected ')'`. It is the vexing-parse machinery that
 would have to be told, `tests/cases/constructor-vexing` pins the behaviour that
 makes it delicate, and a discarded temporary is worth less than that risk.
 
+## Member initialisers, `int x = 5;` on the member itself
+
+**Kept as a place in the token stream**, the way a default argument is and for
+the same reason: [class.base.init] evaluates one per *construction*, in a
+constructor that may not have been read when the class was, so one parsed tree
+could not serve them all. Read again at each constructor that needs it, with
+the enclosing locals put aside - a member's initialiser may name a global or an
+enumerator and cannot name a local of whatever function happens to be
+compiling.
+
+**[class.base.init]/9 makes it a fallback and not an override**, member by
+member rather than all or nothing. `S(int a) : x(a) { }` on a class with
+`int x = 1; int y = 2;` takes x from the list and y from the class, which is
+what `member-initialiser` pins.
+
+**A class with nothing but an initialiser still needs a constructor**, and this
+is where it could have gone silently wrong. The implicit default constructor is
+only declared when it has *work* to do - a vptr, a base with one, a member with
+one - and an initialiser on a member is now another thing that counts. Without
+that line there is no function to put the store in, and `S s;` leaves x holding
+whatever was on the stack: a silent wrong answer of exactly the kind the array
+bug was.
+
+**And the array path had to say it was using the constructor.** Every other
+route to one goes through `resolveOverload`, which marks it used;
+`constructLocalArray` looks the default up directly and did not. It went
+unnoticed while the only classes with implicit constructors were ones that also
+had members or bases with constructors - a class whose *only* reason to have one
+is a member initialiser is what exposed it, and `S a[2];` called `S::S()` with
+nothing defining it. A declared-and-never-emitted function is a link error, so
+this one at least announces itself.
+
 ## Decisions already taken
 
 **Conform to the platform ABI; do not invent one.** Itanium C++ ABI on Linux
