@@ -1,5 +1,7 @@
 #include "Mangle.h"
 
+#include "Operator.h"
+
 #include "Type.h"
 
 #include <vector>
@@ -110,14 +112,30 @@ public:
         subs_.push_back(Sub{ cls, std::string() });
     }
 
+    // An operator's code stands exactly where an ordinary name writes its
+    // length and its letters - `_ZNK1VplERKS_` against `_ZNK1V3addERKS_` -
+    // and everything on either side of it is unchanged. `unary` picks between
+    // the two codes Itanium gives a token that has both forms.
+    void writtenName(const std::string &name, bool unary) {
+        const std::string spelling = operatorSpelling(name);
+        if (const OperatorCode *op = findOperator(spelling)) {
+            out += itaniumOperatorCode(*op, unary);
+            return;
+        }
+        out += std::to_string(name.size());
+        out += name;
+    }
+
     void memberFunction(const std::string &cls, const Type *clsType,
                         const std::string &name,
                         const Type *fn, bool constThis) {
         out = "_ZN";
         if (constThis) out += "K";
         prefix(clsType, cls);
-        out += std::to_string(name.size());
-        out += name;
+        // A member operator's operand count is one more than its parameter
+        // count, `this` being the first, so a member with no parameter is the
+        // unary form.
+        writtenName(name, fn->params().empty());
         out += "E";
         const std::vector<const Type *> &params = fn->params();
         if (params.empty() && !fn->isVariadicFn()) { out += "v"; return; }
@@ -179,8 +197,9 @@ public:
 
     void function(const std::string &name, const Type *fn, bool internal) {
         out = internal ? "_ZL" : "_Z";
-        out += std::to_string(name.size());
-        out += name;
+        // A non-member operator carries every operand in its parameter list,
+        // so one parameter is the unary form where a member's zero is.
+        writtenName(name, fn->params().size() == 1);
         const std::vector<const Type *> &params = fn->params();
         if (params.empty() && !fn->isVariadicFn()) { out += "v"; return; }
         for (const Type *p : params) type(p);
@@ -448,11 +467,29 @@ public:
         return component;
     }
 
+    // **An operator replaces the whole `?name@` and is not pushed as a
+    // back-reference**, which is the one thing here that cannot be guessed
+    // and was measured: in `??HV@@QEBA?AU0@D@Z` the class is back-reference
+    // *0*, where a named member function would have left it 1. The same rule
+    // the ??4 of operator= already followed, now written once.
+    //
+    // Arity plays no part: `??D` is multiplication and dereference both, and
+    // the parameter list is what tells them apart. Only Itanium needs to know.
+    bool operatorPrefix(const std::string &name) {
+        const OperatorCode *op = findOperator(operatorSpelling(name));
+        if (op == nullptr) return false;
+        out = "??";
+        out += op->microsoft;
+        return true;
+    }
+
     void memberFunction(const std::string &cls, const Type *clsType,
                         const std::string &name,
                         const Type *fn, char access, bool constThis) {
-        out = "?";
-        pushName(name);
+        if (!operatorPrefix(name)) {
+            out = "?";
+            pushName(name);
+        }
         scopeOf(clsType, cls);
         out += access;            // Q public, I protected, A private
         out += 'E';               // this is __ptr64
@@ -513,8 +550,12 @@ public:
     }
 
     void function(const std::string &name, const Type *fn) {
-        out = "?";
-        nameComponent(name);      // the name, and the empty list of scopes
+        if (operatorPrefix(name)) {
+            out += '@';           // the empty list of scopes
+        } else {
+            out = "?";
+            nameComponent(name);  // the name, and the empty list of scopes
+        }
         out += "YA";              // a free function, __cdecl
         returnType(fn->returns());
         const std::vector<const Type *> &params = fn->params();

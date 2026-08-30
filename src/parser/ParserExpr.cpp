@@ -42,7 +42,91 @@ ExprPtr Parser::pointerSub(ExprPtr l, ExprPtr r, std::size_t pos) {
     return n;
 }
 
+// What a BinOp is written as, which is what `operator` is followed by when
+// somebody overloads it. The backends spell these too, for their own output;
+// this is the source spelling and belongs to the front end.
+const char *binOpSpelling(BinOp op) {
+    switch (op) {
+    case BinOp::Add:    return "+";
+    case BinOp::Sub:    return "-";
+    case BinOp::Mul:    return "*";
+    case BinOp::Div:    return "/";
+    case BinOp::Mod:    return "%";
+    case BinOp::Shl:    return "<<";
+    case BinOp::Shr:    return ">>";
+    case BinOp::BitAnd: return "&";
+    case BinOp::BitOr:  return "|";
+    case BinOp::BitXor: return "^";
+    case BinOp::Eq:     return "==";
+    case BinOp::Ne:     return "!=";
+    case BinOp::Lt:     return "<";
+    case BinOp::Le:     return "<=";
+    case BinOp::Gt:     return ">";
+    case BinOp::Ge:     return ">=";
+    case BinOp::LAnd:   return "&&";
+    case BinOp::LOr:    return "||";
+    }
+    return "";
+}
+
+// [over.match.oper]: where an operand has class type, `a @ b` is a *call* and
+// not the built-in operation.
+//
+// **Answers null when neither operand is a class**, which is every use in a C
+// program and most uses in a C++ one - so the built-in paths below reach their
+// work having asked one question about a type, and nothing about operators.
+//
+// **A member operator is looked for on the left operand only.** The left one
+// is what [over.match.oper] hands the implicit object parameter, so `3 + v`
+// can never reach `V::operator+` however the class is written - that one is
+// what a non-member operator is for, and is why the non-member form exists at
+// all.
+//
+// The narrowing to record here rather than hide: C++ builds *one* candidate
+// set out of the members and the non-members together and ranks it. This
+// tries the member set first and falls to the non-members only when the class
+// declares no operator of that name at all - so a class whose member
+// `operator+(int)` cannot take a V will be refused rather than finding a
+// non-member `operator+(V, V)` sitting beside it. Said in docs/CONFORMANCE.md
+// with the rest of what this compiler answers differently.
+ExprPtr Parser::overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
+                                 std::size_t pos) {
+    const Type *lt = lhs->type();
+    const Type *rt = rhs->type();
+    if (!lt->unqualified()->isStructOrUnion() &&
+        !rt->unqualified()->isStructOrUnion())
+        return nullptr;
+
+    const char *spelling = binOpSpelling(op);
+    const std::string name = std::string("operator") + spelling;
+
+    if (lt->unqualified()->isStructOrUnion() &&
+        findMemberOwner(lt->unqualified(), name) != nullptr) {
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(rhs));
+        return memberCallWith(std::move(lhs), lt, name, pos, std::move(args));
+    }
+
+    if (overloadsOf(name) != nullptr) {
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(lhs));
+        args.push_back(std::move(rhs));
+        const Signature &sig = resolveOverload(name, args, pos);
+        return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params,
+                            sig.variadic, pos, std::move(args));
+    }
+
+    src_.fail(pos, "'" + lt->describe() + "' and '" + rt->describe() +
+                   "' cannot be combined with '" + spelling + "' - one of them "
+                   "is a class, and no '" + name + "' is declared that takes "
+                   "them");
+    return nullptr;
+}
+
 ExprPtr Parser::arithmetic(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos) {
+    // Before decay, because decay is a rule about built-in operands and a
+    // class is not one.
+    if (ExprPtr call = overloadedBinary(op, lhs, rhs, pos)) return call;
     lhs = decay(std::move(lhs));
     rhs = decay(std::move(rhs));
 
@@ -76,7 +160,8 @@ ExprPtr Parser::arithmetic(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos) 
     return n;
 }
 
-ExprPtr Parser::comparison(BinOp op, ExprPtr lhs, ExprPtr rhs) {
+ExprPtr Parser::comparison(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos) {
+    if (ExprPtr call = overloadedBinary(op, lhs, rhs, pos)) return call;
     lhs = decay(std::move(lhs));
     rhs = decay(std::move(rhs));
     ExprPtr n;
@@ -853,7 +938,7 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
         node->setType(to);
         return node;
     }
-    if (cc->access != Access::Public && currentClass_ != cls)
+    if (cc->access != Access::Public && currentClass_ != cls && !isFriendOf(cls))
         src_.fail(pos, "'" + cls->describe() + "' is passed by value as " + what +
                        ", which copies it, and its copy constructor is " +
                        (cc->access == Access::Private ? "private" : "protected"));
@@ -1102,7 +1187,17 @@ ExprPtr Parser::postfix() {
 ExprPtr Parser::unary() {
     std::size_t pos = peek().pos;
 
-    if (consume("+")) return decay(castExpr());
+    // Unary `+` is a no-op on a built-in operand and is not one on a class,
+    // where [over.match.oper] makes it a call to `operator+` with no
+    // argument. There is no path to that one yet - it is refused where it is
+    // declared - so what has to be refused here is the *use*, which was
+    // otherwise passed through untouched and made `+v` the only operator that
+    // silently accepted a class.
+    if (consume("+")) {
+        ExprPtr v = decay(castExpr());
+        requireScalar(*v, pos, "unary '+'");
+        return v;
+    }
 
     if (peek().is("++") || peek().is("--")) {
         bool inc = peek().is("++");
@@ -1732,6 +1827,18 @@ const Type *Parser::findMemberOwner(const Type *cls,
 
 ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
                            const std::string &name, std::size_t pos) {
+    std::vector<ExprPtr> args;
+    parseArguments(args);
+    return memberCallWith(std::move(object), cls, name, pos, std::move(args));
+}
+
+// The same call with its arguments already in hand. **An overloaded operator
+// is what split this in two**: `a + b` has parsed its right operand long
+// before it knows there is a call here at all, so the arguments cannot come
+// off the token stream the way `a.f(b)` takes them.
+ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
+                               const std::string &name, std::size_t pos,
+                               std::vector<ExprPtr> args) {
     const Type *plain = cls->unqualified();
 
     // **A member function is looked for up the base chain**, unlike a data
@@ -1746,14 +1853,12 @@ ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
     if (owner == nullptr) owner = plain;
     std::string key = owner->tag() + "::" + name;
 
-    std::vector<ExprPtr> args;
-    parseArguments(args);
     const Signature &sig = resolveOverload(key, args, pos, cls);
 
     // Now there IS an inside, and this is where it starts to mean something:
     // a private member is reachable from another member of the same class.
     if (sig.access != Access::Public && currentClass_ != plain &&
-        currentClass_ != owner) {
+        currentClass_ != owner && !isFriendOf(plain) && !isFriendOf(owner)) {
         const char *how = sig.access == Access::Private ? "private" : "protected";
         src_.fail(pos, "'" + name + "' is " + how + " in '" + plain->describe() +
                        "' - it can be called only from inside the class");
@@ -1865,10 +1970,25 @@ ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
 // class. There is no inside yet - member functions are the next step of this
 // rung - so from here every non-public member is out of reach, which is exactly
 // what a class with private data and no member functions means.
+// [class.friend]: is the function whose body is being read one this class
+// granted access to? Asked by every access check, beside the question about
+// being inside the class - the two are the only ways past a private member,
+// and they are asked in the same breath everywhere.
+bool Parser::isFriendOf(const Type *cls) const {
+    if (cls == nullptr || currentFunction_.empty()) return false;
+    std::map<std::string, std::vector<std::string> >::const_iterator it =
+        friends_.find(cls->unqualified()->tag());
+    if (it == friends_.end()) return false;
+    for (std::size_t i = 0; i < it->second.size(); i++)
+        if (it->second[i] == currentFunction_) return true;
+    return false;
+}
+
 void Parser::checkAccessible(const Type *object, const Member &m,
                              std::size_t pos) const {
     if (m.access == Access::Public) return;
     if (currentClass_ != nullptr && currentClass_ == object->unqualified()) return;
+    if (isFriendOf(object)) return;
     const char *how = m.access == Access::Private ? "private" : "protected";
     src_.fail(pos, "'" + m.name + "' is " + how + " in '" + object->describe() +
                    "' - it can be named only from inside the class, and this "

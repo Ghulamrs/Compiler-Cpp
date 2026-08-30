@@ -92,12 +92,13 @@ declaration that begins with an unknown keyword arrives, and `expectIdent`,
 which is where one that begins with a type but is *named* by a keyword
 arrives. Both now answer `'friend' is not supported yet` and so on.
 
-**None of this implements any of them.** `friend` in particular is not on the
-ladder and never was: it is not a member, it declares a function at namespace
-scope and grants it access, so it wants a friend list on the class that
-`checkAccessible` consults as well as a declaration path that puts the
-function outside the class it is written in. What changed is only that the
-compiler now says which word it cannot read.
+**None of this implemented any of them, and that is what changed later.**
+`friend` was the example: not on the ladder and never was, wanting a friend
+list on the class that `checkAccessible` consults as well as a declaration
+path that puts the function outside the class it is written in. Both of those
+now exist - see "`friend`, and why it landed beside the operators" - and the
+description above is exactly what the implementation turned out to be. The
+rest of the list is still only named and not read.
 
 ## Rung 5 reopened: a real tuple, 2026-08-29
 
@@ -2406,10 +2407,177 @@ replayed, and one without the other makes a class refuse its own member.
 
 **7.6 - lambdas**, last because they need the most from the rest: a closure is
 a class with a call operator, generated where the lambda is written, holding
-its captures as members. cxx1 has no local classes at all, so that comes
+its captures as members. **Which means it cannot be started before operator
+overloading**, and specifically before `operator()` is reachable - see
+"Operator overloading" below, where the names are done and the call operator
+is still refused by name. cxx1 has no local classes at all, so that comes
 first; captures by reference need 7.4's story about lifetime; and a generic
 lambda would need 7.1's `auto` in a parameter, which is C++14 and out of
 scope.
+
+## Operator overloading, and why the names came first
+
+**Off the ladder, and the reason it is next.** The ladder was never a map of
+C++, and what is off it is now larger than what is on it. Operator overloading
+blocks more than its size suggests: user-written copy *and* move assignment,
+functors and therefore **lambdas (7.6), which cannot be attempted before it**,
+and iterators and therefore range-for over a class. So it comes before the
+last rung rather than after it.
+
+**The table is in `src/Operator.h` and `src/Operator.cpp`, and every code in
+it was measured.** One class declaring every overloadable operator, compiled
+for both ABIs with clang, twice - and the second time was not optional.
+Measured with the operators all taking the same argument, **half the Microsoft
+codes are unreadable**: `??8`/`??9`, `??M` through `??P`, `??A`/`??R` and
+`??Y`/`??Z` each come out as two identical signatures differing in one letter,
+with nothing in the listing to say which letter belongs to which operator. The
+second measurement gave every operator a *different* parameter type - char,
+short, int, long, float, double, and the unsigned four - so each name
+identifies exactly one row. The parameter type each row was measured with is
+in the comment beside it, which is what makes a row checkable later.
+
+**The one asymmetry between the ABIs is arity.** Itanium gives the unary and
+binary forms of a token different codes - `ml` for `a * b` and `de` for `*p`,
+`an` and `ad`, `mi` and `ng`, `pl` and `ps` - and Microsoft writes one code for
+both and lets the parameter list separate them: `??D` is multiplication *and*
+dereference. So an Itanium name cannot be built without knowing how many
+operands were written and a Microsoft one can, which is why
+`itaniumOperatorCode` takes a flag and `operatorPrefix` does not.
+
+**The code goes exactly where a name's length and letters go**, and nothing on
+either side of it changes: `_ZNK1VplERKS_` against `_ZNK1V3addERKS_`. That is
+what made this small. `operator=` had been mangled by hand since rung 3 -
+`aS` and `??4`, the one operator the compiler could name - and it turns out to
+have been the general rule all along.
+
+**One Microsoft rule that cannot be guessed and was measured**: the operator
+code replaces the whole `?name@` and is **not pushed as a back-reference**. In
+`??HV@@QEBA?AU0@D@Z` the class is back-reference *0*, where a named member
+function would have left it 1. The `??4` of `operator=` already followed that
+rule; it is written once now.
+
+**Verified end to end, not just built**: `tools/mangled-names` over the
+measurement files puts cxx1's names beside clang's for all three targets - 31
+names for the binary set, 7 for the unary forms, 30 for a mixed file with
+`operator=`, `->`, and pre- and post-increment. All agreeing, on
+x86_64-linux, x86_64-windows and arm64-darwin.
+
+### The dispatch is one place, because the expression parser already had one
+
+Every binary operator in the parser funnels through `arithmetic`, `comparison`
+or `shiftOf`, so `overloadedBinary` is asked once in each of those three and
+nowhere else. It answers null when neither operand is a class - which is every
+use in a C program and most in a C++ one - so the built-in paths reach their
+work having asked one question about a type and nothing about operators.
+
+**A member operator is looked for on the left operand only.** The left operand
+is what [over.match.oper] hands the implicit object parameter, so `2 * v` can
+never reach `V::operator*` however the class is written. That is not a
+limitation; it is why the non-member form exists, and
+`tests/cases/nonmember-operator` holds both halves of it.
+
+**`memberCall` had to be split in two.** It read its own arguments off the
+token stream, which is right for `a.f(b)` and impossible for `a + b`, where
+the right operand was parsed long before anything knew there was a call here.
+`memberCallWith` is the same function with the arguments handed to it.
+
+### Two bugs this found, and only one of them was new
+
+**`a += b` is not `a = a + b` when `a` is a class**, and for about ten minutes
+it was. A compound assignment is built by reading the target back, combining
+and storing, which is the correct rewrite for a built-in operand. The moment
+`+` learned to find a class's `operator+`, the rewrite found it too - so
+`a += b` compiled into a call the standard does not sanction, for a class that
+had never declared `operator+=`. clang refuses the same program.
+`tests/cases/operator-compound-refused` is that case. **The lesson is the
+shape of it**: teaching an existing path a new trick teaches it to every
+caller of that path, including the ones that wanted the old behaviour.
+
+**Unary `+` accepted a class, and had since before any of this.**
+`if (consume("+")) return decay(castExpr());` - a no-op with no check on what
+it was applied to, which made `+v` the one operator that took a class in
+silence. Found by running every operator over a class operand and putting
+cxx1's accept-or-reject beside clang's, which is a sweep worth repeating
+whenever a new operand type arrives.
+
+### What is refused, and where
+
+**An operator this compiler can name but cannot reach is refused at the
+declaration**, not at the use - because a function that links, carries the
+name clang gives it, and can never be called is exactly the half-built thing
+this project refuses everywhere else. Which dispatch is missing depends on
+arity, and arity is a question about the parameter list, so the check sits
+where the parameters are known and not back where the name was read:
+`operator-` with a parameter is subtraction and works, with none it is
+negation and there is no path to it.
+
+Reachable now: `+ - * / % & | ^ << >>` and `== != < <= > >=`, with two
+operands, member or non-member.
+
+Refused by name: every unary form, `= [] () ++ -- ! ~ , && ||` and the
+compound assignments; `operator new` and `operator delete`; `operator->*`;
+a user-defined literal; and a conversion function. **The conversion function
+is caught in the specifier path and not the declarator**, because
+`operator int() const` is a declaration with no type in front of it - reaching
+the end of `unqualifiedSpecifiers` having found `operator` is precisely what a
+conversion function looks like from there, and saying so beats the generic
+"'operator' is not supported yet" that the keyword table would have given.
+
+`docs/CONFORMANCE.md` records the one thing that compiles and is wrong: where
+the standard sees the member and non-member candidates as an ambiguity, cxx1
+takes the member, because it asks for the two sets in order rather than
+ranking them together.
+
+## `friend`, and why it landed beside the operators
+
+**A friend is not a member, and nearly every mistake here comes from
+forgetting that.** [class.friend]: the declaration is written inside the class
+and the function it declares belongs to the *enclosing namespace*. It has no
+`this`, it is not in the class's function table, it is not mangled into the
+class, and `main` calls it exactly as it calls anything else. All the class
+gives it is access - so the implementation is an ordinary function declaration
+handed to the same `declareFunction` a file-scope one goes to, plus one entry
+in a table.
+
+**Two rules fall out rather than needing to be written.** The access specifier
+a friend declaration sits under is ignored - [class.friend]/9 - which is true
+here because `access` is simply never read on that path; and a friend reaches
+private member *functions* as well as private data, because every access check
+asks the same new question.
+
+**The table holds linkage names, not source names.** Friendship is granted to
+a *function*, and recording `peek` would befriend every overload of it -
+including ones declared afterwards that the class never saw.
+`tests/cases/friend-overload` is that case: `peek(const Account &)` is a
+friend and `peek(const Account &, int)` is refused, which is what clang does.
+So the grant is recorded as the symbol, looked up through `lookupSignature`
+once the parameter list has been read.
+
+**What asks the question is `currentFunction_`**, the linkage name of the
+function whose body is being read, set beside the `declareFunction` that
+registers a definition and cleared with `currentClass_`. It is left empty for
+a *member's* body on purpose, and that is consistent rather than a gap: the
+qualified form that would make a member somebody's friend is refused where it
+is written.
+
+**Five access checks, and all five had to learn it** - `checkAccessible`, the
+member-call check in `memberCallWith`, the two constructor checks, and the
+static-member one. They were already the complete list of ways past a private
+member, so `isFriendOf` is asked in the same breath as "are we inside the
+class" in each of them. A sixth check added later that forgets this is the
+failure mode to watch for; there is no single funnel that would prevent it.
+
+**It landed beside operator overloading because that is what makes each of
+them useful.** A symmetric operator wants to be a non-member - `2 * v` cannot
+be a member of V, the left operand being an int - and a non-member cannot see
+what the class keeps private. `tests/cases/friend-operator` is both halves at
+once, and neither feature alone would have carried it.
+
+Refused by name: `friend class X;`, a friend function *defined* inside the
+class body (the held-body replay members use would have to put this one back
+outside the class it was written in), befriending one member function of
+another class (`Other::look` would have to be found before `Box` is
+complete), and a friend declaration that declares no function.
 
 ## Decisions already taken
 

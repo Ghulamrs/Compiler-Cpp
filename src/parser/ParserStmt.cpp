@@ -408,7 +408,7 @@ StmtPtr Parser::rangeForStatement(int scope) {
     atB->setType(elemPtr);
     ExprPtr atE(Var::local(eName, eSlot));
     atE->setType(elemPtr);
-    ExprPtr cond = comparison(BinOp::Ne, std::move(atB), std::move(atE));
+    ExprPtr cond = comparison(BinOp::Ne, std::move(atB), std::move(atE), rpos);
 
     // `__b = __b + 1`
     ExprPtr stepFrom(Var::local(bName, bSlot));
@@ -1681,6 +1681,11 @@ void Parser::topLevel(Program &program) {
     } else {
         declareFunction(d.name, d.type, params, variadic, true, d.pos,
                         sc == StorageStatic);
+        // Which function's body is about to be read, so that an access check
+        // inside it can ask whether a class befriended *this* function. A
+        // member's is left empty on purpose: the qualified form that would
+        // make a member somebody's friend is refused where it is written.
+        currentFunction_ = lookupSignature(d.name, params, variadic, d.pos).symbol;
     }
     // The mem-initializer list, [class.base.init]. Parsed here because `this`
     // and the parameters are in scope and the body has not begun - which is
@@ -1952,6 +1957,7 @@ void Parser::topLevel(Program &program) {
         constexprFns_[defined.symbol] = fn;
     }
     currentClass_ = nullptr;
+    currentFunction_.clear();
     program.functions.push_back(Function(d.name, emittedReturn, std::move(paramSlots),
                                          std::move(body), frame,
                                          sc == StorageStatic, sretSlot,

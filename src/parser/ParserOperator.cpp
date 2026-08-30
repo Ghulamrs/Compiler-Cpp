@@ -55,11 +55,12 @@ ExprPtr Parser::shift() {
     for (;;) {
         BinOp op;
         if (inTemplateArgs_ && peek().is(">>")) return n;
+        std::size_t pos = peek().pos;
         if (consume("<<"))      op = BinOp::Shl;
         else if (consume(">>")) op = BinOp::Shr;
         else return n;
 
-        n = shiftOf(op, std::move(n), add());
+        n = shiftOf(op, std::move(n), add(), pos);
     }
 }
 
@@ -70,10 +71,11 @@ ExprPtr Parser::relational() {
         // is the whole reason C++ makes `f<(a > b)>` need its parentheses,
         // and the parentheses are where the flag is cleared.
         if (inTemplateArgs_ && (peek().is(">") || peek().is(">>"))) return n;
-        if (consume("<"))       n = comparison(BinOp::Lt, std::move(n), shift());
-        else if (consume("<=")) n = comparison(BinOp::Le, std::move(n), shift());
-        else if (consume(">"))  n = comparison(BinOp::Gt, std::move(n), shift());
-        else if (consume(">=")) n = comparison(BinOp::Ge, std::move(n), shift());
+        std::size_t pos = peek().pos;
+        if (consume("<"))       n = comparison(BinOp::Lt, std::move(n), shift(), pos);
+        else if (consume("<=")) n = comparison(BinOp::Le, std::move(n), shift(), pos);
+        else if (consume(">"))  n = comparison(BinOp::Gt, std::move(n), shift(), pos);
+        else if (consume(">=")) n = comparison(BinOp::Ge, std::move(n), shift(), pos);
         else return n;
     }
 }
@@ -81,8 +83,9 @@ ExprPtr Parser::relational() {
 ExprPtr Parser::equality() {
     ExprPtr n = relational();
     for (;;) {
-        if (consume("=="))      n = comparison(BinOp::Eq, std::move(n), relational());
-        else if (consume("!=")) n = comparison(BinOp::Ne, std::move(n), relational());
+        std::size_t pos = peek().pos;
+        if (consume("=="))      n = comparison(BinOp::Eq, std::move(n), relational(), pos);
+        else if (consume("!=")) n = comparison(BinOp::Ne, std::move(n), relational(), pos);
         else return n;
     }
 }
@@ -209,7 +212,8 @@ ExprPtr Parser::cloneLvalue(const Expr &e, std::size_t pos) {
                    "first, or write it out as 'x = x op e'");
 }
 
-ExprPtr Parser::shiftOf(BinOp op, ExprPtr lhs, ExprPtr rhs) {
+ExprPtr Parser::shiftOf(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos) {
+    if (ExprPtr call = overloadedBinary(op, lhs, rhs, pos)) return call;
     const Type *lt = promote(lhs->type());
     const Type *rt = promote(rhs->type());
     ExprPtr n(new Binary(op, convert(std::move(lhs), lt),
@@ -238,9 +242,24 @@ ExprPtr Parser::compound(BinOp op, ExprPtr target, ExprPtr value, std::size_t po
     requireAssignable(*target, pos, "the left of a compound assignment");
     const Type *to = target->type();
 
+    // **`a += b` is not `a = a + b` when a is a class**, and this is where
+    // that has to be said. A compound assignment is built here by reading the
+    // target back, combining, and storing - which is the right rewrite for a
+    // built-in operand and the wrong one for a class, where [over.match.oper]
+    // wants `operator+=` and nothing else. Without this the rewrite finds the
+    // class's `operator+`, the assignment goes through, and the program is
+    // accepted where clang refuses it - which is what it did for as long as it
+    // took to write a case for it.
+    if (to->unqualified()->isStructOrUnion())
+        src_.fail(pos, std::string("'operator") + binOpSpelling(op) +
+                       "=' is not supported yet - and a compound assignment on "
+                       "a class is that operator alone: it is not rewritten "
+                       "into '" + binOpSpelling(op) + "' and an assignment the "
+                       "way it is for a built-in type");
+
     if (ExprPtr readBack = clonePure(*target)) {
         ExprPtr combined = (op == BinOp::Shl || op == BinOp::Shr)
-            ? shiftOf(op, std::move(readBack), std::move(value))
+            ? shiftOf(op, std::move(readBack), std::move(value), pos)
             : arithmetic(op, std::move(readBack), std::move(value), pos);
         ExprPtr node(new Assign(std::move(target), convert(std::move(combined), to)));
         node->setType(to);
@@ -276,7 +295,7 @@ ExprPtr Parser::compound(BinOp op, ExprPtr target, ExprPtr value, std::size_t po
     }
 
     ExprPtr combined = (op == BinOp::Shl || op == BinOp::Shr)
-        ? shiftOf(op, std::move(through[0]), std::move(value))
+        ? shiftOf(op, std::move(through[0]), std::move(value), pos)
         : arithmetic(op, std::move(through[0]), std::move(value), pos);
     ExprPtr store(new Assign(std::move(through[1]), convert(std::move(combined), to)));
     store->setType(to);

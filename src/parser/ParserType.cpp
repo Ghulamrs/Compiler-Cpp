@@ -6,6 +6,7 @@
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
+#include "../Operator.h"
 #include "../Source.h"
 
 #include <climits>
@@ -297,6 +298,69 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                    : peek().is("private") ? Access::Private
                                           : Access::Protected;
             at_ += 2;
+            continue;
+        }
+
+        // `friend int peek(const Account &a);` - a declaration written inside
+        // a class that declares nothing in it.
+        //
+        // **[class.friend]: the function belongs to the enclosing namespace
+        // and what the class gives it is access.** So this reads an ordinary
+        // function declaration, hands it to the same `declareFunction` a file-
+        // scope one goes to, and then records the grant. Nothing about it is a
+        // member: it has no `this`, it is not in the class's function table,
+        // it is not mangled into the class, and `private:` above it changes
+        // nothing - [class.friend]/9 says the access specifier a friend
+        // declaration sits under is ignored, which falls out here rather than
+        // needing a rule, because `access` is never read on this path.
+        if (peek().is("friend")) {
+            const std::size_t fpos = peek().pos;
+            at_++;
+            if (tag.empty())
+                src_.fail(fpos, "an anonymous class has no name to grant "
+                                "friendship with");
+            if (peek().is("class") || peek().is("struct") || peek().is("union"))
+                src_.fail(fpos, "'friend class' is not supported yet - it "
+                                "grants every member function of another class "
+                                "access at once, where this grants one named "
+                                "function");
+            StorageClass fsc;
+            Qualifiers fquals;
+            const Type *fbase = specifiers(&fsc, &fquals);
+            if (fsc != StorageNone)
+                src_.fail(fpos, "a friend declaration takes no storage class - "
+                                "the function it names is somebody else's");
+            Declared fd = declarator(fbase);
+            if (!fd.qualifier.empty())
+                src_.fail(fd.pos, "befriending one member function of another "
+                                  "class is not supported yet - '" +
+                                  fd.qualifier + "::" + fd.name + "' would have "
+                                  "to be found before that class is complete");
+            if (!peek().is("("))
+                src_.fail(fd.pos, "a friend declaration declares a function, "
+                                  "and '" + fd.name + "' is not one - a friend "
+                                  "gets access, and only something that runs "
+                                  "can use it");
+            std::vector<const Type *> fparams;
+            bool fvariadic = false;
+            parameterTypes(fparams, fvariadic);
+            if (peek().is("const"))
+                src_.fail(peek().pos, "'const' here would say the function has "
+                                      "a 'this' to leave alone, and a friend "
+                                      "is not a member function");
+            if (peek().is("{"))
+                src_.fail(peek().pos, "a friend function defined inside the "
+                                      "class is not supported yet - declare it "
+                                      "here and define it outside, where its "
+                                      "body is parsed like any other");
+            declareFunction(fd.name, fd.type, fparams, fvariadic, false, fd.pos,
+                            false);
+            // **The grant is to this function, not to its name.** Recording
+            // the name would befriend every overload of it, including ones
+            // declared later that the class never saw.
+            friends_[tag].push_back(
+                lookupSignature(fd.name, fparams, fvariadic, fd.pos).symbol);
+            expect(";");
             continue;
         }
 
@@ -859,6 +923,17 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // all begin one in C++ and none of them begins one here, so without this
     // each is reported as a missing type at the keyword - which names the
     // right token and tells the reader nothing about it.
+    // **A declaration whose *type* is `operator` is a conversion function**,
+    // and nothing else: `operator int() const` says what it converts to where
+    // every other declaration says what it is. Reaching here having found no
+    // type is how that is recognised, so it is named here rather than being
+    // handed to the generic refusal below, which would say only that the
+    // keyword is unsupported and leave the reader to guess which half of it.
+    if (peek().is("operator"))
+        src_.fail(peek().pos, "a conversion function is not supported yet - "
+                              "this declaration names a type to convert to "
+                              "where every operator that can be overloaded "
+                              "here is punctuation");
     if (const char *pending = notYetSupported(peek().text))
         src_.fail(peek().pos, std::string("'") + pending +
                               "' is not supported yet");
@@ -891,6 +966,95 @@ const Type *Parser::arraySuffix(const Type *base, std::size_t pos) {
     for (std::size_t i = dims.size(); i-- > 0; )
         base = types_.arrayOf(base, dims[i]);
     return base;
+}
+
+// `operator` and then the operator itself, read where a declarator wants a
+// name. What comes back is the whole of it - "operator+", punctuation
+// included - because that is the name the declaration carries from here on:
+// the function tables key it exactly as they key `get`, and overload
+// resolution, access and mangling all needed to learn nothing about operators
+// in order to hold one.
+//
+// **Everything this will not take, it refuses by name.** Each is a real
+// operator function, and a reader who wrote one is owed better than "expected
+// a name" pointing at the punctuation after the keyword.
+std::string Parser::operatorName() {
+    const std::size_t pos = peek().pos;
+    at_++;                                    // `operator`
+
+    // The two that are written as a *pair* of tokens. `operator()` has to be
+    // read here rather than left to the parameter list below, which would
+    // take the `()` for an empty one and leave the declaration with no name.
+    if (peek().is("(")) { at_++; expect(")"); return "operator()"; }
+    if (peek().is("[")) { at_++; expect("]"); return "operator[]"; }
+
+    const std::string spelling = peek().text;
+
+    if (spelling == "new" || spelling == "delete")
+        src_.fail(pos, "'operator " + spelling + "' is not supported yet - "
+                       "a new-expression here calls the platform's '" +
+                       spelling + "' by name, and replacing that one is more "
+                       "than giving this a name");
+    if (spelling == "->*")
+        src_.fail(pos, "'operator->*' is not supported yet");
+    if (peek().kind == TokenKind::Str)
+        src_.fail(pos, "a user-defined literal is not supported yet");
+    if (peek().kind != TokenKind::Punct)
+        src_.fail(pos, "a conversion function is not supported yet - "
+                       "'operator " + spelling + "' names a type to convert "
+                       "to, where every operator this compiler can overload "
+                       "is punctuation");
+    if (findOperator(spelling) == nullptr)
+        src_.fail(peek().pos, "'" + spelling + "' is not an operator, so "
+                              "there is nothing here to overload");
+    at_++;
+    return "operator" + spelling;
+}
+
+// An operator this compiler can *name* but cannot yet reach from an
+// expression, refused where it is declared.
+//
+// **The declaration is the right place and the name is the wrong one.** The
+// mangler can spell every overloadable operator and does, checked against
+// clang on all three targets - so what is missing here is the dispatch, and
+// which dispatch is missing depends on how many operands the operator was
+// written with: `operator-` with one parameter is a subtraction and reaches a
+// class fine, and with none it is a negation and there is no path to it. That
+// is a question about the parameter list, so it is asked once the parameter
+// list has been read, and not back where the name was.
+//
+// Accepting one of these quietly would leave a function that links, has the
+// name clang gives it, and can never be called - which is the shape of bug
+// this project refuses by name everywhere else.
+void Parser::checkOperatorDeclarable(const std::string &name, std::size_t params,
+                                     bool member, std::size_t pos) {
+    const std::string spelling = operatorSpelling(name);
+    if (spelling.empty() || findOperator(spelling) == nullptr) return;
+
+    // `this` is the first operand of a member operator and is not in the list.
+    const std::size_t operands = params + (member ? 1 : 0);
+
+    static const char *const binary[] = {
+        "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>",
+        "==", "!=", "<", "<=", ">", ">="
+    };
+    if (operands == 2)
+        for (const char *k : binary)
+            if (spelling == k) return;
+
+    const std::string how = operands == 1 ? "a unary " : "a binary ";
+    src_.fail(pos, how + "'operator" + spelling + "' is not supported yet - "
+                   "it can be given the name the linker wants, and there is no "
+                   "path from an expression to it, so declaring one would make "
+                   "a function nothing can call");
+}
+
+// `expectIdent` with the operator case in front of it. This stands wherever a
+// declarator reads a name, which is three places: the plain one, the one
+// after a `::`, and the one after a class template's argument list.
+std::string Parser::declaredName(const char *what) {
+    if (peek().is("operator")) return operatorName();
+    return expectIdent(what);
 }
 
 Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
@@ -977,7 +1141,10 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
     bool inlineDtor = false;
     if (!inlineOwner_.empty() && peek().is("~")) { at_++; inlineDtor = true; }
 
-    if (nameOptional && peek().kind != TokenKind::Ident) name.clear();
+    // The operator test comes before the optional-name one: an abstract
+    // declarator never says `operator`, so reaching it here is always a name.
+    if (peek().is("operator")) name = operatorName();
+    else if (nameOptional && peek().kind != TokenKind::Ident) name.clear();
     else name = expectIdent("a name");
 
     // **`Box<T, N>::size` - a class template's name where a class name goes.**
@@ -998,7 +1165,7 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
                                       "it");
             at_++;
             qualifier = cls->tag();
-            name = expectIdent("a member name");
+            name = declaredName("a member name");
         }
     }
 
@@ -1028,7 +1195,7 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
         at_++;
         qualifier = qualifier.empty() ? name : qualifier + "::" + name;
         bool destructor = consume("~");
-        name = expectIdent("a member name after '::'");
+        name = declaredName("a member name after '::'");
         if (destructor) name = "~" + name;
     }
 

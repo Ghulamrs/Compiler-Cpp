@@ -16,7 +16,8 @@ StmtPtr Parser::constructLocal(const Declared &d, int offset,
     const std::string key = constructorKey(d.type->tag());
     const Signature &ctor = resolveOverload(key, args, d.pos);
 
-    if (ctor.access != Access::Public && currentClass_ != d.type->unqualified())
+    if (ctor.access != Access::Public && currentClass_ != d.type->unqualified() &&
+        !isFriendOf(d.type))
         src_.fail(d.pos, "'" + d.type->describe() + "' has no public constructor "
                          "taking these arguments - the one that matches is " +
                          (ctor.access == Access::Private ? "private" : "protected"));
@@ -1743,7 +1744,8 @@ void Parser::defineStaticMember(Declared &d, Program &program) {
 // and has no storage at all; every other is the one global the class named.
 ExprPtr Parser::staticMemberRef(const Type *owner, const Type::StaticMember &s,
                                 const std::string &cls, std::size_t pos) {
-    if (s.access != Access::Public && currentClass_ != owner->unqualified())
+    if (s.access != Access::Public && currentClass_ != owner->unqualified() &&
+        !isFriendOf(owner))
         src_.fail(pos, "'" + cls + "::" + s.name + "' is " +
                        (s.access == Access::Private ? "private" : "protected"));
     if (s.folded) {
@@ -1769,6 +1771,7 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
         src_.fail(d.pos, "a member function of a union is not supported yet");
 
     const Type *fn = d.type;
+    checkOperatorDeclarable(d.name, fn->params().size(), true, d.pos);
     std::string key = cls + "::" + d.name;
     std::vector<std::size_t> &set = functionIndex_[key];
 
@@ -1891,6 +1894,7 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
     // made when the call asked for it, so this finds that one and marks it
     // defined rather than computing a second symbol.
     const std::string &key = instantiationName(name);
+    checkOperatorDeclarable(key, params.size(), false, pos);
     const bool cName = cLinkage_ > 0 || key == "main";
     std::vector<std::size_t> &set = functionIndex_[key];
 

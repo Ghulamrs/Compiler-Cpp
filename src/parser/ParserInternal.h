@@ -48,4 +48,9 @@ bool isNullConstant(const Expr &e);
 // was. Answering the word is the whole point - see the definition.
 const char *notYetSupported(const std::string &word);
 
+// How a BinOp is written in source, which is what `operator` is followed by
+// when one is overloaded. Wanted where the operator is dispatched and again
+// where a compound assignment on a class is refused, and those are two units.
+const char *binOpSpelling(BinOp op);
+
 #endif

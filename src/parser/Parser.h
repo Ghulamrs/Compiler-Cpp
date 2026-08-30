@@ -748,6 +748,9 @@ private:
                              std::size_t pos, bool isVirtual = false);
     ExprPtr memberCall(ExprPtr object, const Type *cls, const std::string &name,
                        std::size_t pos);
+    ExprPtr memberCallWith(ExprPtr object, const Type *cls,
+                           const std::string &name, std::size_t pos,
+                           std::vector<ExprPtr> args);
     // The class up the chain that declares this member function, searching
     // every base rather than only the first.
     const Type *findMemberOwner(const Type *cls, const std::string &name) const;
@@ -775,6 +778,41 @@ private:
 
     Declared declarator(const Type *base, bool nameOptional = false,
                         bool insideParens = false);
+    // `operator+` where a declarator wants a name. The name a declaration
+    // carries is the whole of it - "operator+", punctuation and all - so that
+    // every table here keys it exactly as it keys `get`, and overloading,
+    // access and mangling needed to learn nothing about operators to hold
+    // one. `declaredName` is `expectIdent` with that case in front of it, and
+    // stands wherever a declarator reads a name.
+    std::string operatorName();
+    std::string declaredName(const char *what);
+
+    // [class.friend]. **A friend is not a member**: the declaration is
+    // written inside the class and the function it declares belongs to the
+    // enclosing namespace, so all the class gives it is access. That is why
+    // this is a table beside the class rather than anything in it.
+    //
+    // Keyed by the class's tag, holding the *linkage names* of the functions
+    // it has befriended - the name alone would grant access to every overload
+    // of it, including ones declared later that were never offered any.
+    std::map<std::string, std::vector<std::string> > friends_;
+
+    // The linkage name of the function whose body is being read, which is the
+    // whole of what an access check needs to ask about friendship. Empty
+    // outside a definition, and outside a *free* function's definition: a
+    // member cannot be granted friendship here, because the qualified form
+    // that would grant it is refused by name.
+    std::string currentFunction_;
+
+    bool isFriendOf(const Type *cls) const;
+    // An operator this compiler can *name* but cannot yet reach from an
+    // expression is refused where it is declared, not where it is written.
+    // The arity is what decides it - `operator-` is two functions and only
+    // one of them is missing - so this is asked once the parameters are
+    // known, which is why it lives beside the declaration and not beside the
+    // name.
+    void checkOperatorDeclarable(const std::string &name, std::size_t params,
+                                 bool member, std::size_t pos);
     const Type *arraySuffix(const Type *base, std::size_t pos);
     const Type *promote(const Type *t) const;
     const Type *usualArithmetic(const Type *a, const Type *b) const;
@@ -1016,7 +1054,7 @@ private:
     ExprPtr incDec(ExprPtr target, bool increment, bool prefix, std::size_t pos);
     ExprPtr clonePure(const Expr &e);
     ExprPtr cloneLvalue(const Expr &e, std::size_t pos);
-    ExprPtr shiftOf(BinOp op, ExprPtr lhs, ExprPtr rhs);
+    ExprPtr shiftOf(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos);
     ExprPtr logicalOr();
     ExprPtr logicalAnd();
     ExprPtr equality();
@@ -1031,7 +1069,12 @@ private:
     ExprPtr primary(Program *program);
 
     ExprPtr arithmetic(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos);
-    ExprPtr comparison(BinOp op, ExprPtr lhs, ExprPtr rhs);
+    ExprPtr comparison(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos);
+    // Null unless an operand has class type, in which case the call it built.
+    // Takes its operands by reference because it leaves them alone when it
+    // answers null, and the built-in path below still needs them.
+    ExprPtr overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
+                             std::size_t pos);
     ExprPtr pointerAdd(ExprPtr p, ExprPtr n);
     ExprPtr pointerSub(ExprPtr l, ExprPtr r, std::size_t pos);
 
