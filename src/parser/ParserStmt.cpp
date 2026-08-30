@@ -1859,6 +1859,22 @@ void Parser::topLevel(Program &program) {
             obj->setType(memberOf);
             ExprPtr field(new MemberAccess(std::move(obj), m->name, m->offset,
                                            m->width, m->bitOffset));
+
+            // **A reference member is bound, not assigned**, and this is the
+            // one place it can be: the mem-initialiser list. What the slot
+            // holds is an address, so the member is typed as the pointer it
+            // really is and `bindReference` supplies the address - the same
+            // road a reference local's initialiser takes.
+            if (m->type->isReference()) {
+                const Type *held = types_.pointerTo(m->type->referent());
+                field->setType(held);
+                ExprPtr addr = bindReference(m->type, std::move(found->second[0]),
+                                             epos, "'" + m->name + "'");
+                ExprPtr bind(new Assign(std::move(field), std::move(addr)));
+                bind->setType(held);
+                memberInits.push_back(StmtPtr(new ExprStmt(std::move(bind))));
+                continue;
+            }
             field->setType(m->type);
 
             ExprPtr value = decay(std::move(found->second[0]));

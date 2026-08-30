@@ -549,23 +549,24 @@ ExprPtr Parser::lambdaExpression() {
     std::vector<const Type *> capTypes;
     std::vector<int> capOffsets;
     bool captureAllByValue = false;
-    if (peek().is("=")) {
-        at_++;
-        captureAllByValue = true;
-        if (!peek().is("]"))
-            src_.fail(peek().pos, "naming a capture after '=' is not supported "
-                                  "yet - '[=]' on its own takes everything the "
-                                  "body reads");
+    bool captureAllByRef = false;
+    if (peek().is("=") || peek().is("&")) {
+        // `[&]` only where it is the whole list: `[&x]` is one named capture
+        // and is read by the loop below.
+        if (peek().is("=") || peekAt(1).is("]")) {
+            captureAllByValue = peek().is("=");
+            captureAllByRef = peek().is("&");
+            at_++;
+            if (!peek().is("]"))
+                src_.fail(peek().pos, "naming a capture after a default one is "
+                                      "not supported yet - '[=]' and '[&]' on "
+                                      "their own take everything the body "
+                                      "reads");
+        }
     }
     while (!peek().is("]")) {
-        if (peek().is("&"))
-            src_.fail(peek().pos, "capturing by reference is not supported yet "
-                                  "- the closure would have to hold a reference "
-                                  "member, and a reference member is refused "
-                                  "here for a reason that is about layout: "
-                                  "sizeof a reference is the size of what it "
-                                  "refers to, and the slot it needs is a "
-                                  "pointer. '[=]' and a named capture copy");
+        // `[&x]` - this one by reference, whatever the default is.
+        bool byRef = consume("&");
         if (peek().is("this"))
             src_.fail(peek().pos, "capturing 'this' is not supported yet");
         const std::size_t cpos = peek().pos;
@@ -576,13 +577,16 @@ ExprPtr Parser::lambdaExpression() {
                             "around this lambda, so there is nothing here to "
                             "capture");
         capNames.push_back(cname);
-        // **A reference captured by value copies what it refers to**, which is
-        // what the closure holds - [expr.prim.lambda]. Nothing special is
-        // needed to read it: every mention of a reference here is already
-        // lowered to a dereference, so `objectRef` hands back the object.
-        capTypes.push_back(have->type->isReference()
-                               ? have->type->referent()->unqualified()
-                               : have->type->unqualified());
+        // **By reference the closure holds a reference member**, which needs
+        // the layout rule reference members have: the slot is a pointer where
+        // `sizeof` the type is the referent's. By value it holds a copy - and
+        // capturing a reference *by value* copies what it refers to, which
+        // needs nothing at all, every mention of a reference here being
+        // already lowered to a dereference.
+        const Type *base = have->type->isReference()
+                         ? have->type->referent()->unqualified()
+                         : have->type->unqualified();
+        capTypes.push_back(byRef ? types_.referenceTo(base) : base);
         if (!peek().is("]")) expect(",");
     }
     at_++;                                    // ']'
@@ -634,7 +638,7 @@ ExprPtr Parser::lambdaExpression() {
     // does the same. So a copy nobody reads is the worst this can do, and
     // `docs/CONFORMANCE.md` records that a closure can therefore be larger
     // than the standard's minimum.
-    if (captureAllByValue) {
+    if (captureAllByValue || captureAllByRef) {
         for (std::size_t i = bodyFrom + 1; i + 1 < bodyTo; i++) {
             if (tokens_[i].kind != TokenKind::Ident) continue;
             const Token &before = tokens_[i - 1];
@@ -663,9 +667,10 @@ ExprPtr Parser::lambdaExpression() {
                 continue;
             }
             capNames.push_back(n);
-            capTypes.push_back(have->type->isReference()
-                                   ? have->type->referent()->unqualified()
-                                   : have->type->unqualified());
+            const Type *base = have->type->isReference()
+                             ? have->type->referent()->unqualified()
+                             : have->type->unqualified();
+            capTypes.push_back(captureAllByRef ? types_.referenceTo(base) : base);
         }
     }
 
@@ -690,13 +695,18 @@ ExprPtr Parser::lambdaExpression() {
     std::vector<Member> members;
     int at = 0, widest = 1;
     for (std::size_t i = 0; i < capTypes.size(); i++) {
-        const int a = capTypes[i]->align(target_);
+        // The same slot rule a reference data member follows: what it occupies
+        // is a pointer, where `sizeof` the type is the referent's.
+        const Type *slot = capTypes[i]->isReference()
+                         ? types_.pointerTo(capTypes[i]->referent())
+                         : capTypes[i];
+        const int a = slot->align(target_);
         if (a > widest) widest = a;
         at = alignTo(at, a);
         capOffsets.push_back(at);
         members.push_back(Member{ capNames[i], capTypes[i], at, 0, 0,
                                   Access::Public });
-        at += capTypes[i]->size(target_);
+        at += slot->size(target_);
     }
     const int size = members.empty() ? 1 : alignTo(at, widest);
     closure->complete(members, size, widest);
@@ -765,11 +775,26 @@ ExprPtr Parser::buildClosure(const MadeLambda &made, std::size_t pos) {
         self->setType(made.type);
         ExprPtr dst(new MemberAccess(std::move(self), made.names[i],
                                      made.offsets[i], 0, 0));
-        dst->setType(made.types[i]);
         ExprPtr src = objectRef(made.names[i]);
         if (src == nullptr)
             src_.fail(pos, "'" + made.names[i] + "' went missing between the "
                            "capture list and the lambda");
+        // Bound, not assigned, when the capture is by reference: the slot
+        // holds an address, which is what `bindReference` supplies.
+        if (made.types[i]->isReference()) {
+            const Type *held = types_.pointerTo(made.types[i]->referent());
+            dst->setType(held);
+            ExprPtr addr = bindReference(made.types[i], std::move(src), pos,
+                                         "'" + made.names[i] + "'");
+            ExprPtr bind(new Assign(std::move(dst), std::move(addr)));
+            bind->setType(held);
+            if (chain == nullptr) { chain = std::move(bind); continue; }
+            ExprPtr joined(new Comma(std::move(chain), std::move(bind)));
+            joined->setType(held);
+            chain = std::move(joined);
+            continue;
+        }
+        dst->setType(made.types[i]);
         ExprPtr store(new Assign(std::move(dst), decay(std::move(src))));
         store->setType(made.types[i]);
         if (chain == nullptr) { chain = std::move(store); continue; }
@@ -1142,8 +1167,12 @@ ExprPtr Parser::primary(Program *program) {
                 obj->setType(held);
                 ExprPtr acc(new MemberAccess(std::move(obj), name, m->offset,
                                              m->width, m->bitOffset));
-                acc->setType(held->isConst() ? types_.withConst(m->type) : m->type);
-                return acc;
+                // The same two rules as the `.` and `->` paths: a const
+                // object does not reach through a reference member, and a
+                // reference member is read by dereferencing what it holds.
+                acc->setType(held->isConst() && !m->type->isReference()
+                                 ? types_.withConst(m->type) : m->type);
+                return useReference(std::move(acc));
             }
         }
 
@@ -1749,7 +1778,17 @@ ExprPtr Parser::postfix() {
             // A member reached through a const object is itself const:
             // [expr.ref] gives the member the object's cv-qualification, and
             // without this 's.x = 2' on a const s would be a way round it.
-            acc->setType(obj->isConst() ? types_.withConst(m->type) : m->type);
+            // **A const object does not make its reference member's referent
+            // const.** [dcl.ref]: what the const reaches is the reference
+            // itself, which could not be rebound anyway - `h.r` on a const h
+            // is still `int &`. Applying the object's const here made a const
+            // member function unable to return its own reference member.
+            acc->setType(obj->isConst() && !m->type->isReference()
+                             ? types_.withConst(m->type) : m->type);
+            // A reference member holds an address, so reading one is a
+            // dereference - the same `useReference` every mention of a
+            // reference local already goes through.
+            acc = useReference(std::move(acc));
             n = std::move(acc);
             continue;
         }
@@ -1796,7 +1835,17 @@ ExprPtr Parser::postfix() {
             // A member reached through a const object is itself const:
             // [expr.ref] gives the member the object's cv-qualification, and
             // without this 's.x = 2' on a const s would be a way round it.
-            acc->setType(obj->isConst() ? types_.withConst(m->type) : m->type);
+            // **A const object does not make its reference member's referent
+            // const.** [dcl.ref]: what the const reaches is the reference
+            // itself, which could not be rebound anyway - `h.r` on a const h
+            // is still `int &`. Applying the object's const here made a const
+            // member function unable to return its own reference member.
+            acc->setType(obj->isConst() && !m->type->isReference()
+                             ? types_.withConst(m->type) : m->type);
+            // A reference member holds an address, so reading one is a
+            // dereference - the same `useReference` every mention of a
+            // reference local already goes through.
+            acc = useReference(std::move(acc));
             n = std::move(acc);
             continue;
         }

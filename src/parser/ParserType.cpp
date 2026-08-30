@@ -500,10 +500,16 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 !d.type->isFunction())
                 d.type = types_.withoutConst(d.type);
 
-            if (!memberIsFunction && d.type->isReference())
-                src_.fail(d.pos, "'" + d.name + "' is a reference member, and "
-                                 "binding one needs a constructor - not "
-                                 "supported yet; a pointer member works now");
+            // **A reference member is bound, never assigned**, so a class
+            // with one and no constructor could never be built. Said here
+            // rather than at the first use, where the reader would be told
+            // only that something was uninitialised.
+            if (!memberIsFunction && d.type->isReference() &&
+                overloadsOf(constructorKey(tag)) == nullptr && !peek().is(";"))
+                src_.fail(d.pos, "'" + d.name + "' is a reference member, and a "
+                                 "reference is bound where it is made - so this "
+                                 "class needs a constructor with '" + d.name +
+                                 "' in its initialiser list");
 
             // **A static member is not part of the object**, so it leaves the
             // layout untouched and the cursor where it was.
@@ -616,13 +622,20 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
             if (!d.type->isComplete())
                 src_.fail(d.pos, "'" + d.name + "' has an incomplete type");
-            int a = d.type->align(target_);
+            // **What a reference member occupies is a pointer**, and asking
+            // the type is the wrong question: `sizeof` a reference is the size
+            // of what it refers to - which is right for sizeof and wrong for a
+            // slot. The declared type stays the reference, because that is
+            // what tells every read of it to dereference.
+            const Type *slot = d.type->isReference()
+                             ? types_.pointerTo(d.type->referent()) : d.type;
+            int a = slot->align(target_);
             if (a > widest) widest = a;
             long long byteCursor = (bitCursor + 7) / 8;
             long long at = (kind == Kind::Union) ? 0 : alignTo(byteCursor, a);
             members.push_back(Member{ d.name, d.type, static_cast<int>(at), 0, 0,
                                       access });
-            long long endBits = (at + d.type->size(target_)) * 8;
+            long long endBits = (at + slot->size(target_)) * 8;
             if (kind == Kind::Union) { if (endBits > widestBits) widestBits = endBits; }
             else bitCursor = endBits;
             if (!consume(",")) break;

@@ -3099,14 +3099,46 @@ declares a name it captured. Both are things C++ allows and both now shadow.
 every mention of a reference here is already lowered to a dereference, so
 `objectRef` hands back the object.
 
-Still refused by name: **`[&]`**, and the reason is layout rather than lambdas
-- capturing by reference means the closure holds a *reference member*, and
-`sizeof` a reference is the size of what it refers to while the slot it needs
-is a pointer, so laying one out inside a class needs a rule the type system
-does not have. Also `[this]`, `mutable`, and an inner `[=]` reaching for the
-capture of the lambda around it - by then that name is a member of the outer
-closure and not a local, so the scan has nothing to copy, and it is refused by
-name rather than left to fail further in.
+**`[&]`, `[&x]` and a mixed list work too**, and they waited on reference data
+members rather than on anything about lambdas - see below. Once those existed
+this was mostly the same code as capturing by value, with `bindReference` in
+place of the assignment and the same pointer-sized slot.
+
+Still refused by name: `[this]`, `mutable`, and an inner `[=]` or `[&]`
+reaching for the capture of the lambda around it - by then that name is a
+member of the outer closure and not a local, so the scan has nothing to take,
+and it is refused by name rather than left to fail further in.
+
+## Reference data members, refused since rung 3
+
+**What one occupies is a pointer, and asking the type is the wrong question.**
+`sizeof` a reference is the size of what it refers to, which is right for
+`sizeof` and wrong for a slot - so the layout asks a *slot type* while the
+declared type stays the reference, which is what tells every read of it to
+dereference. That one sentence is the whole reason this was refused for so
+long, and why a pointer member was not a substitute: it would have compiled and
+lied about its own type.
+
+**It is bound, never assigned**, and the mem-initialiser list is the one place
+that can happen. `bindReference` supplies the address - the same road a
+reference local's initialiser takes - and the member is typed as the pointer it
+really is for the store.
+
+**A const object does not reach through it.** [dcl.ref]: the const stops at the
+reference, which could not be rebound anyway, so `h.r` on a const `h` is still
+`int &`. Applying the object's cv-qualification here - which is right for every
+other member - made a `const` member function unable to return its own
+reference member, and that is how the rule was found.
+
+**Three read paths had to learn it, not one**: `.`, `->`, and the implicit
+`this->name` an unqualified name inside a member function takes. The first two
+were changed together and the third was missed, which the case caught at once -
+`return r;` inside a member function goes through none of the paths a reader
+thinks of first.
+
+This is what `[&]` was waiting for, and it is what the refusal said. Naming the
+real blocker rather than calling the feature unwritten is what made the order
+obvious when it came time to do it.
 
 ## Class temporaries: one gap, three symptoms
 
