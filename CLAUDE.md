@@ -1104,10 +1104,22 @@ function.
 | C-04 | `long` narrowings make the front end behave differently on the Windows build | **fixed** 2026-09-01 |
 
 **All nineteen are closed.** Every one has a fix and a case, and every fix was
-verified on the three boxes before it was committed. The two suspected items
-the report marks as reasoned rather than reproduced are still open and still
-suspected: `Trial` does not restore `angleSplit_`, and a diagnostic position
-is written to the first overload rather than the one being defined.
+verified on the three boxes before it was committed.
+
+**And the two the report marks as suspected are fixed too, still unreproduced.**
+`Trial` restores `angleSplit_` now, alongside the three things it already put
+back; and the assignment that wrote a member's position into the *first*
+overload's entry is gone - a no-op when the member being defined was that one,
+and a corruption of somebody else's recorded position when it was not.
+
+Neither could be made to happen. The `>>` window needs a substitution failure
+thrown between the two halves of the token, which needs `typename T::type` in
+a member or a typedef - and neither parses here, while clang treats that shape
+as a hard error rather than SFINAE, so the window may not be reachable in C++
+at all as this compiler stands. Nothing reads a user overload's `pos`, so the
+second had nowhere to show either. Both fixes are correct whether or not the
+faults are reachable, and both are the kind that would be found the hard way
+later: state not restored, and a write to the wrong element.
 
 **What the audit was worth, in the end.** Nineteen defects under a suite that
 was green on all three machines, and the fixes added 62 cases - the suite went

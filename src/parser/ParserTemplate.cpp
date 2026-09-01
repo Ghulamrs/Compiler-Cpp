@@ -1132,7 +1132,7 @@ static bool mentionsParam(const Type *t, std::size_t i) {
 
 Parser::Trial::Trial(Parser *parser)
     : p(parser), at(parser->at_), classes(parser->classStack_.size()),
-      pattern(parser->patternOnly_) {
+      pattern(parser->patternOnly_), split(parser->angleSplit_) {
     p->src_.beginTrial();
 }
 
@@ -1141,6 +1141,7 @@ Parser::Trial::~Trial() {
     p->at_ = at;
     p->classStack_.resize(classes);
     p->patternOnly_ = pattern;
+    p->angleSplit_ = split;
 }
 
 // [temp.deduct.type]. A pattern that is a pointer matches a pointer and

@@ -2130,7 +2130,14 @@ void Parser::topLevel(Program &program) {
                              d.type->describe() + "'");
         if (member->defined)
             src_.fail(d.pos, "'" + key + "' is defined twice");
-        functions_[(*overloadsOf(key))[0]].pos = member->pos;   // keep the table stable
+        // **This used to write `member->pos` into the *first* overload's
+        // entry**, which is a no-op when the member being defined is that
+        // one and a corruption of somebody else's recorded position when it
+        // is not: `int S::f(double)` defined out of line moved `f(int)`'s
+        // declaration position onto itself. Nothing reads a user overload's
+        // `pos` today, which is why it never showed - and the line was doing
+        // nothing that was wanted in either case. The assignment on the next
+        // line is the whole of what this branch has to record.
         const_cast<Signature *>(member)->defined = true;
 
         // `this` takes the first slot, and its type carries the constness the

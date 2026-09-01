@@ -322,6 +322,14 @@ private:
         std::size_t at;
         std::size_t classes;
         bool pattern;
+        // **The half-taken `>>` counts as state too.** `angleSplit_` marks
+        // the token whose first `>` has been consumed, and a substitution
+        // that fails between the two halves leaves it pointing at a token the
+        // next reading will meet again - which would take both halves at the
+        // inner list and leave the outer one unterminated. `atOutOfLineSpecial`
+        // saves and restores it by hand for the same reason; this is the same
+        // rule where every other piece of trial state already lives.
+        std::size_t split;
         explicit Trial(Parser *parser);
         ~Trial();
     };
