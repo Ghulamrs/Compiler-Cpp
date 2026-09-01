@@ -275,9 +275,9 @@ x86_64-linux, x86_64-windows and arm64-darwin. Suites at the last commit:
 
 | | run | emit | names vs clang | overload | names vs cl |
 | --- | --- | --- | --- | --- | --- |
-| Mac | 205 | 304 | 102 | 26 | - |
-| Linux | 205 | 304 | - | - | - |
-| Windows | 203 | - | - | - | 82 |
+| Mac | 207 | 309 | 104 | 26 | - |
+| Linux | 207 | 309 | - | - | - |
+| Windows | 204 | - | - | - | 82 |
 
 **Two of the four suites only ever run on one machine.** `names.sh` and
 `overload.sh` both ask clang, and the Linux box has no clang++ - they skip
@@ -1085,9 +1085,9 @@ function.
 | --- | --- | --- |
 | S-01 | Returning a by-value parameter elides a copy [class.copy]/31 forbids; one object destroyed twice | **fixed** 2026-09-01 |
 | S-02 | A move-only class is copied bytewise and its deleted copy accepted | **fixed** 2026-09-01 |
-| S-03 | An override of a non-first base written without `virtual` dispatches statically | open |
+| S-03 | An override of a non-first base written without `virtual` dispatches statically | **fixed** 2026-09-01 |
 | S-04 | By-value aggregates lose their tail bytes on arm64-darwin and x86_64-linux | open |
-| S-05 | Tail padding of a POD base is reused; `sizeof` wrong on all three | open |
+| S-05 | Tail padding of a POD base is reused; `sizeof` wrong on all three | **fixed** 2026-09-01 |
 | S-06 | `delete` of a null pointer runs the destructor | open |
 | S-07 | A virtual call in a base destructor reaches the derived override | open |
 | S-08 | Comparisons yield `int`; hex literals skip `unsigned int` | open |
@@ -1107,6 +1107,55 @@ Four more silent wrong answers are recorded in the report and not in this
 table because they were confirmed by a reviewer and not re-run here: `goto`
 past an initialisation, narrowing in list-initialisation, an ambiguity
 [over.ics.rank] requires that is silently resolved, and `const S s;` for a POD.
+
+### S-03 and S-05, the two that made the object model quietly wrong
+
+**A class may override a virtual of any base, and the slot search knew about
+one.** `vtables_[cls]` is seeded from base zero alone, so a member overriding
+a second base's virtual was found nowhere, was declared non-virtual, and a
+call through a `B *` reached B's own function. Writing `virtual` set the flag
+by hand and everything downstream worked - which is why the whole suite
+passed, since every case in it writes the keyword, and why the two spellings
+of one declaration meant different things.
+
+[class.virtual]/2 does not care which base declared the function, so neither
+does the search now: it looks through the bases after the first as well, and
+what follows is unchanged from the path the keyword already took. The emitted
+table is clang's, entry for entry - 56 bytes, `_ZThn8_N1D2fbEv` in the
+secondary section - and the two spellings produce identical objects.
+
+**Tail padding was reused for every base, and the ABI reuses it for some.**
+Itanium sets dsize == sizeof for a POD and only lets a derived class into the
+padding of a base that is *not* one; the Microsoft ABI never lets it in.
+`struct TD : TP` with `TP { int; char; }` came out 8 bytes where all three
+oracles say 12, and the cost is not the number: the base and the derived
+member overlapped, so assigning through a `TP *` wrote over `TD::c`.
+
+`podForLayout` is asked while the class is being completed, which is *before*
+its implicit special members are declared - so what it sees is what the
+program wrote, which is exactly the question the ABI asks. A vptr, a base, a
+constructor or a destructor each answer no; the rest of the standard's list
+cannot be written in this language yet, `operator=` being refused by name.
+
+**Three existing cases printed a size that is an ABI's answer and not a
+fact.** `vtable`, `tuple` and `template-dependent-base` each printed a
+`sizeof` into one `.expected` shared by three machines, and the numbers were
+Itanium's - so the Windows box failed all three the moment its layout became
+correct. Each is a `static_assert` under `#ifdef _WIN32` now, with both
+answers measured against clang for both ABIs: `Derived` 16 against 24,
+`Tuple<int,char,double>` 16 against 24, `Deeper<double>` 24 against 32. That
+is stronger than the print it replaced, because `emit.sh` checks it for all
+three targets from whichever box is running, where a printed number is only
+ever checked on the host.
+
+**The empty base is the other half of the same rule and had to stay put.** An
+empty class contributes nothing on every ABI - that is the empty base
+optimisation, not tail padding - so the 0 is kept and only the non-empty case
+consults the POD question. Seven layouts are pinned in
+`tests/cases/base-tail-padding.cpp`, measured against clang for all three
+ABIs, and the two that differ by ABI are written out under `#ifdef _WIN32`
+rather than skipped: cl never reuses, so its `ND` is 12 where Itanium's is 8
+and its `VD` is 24 where Itanium's is 16.
 
 ### C-01, and why the fix is at the two doors rather than at twelve
 

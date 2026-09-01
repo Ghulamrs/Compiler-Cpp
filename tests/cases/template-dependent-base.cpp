@@ -22,10 +22,21 @@ template <class T> struct Deeper : Named<T> { int extra; };
 
 struct Concrete : Holder<char> { int mine; };
 
+// **`sizeof d` depends on the ABI, so it is pinned at compile time instead of
+// printed.** Itanium lets a derived class into a base's tail padding when the
+// base is not a POD - Named<double> is not, having a base - and the Microsoft
+// ABI never does. One `.expected` cannot hold both answers, and the assert is
+// checked for all three targets by emit.sh rather than only on the host.
+#ifdef _WIN32
+static_assert(sizeof(Deeper<double>) == 32, "cl gives each level its own word");
+#else
+static_assert(sizeof(Deeper<double>) == 24, "Named's padding takes Deeper::extra");
+#endif
+
 int main() {
     Deeper<double> d;
     d.value = 11; d.tag = 2; d.id = 3; d.extra = 4;
-    printf("%.0f %d %d %d %d\n", d.value, d.tag, d.id, d.extra, (int)sizeof d);
+    printf("%.0f %d %d %d\n", d.value, d.tag, d.id, d.extra);
 
     Named<char> n;
     n.value = 'q'; n.tag = 1; n.id = 9;

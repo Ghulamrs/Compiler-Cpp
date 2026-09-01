@@ -116,6 +116,13 @@ private:
         bool constThis;
     };
     std::map<std::string, std::vector<VSlot> > vtables_;
+    // Whether a slot is the one a member with this name and parameter list
+    // overrides. Three places ask it - the slot search, the search across the
+    // bases after the first, and the secondary table's walk - and the third
+    // copy of the comparison is where it became worth naming.
+    static bool overrides(const VSlot &s, const std::string &name,
+                          const std::vector<const Type *> &params,
+                          bool constThis);
     // Where a class's secondary vptr for a given base points into its table,
     // keyed "Derived::Base". Filled while the table is laid out, read by the
     // constructor that has to store it.
@@ -714,6 +721,14 @@ private:
     // there is.
     std::string baseConstructorSymbol(const Signature &ctor, const Type *base);
     const Signature *destructorOf(const Type *cls) const;
+    // **Whether a class is a POD for the purpose of layout**, which is the
+    // one question that decides whether a derived class may put its own
+    // members in this one's tail padding. Itanium says dsize == sizeof for a
+    // POD and only reuses the padding of one that is not; the Microsoft ABI
+    // never reuses it at all. Asked while the class is being completed, which
+    // is before its implicit special members are declared - so what it sees
+    // is what the program wrote, which is exactly the question.
+    bool podForLayout(const Type *t) const;
     ExprPtr destructorCall(ExprPtr address, const Signature &dtor, std::size_t pos);
 
     // Objects that have been constructed and not yet destroyed, innermost

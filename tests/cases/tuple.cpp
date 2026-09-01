@@ -20,6 +20,14 @@
 // what was meant.
 extern "C" int printf(const char *, ...);
 
+// **The size of the three-element tuple depends on the ABI, so it is pinned at compile time
+// instead of printed.** Itanium lets a derived class into a base's tail
+// padding when the base is not a POD; the Microsoft ABI never does. One
+// `.expected` cannot hold both answers, and a static_assert is the better
+// home anyway: emit.sh checks it for all three targets from whichever box is
+// running, where a printed number is only ever checked on the host.
+
+
 template <class... Ts> struct Tuple;
 template <> struct Tuple<> { };
 
@@ -29,13 +37,19 @@ struct Tuple<T, Rest...> : Tuple<Rest...> {
     Tuple<Rest...> *tail() { return this; }
 };
 
+#ifdef _WIN32
+static_assert(sizeof(Tuple<int, char, double>) == 24, "cl reuses no tail padding");
+#else
+static_assert(sizeof(Tuple<int, char, double>) == 16, "each level sits in the one below's padding");
+#endif
+
 int main() {
     Tuple<int, char, double> t;
     t.head = 7;
     t.tail()->head = 'x';
     t.tail()->tail()->head = 99;
-    printf("%d %c %.0f size=%d\n", t.head, t.tail()->head,
-           t.tail()->tail()->head, (int)sizeof t);
+    printf("%d %c %.0f\n", t.head, t.tail()->head,
+           t.tail()->tail()->head);
 
     Tuple<int> one;
     one.head = 3;

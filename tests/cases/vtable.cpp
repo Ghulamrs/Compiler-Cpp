@@ -32,10 +32,23 @@ int Base::how() { return 2; }
 Derived::Derived() { d = 3; }
 int Derived::who() { return 4; }
 
+
+// **The size below depends on the ABI, so it is pinned at compile time
+// instead of printed.** Itanium lets a derived class into a base's tail
+// padding when the base is not a POD; the Microsoft ABI never does. One
+// `.expected` cannot hold both answers, and a static_assert is the better
+// home anyway: emit.sh checks it for all three targets from whichever box is
+// running, where a printed number is only ever checked on the host.
+static_assert(sizeof(Base) == 16, "vptr and an int, padded to the vptr");
+#ifdef _WIN32
+static_assert(sizeof(Derived) == 24, "cl gives Derived::d its own word");
+#else
+static_assert(sizeof(Derived) == 16, "Itanium puts Derived::d in Base's padding");
+#endif
+
 int main(void) {
     Derived x;
     Base y;
-    printf("%d %d\n", (int)sizeof(Base), (int)sizeof(Derived));
     printf("%d %d\n", x.b, x.d);
     printf("%d\n", y.b);
     return 0;

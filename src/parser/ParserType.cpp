@@ -755,8 +755,23 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // addresses and this would place both at 0. That needs `struct C : A, B`
     // where B also derives from A, and it is not reachable while a repeated
     // base is refused for its own reasons.
-    type->setDataSize(members.empty() && totalBits == 0
-                          ? 0 : static_cast<int>((totalBits + 7) / 8));
+    // **Tail padding is reused only where the ABI says it may be**, and the
+    // rule this was missing is the POD one. Itanium reuses the padding of a
+    // base that is *not* a POD and sets dsize == sizeof for one that is; the
+    // Microsoft ABI never reuses it. Without the carve-out every base was
+    // laid at its unpadded size, so `struct TD : TP` with `TP {int; char;}`
+    // came out 8 bytes where all three oracles say 12 - and assigning through
+    // a `TP *` then wrote over the derived member.
+    //
+    // An empty class keeps its 0 either way: that is the empty base
+    // optimisation, which Itanium requires and cl does too, and it is a
+    // different question from tail padding.
+    const long long unpadded = static_cast<long long>((totalBits + 7) / 8);
+    const bool noData = members.empty() && totalBits == 0;
+    const bool mayReuse = !noData && !target_.microsoftNames() &&
+                          !podForLayout(type);
+    type->setDataSize(noData ? 0
+                      : mayReuse ? static_cast<int>(unpadded) : size);
     type->complete(members, size, align);
     // Held bodies are read now, with the class complete: every member exists,
     // so a body may name one declared below it. Taken out of the vector first,
@@ -1062,6 +1077,28 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     if (*storage != StorageNone || quals->isConst || quals->isVolatile)
         src_.fail(start, "this declaration has no type; write one");
     src_.fail(start, "expected a type");
+}
+
+bool Parser::podForLayout(const Type *t) const {
+    if (t == nullptr) return true;
+    const Type *u = t->unqualified();
+    while (u->isArray()) u = u->pointee()->unqualified();
+    if (!u->isStructOrUnion()) return true;      // a fundamental or a pointer
+    // A vptr, a base, a constructor or a destructor each make it not a POD,
+    // and any one of them is enough - the standard's list is longer, but the
+    // rest of it cannot be written in this language yet: a user-declared copy
+    // assignment needs `operator=`, which is refused by name, and access
+    // control on a data member does not change the layout here.
+    if (u->polymorphic()) return false;
+    if (!u->bases().empty()) return false;
+    if (!u->tag().empty()) {
+        if (overloadsOf(constructorKey(u->tag())) != nullptr) return false;
+        if (destructorOf(u) != nullptr) return false;
+    }
+    const std::vector<Member> &ms = u->members();
+    for (std::size_t i = 0; i < ms.size(); i++)
+        if (!podForLayout(ms[i].type)) return false;
+    return true;
 }
 
 const Type *Parser::arraySuffix(const Type *base, std::size_t pos) {

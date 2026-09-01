@@ -60,6 +60,15 @@ StmtPtr Parser::constructLocal(const Declared &d, int offset,
 // The deleting destructor's name. Built through the manglers rather than by
 // concatenation, because a nested class's is a whole nested-name -
 // ??_GInner@Outer@@UEAAPEAXI@Z, not ??_GOuter::Inner@@...
+bool Parser::overrides(const VSlot &s, const std::string &name,
+                       const std::vector<const Type *> &params, bool constThis) {
+    if (s.name != name || s.constThis != constThis) return false;
+    if (s.params.size() != params.size()) return false;
+    for (std::size_t i = 0; i < params.size(); i++)
+        if (s.params[i] != params[i]) return false;
+    return true;
+}
+
 std::string Parser::deletingDestructorSymbol(const std::string &cls) {
     return target_.microsoftNames()
          ? microsoftDeletingDestructorName(cls, findTypedef(cls))
@@ -637,13 +646,8 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
             std::string entry = theirs[i].symbol;
             // Did this class override it? Its own slot list has the answer.
             for (std::size_t k = 0; k < slots.size(); k++) {
-                if (slots[k].name != theirs[i].name) continue;
-                if (slots[k].constThis != theirs[i].constThis) continue;
-                if (slots[k].params.size() != theirs[i].params.size()) continue;
-                bool same = true;
-                for (std::size_t q = 0; q < slots[k].params.size(); q++)
-                    if (slots[k].params[q] != theirs[i].params[q]) { same = false; break; }
-                if (!same) continue;
+                if (!overrides(slots[k], theirs[i].name, theirs[i].params,
+                               theirs[i].constThis)) continue;
                 if (slots[k].symbol != theirs[i].symbol)
                     entry = synthesizeThunk(tag, cls, slots[k], off, pos);
                 break;
@@ -1903,16 +1907,40 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
     std::vector<VSlot> &slots = vtables_[cls];
     std::size_t slot = slots.size();
     for (std::size_t i = 0; i < slots.size(); i++) {
-        if (slots[i].name != d.name || slots[i].constThis != constThis) continue;
-        if (slots[i].params.size() != params.size()) continue;
-        bool same = true;
-        for (std::size_t k = 0; k < params.size(); k++)
-            if (slots[i].params[k] != params[k]) { same = false; break; }
-        if (!same) continue;
+        if (!overrides(slots[i], d.name, params, constThis)) continue;
         slot = i;
         isVirtual = true;
         break;
     }
+
+    // **The slots that came down are the *first* base's**, and a class may
+    // override a virtual of any of them. `vtables_[cls]` is seeded from base
+    // zero alone, so a function overriding a second base's virtual was found
+    // nowhere, was declared non-virtual, and dispatched statically - a call
+    // through a `B *` reached B's function and not this one. The keyword hid
+    // it: writing `virtual` set the flag by hand and everything downstream
+    // worked, which is why every case in the suite passes and why the two
+    // spellings of one declaration meant different things.
+    //
+    // [class.virtual]/2 does not care which base it came from, so neither
+    // does this. What follows is unchanged from the keyword-written path: a
+    // new slot in this class's own list, which the secondary table then finds
+    // when it asks whether this class overrode anything of theirs, and points
+    // at through a thunk.
+    if (!isVirtual)
+        if (const Type *self = findTypedef(cls)) {
+            const std::vector<Type::BaseSpec> &bs = self->bases();
+            for (std::size_t bi = 1; bi < bs.size() && !isVirtual; bi++) {
+                std::map<std::string, std::vector<VSlot> >::const_iterator it =
+                    vtables_.find(bs[bi].type->tag());
+                if (it == vtables_.end()) continue;
+                for (std::size_t i = 0; i < it->second.size(); i++)
+                    if (overrides(it->second[i], d.name, params, constThis)) {
+                        isVirtual = true;
+                        break;
+                    }
+            }
+        }
 
     const std::string symbol = memberSymbol(cls, d.name, fn, access, constThis,
                                             d.pos, isVirtual);
