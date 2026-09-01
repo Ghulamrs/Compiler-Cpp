@@ -495,6 +495,11 @@ private:
     std::string inlineOwnerName_;
 
     void emitVtable(const Type *cls, const std::string &tag, std::size_t pos);
+    // **Emitting a vtable uses everything the table points at.** The `used`
+    // flag otherwise only ever comes from a call, and a slot holding a
+    // function's address is not a call - so an implicit virtual destructor
+    // that nothing named got a vtable entry and no body.
+    void markSymbolUsed(const std::string &symbol);
     // The statements that set an object's vptrs - the primary one and any a
     // polymorphic second base needs. Every constructor emits these, written
     // or implicit, which is why they live in one place.

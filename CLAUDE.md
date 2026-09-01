@@ -275,9 +275,9 @@ x86_64-linux, x86_64-windows and arm64-darwin. Suites at the last commit:
 
 | | run | emit | names vs clang | overload | names vs cl |
 | --- | --- | --- | --- | --- | --- |
-| Mac | 215 | 330 | 111 | 26 | - |
-| Linux | 215 | 330 | - | - | - |
-| Windows | 212 | - | - | - | 87 |
+| Mac | 216 | 333 | 112 | 26 | - |
+| Linux | 216 | 333 | - | - | - |
+| Windows | 213 | - | - | - | 88 |
 
 **Two of the four suites only ever run on one machine.** `names.sh` and
 `overload.sh` both ask clang, and the Linux box has no clang++ - they skip
@@ -1094,7 +1094,7 @@ function.
 | S-09 | Value-initialisation does not zero | **fixed** 2026-09-01 |
 | S-10 | A default argument leaks onto the next function declared | **fixed** 2026-09-01 |
 | A-01 | `this` and the sret pointer are swapped against cl on x86_64-windows | open |
-| A-02 | A vtable references an implicit destructor that is never emitted | open |
+| A-02 | A vtable references an implicit destructor that is never emitted | **fixed** 2026-09-01 |
 | A-03 | Bitfield layout is Itanium's on Windows; zero-width fields match no ABI | open |
 | A-04 | `double` to `unsigned long long` is a bare signed convert on x86 | open |
 | A-05 | An empty class argument consumes a register on arm64-darwin | open |
@@ -1107,6 +1107,32 @@ Four more silent wrong answers are recorded in the report and not in this
 table because they were confirmed by a reviewer and not re-run here: `goto`
 past an initialisation, narrowing in list-initialisation, an ambiguity
 [over.ics.rank] requires that is silently resolved, and `const S s;` for a POD.
+
+### A-02: a vtable slot is a use, and the Microsoft table names one fewer
+
+**Emitting a table odr-uses everything in it.** The `used` flag came only
+from calls, and a slot holding a function's address is not a call - so
+`struct D : B { };` where B's destructor is virtual got a table pointing at
+`~D` and no `~D` emitted anywhere. Nothing in the program named it and
+nothing had to: `delete p` through a `B *` reaches it through the slot. The
+link failed with a symbol not found, on a program rung 4 says works.
+
+The slots are marked when the table is emitted, which is during the class's
+own completion and well before `defineImplicitFunctions` walks the list.
+
+**And then the same fault one symbol over, on one ABI.** Itanium has two
+destructor slots - the complete-object form and the deleting one - so marking
+the slots covers both. MSVC has a single slot holding the deleting destructor,
+whose body calls an ordinary destructor that nothing else points at, so `??1E`
+was still unemitted there and nowhere else. The class's own destructor is
+marked alongside the slots now, and the Windows name comparison agrees on all
+seventeen.
+
+Worth the note because of how it was found: the fix looked complete, the Mac
+and Linux suites were green, and it was the clang-as-MSVC name comparison that
+said one ABI was still missing a symbol. That comparison runs on the Mac and
+is the only thing in the fleet that would have caught it before the Windows
+box did.
 
 ### S-09 and S-10: an object nobody set, and a default nobody asked for
 

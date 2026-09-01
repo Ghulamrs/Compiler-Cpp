@@ -578,6 +578,12 @@ std::string Parser::synthesizeThunk(const std::string &cls, const Type *type,
     return name;
 }
 
+void Parser::markSymbolUsed(const std::string &symbol) {
+    if (symbol.empty()) return;
+    for (std::size_t i = 0; i < functions_.size(); i++)
+        if (functions_[i].symbol == symbol) { functions_[i].used = true; return; }
+}
+
 void Parser::emitVtable(const Type *cls, const std::string &tag,
                         std::size_t pos) {
     if (tag.empty())
@@ -590,6 +596,22 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
 
     for (std::size_t i = 0; i < current_->globals.size(); i++)
         if (current_->globals[i].symbol == symbol) return;   // one per class
+
+    // **The table holding a function's address is a use of it.** The `used`
+    // flag came only from calls, so a class whose virtual destructor is
+    // implicit - `struct D : B { };` where B's is virtual - got a table
+    // pointing at `~D` and no `~D` anywhere, and the program did not link.
+    // Marked here, which is during the class's own completion and so well
+    // before `defineImplicitFunctions` walks the list.
+    for (std::size_t i = 0; i < slots.size(); i++)
+        markSymbolUsed(slots[i].symbol);
+    // **And the destructor itself, which the Microsoft table does not name.**
+    // Itanium has two slots - the complete-object destructor and the deleting
+    // one - so marking the slots covers both; MSVC has a single slot holding
+    // the deleting destructor, whose body calls an ordinary destructor that
+    // nothing else points at. Marking only the slots left `??1E` unemitted on
+    // that ABI and nowhere else, which is the same fault one symbol over.
+    if (const Signature *dtor = destructorOf(cls)) markSymbolUsed(dtor->symbol);
 
     std::vector<GlobalPiece> pieces;
     int at = 0;
