@@ -1155,6 +1155,11 @@ void Parser::synthesizeDestructor(std::size_t which) {
 void Parser::declareImplicitCopyAssign(const std::string &tag, const Type *type,
                                        std::size_t pos) {
     if (overloadsOf(assignmentKey(tag)) != nullptr) return;
+    // [class.copy]/23: a user-declared move constructor **deletes** the
+    // implicit copy assignment, the same sentence that deletes the implicit
+    // copy constructor two rules earlier. Called before the implicit move is
+    // declared, so what moveConstructorOf finds here is what the user wrote.
+    if (moveConstructorOf(type) != nullptr) return;
 
     // **A const member has no assignment to give**, so the operator the
     // compiler would write is deleted rather than non-trivial and none is

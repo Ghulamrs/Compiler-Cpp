@@ -106,6 +106,9 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
             pendingTemps_.push_back(std::make_pair(slot, plain));
         ExprPtr obj(Var::local("$tmp", slot));
         obj->setType(plain);
+        // Expiring, whichever of the three shapes below answers - the same
+        // mark the constructor branch sets, for the same reason.
+        obj->setXvalue();
         if (args.empty()) {
             // **[dcl.init]/8: `P()` value-initialises, and for a class with
             // no user-provided constructor that means zero-initialising it.**
@@ -136,6 +139,7 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
             both->setType(types_.pointerTo(plain));
             ExprPtr made(new Unary('*', std::move(both)));
             made->setType(plain);
+            made->setXvalue();
             return made;
         }
         checkAssignable(*args[0], plain, pos, "this temporary");
@@ -149,6 +153,7 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
         both->setType(types_.pointerTo(plain));
         ExprPtr made(new Unary('*', std::move(both)));
         made->setType(plain);
+        made->setXvalue();
         return made;
     }
 
@@ -196,6 +201,14 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
     both->setType(ptr);
     ExprPtr made(new Unary('*', std::move(both)));
     made->setType(plain);
+    // **What `T(...)` makes is about to expire, and the marker is how the
+    // rest of the compiler is told.** The lowering above is a dereference,
+    // which reads as an ordinary lvalue - so a temporary passed by value
+    // reached for the copy constructor, and an explicit copy beside a plain
+    // move refused a call clang accepts. The xvalue mark is the one bit of
+    // value category this AST carries, and a materialised temporary has
+    // every property it stands for: an address, and no further readers.
+    made->setXvalue();
     return made;
 }
 
