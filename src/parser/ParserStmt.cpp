@@ -212,11 +212,37 @@ StmtPtr Parser::declarationBody() {
             // move of bytes and cl and clang both emit no function for one -
             // so there is nothing for overload resolution to find, and what
             // the standard asks for here is those bytes.
-            const bool trivialCopy =
-                args.size() == 1 &&
-                copyConstructorOf(d.type->unqualified()) == nullptr &&
-                args[0]->type() != nullptr &&
+            // **A class that declares a move constructor has no trivial
+            // copy**, and reading this branch as though it did is how a
+            // move-only class came to be copied byte for byte.
+            // [class.copy]/7: declaring a move constructor *deletes* the
+            // implicit copy. Here the copy was never declared either, which
+            // looks the same to `copyConstructorOf` and means something
+            // entirely different - so the byte path answered, the move
+            // constructor never ran, and two objects owned one resource.
+            //
+            // With the move constructor in the way, the initialisation goes
+            // through `constructLocal` and overload resolution picks between
+            // the constructors the class actually has: the move for an
+            // xvalue, and nothing at all for an lvalue - which is the
+            // deletion, and is refused just below rather than left to a
+            // resolution failure that would name the wrong reason.
+            const Signature *mover = moveConstructorOf(d.type->unqualified());
+            const bool sameClass =
+                args.size() == 1 && args[0]->type() != nullptr &&
                 args[0]->type()->unqualified() == d.type->unqualified();
+            if (mover != nullptr && sameClass && !args[0]->isXvalue() &&
+                copyConstructorOf(d.type->unqualified()) == nullptr)
+                src_.fail(d.pos, "'" + d.type->describe() + "' declares a move "
+                                 "constructor, so its copy constructor is "
+                                 "deleted and '" + d.name + "' cannot be built "
+                                 "from an lvalue - write 'static_cast<" +
+                                 d.type->describe() + " &&>(...)' to move out "
+                                 "of it, or give the class a copy constructor");
+
+            const bool trivialCopy =
+                sameClass && mover == nullptr &&
+                copyConstructorOf(d.type->unqualified()) == nullptr;
 
             if (made != nullptr && made->type() == d.type &&
                 returnsIndirectly(d.type)) {
@@ -1365,14 +1391,64 @@ StmtPtr Parser::statementBody() {
         // the bytes go straight to the caller's storage with no copy
         // constructor called, and a copy that was not made must not be
         // destroyed either.
+        // **[class.copy]/31 names one automatic object and excludes a
+        // parameter**, and the exclusion is the whole point rather than a
+        // detail: the caller made the argument and the caller destroys it, so
+        // eliding here leaves the caller holding two objects over one set of
+        // bytes and destroying both. `T pass(T t) { return t; }` built two
+        // objects and destroyed three - a double free for any class that owns
+        // anything.
+        bool elidable = false;
+        if (const Var *v = dynamic_cast<const Var *>(value.get()))
+            if (v->isLocal()) {
+                const Local *l = findLocal(v->name());
+                elidable = l == nullptr || !l->isParameter;
+            }
+
+        // **A `return` of a glvalue this function does not own has to call
+        // the copy constructor**, and until now nothing did: the return path
+        // moved the bytes and left the elision of the *destructor* to stand
+        // in for the copy. That works for exactly one case - an automatic
+        // object of this function, where the standard also allows the copy
+        // itself to go - and is wrong for every other: a parameter, a member,
+        // `*p`. Each of those left the caller with a byte copy that no
+        // constructor had made and that the source would also destroy.
+        //
+        // The copy is built into a slot of this frame and *that* slot is the
+        // one elided: one constructor runs, its bytes become the caller's
+        // object, and nothing destroys it here. That is the copy the standard
+        // asks for plus the elision it allows, which is what clang emits.
+        std::vector<StmtPtr> before;
+        if (returnType_->isStructOrUnion() && !elidable &&
+            value->type() != nullptr &&
+            value->type()->unqualified() == returnType_->unqualified() &&
+            isGlvalue(*value) &&
+            (copyConstructorOf(returnType_->unqualified()) != nullptr ||
+             moveConstructorOf(returnType_->unqualified()) != nullptr)) {
+            Declared rv;
+            rv.name = ".rv" + std::to_string(refTemps_++);
+            rv.type = returnType_;
+            rv.pos = pos;
+            const int slot = declare(rv.name, rv.type, pos);
+            std::vector<ExprPtr> one;
+            one.push_back(std::move(value));
+            before.push_back(constructLocal(rv, slot, std::move(one), true));
+            ExprPtr built(Var::local(rv.name, slot));
+            built->setType(returnType_);
+            value = std::move(built);
+            elidable = true;
+        }
+
         int elided = -1;
         if (returnType_->isStructOrUnion() &&
-            destructorOf(returnType_) != nullptr)
+            destructorOf(returnType_) != nullptr && elidable)
             if (const Var *v = dynamic_cast<const Var *>(value.get()))
                 if (v->isLocal()) elided = v->offset();
 
         if (!alive_.empty()) {
             std::vector<StmtPtr> unwind;
+            for (std::size_t i = 0; i < before.size(); i++)
+                unwind.push_back(std::move(before[i]));
             int slot = allocateFrameSlot(returnType_);
             std::string temp = ".ret" + std::to_string(refTemps_++);
 
@@ -1388,6 +1464,10 @@ StmtPtr Parser::statementBody() {
             give->setType(returnType_);
             unwind.push_back(StmtPtr(new Return(std::move(give))));
             return StmtPtr(new Block(std::move(unwind)));
+        }
+        if (!before.empty()) {
+            before.push_back(StmtPtr(new Return(std::move(value))));
+            return StmtPtr(new Block(std::move(before)));
         }
         return StmtPtr(new Return(std::move(value)));
     }

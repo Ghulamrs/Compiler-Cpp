@@ -40,6 +40,12 @@ private:
         // address; this is what it is worth when read.
         bool isConstantValue = false;
         long long constantValue = 0;
+        // **[class.copy]/31 lets a `return` elide the copy of an automatic
+        // object, and excludes a parameter by name** - the caller destroys
+        // the argument, so eliding there hands the caller two objects over
+        // one set of bytes and it destroys both. Nothing else needed to know
+        // a parameter from a local until then.
+        bool isParameter = false;
     };
 
     struct GlobalSym {

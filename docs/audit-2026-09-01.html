@@ -1,0 +1,910 @@
+<title>cxx1 Conformance Audit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Spectral:wght@500;600&display=swap">
+
+<style>
+:root {
+  --ground: #f2f4f7;
+  --surface: #ffffff;
+  --surface-2: #e9edf2;
+  --ink: #151a22;
+  --ink-2: #39424f;
+  --muted: #5d6878;
+  --rule: #d7dde5;
+  --rule-2: #c3ccd7;
+  --accent: #2f4b7c;
+  --accent-2: #4a6a9e;
+  --crit: #a12f2a;
+  --crit-bg: #f6e8e6;
+  --high: #96651a;
+  --high-bg: #f6efe0;
+  --med: #35695f;
+  --med-bg: #e4efec;
+  --ok: #35695f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0e1218;
+    --surface: #151b23;
+    --surface-2: #1d242e;
+    --ink: #e7ebf1;
+    --ink-2: #c2cad6;
+    --muted: #929cac;
+    --rule: #262f3b;
+    --rule-2: #35404f;
+    --accent: #8aabdd;
+    --accent-2: #a7c1e9;
+    --crit: #e58175;
+    --crit-bg: #2c1c1b;
+    --high: #d8a55a;
+    --high-bg: #2a2318;
+    --med: #74b8a8;
+    --med-bg: #172623;
+    --ok: #74b8a8;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #0e1218;
+  --surface: #151b23;
+  --surface-2: #1d242e;
+  --ink: #e7ebf1;
+  --ink-2: #c2cad6;
+  --muted: #929cac;
+  --rule: #262f3b;
+  --rule-2: #35404f;
+  --accent: #8aabdd;
+  --accent-2: #a7c1e9;
+  --crit: #e58175;
+  --crit-bg: #2c1c1b;
+  --high: #d8a55a;
+  --high-bg: #2a2318;
+  --med: #74b8a8;
+  --med-bg: #172623;
+  --ok: #74b8a8;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  margin: 0;
+  padding: 0 1.25rem 5rem;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 60rem; margin: 0 auto; }
+
+/* ---------- masthead ---------- */
+
+.masthead {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 3.5rem 0 2rem;
+  border-bottom: 2px solid var(--ink);
+}
+.eyebrow {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+h1 {
+  font-family: Spectral, Georgia, serif;
+  font-weight: 600;
+  font-size: clamp(2.1rem, 5.5vw, 3.1rem);
+  line-height: 1.1;
+  letter-spacing: -0.015em;
+  margin: 0;
+  text-wrap: balance;
+}
+.standfirst {
+  font-family: Spectral, Georgia, serif;
+  font-size: clamp(1.05rem, 2.2vw, 1.22rem);
+  line-height: 1.55;
+  color: var(--ink-2);
+  max-width: 44rem;
+  margin: 0;
+}
+
+.meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 1rem 1.5rem;
+  padding-top: 0.5rem;
+}
+.meta div { display: flex; flex-direction: column; gap: 0.15rem; }
+.meta dt, .meta .k {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.meta .v {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.86rem;
+  color: var(--ink);
+}
+
+/* ---------- verdict ---------- */
+
+.verdict {
+  margin: 2.5rem 0 0;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--crit);
+  padding: 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.verdict p { margin: 0; max-width: 46rem; }
+.verdict .lead {
+  font-family: Spectral, Georgia, serif;
+  font-size: 1.18rem;
+  line-height: 1.5;
+}
+.counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: 1rem;
+  border-top: 1px solid var(--rule);
+  padding-top: 1.25rem;
+}
+.count .n {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 2rem;
+  font-weight: 600;
+  line-height: 1;
+  display: block;
+}
+.count .l {
+  font-size: 0.8rem;
+  color: var(--muted);
+  display: block;
+  margin-top: 0.4rem;
+  line-height: 1.35;
+}
+.count.crit .n { color: var(--crit); }
+.count.high .n { color: var(--high); }
+.count.ok .n { color: var(--ok); }
+
+/* ---------- sections ---------- */
+
+section { margin-top: 3.5rem; }
+
+h2 {
+  font-family: Spectral, Georgia, serif;
+  font-weight: 600;
+  font-size: 1.6rem;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.5rem;
+  text-wrap: balance;
+}
+h2 .num {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.8rem;
+  color: var(--accent);
+  margin-right: 0.7rem;
+  vertical-align: 0.22em;
+  letter-spacing: 0.06em;
+}
+.section-note {
+  color: var(--muted);
+  max-width: 46rem;
+  margin: 0 0 1.75rem;
+  font-size: 0.95rem;
+}
+
+/* ---------- legend ---------- */
+
+.legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+.legend div {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  padding: 0.85rem 1rem;
+  font-size: 0.88rem;
+  color: var(--ink-2);
+}
+.legend strong {
+  display: block;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-bottom: 0.3rem;
+}
+
+/* ---------- findings ---------- */
+
+.finding {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--rule-2);
+  padding: 1.35rem 1.5rem;
+  margin-bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+.finding.crit { border-left-color: var(--crit); }
+.finding.high { border-left-color: var(--high); }
+.finding.med  { border-left-color: var(--med); }
+
+.f-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem 0.85rem; }
+.fid {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.f-title {
+  font-family: Spectral, Georgia, serif;
+  font-size: 1.13rem;
+  font-weight: 600;
+  line-height: 1.35;
+  flex: 1 1 22rem;
+  min-width: 0;
+  text-wrap: balance;
+}
+.tag {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  padding: 0.22rem 0.5rem;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.tag.crit { color: var(--crit); background: var(--crit-bg); }
+.tag.high { color: var(--high); background: var(--high-bg); }
+.tag.med  { color: var(--med);  background: var(--med-bg); }
+.tag.repro { color: var(--accent); background: transparent; }
+
+.finding p { margin: 0; color: var(--ink-2); font-size: 0.95rem; }
+.finding p.why { max-width: 48rem; }
+
+/* evidence */
+
+.ev { display: grid; grid-template-columns: 1fr; gap: 0.6rem; }
+.prog {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+  padding: 0.75rem 0.9rem;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--ink);
+}
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+@media (max-width: 34rem) { .pair { grid-template-columns: 1fr; } }
+.side {
+  border: 1px solid var(--rule);
+  padding: 0.65rem 0.85rem;
+  overflow-x: auto;
+}
+.side .k {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.67rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 0.3rem;
+}
+.side .v {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
+  display: block;
+}
+.side.want .v { color: var(--ok); }
+.side.got .v { color: var(--crit); font-weight: 500; }
+
+.site {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: var(--muted);
+  border-top: 1px dashed var(--rule-2);
+  padding-top: 0.7rem;
+}
+.site b { color: var(--ink-2); font-weight: 500; }
+
+code, .mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.88em;
+  background: var(--surface-2);
+  padding: 0.08em 0.3em;
+  border-radius: 2px;
+}
+p code { white-space: nowrap; }
+
+/* ---------- tables ---------- */
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--rule); background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; min-width: 34rem; }
+th, td { text-align: left; padding: 0.65rem 0.9rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 500;
+  background: var(--surface-2);
+}
+tbody tr:last-child td { border-bottom: none; }
+td.mono-cell {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+/* ---------- lists ---------- */
+
+ul.plain { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.55rem; }
+ul.plain li {
+  padding-left: 1.15rem;
+  position: relative;
+  color: var(--ink-2);
+  font-size: 0.95rem;
+}
+ul.plain li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 0.45rem;
+  height: 1px;
+  background: var(--accent);
+}
+ol.steps { padding-left: 0; margin: 0; list-style: none; counter-reset: s; display: flex; flex-direction: column; gap: 1rem; }
+ol.steps li {
+  counter-increment: s;
+  display: grid;
+  grid-template-columns: 2.1rem 1fr;
+  gap: 0.9rem;
+  align-items: start;
+}
+ol.steps li::before {
+  content: counter(s);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--accent);
+  border: 1px solid var(--rule-2);
+  width: 2.1rem;
+  height: 2.1rem;
+  display: grid;
+  place-items: center;
+}
+ol.steps strong { color: var(--ink); }
+ol.steps p { margin: 0.15rem 0 0; color: var(--ink-2); font-size: 0.93rem; }
+
+.pending {
+  background: var(--high-bg);
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--high);
+  padding: 1.1rem 1.35rem;
+  font-size: 0.93rem;
+  color: var(--ink-2);
+}
+.pending strong { color: var(--ink); }
+
+footer {
+  margin-top: 4rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.85rem;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+a { color: var(--accent); }
+a:focus-visible, :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <span class="eyebrow">Compiler review &middot; Fable 5 panel of five &middot; 1 September 2026</span>
+  <h1>cxx1 Conformance Audit</h1>
+  <p class="standfirst">Five independent reviewers went at the C++11 compiler from five directions. Every suite passes on all three machines; twenty-three defects are confirmed underneath them, and fourteen of those change what a correct program does without saying a word.</p>
+  <div class="meta">
+    <div><span class="k">Tree</span><span class="v">Compiler-Cpp @ 29f8dfb</span></div>
+    <div><span class="k">Source language</span><span class="v">ISO C++14</span></div>
+    <div><span class="k">Accepted language</span><span class="v">C++11</span></div>
+    <div><span class="k">Targets</span><span class="v">darwin / linux / windows</span></div>
+    <div><span class="k">Oracle</span><span class="v">clang++ -std=c++11<br>-pedantic-errors</span></div>
+    <div><span class="k">Panel</span><span class="v">5 of 5 reported</span></div>
+  </div>
+</header>
+
+<div class="verdict" style="border-left-color: var(--med); margin-bottom: 0;">
+  <p class="lead" style="font-size:1.05rem">Addendum, later the same day: S-01 and S-02 are fixed and verified on all three machines.</p>
+  <p>The findings below are left exactly as written. This page is the record of what was true at 29f8dfb, and correcting it as things are fixed would destroy the only thing a dated audit is good for. Current status for every finding lives in CLAUDE.md, under "The audit of 2026-09-01". The two double-frees are closed, with cases that pin the built-equals-destroyed invariant rather than a constructor count; suites now read 204 / 301 / 101 / 26 on the Mac, 204 / 301 on Linux, 202 and 82 names on Windows.</p>
+</div>
+
+<div class="verdict">
+  <p class="lead">The suites are green and the compiler is not. That gap is the finding — everything below it is detail.</p>
+  <p>A four-suite run at this commit reports 201 cases, 295 emissions, 99 linkage-name comparisons and 26 overload comparisons, passing on the Mac, the Linux box and the Windows box. Underneath that, an ordinary program that returns a by-value parameter destroys one object twice; a class with a move constructor is copied bytewise instead of moved; a struct passed by value loses its tail bytes on two of three targets; and the compiler itself reads freed memory while parsing a default argument.</p>
+  <div class="counts">
+    <div class="count crit"><span class="n">14</span><span class="l">silent wrong answers — compiles, runs, wrong</span></div>
+    <div class="count high"><span class="n">5</span><span class="l">ABI and layout divergences</span></div>
+    <div class="count"><span class="n">4</span><span class="l">defects in the C++14 source itself</span></div>
+    <div class="count high"><span class="n">4</span><span class="l">planted bugs the suites failed to catch</span></div>
+    <div class="count ok"><span class="n">17</span><span class="l">reproduced first-hand for this report</span></div>
+  </div>
+</div>
+
+<section>
+  <h2><span class="num">01</span>How to read this</h2>
+  <p class="section-note">Every finding names the program, what clang answers and what cxx1 answers. Nothing here is reported on reasoning alone.</p>
+  <div class="legend">
+    <div><strong>Reproduced</strong>A reviewer found it and I ran it again independently. The numbers shown are from that second run.</div>
+    <div><strong>Reviewer-confirmed</strong>The reviewer ran it and showed the output; I did not re-run it.</div>
+    <div><strong>Suspected</strong>Reasoned from the source, no reproducing input yet. Two items, both marked.</div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">02</span>Silent wrong answers</h2>
+  <p class="section-note">Programs that compile, link and run, and produce something other than what C++11 says. These are ranked first because nothing in the build tells you they happened.</p>
+
+  <div class="finding crit">
+    <div class="f-head">
+      <span class="fid">S-01</span>
+      <span class="f-title">Returning a by-value parameter elides a copy the standard forbids, and one object is destroyed twice</span>
+      <span class="tag crit">Double free</span><span class="tag repro">Reproduced</span>
+    </div>
+    <div class="ev">
+      <div class="prog">struct T { T(); T(const T &amp;o); ~T(); };   // each prints c / C / d
+T pass(T t) { return t; }
+int main() { T b; { T d = pass(b); } }</div>
+      <div class="pair">
+        <div class="side want"><span class="k">clang -std=c++11</span><span class="v">cCCddd</span></div>
+        <div class="side got"><span class="k">cxx1</span><span class="v">cCddd</span></div>
+      </div>
+    </div>
+    <p class="why">Two objects are constructed and three are destroyed. [class.copy]/31 excludes function parameters from copy elision precisely because the caller destroys the argument; the return path treats any local <code>Var</code> as elidable, and a parameter is a local. For any class that owns memory this is a double free.</p>
+    <p class="site"><b>src/parser/ParserStmt.cpp:1368</b> — <code>v-&gt;isLocal()</code> is true for parameters</p>
+  </div>
+
+  <div class="finding crit">
+    <div class="f-head">
+      <span class="fid">S-02</span>
+      <span class="f-title">A move-only class is copied bytewise, and its deleted copy constructor is accepted</span>
+      <span class="tag crit">Double free</span><span class="tag repro">Reproduced</span>
+    </div>
+    <div class="ev">
+      <div class="prog">struct S { int v; S() { v = 5; } S(S &amp;&amp;o) { v = o.v; o.v = 0; } };
+S a;  S b(static_cast&lt;S &amp;&amp;&gt;(a));   printf("%d %d", b.v, a.v);
+S c = a;                            // ill-formed: copy is deleted</div>
+      <div class="pair">
+        <div class="side want"><span class="k">clang -std=c++11</span><span class="v">5 0
+rejects `S c = a;`</span></div>
+        <div class="side got"><span class="k">cxx1</span><span class="v">5 5
+accepts, copies bytes</span></div>
+      </div>
+    </div>
+    <p class="why">The move constructor never runs: the declaration path falls through to the byte copy inherited from the C compiler. [class.copy]/7 deletes the implicit copy when a move constructor is declared — cxx1 merely never declares one, so the byte path answers instead. With a pointer member the reviewer's version double-freed and trapped. Rung 7.4 is recorded in CLAUDE.md as landed, and the by-value-argument half of it genuinely is; the declaration half is not.</p>
+    <p class="site"><b>Root:</b> implicit-copy suppression is an absence, not a deletion — the struct-assignment path predates it</p>
+  </div>
+
+  <div class="finding crit">
+    <div class="f-head">
+      <span class="fid">S-03</span>
+      <span class="f-title">An override of a non-first base, written without the <span class="mono">virtual</span> keyword, dispatches statically</span>
+      <span class="tag crit">Wrong call</span><span class="tag repro">Reproduced</span>
+    </div>
+    <div class="ev">
+      <div class="prog">struct A { virtual int fa() { return 1; } };
+struct B { virtual int fb() { return 2; } };
+struct D : A, B { int fb() { return 22; } };     // no `virtual` written
+int main() { D d; B *pb = &amp;d; return pb-&gt;fb(); }</div>
+      <div class="pair">
+        <div class="side want"><span class="k">clang -std=c++11</span><span class="v">22</span></div>
+        <div class="side got"><span class="k">cxx1</span><span class="v">2</span></div>
+      </div>
+    </div>
+    <p class="why">The implicit-virtual slot search scans only the primary base's vtable, which is seeded from base 0 alone — so an override of a second base is never recognised as one, is declared non-virtual, and the secondary vtable keeps the base's entry. Writing <code>virtual</code> explicitly fixes it, which is why every test case passes: they all write it. CLAUDE.md states the opposite rule — "finding a base's slot is what makes a function virtual, not the keyword".</p>
+    <p class="site"><b>src/parser/ParserClass.cpp:1904</b> and <b>src/parser/ParserType.cpp:272</b> (<code>bi == 0</code>)</p>
+  </div>
+
+  <div class="finding crit">
+    <div class="f-head">
+      <span class="fid">S-04</span>
+      <span class="f-title">By-value aggregates lose their tail bytes on both Itanium targets</span>
+      <span class="tag crit">Data loss</span><span class="tag repro">Reproduced</span>
+    </div>
+    <div class="ev">
+      <div class="prog">struct T3 { char c[3]; };  struct T6 { char c[6]; };
+int use3(T3 s); int use6(T6 s);            // sum the bytes
+use3({1,2,4}), use6({1,2,3,4,5,6})</div>
+      <div class="pair">
+        <div class="side want"><span class="k">clang -std=c++11</span><span class="v">7 21</span></div>
+        <div class="side got"><span class="k">cxx1 (arm64-darwin)</span><span class="v">3 12</span></div>
+      </div>
+    </div>
+    <p class="why">Any aggregate whose size mod 8 is 3, 5, 6 or 7 is spilled with the single largest store that fits rather than a composed 4+2+1 — a 3-byte tail stores 2 bytes, a 6-byte tail stores 4. It affects arm64-darwin and x86_64-linux, in argument spills, call-result stores and returns. x86_64-windows escapes it because non-power-of-2 aggregates go by reference there and its copy helper loops. That is the house bug class exactly: one target right, two silently wrong.</p>
+    <p class="site"><b>src/backend/Arm64Darwin.cpp:146</b>, <b>src/backend/X86_64Linux.cpp:1443, 1465, 913, 1010, 1174</b></p>
+  </div>
+
+  <div class="finding crit">
+    <div class="f-head">
+      <span class="fid">S-05</span>
+      <span class="f-title">Tail padding of a POD base is reused, so <span class="mono">sizeof</span> disagrees with every oracle on every target</span>
+      <span class="tag crit">Layout</span><span class="tag repro">Reproduced</span>
+    </div>
+    <div class="ev">
+      <div class="prog">struct TP { int a; char b; };
+struct TD : TP { char c; };
+sizeof(TP), sizeof(TD)</div>
+      <div class="pair">
+        <div class="side want"><span class="k">clang (all three)</span><span class="v">8 12</span></div>
+        <div class="side got"><span class="k">cxx1 (all three)</span><span class="v">8 8</span></div>
+      </div>
+    </div>
+    <p class="why">Every base is laid at the base's unpadded size. Itanium reuses tail padding only for <em>non-POD</em> bases — for a POD base, dsize equals sizeof — and MSVC never reuses it at all. Assigning through a base pointer then overwrites the derived member. The codebase knows the reuse rule deliberately; what is missing is the POD carve-out.</p>
+    <p class="site"><b>src/parser/ParserType.cpp:758, 270</b>; also <b>ParserClass.cpp:1564</b></p>
+  </div>
+
+  <div class="finding crit">
+    <div class="f-head">
+      <span class="fid">S-06</span>
+      <span class="f-title">Deleting a null pointer runs the destructor</span>
+      <span class="tag crit">Crash</span><span class="tag repro">Reproduced</span>
+    </div>
+    <div class="ev">
+      <div class="prog">struct T { int v; ~T() { v = 0; } };
+int main() { T *z = 0; delete z; return 0; }</div>
+      <div class="pair">
+        <div class="side want"><span class="k">clang -std=c++11</span><span class="v">no-op, rc=0</span></div>
+        <div class="side got"><span class="k">cxx1</span><span class="v">SIGSEGV, rc=139</span></div>
+      </div>
+    </div>
+    <p class="why">[expr.delete]/2: deleting a null pointer has no effect. The delete-expression emits the destructor call — or the vtable load, for a virtual destructor — with no null guard at all. <code>delete p;</code> on a pointer that may be null is ordinary code.</p>
+    <p class="site"><b>src/parser/ParserExpr.cpp:2932</b> onwards</p>
+  </div>
+
+  <div class="finding high">
+    <div class="f-head">
+      <span class="fid">S-07</span>
+      <span class="f-title">A virtual call inside a base destructor reaches the derived override</span>
+      <span class="tag high">Wrong call</span><span class="tag repro">Reproduced</span>
+    </div>
+    <div class="ev">
+      <div class="prog">struct A { virtual int f() { return 1; } virtual ~A() { print(f()); } };
+struct B : A { int f() { return 2; } ~B() {} };
+int main() { B b; }</div>
+      <div class="pair">
+        <div class="side want"><span class="k">clang -std=c++11</span><span class="v">1</span></div>
+        <div class="side got"><span class="k">cxx1</span><span class="v">2</span></div>
+      </div>
+    </div>
+    <p class="why">Constructors re-store the vptr as each level runs, and that direction is correct. Destructors never store it, so during <code>~A</code> the object still claims to be a <code>B</code> and a derived override runs against a partially destroyed object.</p>
+    <p class="site"><b>src/parser/ParserClass.cpp:147</b> — the vptr helper the destructor path never calls</p>
+  </div>
+
+  <div class="finding high">
+    <div class="f-head">
+      <span class="fid">S-08</span>
+      <span class="f-title">Comparisons yield <span class="mono">int</span>, and hex literals skip <span class="mono">unsigned int</span></span>
+      <span class="tag high">Type system</span><span class="tag repro">Reproduced</span>
+    </div>
+    <div class="ev">
+      <div class="prog">sizeof(1 == 1)          // bool in C++, int here
+sizeof(0x80000000)      // [lex.icon]: hex goes int -&gt; unsigned int -&gt; long
+0xFFFFFFFF == -1        // true in C++11</div>
+      <div class="pair">
+        <div class="side want"><span class="k">clang -std=c++11</span><span class="v">1  4  true</span></div>
+        <div class="side got"><span class="k">cxx1</span><span class="v">4  8  false</span></div>
+      </div>
+    </div>
+    <p class="why">Two independent faults with the same reach. Every comparison and logical operator stamps <code>int</code> on its result, so overloading on <code>bool</code> versus <code>int</code> picks the wrong function and <code>auto b = (1==2)</code> gives an int. Separately, one <code>fits()</code> ladder serves every radix, so hex and octal literals never pass through <code>unsigned int</code> — which changes the signedness of comparisons written against masks.</p>
+    <p class="site"><b>ParserExpr.cpp:230, 2391</b>, <b>ParserOperator.cpp:257, 273</b>; literals at <b>ParserExpr.cpp:1360</b></p>
+  </div>
+
+  <div class="finding high">
+    <div class="f-head">
+      <span class="fid">S-09</span>
+      <span class="f-title">Value-initialisation does not zero</span>
+      <span class="tag high">Uninitialised</span><span class="tag repro">Reproduced</span>
+    </div>
+    <div class="ev">
+      <div class="prog">struct P { int v; };
+int f(P p) { return p.v; }
+int main() { return f(P()); }</div>
+      <div class="pair">
+        <div class="side want"><span class="k">clang -std=c++11</span><span class="v">0</span></div>
+        <div class="side got"><span class="k">cxx1</span><span class="v">1 (stack residue)</span></div>
+      </div>
+    </div>
+    <p class="why">[dcl.init]/7: <code>P()</code> on a class with no user-provided constructor zero-initialises. cxx1 hands over whatever was on the stack, reproducibly and differently per call site. Not recorded in CONFORMANCE.md, which exists for exactly this category.</p>
+    <p class="site">Reviewer-confirmed at a second call shape; reproduced here</p>
+  </div>
+
+  <div class="finding high">
+    <div class="f-head">
+      <span class="fid">S-10</span>
+      <span class="f-title">A default argument leaks from one function onto the next one declared</span>
+      <span class="tag high">Wrong call</span><span class="tag repro">Reproduced</span>
+    </div>
+    <div class="ev">
+      <div class="prog">int g(int a);
+int g(int a = 5) { return a; }     // legal C++: adds a default on redeclaration
+int h(int b) { return b * 10; }
+int main() { return h(); }          // h takes no default — this is an error</div>
+      <div class="pair">
+        <div class="side want"><span class="k">clang -std=c++11</span><span class="v">rejects h()</span></div>
+        <div class="side got"><span class="k">cxx1</span><span class="v">50</span></div>
+      </div>
+    </div>
+    <p class="why">The redeclaration path clears the pending <code>noexcept</code> but neither stores nor clears the pending default arguments, so the next function declared inherits them. <code>g</code>'s default is dropped where it belongs and re-read as <code>h</code>'s token stream where it does not.</p>
+    <p class="site"><b>src/parser/ParserClass.cpp:2058</b> (returns without clearing <code>pendingDefaults_</code>)</p>
+  </div>
+
+  <p class="section-note" style="margin-top:1.5rem">Four more in this class are reviewer-confirmed and not re-run here: <strong>goto past an initialisation</strong> is accepted and then destroys a never-constructed object; <strong>narrowing in list-initialisation</strong> is silently truncated (<code>char c = {300}</code> gives 44); an lvalue against <code>f(int)</code> and <code>f(const int &amp;)</code> is <strong>ambiguous in C++11</strong> and cxx1 quietly picks one; and <code>const S s;</code> for a POD with no user constructor is accepted where C++11 requires an initialiser.</p>
+</section>
+
+<section>
+  <h2><span class="num">03</span>ABI divergence and code generation</h2>
+  <p class="section-note">Where cxx1 is self-consistent but disagrees with the platform — visible only when its objects meet someone else's, which is the whole premise of a compiler that ships no standard library.</p>
+
+  <div class="finding crit">
+    <div class="f-head">
+      <span class="fid">A-01</span>
+      <span class="f-title">On x86_64-windows, <span class="mono">this</span> and the hidden return pointer are passed in the wrong order</span>
+      <span class="tag crit">ABI break</span><span class="tag med">Reviewer-confirmed</span>
+    </div>
+    <p class="why">For a member function returning a struct through the hidden pointer, cl and clang-msvc pass <code>this</code> in RCX and the sret pointer in RDX. cxx1 reserves integer slot 0 for sret ahead of every parameter including <code>this</code>, so it passes them the other way round — on both sides of the call, which is why nothing inside cxx1 notices. Any link against cl-compiled code is silently wrong. The Itanium targets are correct.</p>
+    <p class="site"><b>src/backend/X86_64Linux.cpp:838, 977, 1371</b> — needs the Microsoft order when <code>abi_.positional</code></p>
+  </div>
+
+  <div class="finding crit">
+    <div class="f-head">
+      <span class="fid">A-02</span>
+      <span class="f-title">A vtable references an implicit destructor that is never emitted, and the program does not link</span>
+      <span class="tag crit">Link failure</span><span class="tag repro">Reproduced</span>
+    </div>
+    <div class="ev">
+      <div class="prog">struct B { virtual ~B(); };  B::~B() {}
+struct D : B { };                       // implicit ~D
+int main() { B *p = new D; delete p; return 0; }</div>
+      <div class="pair">
+        <div class="side want"><span class="k">clang -std=c++11</span><span class="v">links, runs</span></div>
+        <div class="side got"><span class="k">cxx1</span><span class="v">symbol not found</span></div>
+      </div>
+    </div>
+    <p class="why">D's vtable points at <code>~D</code>'s two forms, but nothing in the source <em>names</em> <code>~D</code>, so the used flag never fires and no body is emitted. A vtable slot is a use; it is not counted as one. Single translation unit, whole-program compile — this is rung 4 failing at link.</p>
+    <p class="site">Emission gap rather than an ABI question; found on all three targets</p>
+  </div>
+
+  <div class="finding high">
+    <div class="f-head">
+      <span class="fid">A-03</span>
+      <span class="f-title">Bitfield layout follows Itanium rules on Windows, and zero-width bitfields match no ABI anywhere</span>
+      <span class="tag high">Layout</span><span class="tag med">Reviewer-confirmed</span>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Declaration</th><th>cxx1</th><th>cl / clang-msvc</th></tr></thead>
+        <tbody>
+          <tr><td class="mono-cell">{int a:3; char b:2;}</td><td class="mono-cell">4</td><td class="mono-cell">8</td></tr>
+          <tr><td class="mono-cell">{char a:7; int b:25;}</td><td class="mono-cell">4</td><td class="mono-cell">8</td></tr>
+          <tr><td class="mono-cell">{long long a:33; int b:31;}</td><td class="mono-cell">8</td><td class="mono-cell">16</td></tr>
+          <tr><td class="mono-cell">{char a; int :0; char b;}</td><td class="mono-cell">8</td><td class="mono-cell">2 (Itanium says 5)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="why">One shared layout serves all three targets. MSVC never merges bitfields of different declared types and sizes the unit by the declared type; the Itanium answers match clang exactly, so this is Windows-only — except the zero-width row, which matches neither ABI on any target.</p>
+    <p class="site"><b>src/parser/ParserType.cpp</b> — the bitfield walk</p>
+  </div>
+
+  <div class="finding high">
+    <div class="f-head">
+      <span class="fid">A-04</span>
+      <span class="f-title">Converting a large <span class="mono">double</span> to <span class="mono">unsigned long long</span> is a bare signed convert on both x86 targets</span>
+      <span class="tag high">Wrong value</span><span class="tag med">Reviewer-confirmed</span>
+    </div>
+    <div class="ev">
+      <div class="pair">
+        <div class="side want"><span class="k">clang, and cxx1 on arm64</span><span class="v">12000000000000000000</span></div>
+        <div class="side got"><span class="k">cxx1 on x86 targets</span><span class="v">9223372036854775808</span></div>
+      </div>
+    </div>
+    <p class="why"><code>cvttsd2si</code> with no compensation for values at or above 2<sup>63</sup>. arm64 uses <code>fcvtzu</code> and is right; the MASM backend shares the affected Walker, so Windows is wrong too. The reverse direction already has its halving trick — this is its missing mirror.</p>
+    <p class="site"><b>src/backend/X86_64Linux.cpp:641</b></p>
+  </div>
+
+  <div class="finding high">
+    <div class="f-head">
+      <span class="fid">A-05</span>
+      <span class="f-title">An empty class argument consumes a register that Apple's ABI says to ignore</span>
+      <span class="tag high">ABI break</span><span class="tag repro">Reproduced</span>
+    </div>
+    <div class="ev">
+      <div class="prog">struct Empty { };
+int take(Empty e, int x) { return x; }   // compiled by clang
+take(e, 42)                              // called from cxx1-compiled code</div>
+      <div class="pair">
+        <div class="side want"><span class="k">both clang</span><span class="v">42</span></div>
+        <div class="side got"><span class="k">cxx1 caller</span><span class="v">828375040</span></div>
+      </div>
+    </div>
+    <p class="why">Self-consistent within cxx1 — compile both sides with it and you get 42 — so only a mixed link exposes it. The SysV backend fixed exactly this rule for returns, and its comment says arm64 "classif[ies] differently and w[as] unaffected". It was affected, on the parameter side.</p>
+    <p class="site"><b>src/backend/Arm64Darwin.cpp:125</b> — <code>planFor</code> has no empty case</p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">04</span>Defects in the C++14 source</h2>
+  <p class="section-note">The compiler's own correctness, as opposed to the language it accepts. All four suites pass under an ASan+UBSan build with no reports, so each of these lives just off the tested paths.</p>
+
+  <div class="finding crit">
+    <div class="f-head">
+      <span class="fid">C-01</span>
+      <span class="f-title">A <span class="mono">Signature &amp;</span> into <span class="mono">functions_</span> dangles across a default-argument re-parse</span>
+      <span class="tag crit">Use after free</span><span class="tag repro">Reproduced</span>
+    </div>
+    <div class="ev">
+      <div class="prog">template &lt;class T&gt; T id(T v) { return v; }
+int f(int a, int b = id(7)) { return a + b; }
+int main() { return f(1) == 8 ? 0 : 1; }</div>
+      <div class="pair">
+        <div class="side want"><span class="k">clang -std=c++11</span><span class="v">compiles, rc=0</span></div>
+        <div class="side got"><span class="k">cxx1</span><span class="v">'' has no default
+for parameter 3</span></div>
+      </div>
+    </div>
+    <p class="why">Applying a default argument re-parses its tokens. If that expression instantiates a function template or builds a lambda, <code>functions_</code> reallocates and the reference the caller still holds is freed memory — the diagnostic above is reading it, which is why it names an empty function and a third parameter that does not exist. The reviewer's ASan build reports heap-use-after-free on the same input. The repo fixed this identical bug once, at one site, and wrote down the lesson; roughly ten call sites still hold the reference.</p>
+    <p class="site">Read at <b>ParserOverload.cpp:521</b>, freed at <b>ParserTemplate.cpp:796</b>. Sites: <b>ParserExpr.cpp:118, 160, 663, 1200, 1428, 1563, 2877, 3106</b>, <b>ParserOperator.cpp:463</b>, <b>ParserClass.cpp:17</b>. Fix: take the <code>Signature</code> by value.</p>
+  </div>
+
+  <div class="finding high">
+    <div class="f-head">
+      <span class="fid">C-02</span>
+      <span class="f-title">An array's size overflows a signed <span class="mono">int</span>, and the assembler is handed a negative length</span>
+      <span class="tag high">Invalid output</span><span class="tag repro">Reproduced</span>
+    </div>
+    <div class="ev">
+      <div class="prog">static int a[600000000];</div>
+      <div class="pair">
+        <div class="side want"><span class="k">clang</span><span class="v">.zero 2400000000</span></div>
+        <div class="side got"><span class="k">cxx1</span><span class="v">.zero -1894967296</span></div>
+      </div>
+    </div>
+    <p class="why">Sizes are computed in <code>int</code>. UBSan names it directly; the shipped <code>-O2</code> binary emits the negative literal without complaint. A length above 2<sup>31</sup> truncates in the cast as well.</p>
+    <p class="site"><b>src/Type.cpp:24</b> — compute in <code>long long</code>, and diagnose an over-large object where it is declared</p>
+  </div>
+
+  <div class="finding high">
+    <div class="f-head">
+      <span class="fid">C-03</span>
+      <span class="f-title">The host's <span class="mono">long double</span> decides the target's x87 constants</span>
+      <span class="tag high">Host-dependent</span><span class="tag med">Reviewer-confirmed</span>
+    </div>
+    <p class="why">Literals are parsed with <code>strtold</code> into a host <code>long double</code> and the 80-bit encoding is derived from it. On this arm64 Mac, where <code>long double</code> is a double, <code>long double x = 0.1L;</code> emitted for x86_64-linux gets significand <code>0xCCCCCCCCCCCCD000</code> where the correct value is <code>0xCCCCCCCCCCCCCCCD</code>. A Linux-built cxx1 emits it exactly. The same source therefore produces different objects depending on which machine built the compiler — cross-target divergence relocated into the front end, where three-box verification cannot see it, because each box checks its own build.</p>
+    <p class="site"><b>src/Lexer.cpp:209</b>, <b>src/Type.cpp:332</b>, and <code>foldDouble</code> in <b>ParserInit.cpp</b></p>
+  </div>
+
+  <div class="finding med">
+    <div class="f-head">
+      <span class="fid">C-04</span>
+      <span class="f-title"><span class="mono">long</span> narrowings make the front end behave differently on the Windows build</span>
+      <span class="tag med">Host-dependent</span><span class="tag med">Reviewer-confirmed</span>
+    </div>
+    <p class="why">Array lengths and the preprocessor's <code>#if</code> evaluator use <code>long</code>, which is 32-bit under cl. <code>char a[0x100000001]</code> truncates to <code>char a[1]</code> on the Windows-built compiler and is accepted at full width on the other two. Surrounding code already uses <code>long long</code>.</p>
+    <p class="site"><b>ParserType.cpp:1076, 495, 571</b>; <b>Preprocessor.cpp:517</b></p>
+  </div>
+
+  <p class="section-note" style="margin-top:1.5rem">Two suspected items, reasoned but not reproduced: <code>Trial</code> restores <code>at_</code>, <code>classStack_</code> and <code>patternOnly_</code> but not <code>angleSplit_</code>, which a substitution failure between the halves of a <code>&gt;&gt;</code> could leave stale — a two-line fix that is correct regardless; and a diagnostic position written to the first overload rather than the one being defined.</p>
+</section>
+
+<section>
+  <h2><span class="num">05</span>The written record</h2>
+  <p class="section-note">CLAUDE.md is the design record and the reason this project can be picked up cold. A reviewer sampled ~35 of its concrete claims by running them, and 70 of the 445 diagnostics by writing the program each one describes.</p>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Where</th><th>Claims</th><th>Actually</th></tr></thead>
+      <tbody>
+        <tr><td class="mono-cell">CLAUDE.md:269</td><td>rung 7: "every C++11 capture included"</td><td><code>[=, &amp;y]</code> and <code>[&amp;, x]</code> are both refused; and a capture-default does not capture <code>this</code>, so <code>[=]</code> in a member function cannot see a member</td></tr>
+        <tr><td class="mono-cell">CLAUDE.md:3043</td><td><code>return P(1);</code> is refused</td><td>Compiles and runs. The gap closed; two sections disagree with each other</td></tr>
+        <tr><td class="mono-cell">CLAUDE.md:267</td><td>rung 4 virtual functions done</td><td>Pure virtual <code>= 0</code> does not parse — no abstract class can be written, and this appears in neither document</td></tr>
+        <tr><td class="mono-cell">CLAUDE.md:2364</td><td>the implicit copy "is deleted" when a move is declared</td><td>It is undeclared, and the byte path answers instead — finding S-02</td></tr>
+        <tr><td class="mono-cell">CONFORMANCE:87</td><td>an object cannot hide a class name</td><td>The declaration is accepted now; what fails is any later use of the object</td></tr>
+        <tr><td class="mono-cell">README:29</td><td>a foreign target "implies <code>-S</code>"</td><td>It requires <code>-S</code> and exits 1 without it</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="section-note" style="margin-top:1.5rem">On the diagnostics, two patterns rather than a list. <strong><code>int f(auto x)</code> blames C++14</strong>, but a deduced function parameter is C++20 — clang refuses it at <code>-std=c++17</code> too. It is the same disease as the three misattributions fixed this week, and the only reason it went unnoticed is that it shares its message with the lambda case, where C++14 is right. And <strong><code>notYetSupported</code> still lists features that have landed</strong>: a template inside a function says "'template' is not supported yet", and so do <code>friend</code> and <code>virtual</code> in the wrong position. In each the real fault is placement, and the reader is told the feature does not exist. CLAUDE.md records fixing exactly this for <code>operator</code>; the same fix is owed to at least three more.</p>
+</section>
+
+<section>
+  <h2><span class="num">06</span>Why a green suite proves less than it looks</h2>
+  <p class="section-note">The mutation pass answers this with evidence: plant a deliberate bug in a copy of the tree, rebuild, and see whether <code>make test</code> notices. Nine were planted. <strong>Four survived every suite.</strong></p>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Planted bug</th><th>Caught by</th></tr></thead>
+      <tbody>
+        <tr><td>Unsigned division emitted as signed, <strong>on the host target</strong></td><td class="mono-cell">SURVIVED</td></tr>
+        <tr><td>Windows prologue writes a garbage frame pointer in <strong>every function</strong></td><td class="mono-cell">SURVIVED</td></tr>
+        <tr><td>Constant fold of <code>&lt;</code> ignores unsignedness</td><td class="mono-cell">SURVIVED</td></tr>
+        <tr><td>Constant fold of a signed <code>&gt;&gt;</code> made logical</td><td class="mono-cell">SURVIVED</td></tr>
+        <tr><td>Itanium <code>int</code> mangled <code>l</code> instead of <code>i</code></td><td class="mono-cell">names.sh only</td></tr>
+        <tr><td>Const-qualification ranked equal to identity</td><td class="mono-cell">overload.sh only</td></tr>
+        <tr><td><code>delete</code> skips the destructor</td><td class="mono-cell">one case</td></tr>
+        <tr><td>Destruction order forward instead of reverse</td><td class="mono-cell">run.sh, 4 cases</td></tr>
+        <tr><td>Itanium vptr header 2 words &rarr; 1</td><td class="mono-cell">run.sh, 7 cases</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="section-note" style="margin-top:1.5rem">Each survivor was proved a real bug rather than an equivalent mutant. The unsigned-division one prints <code>18446744073709551615</code> where clang prints <code>9223372036854775807</code> — wrong code on the <em>host</em> target, with all four suites green, because no case in the tree performs runtime unsigned division. The Windows one leaves <code>mov rbp, rax</code> visible in the emitted assembly; <code>emit.sh</code> checks that the compiler exited 0 and a file appeared, so every Windows function can be broken and the suite stays green.</p>
+
+  <p class="section-note">Two more results matter as much as the survivors. The mangling mutant was caught by <code>names.sh</code> alone and the ranking mutant by <code>overload.sh</code> alone — and both of those suites <code>exit 0</code> when clang is absent, which is the state of the Linux box. A green <code>make test</code> there tested neither the ABI nor overload resolution and said nothing about it.</p>
+
+  <ul class="plain">
+    <li><strong>Every test writes <code>virtual</code> on its overrides</strong>, which is why S-03 has never fired. The suite tests the language as the author writes it, not as the standard permits it.</li>
+    <li><strong>No case counts constructors and destructors</strong> — deliberately, because elision is permitted and the oracles differ. Sound as a decision, and exactly why S-01 and S-02 are invisible: a double destruction looks like nothing unless someone counts.</li>
+    <li><strong><code>run.sh</code> ignores the test binary's exit status</strong> — only stdout is diffed, so a case that prints its expected output and then crashes in a late destructor passes. Several cases end in <code>return &lt;expr&gt;</code> as though it were checked.</li>
+    <li><strong>The 425-file C corpus is referenced only from CLAUDE.md.</strong> No script in the tree runs it, which makes it indistinguishable from coverage while contributing none.</li>
+    <li><strong>Some invariants hang on a single case</strong>, and some <code>.error</code> files are byte-identical to each other, so a diagnostic that moves to the wrong construct with similar wording stays green.</li>
+    <li><strong>Three-box verification checks three builds of the compiler, not one compiler on three machines</strong> — C-03 produces different output per build host and passes on all three.</li>
+  </ul>
+</section>
+
+<section>
+  <h2><span class="num">07</span>What I would fix, in this order</h2>
+  <ol class="steps">
+    <li><div><strong>The two double-frees, S-01 and S-02.</strong><p>They are the only findings that corrupt a correct program's memory, they are both in the copy/move path that rung 7.4 claims to have finished, and the second one also accepts a program C++11 rejects. Add cases that count constructors and destructors — the reason not to count them applies to elision, not to the total.</p></div></li>
+    <li><div><strong>C-01, the use-after-free in the compiler.</strong><p>One-line fix per site: take the <code>Signature</code> by value. The repo already learned this lesson once; finishing it is cheaper than meeting it a third time.</p></div></li>
+    <li><div><strong>S-03 and S-05 — the two that make the object model quietly wrong.</strong><p>A keyword-less override of a second base, and POD base padding. Both are layout- or dispatch-level, both affect all targets, and both are the kind of thing another compiler's object would disagree with.</p></div></li>
+    <li><div><strong>S-04 and A-04, the target-specific codegen faults.</strong><p>Tail bytes and the unsigned conversion. Neither can be caught by any suite that runs only on the host, so a way of running the other two targets — even a slow emulator on the Linux box — buys more than the fixes do.</p></div></li>
+    <li><div><strong>Then the type-system corrections, S-08 and S-09.</strong><p><code>bool</code> results, the hex literal ladder, and value-initialisation. Each is small on its own and each changes what overload resolution picks, so they are worth doing together and re-running the overload suite after.</p></div></li>
+    <li><div><strong>Last, the record.</strong><p>Six stale claims and two diagnostic patterns. Cheap, and the project's whole method depends on CLAUDE.md being true — every finding above was found faster because the rest of it is.</p></div></li>
+  </ol>
+</section>
+
+<section>
+  <h2><span class="num">08</span>What held</h2>
+  <p class="section-note">An audit that only lists faults misrepresents the thing it audited. These were probed hard and came back clean.</p>
+  <ul class="plain">
+    <li><strong>The C++11 boundary.</strong> Fifteen C++14 forms tested; every one refused. The <code>constexpr</code> member function is implicitly const, which is C++11's rule and not C++14's, and cxx1 answers C++11 on both halves — accepting the call C++14's clang refuses and refusing the mutation it accepts.</li>
+    <li><strong>Name mangling, both ABIs.</strong> Namespaces, nested classes, every fundamental type, function and member pointers, operators, constructors and destructors, template functions and classes, back-reference saturation past ten types, vtable symbols — matched against clang for all three ABIs.</li>
+    <li><strong>Calling conventions, in the large.</strong> SysV eightbyte classification including mixed lanes, arm64 HFAs and their spill, Apple's packed stack arguments, variadics on all three targets, the 32-byte shadow space and 16-byte call alignment on Windows.</li>
+    <li><strong>Cross-compiler interop on Darwin</strong> for struct passing and returns at 4–24 bytes, non-trivial classes, vtables built by one compiler and read through the other, and <code>__cxa_</code> throw/catch of fundamental types in both directions.</li>
+    <li><strong>Arithmetic.</strong> Integer promotions, the usual arithmetic conversions, shifts, ternary typing, NaN comparison semantics on all three ISAs, bitfield runtime semantics including 40-bit fields.</li>
+    <li><strong>The C++14 source's discipline</strong>, where it is deliberate: no C++17-isms, every <code>dynamic_cast</code> guarded, every token-skip loop bounded, constant folding written with care around overflow and division by zero, and RAII unbinding in the template replay paths — which is what makes C-01's sites stand out as stragglers rather than as the norm.</li>
+  </ul>
+</section>
+
+<footer>
+  <span>Reviewers: five Fable 5 agents, one each on C++11 conformance, the C++14 implementation, backends and ABI, the written record, and test coverage by mutation. Each worked from its own copy of the tree; the repository was read-only throughout and is byte-identical to HEAD.</span>
+  <span>Every "Reproduced" finding was re-run first-hand against clang on this machine. Counts in the summary band cover confirmed findings only; suspected items are excluded and marked where they appear.</span>
+</footer>
+
+</div>

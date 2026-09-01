@@ -478,6 +478,7 @@ int Parser::declare(const std::string &name, const Type *type, std::size_t pos) 
 
     int offset = allocateFrameSlot(type);
     locals_.push_back(Local{ name, offset, type, false, std::string() });
+    locals_.back().isParameter = inParams_;
     // The debug record describes the storage, which for a reference is the
     // pointer it really is. DWARF has a tag for a reference and this does not
     // use it yet.

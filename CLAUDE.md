@@ -275,9 +275,9 @@ x86_64-linux, x86_64-windows and arm64-darwin. Suites at the last commit:
 
 | | run | emit | names vs clang | overload | names vs cl |
 | --- | --- | --- | --- | --- | --- |
-| Mac | 201 | 295 | 99 | 26 | - |
-| Linux | 201 | 295 | - | - | - |
-| Windows | 199 | - | - | - | 80 |
+| Mac | 204 | 301 | 101 | 26 | - |
+| Linux | 204 | 301 | - | - | - |
+| Windows | 202 | - | - | - | 82 |
 
 **Two of the four suites only ever run on one machine.** `names.sh` and
 `overload.sh` both ask clang, and the Linux box has no clang++ - they skip
@@ -1055,6 +1055,94 @@ path. `Parser::convert` builds `x != 0` and gives it type `bool`, which every
 backend already knows how to emit. This is the pattern to reach for again:
 where C++ adds a *conversion*, look for an existing operation to lower it to
 before adding a case to three code generators.
+
+## The audit of 2026-09-01, and what it is for
+
+**`docs/audit-2026-09-01.html` is a frozen record and is not to be edited as
+things are fixed.** It says what five reviewers found in the tree at 29f8dfb,
+with the program and the two outputs for each finding, and its value is that
+it is dated: a later reader can tell what was true then from what is true now
+only if nobody quietly brings it up to date. Fixes are recorded *here*, in the
+table below, and the report stays as written. A second audit gets a second
+file beside it rather than an edit to this one.
+
+**What it was.** Five reviewers, one each on C++11 conformance, the C++14
+source, the backends and ABI, the written record, and test coverage by
+mutation. Every reviewer worked from its own copy of the tree with clang as
+the oracle - `clang++ -std=c++11 -pedantic-errors` for the language,
+`-target x86_64-pc-windows-msvc` for Microsoft names. Twenty-three defects
+were confirmed under a suite that was green on all three boxes, seventeen of
+them reproduced a second time before being written down.
+
+**The one sentence worth carrying forward:** the suites were green and the
+compiler was not, and the mutation pass says why with evidence - nine
+deliberate bugs planted in a copy of the tree, and **four survived every
+suite**, including unsigned division emitted as signed *on the host target*
+and a Windows prologue that writes a garbage frame pointer into every
+function.
+
+| | Finding | State |
+| --- | --- | --- |
+| S-01 | Returning a by-value parameter elides a copy [class.copy]/31 forbids; one object destroyed twice | **fixed** 2026-09-01 |
+| S-02 | A move-only class is copied bytewise and its deleted copy accepted | **fixed** 2026-09-01 |
+| S-03 | An override of a non-first base written without `virtual` dispatches statically | open |
+| S-04 | By-value aggregates lose their tail bytes on arm64-darwin and x86_64-linux | open |
+| S-05 | Tail padding of a POD base is reused; `sizeof` wrong on all three | open |
+| S-06 | `delete` of a null pointer runs the destructor | open |
+| S-07 | A virtual call in a base destructor reaches the derived override | open |
+| S-08 | Comparisons yield `int`; hex literals skip `unsigned int` | open |
+| S-09 | Value-initialisation does not zero | open |
+| S-10 | A default argument leaks onto the next function declared | open |
+| A-01 | `this` and the sret pointer are swapped against cl on x86_64-windows | open |
+| A-02 | A vtable references an implicit destructor that is never emitted | open |
+| A-03 | Bitfield layout is Itanium's on Windows; zero-width fields match no ABI | open |
+| A-04 | `double` to `unsigned long long` is a bare signed convert on x86 | open |
+| A-05 | An empty class argument consumes a register on arm64-darwin | open |
+| C-01 | A `Signature &` into `functions_` dangles across a default-argument re-parse | open |
+| C-02 | An array's size overflows a signed `int`; the assembler is handed a negative length | open |
+| C-03 | The host's `long double` decides the target's x87 constants | open |
+| C-04 | `long` narrowings make the front end behave differently on the Windows build | open |
+
+Four more silent wrong answers are recorded in the report and not in this
+table because they were confirmed by a reviewer and not re-run here: `goto`
+past an initialisation, narrowing in list-initialisation, an ambiguity
+[over.ics.rank] requires that is silently resolved, and `const S s;` for a POD.
+
+### What S-01 and S-02 were, and why they are one fix in two places
+
+**The return path never called a copy constructor at all.** It moved the bytes
+into the caller's storage and elided the *destructor* of the source to keep
+the tally right - which is correct for exactly one case, an automatic object
+of the function, where [class.copy]/31 also lets the copy itself go. For
+anything else it left the caller holding a byte copy no constructor had made
+and that the source would also destroy: `T pass(T t) { return t; }` built two
+objects and destroyed three, and `return *p;` did the same. The standard
+excludes a parameter from that elision *by name*, and the reason is exactly
+this: the caller made the argument and the caller destroys it.
+
+So `Local` knows whether it is a parameter now, and a return of a glvalue this
+function does not own builds the copy into a slot of its own and elides
+*that*. One constructor runs, its bytes become the caller's object, nothing
+destroys it here - the copy the standard asks for plus the elision it allows,
+which is what clang emits.
+
+**The move-only half is the same shape one table over.** `copyConstructorOf`
+answering null means two different things - a class that is trivially
+copyable, and a class whose copy [class.copy]/7 *deleted* because it declared
+a move constructor - and the byte path could not tell them apart. It asks
+`moveConstructorOf` first now: with a move constructor in the way the
+initialisation goes through overload resolution, which picks the move for an
+xvalue; and an lvalue is refused by name, because the deletion is what the
+reader needs to be told rather than a resolution failure that would name
+something else.
+
+**The cases pin the invariant, not the count.** CLAUDE.md rules out counting
+constructor calls because clang elides at -O0 where cl does not, and that
+rule is right - so `return-copy-balance.cpp` and `move-only.cpp` count
+constructions and destructions and print whether the two agree. Elision moves
+both numbers together and cannot change the answer; a double free is exactly
+what makes them differ. That is the shape any future case about copies wants,
+and it is why nothing in a 201-case suite noticed either bug.
 
 ## The line at C++14, and the refusals that hold it
 
