@@ -1637,7 +1637,10 @@ ExprPtr Parser::templateCall(Program *program) {
     // else will mark it - and a specialization is defined only where it was
     // chosen. Saying so here is what makes this call get a body.
     functions_[which].used = true;
-    const Signature &sig = functions_[which];
+    // A copy, not a reference: `sig.params` is handed to `completeCall` and
+    // read for the length of it, and what that call does with the arguments
+    // can declare a function and move `functions_` out from under it.
+    const Signature sig = functions_[which];
     return completeCall(sig.name, sig.symbol, nullptr, sig.returns, sig.params,
                         sig.variadic, pos, std::move(callArgs));
 }

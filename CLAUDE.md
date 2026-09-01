@@ -275,9 +275,9 @@ x86_64-linux, x86_64-windows and arm64-darwin. Suites at the last commit:
 
 | | run | emit | names vs clang | overload | names vs cl |
 | --- | --- | --- | --- | --- | --- |
-| Mac | 204 | 301 | 101 | 26 | - |
-| Linux | 204 | 301 | - | - | - |
-| Windows | 202 | - | - | - | 82 |
+| Mac | 205 | 304 | 102 | 26 | - |
+| Linux | 205 | 304 | - | - | - |
+| Windows | 203 | - | - | - | 82 |
 
 **Two of the four suites only ever run on one machine.** `names.sh` and
 `overload.sh` both ask clang, and the Linux box has no clang++ - they skip
@@ -1098,7 +1098,7 @@ function.
 | A-03 | Bitfield layout is Itanium's on Windows; zero-width fields match no ABI | open |
 | A-04 | `double` to `unsigned long long` is a bare signed convert on x86 | open |
 | A-05 | An empty class argument consumes a register on arm64-darwin | open |
-| C-01 | A `Signature &` into `functions_` dangles across a default-argument re-parse | open |
+| C-01 | A `Signature &` into `functions_` dangles across a default-argument re-parse | **fixed** 2026-09-01 |
 | C-02 | An array's size overflows a signed `int`; the assembler is handed a negative length | open |
 | C-03 | The host's `long double` decides the target's x87 constants | open |
 | C-04 | `long` narrowings make the front end behave differently on the Windows build | open |
@@ -1107,6 +1107,49 @@ Four more silent wrong answers are recorded in the report and not in this
 table because they were confirmed by a reviewer and not re-run here: `goto`
 past an initialisation, narrowing in list-initialisation, an ambiguity
 [over.ics.rank] requires that is silently resolved, and `const S s;` for a POD.
+
+### C-01, and why the fix is at the two doors rather than at twelve
+
+**`resolveOverload` handed back a reference into `functions_`.** That vector
+grows whenever a function is declared, and the caller's next move is often to
+parse something - a default argument, a conversion - that can declare one. The
+reference was then reading freed memory, and so was `applyDefaults`, which
+re-reads `f.params` and `f.name` on every turn of a loop whose body is a
+parse.
+
+Twelve call sites held that reference and a dozen more hold one straight out
+of `functions_`. Editing twelve sites leaves the thirteenth, so **both entry
+points hand back a copy now**: `resolveOverload` returns a `Signature` by
+value, and `applyDefaults` takes one by value. Every existing
+`const Signature &sig = resolveOverload(...)` binds to a temporary and is safe
+without being touched, and the compiler found the one site that had taken the
+*address* of the result - a base's constructor in a mem-initialiser list,
+which now holds its own copy.
+
+**The same bug was found once before**, in `localOwnerOf`'s caller, and fixed
+there by taking a copy with a comment saying why. This is that comment applied
+at the source instead of at one of its readers.
+
+**It never crashed; it read whatever the reallocation left behind.** The
+symptom was a diagnostic naming a function with no name and a parameter that
+does not exist - `'' has no default for parameter 3`, for a function of two -
+which is a freed `Signature` being printed. An ASan build reports
+heap-use-after-free on the same input; the same build is clean on it now, and
+on the whole 205-case suite. The negative control matters as much: that build
+still reports C-02's signed overflow, so the instrumentation is live and the
+clean result means something.
+
+**And a second fault the case's linkage names exposed.** [dcl.fct.default]/5
+reads a default argument in the scope of its *declaration*, and
+`applyDefaults` already hides the caller's locals to honour that - but not the
+enclosing function, so a lambda written in a default argument was given the
+closure type of whichever function happened to call. clang names one written
+at namespace scope `_ZNK3$_0clEi`; cxx1 wrote `_ZZ4mainENK3$_0clEi`. The
+function is hidden and restored now alongside the locals, and both Itanium
+targets agree with clang name for name. Windows keeps a recorded difference -
+clang-msvc spells a namespace-scope closure `<lambda_0>` and encodes its
+deduced return as `@` where cxx1 writes `$_0` and the deduced type - noted on
+the case.
 
 ### What S-01 and S-02 were, and why they are one fix in two places
 

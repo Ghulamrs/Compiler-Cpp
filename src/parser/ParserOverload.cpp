@@ -506,7 +506,7 @@ std::size_t Parser::leastArguments(const Signature &f) const {
 // globals, enumerators and static members - so hiding them is what the
 // declaration's scope actually is from here, and it stops a local of the same
 // name in the *calling* function from quietly capturing the default.
-void Parser::applyDefaults(const Signature &f, std::vector<ExprPtr> &args,
+void Parser::applyDefaults(Signature f, std::vector<ExprPtr> &args,
                            std::size_t pos) {
     if (args.size() >= f.params.size()) return;
     std::map<std::string, std::vector<std::size_t> >::const_iterator it =
@@ -518,6 +518,18 @@ void Parser::applyDefaults(const Signature &f, std::vector<ExprPtr> &args,
     hidden.swap(locals_);
     std::vector<std::size_t> starts;
     starts.swap(scopeStarts_);
+    // **The enclosing function is hidden for the same reason the locals
+    // are.** [dcl.fct.default]/5 reads a default argument in the scope of the
+    // *declaration*, and these tokens are being replayed at a call that may
+    // be anywhere. Anything the expression declares belongs where the default
+    // was written, not where it was used - which for a lambda is its closure
+    // type: clang names one written at namespace scope `_ZNK3$_0clEi`, and
+    // without this cxx1 wrapped it in whichever function happened to call,
+    // `_ZZ4mainENK3$_0clEi`.
+    const std::string outerFunction = currentFunction_;
+    const std::string outerFunctionName = currentFunctionName_;
+    currentFunction_.clear();
+    currentFunctionName_.clear();
     for (std::size_t i = args.size(); i < f.params.size(); i++) {
         if (i >= it->second.size() || it->second[i] == 0)
             src_.fail(pos, "'" + f.name + "' has no default for parameter " +
@@ -528,12 +540,14 @@ void Parser::applyDefaults(const Signature &f, std::vector<ExprPtr> &args,
     at_ = resume;
     locals_.swap(hidden);
     scopeStarts_.swap(starts);
+    currentFunction_ = outerFunction;
+    currentFunctionName_ = outerFunctionName;
 }
 
-const Parser::Signature &Parser::resolveOverload(const std::string &written,
-                                                 const std::vector<ExprPtr> &args,
-                                                 std::size_t pos,
-                                                 const Type *object) {
+Parser::Signature Parser::resolveOverload(const std::string &written,
+                                          const std::vector<ExprPtr> &args,
+                                          std::size_t pos,
+                                          const Type *object) {
     // An unqualified name inside a namespace names that namespace's function
     // if it has one - the enclosing scopes are tried from the innermost out,
     // then whatever a `using namespace` has opened.

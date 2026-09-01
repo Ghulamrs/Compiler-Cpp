@@ -2397,26 +2397,33 @@ void Parser::topLevel(Program &program) {
             std::vector<ExprPtr> chosenArgs;
             std::map<std::string, std::vector<ExprPtr> >::iterator named =
                 baseArgs.find(base->tag());
-            const Signature *chosen = nullptr;
+            // **Held by value, like everything else that comes out of
+            // overload resolution.** A pointer into `functions_` is a pointer
+            // into a vector that anything parsed after this can move.
+            Signature chosen;
+            bool found = false;
             if (building && named != baseArgs.end()) {
                 chosenArgs.swap(named->second);
-                chosen = &resolveOverload(key, chosenArgs, d.pos);
+                chosen = resolveOverload(key, chosenArgs, d.pos);
+                found = true;
             } else {
                 for (std::size_t k = 0; k < set->size(); k++)
-                    if (functions_[(*set)[k]].params.empty())
-                        chosen = &functions_[(*set)[k]];
+                    if (functions_[(*set)[k]].params.empty()) {
+                        chosen = functions_[(*set)[k]];
+                        found = true;
+                    }
             }
-            if (chosen == nullptr)
+            if (!found)
                 src_.fail(d.pos, "'" + base->tag() + "' has no constructor "
                                  "taking nothing - name one in the initialiser "
                                  "list, ': " + base->tag() + "(...)'");
 
-            std::string symbol = chosen->symbol;
+            std::string symbol = chosen.symbol;
             if (!target_.microsoftNames()) {
                 std::string sub;
                 if (building) {
                     const Type *fnType = types_.functionType(types_.get(Kind::Void),
-                                                             chosen->params,
+                                                             chosen.params,
                                                              false);
                     std::string why;
                     itaniumConstructorName(base->tag(), base, fnType, false,
@@ -2439,9 +2446,9 @@ void Parser::topLevel(Program &program) {
             args.push_back(std::move(me));
             std::vector<const Type *> params2;
             params2.push_back(basePtr);
-            for (std::size_t i = 0; i < chosen->params.size(); i++) {
+            for (std::size_t i = 0; i < chosen.params.size(); i++) {
                 args.push_back(std::move(chosenArgs[i]));
-                params2.push_back(chosen->params[i]);
+                params2.push_back(chosen.params[i]);
             }
             ExprPtr call = completeCall(base->tag(), symbol, nullptr,
                                         types_.get(Kind::Void), params2, false,

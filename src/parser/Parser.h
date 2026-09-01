@@ -968,7 +968,15 @@ private:
     // null for a free one. **A member function has an implicit object
     // parameter** - [over.match.funcs] - and it is ranked like any other,
     // which is the whole of what tells `get()` from `get() const`.
-    const Signature &resolveOverload(const std::string &name,
+    // **By value, and that is the fix rather than a style.** What this
+    // returns used to be a reference into `functions_`, and the caller then
+    // did something that parses - a default argument, an argument's own
+    // conversion - which can declare a function, grow that vector and move
+    // it. The reference was reading freed memory from there on. The same bug
+    // was found once before, in `localOwnerOf`'s caller, and fixed there by
+    // taking a copy; a dozen call sites had it, so the copy is made here
+    // instead where none of them can forget it.
+    Signature resolveOverload(const std::string &name,
                                      const std::vector<ExprPtr> &args,
                                      std::size_t pos,
                                      const Type *object = nullptr);
@@ -1107,7 +1115,10 @@ private:
     // The lowest number of arguments a call may give this function.
     std::size_t leastArguments(const Signature &f) const;
     // Fill in what the call left out, by re-reading each default expression.
-    void applyDefaults(const Signature &f, std::vector<ExprPtr> &args,
+    // By value for the same reason, and this one is the site that does the
+    // parsing: it re-reads the default argument's tokens, which is exactly
+    // what can grow `functions_` under a caller still holding a reference.
+    void applyDefaults(Signature f, std::vector<ExprPtr> &args,
                        std::size_t pos);
     void blockFunctionDeclaration(const Declared &d);
 
