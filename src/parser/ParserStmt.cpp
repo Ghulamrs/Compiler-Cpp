@@ -183,16 +183,28 @@ StmtPtr Parser::declarationBody() {
             // below - copy elision and the trivial-copy store - both reach
             // past `constructLocal`, which is where the rule otherwise lives.
             if (copyInit && args.size() == 1 && args[0]->type() != nullptr &&
-                args[0]->type()->unqualified() == d.type->unqualified())
-                if (const Signature *cc = copyConstructorOf(d.type->unqualified()))
-                    if (cc->isExplicit)
-                        src_.fail(d.pos, "'" + d.type->describe() + "' has an "
-                                         "'explicit' copy constructor, so it "
-                                         "will not be chosen for '" + d.name +
-                                         " = ...' - write '" +
-                                         d.type->describe() + " " + d.name +
-                                         "(...)'. The copy may well be elided, "
-                                         "and the rule is checked all the same");
+                args[0]->type()->unqualified() == d.type->unqualified()) {
+                // The constructor the rule checks is the one resolution would
+                // pick: the move for a source that is not an lvalue and has
+                // one to be picked, the copy otherwise. An explicit copy
+                // beside a plain move does not make `S b = make();`
+                // ill-formed - the move is chosen, and it is the move's
+                // explicit-ness that would matter.
+                const Signature *mc = moveConstructorOf(d.type->unqualified());
+                const Signature *sel = !isLvalue(*args[0]) && mc != nullptr
+                                     ? mc
+                                     : copyConstructorOf(d.type->unqualified());
+                if (sel != nullptr && sel->isExplicit)
+                    src_.fail(d.pos, "'" + d.type->describe() + "' has an "
+                                     "'explicit' " +
+                                     (sel == mc ? "move" : "copy") +
+                                     " constructor, so it "
+                                     "will not be chosen for '" + d.name +
+                                     " = ...' - write '" +
+                                     d.type->describe() + " " + d.name +
+                                     "(...)'. The copy may well be elided, "
+                                     "and the rule is checked all the same");
+            }
 
             int off = declare(d.name, d.type, d.pos);
 
@@ -231,7 +243,10 @@ StmtPtr Parser::declarationBody() {
             const bool sameClass =
                 args.size() == 1 && args[0]->type() != nullptr &&
                 args[0]->type()->unqualified() == d.type->unqualified();
-            if (mover != nullptr && sameClass && !args[0]->isXvalue() &&
+            // An lvalue is what the deleted copy would be asked to take; an
+            // xvalue moves, and so does a prvalue - `S d = make();` is a
+            // temporary and the move constructor is exactly what it is for.
+            if (mover != nullptr && sameClass && isLvalue(*args[0]) &&
                 copyConstructorOf(d.type->unqualified()) == nullptr)
                 src_.fail(d.pos, "'" + d.type->describe() + "' declares a move "
                                  "constructor, so its copy constructor is "
@@ -1343,6 +1358,7 @@ StmtPtr Parser::statementBody() {
         }
         ExprPtr value = endFullExpression(returnType_->isReference() ? expr()
                                                                   : decay(expr()));
+        bool returnedParameter = false;
         if (returnType_->isReference()) {
             value = bindReference(returnType_, std::move(value), pos,
                                   "this function's return type");
@@ -1352,6 +1368,25 @@ StmtPtr Parser::statementBody() {
                                "caller could read it");
         } else {
             checkAssignable(*value, returnType_, pos, "this function's return type");
+            // Does the operand name a by-value parameter of this function?
+            // One that arrived by address was lowered to a reference, so it
+            // reads back as `*slot` - the dereference is unwrapped here, and
+            // `byValueByAddress` is what tells it from a genuine `T &t` or
+            // `*p`, both of which name an object the caller owns and must be
+            // copied, not moved.
+            {
+                const Expr *named = value.get();
+                bool viaDeref = false;
+                if (const Unary *u = dynamic_cast<const Unary *>(named))
+                    if (u->op() == '*') { named = &u->operand(); viaDeref = true; }
+                if (const Var *v = dynamic_cast<const Var *>(named))
+                    if (v->isLocal())
+                        if (const Local *l = findLocal(v->name()))
+                            if (l->isParameter)
+                                returnedParameter = viaDeref
+                                                  ? l->byValueByAddress
+                                                  : !l->type->isReference();
+            }
             // **[class.copy]/31 again: returning by value copy-initializes the
             // caller's object**, so its copy constructor is selected and
             // checked even though the copy is elided a few lines below. A
@@ -1360,16 +1395,35 @@ StmtPtr Parser::statementBody() {
             // caller is looked at, which is the surprising half and the reason
             // it is checked here rather than at the call.
             if (returnType_->isStructOrUnion() && value->type() != nullptr &&
-                value->type()->unqualified() == returnType_->unqualified())
-                if (const Signature *cc = copyConstructorOf(returnType_->unqualified()))
-                    if (cc->isExplicit)
-                        src_.fail(pos, "'" + returnType_->describe() + "' has an "
-                                       "'explicit' copy constructor, so it "
-                                       "cannot be returned by value - 'return' "
-                                       "copy-initialises the caller's object, "
-                                       "and that may not pick an explicit "
-                                       "constructor even where the copy is "
-                                       "elided");
+                value->type()->unqualified() == returnType_->unqualified()) {
+                // **Which constructor `return` selects is decided rvalue-first
+                // for an automatic object** - [class.copy]/32: where elision
+                // is permitted, or would be save that the operand is a
+                // parameter, overload resolution runs first as if the operand
+                // were an rvalue, and only if that fails as the lvalue it is.
+                // So a local or a parameter with a move constructor returns by
+                // move, and the explicit-ness that matters is the selected
+                // constructor's - a class with an explicit copy and a plain
+                // move still returns fine.
+                bool asRvalue = !isGlvalue(*value) || value->isXvalue() ||
+                                returnedParameter;
+                if (const Var *v = dynamic_cast<const Var *>(value.get()))
+                    if (v->isLocal()) asRvalue = true;
+                const Signature *mc = moveConstructorOf(returnType_->unqualified());
+                const Signature *sel = asRvalue && mc != nullptr
+                                     ? mc
+                                     : copyConstructorOf(returnType_->unqualified());
+                if (sel != nullptr && sel->isExplicit)
+                    src_.fail(pos, "'" + returnType_->describe() + "' has an "
+                                   "'explicit' " +
+                                   (sel == mc ? "move" : "copy") +
+                                   " constructor, so it "
+                                   "cannot be returned by value - 'return' "
+                                   "copy-initialises the caller's object, "
+                                   "and that may not pick an explicit "
+                                   "constructor even where the copy is "
+                                   "elided");
+            }
             value = convert(std::move(value), returnType_);
         }
         expect(";");
@@ -1430,6 +1484,16 @@ StmtPtr Parser::statementBody() {
             rv.type = returnType_;
             rv.pos = pos;
             const int slot = declare(rv.name, rv.type, pos);
+            // **A returned parameter moves.** [class.copy]/32 again, now on
+            // the copy that is actually built: the operand is designated an
+            // rvalue first, so a class with a move constructor gives it up
+            // rather than being copied - and a move-only class can be
+            // returned by value at all, which C++11 promises. The lvalue
+            // second stage is the fall-through: no move constructor, and
+            // resolution below finds the copy as before.
+            if (returnedParameter &&
+                moveConstructorOf(returnType_->unqualified()) != nullptr)
+                value->setXvalue();
             std::vector<ExprPtr> one;
             one.push_back(std::move(value));
             before.push_back(constructLocal(rv, slot, std::move(one), true));
@@ -2017,6 +2081,7 @@ void Parser::topLevel(Program &program) {
                     inParams_ = false;
                     locals_.back().isConst = pd.type->isConst();
                     locals_.back().isRegister = (psc == StorageRegister);
+                    locals_.back().byValueByAddress = byAddress;
 
                     // **On Microsoft the callee destroys its by-value class
                     // parameter**, whether it arrived in a register or as the

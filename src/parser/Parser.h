@@ -46,6 +46,12 @@ private:
         // one set of bytes and it destroys both. Nothing else needed to know
         // a parameter from a local until then.
         bool isParameter = false;
+        // A by-value class parameter that arrived by address is *lowered to*
+        // a reference, so by its slot alone it looks like `T &t`. This is the
+        // difference kept: `return t;` on a by-value parameter moves
+        // ([class.copy]/32 treats it as an rvalue first), and on a reference
+        // parameter it copies, because the object is the caller's.
+        bool byValueByAddress = false;
     };
 
     struct GlobalSym {

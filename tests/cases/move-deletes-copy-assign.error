@@ -1,0 +1,1 @@
+declares a move constructor, so its copy assignment is deleted

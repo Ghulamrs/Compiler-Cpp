@@ -142,15 +142,17 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
                                 const std::string &what,
                                 std::vector<std::pair<int, const Type *> > &destroy) {
     const Type *cls = type->unqualified();
-    // **A by-value parameter is initialised from the argument, so an xvalue
-    // moves into it.** [dcl.init]/17 makes this ordinary initialisation and
-    // overload resolution over the constructors, which would pick the move;
-    // this path predates rvalue references and reaches for the copy by name,
-    // so the choice is made here instead. Without it `take(static_cast<S &&>
-    // (e))` copies, silently, and `e` is left untouched where C++ says it has
-    // been emptied.
+    // **A by-value parameter is initialised from the argument, so anything
+    // that is not an lvalue moves into it.** [dcl.init]/17 makes this
+    // ordinary initialisation and overload resolution over the constructors,
+    // which picks the move for an xvalue and for a prvalue alike; this path
+    // predates rvalue references and reaches for the copy by name, so the
+    // choice is made here instead. Without it `take(static_cast<S &&>(e))`
+    // copies, silently, and `e` is left untouched where C++ says it has been
+    // emptied - and `take(make())`, a temporary, insists on the copy
+    // constructor of a class that may not have one to spare.
     const Signature *cc = nullptr;
-    if (arg->isXvalue()) cc = moveConstructorOf(cls);
+    if (!isLvalue(*arg)) cc = moveConstructorOf(cls);
     if (cc == nullptr) cc = copyConstructorOf(cls);
 
     // **[dcl.init]/17 makes this copy-initialization, so the constructor it
@@ -166,6 +168,24 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
                        "and that may not pick the 'explicit' constructor this "
                        "class copies with. Take it by reference, or make the "
                        "copy constructor not explicit");
+
+    // **A class that declares a move constructor cannot be passed by value
+    // from an lvalue.** [class.copy]/7 deletes its implicit copy constructor,
+    // and here that deletion is an absence - no copy was ever declared - so
+    // without this the byte path below would answer for it, silently, and
+    // two objects would own one resource. An xvalue or a temporary took the
+    // move above and never reaches this.
+    if (cc == nullptr) {
+        const Signature *mv = moveConstructorOf(cls);
+        if (mv != nullptr && !mv->implicit)
+            src_.fail(pos, what + " is a '" + cls->describe() + "' passed by "
+                           "value, and this class declares a move constructor "
+                           "- so its copy constructor is deleted and an lvalue "
+                           "cannot be copied into the parameter. Write "
+                           "'static_cast<" + cls->describe() + " &&>(...)' to "
+                           "move out of it, or give the class a copy "
+                           "constructor");
+    }
 
     // **A class that only has a destructor still goes by address on Itanium**,
     // and the copy the caller makes for it is a move of bytes rather than a

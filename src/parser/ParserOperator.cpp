@@ -593,6 +593,23 @@ ExprPtr Parser::assign() {
         return result;
     }
 
+    // **A class that declares a move constructor has no bytewise assignment
+    // to fall back on.** [class.copy]/23 *deletes* the implicit copy
+    // assignment of such a class, and nothing here declared one - which looks
+    // the same as a trivially copyable class to the branch above and means
+    // the opposite. The deletion is unconditional: it is the operator that is
+    // gone, so an rvalue source is refused the same as an lvalue. An
+    // *implicit* move constructor deletes nothing, which is what the
+    // `implicit` flag is asked for.
+    if (to->unqualified()->isStructOrUnion()) {
+        const Signature *mv = moveConstructorOf(to->unqualified());
+        if (mv != nullptr && !mv->implicit)
+            src_.fail(pos, "'" + to->unqualified()->describe() + "' declares "
+                           "a move constructor, so its copy assignment is "
+                           "deleted and '=' cannot copy one - assign the "
+                           "members themselves, or give the class a copy "
+                           "assignment operator");
+    }
     ExprPtr node(new Assign(std::move(n), convert(std::move(value), to)));
     node->setType(to);
     return node;
