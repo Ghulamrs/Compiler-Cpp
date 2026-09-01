@@ -425,6 +425,21 @@ void Parser::flattenInit(const Type *type, Init &in, int base,
                               ? "an array at file scope needs a braced initialiser"
                               : "a struct or union at file scope needs a braced "
                                 "initialiser");
+        // **The same C++11 rule the local path names, and this is where a
+        // program could reach past it.** [dcl.init.aggr]/1 makes a class with
+        // a member initialiser something other than an aggregate, so the
+        // braces below are not aggregate initialisation at all. A local goes
+        // through the constructor path and is told so; a file-scope object is
+        // laid out by this function, which knows nothing about constructors -
+        // so until this check, `S s = {5, 6};` on such a class compiled here
+        // and gave C++14's answer.
+        if (type->isStructOrUnion() && !type->tag().empty() &&
+            hasMemberInitialiser(type->tag()))
+            src_.fail(in.pos, "'" + type->describe() + "' writes an "
+                              "initialiser on a member, so in C++11 it is not "
+                              "an aggregate and a braced list cannot "
+                              "initialise it - C++14 changed that rule and "
+                              "this compiler is C++11");
         InitCursor c{ &in.items, 0 };
         flattenAggregate(type, c, base, out);
         if (!c.done())

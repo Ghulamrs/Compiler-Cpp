@@ -23,7 +23,7 @@ from `tools/`.
 ```
 cxx1 f.cpp -o f          compile, assemble and link for this machine
 cxx1 -S f.cpp -o f.s     stop at assembly
-cxx1 -S -target x86_64-linux f.cpp
+cxx1 -S -arch x86_64-linux f.cpp
 ```
 
 Targets are named `x86_64-linux`, `x86_64-windows` and `arm64-darwin`. A

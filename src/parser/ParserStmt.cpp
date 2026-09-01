@@ -130,6 +130,29 @@ StmtPtr Parser::declarationBody() {
                 src_.fail(d.pos, "'" + d.name + "' is static and has a "
                                  "constructor - running one before main is not "
                                  "supported yet");
+            // **A braced initialiser, and the two different answers it
+            // has.** [dcl.init.aggr]/1 in C++11 says a class with a member
+            // initialiser is *not* an aggregate, so `S s = {1, 2}` on one is
+            // ill-formed here and legal from C++14 - a rule this compiler has
+            // to keep on the C++11 side of, and the only place where having
+            // written member initialisers changes what an older program
+            // means. Where the class wrote none, the braces are asking for
+            // list-initialisation through a constructor, which is C++11 and
+            // simply is not built yet.
+            if (peek().is("{") || (peek().is("=") && peekAt(1).is("{"))) {
+                if (hasMemberInitialiser(d.type->tag()))
+                    src_.fail(d.pos, "'" + d.type->describe() + "' writes an "
+                                     "initialiser on a member, so in C++11 it "
+                                     "is not an aggregate and a braced list "
+                                     "cannot initialise it - C++14 changed "
+                                     "that rule and this compiler is C++11. "
+                                     "Give the class a constructor, or take "
+                                     "the member initialiser off");
+                src_.fail(d.pos, "list-initialisation - '" + d.name +
+                                 "{...}' calling a constructor - is not "
+                                 "supported yet; write the arguments in "
+                                 "parentheses");
+            }
             std::vector<ExprPtr> args;
             bool copyInit = false;
             if (consume("(")) {
@@ -1652,6 +1675,34 @@ void Parser::topLevel(Program &program) {
                                  "supported yet - make it a local or a "
                                  "pointer");
 
+            // **A class with a constructor, at file scope.** The local path
+            // refuses a `static` one by name for want of the mechanism that
+            // runs it before main; this path had no such test at all, so the
+            // object was laid out as bytes and the constructor never ran -
+            // `S s;` at file scope read 0 where the constructor had written
+            // 7, and it compiled, linked and ran. A silently missing
+            // construction is the one failure worth a refusal.
+            //
+            // The braced form is asked first and separately: a class that
+            // writes a member initialiser is not an aggregate in C++11
+            // ([dcl.init.aggr]/1) and *is* one from C++14, so what a reader
+            // needs to be told there is which standard refuses them, not
+            // which mechanism is missing.
+            if (d.type->isStructOrUnion() && !d.type->tag().empty()) {
+                const bool braced = peek().is("=") && peekAt(1).is("{");
+                if (braced && hasMemberInitialiser(d.type->tag()))
+                    src_.fail(d.pos, "'" + d.type->describe() + "' writes an "
+                                     "initialiser on a member, so in C++11 it "
+                                     "is not an aggregate and a braced list "
+                                     "cannot initialise it - C++14 changed "
+                                     "that rule and this compiler is C++11");
+                if (overloadsOf(constructorKey(d.type->tag())) != nullptr)
+                    src_.fail(d.pos, "'" + d.name + "' is at file scope and '" +
+                                     d.type->describe() + "' has a constructor "
+                                     "- running one before main is not "
+                                     "supported yet");
+            }
+
             std::vector<GlobalPiece> pieces;
             bool hasInit = false;
             // Read while the initialiser tree is still in scope - `in` does
@@ -1745,6 +1796,32 @@ void Parser::topLevel(Program &program) {
         return;
     }
 
+    // **A trailing return type is C++11, and it arrives here wearing the same
+    // `auto`.** `auto f(int) -> int` says what the return type is rather than
+    // asking for it to be deduced, so blaming C++14 is wrong twice over: the
+    // standard is the wrong one, and the reader is told a type cannot be
+    // worked out when they had written it down.
+    // The parameter list is still ahead here - it was recorded to be read
+    // again, not consumed - so the arrow is found by stepping over it.
+    bool trailingArrow = false;
+    if (peek().is("(")) {
+        int depth = 0;
+        for (std::size_t i = at_; i < tokens_.size(); i++) {
+            if (tokens_[i].is("(")) depth++;
+            else if (tokens_[i].is(")")) {
+                if (--depth == 0) {
+                    trailingArrow = i + 1 < tokens_.size() &&
+                                    tokens_[i + 1].is("->");
+                    break;
+                }
+            }
+        }
+    }
+    if (mentionsDeduced(d.type) && trailingArrow)
+        src_.fail(d.pos, "a trailing return type - `auto f(...) -> T` - is "
+                         "C++11 and is not supported yet; write the return "
+                         "type in front, which says the same thing wherever it "
+                         "does not name a parameter");
     if (mentionsDeduced(d.type))
         src_.fail(d.pos, "a function's return type cannot be deduced - `auto` "
                          "there is C++14, and this compiler is C++11");

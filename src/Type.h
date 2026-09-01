@@ -228,6 +228,19 @@ public:
     }
     void setInNamespace() { inNamespace_ = true; }
 
+    // **A class written inside a function**, carrying the linkage name of the
+    // function it was written in. Both ABIs wrap that name round this one -
+    // Itanium as `Z <function> E <name>`, the Microsoft ABI as `?1?` and the
+    // whole function - and until the type could answer this, only a *member*
+    // of such a class was named that way: the class as a template argument
+    // was spelled `7main::L`, which is a colon in a symbol and no assembler
+    // takes it.
+    const std::string &localOwner() const {
+        if (unqual_) return unqual_->localOwner();
+        return localOwner_;
+    }
+    void setLocalOwner(std::string o) { localOwner_ = std::move(o); }
+
     // A class made by instantiating a class template. The name and arguments
     // are kept because the tag - "Box<int,3>" - is the parser's key and not
     // anything a linker has ever seen.
@@ -395,6 +408,7 @@ private:
 
     std::string tag_;
     std::string local_;
+    std::string localOwner_;
     bool inNamespace_ = false;
     // Set on a class that is a template specialization. `local_` is
     // "Box<int,3>" there, which no ABI writes: Itanium wants `3BoxIiLi3EE`

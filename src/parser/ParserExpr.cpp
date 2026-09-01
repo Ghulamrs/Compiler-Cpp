@@ -276,8 +276,8 @@ ExprPtr Parser::staticCast(std::size_t pos) {
         if (v->type()->isConst() && !referent->isConst())
             src_.fail(pos, "'static_cast<" + to->describe() + ">' of a '" +
                            v->type()->describe() + "' - a cast does not take "
-                           "const off; 'const_cast' is what does, and it is "
-                           "not supported yet");
+                           "const off; 'const_cast' is what does, and the two "
+                           "are written separately on purpose");
         // An lvalue reference cast leaves an lvalue and there is nothing to
         // mark; an rvalue reference cast is the whole point of this function.
         if (to->isRValueReference()) v->setXvalue();
@@ -769,6 +769,17 @@ ExprPtr Parser::lambdaExpression() {
         }
         const std::size_t cpos = peek().pos;
         const std::string cname = expectIdent("a captured name");
+        // **`[n = k]` is an init-capture, which is C++14.** It has to be
+        // named here rather than left to the lookup below: the name it
+        // introduces is the closure's own and need not be a local at all, so
+        // what the reader would otherwise be told is that a name they were
+        // declaring does not exist.
+        if (peek().is("="))
+            src_.fail(peek().pos, "an init-capture - '" + cname + " = ...' in "
+                                  "the capture list - is C++14, and this "
+                                  "compiler is C++11: a capture here names "
+                                  "something the enclosing function already "
+                                  "declared");
         const Local *have = findLocal(cname);
         const Type *fromOuter = nullptr;
         if (have == nullptr) {
@@ -907,7 +918,10 @@ ExprPtr Parser::lambdaExpression() {
     Type *closure = types_.structType(Kind::Struct, tag);
     closure->setLocalName(local);
     closure->setDeclaredClass(false);
-    if (!currentFunction_.empty()) localClassOwner_[tag] = currentFunction_;
+    if (!currentFunction_.empty()) {
+        localClassOwner_[tag] = currentFunction_;
+        closure->setLocalOwner(currentFunction_);
+    }
     if (capturedThisFrom != nullptr) closureOuter_[tag] = capturedThisFrom;
     declareTypeName(tag, closure);
     // Laid out as any class is: each member at the next offset its own
@@ -1659,6 +1673,14 @@ const Type *Parser::decltypeSpecifier() {
     const std::size_t pos = peek().pos;
     at_++;
     expect("(");
+    // **`decltype(auto)` is C++14 and `decltype(e)` is C++11**, and the two
+    // are told apart by one token. Named here because the C++11 form is
+    // built: without this the `auto` is read as the start of an expression
+    // and the error says one was expected, which is true and useless.
+    if (peek().is("auto"))
+        src_.fail(peek().pos, "'decltype(auto)' is C++14, and this compiler is "
+                              "C++11 - 'decltype' of an expression works, and "
+                              "'auto' on its own deduces from an initialiser");
     const bool namePath = atNamePath();
 
     // **A name on its own is looked up, not evaluated.** A reference variable

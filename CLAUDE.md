@@ -268,16 +268,22 @@ starts. No half-built pipelines waiting on a later phase.
 | 6 | Exceptions: `__cxa_*`, `.gcc_except_table`, unwind data | **done** on all three targets, 2026-08-30 - `return` inside a `catch` is refused on Windows |
 | 7 | The C++11 layer: `auto`, `decltype`, move, lambdas, `constexpr`, range-for | **done**, 2026-08-30 - every C++11 capture included |
 
-## Where this stands, 2026-08-30
+## Where this stands, 2026-09-01
 
 **The ladder is walked.** All eight rungs compile, assemble, link and run on
 x86_64-linux, x86_64-windows and arm64-darwin. Suites at the last commit:
 
 | | run | emit | names vs clang | overload | names vs cl |
 | --- | --- | --- | --- | --- | --- |
-| Mac | 190 | 292 | 98 | 26 | - |
-| Linux | 190 | 292 | - | - | - |
-| Windows | 188 | - | - | - | 80 |
+| Mac | 201 | 295 | 99 | 26 | - |
+| Linux | 201 | 295 | - | - | - |
+| Windows | 199 | - | - | - | 80 |
+
+**Two of the four suites only ever run on one machine.** `names.sh` and
+`overload.sh` both ask clang, and the Linux box has no clang++ - they skip
+themselves there and say so. So the oracle half of three-box verification is
+the Mac's, with the Windows box asking cl separately. Worth knowing before
+reading a green Linux run as agreement with anything.
 
 Since the ladder finished, the work has been **C++11 features that were never
 rungs** - each one measured against clang, and against cl for a Microsoft-ABI
@@ -1049,6 +1055,116 @@ path. `Parser::convert` builds `x != 0` and gives it type `bool`, which every
 backend already knows how to emit. This is the pattern to reach for again:
 where C++ adds a *conversion*, look for an existing operation to lower it to
 before adding a case to three code generators.
+
+## The line at C++14, and the refusals that hold it
+
+**`src/` is C++14 and the language is C++11, and the risk runs the other way
+round from the one that gets watched.** The build enforces the first: `-std=c++14
+-pedantic` on three toolchains. Nothing enforced the second - the compiler
+accepts what its rules accept, and a C++14 rule that slipped into one of them
+would be found by a program that compiled here and nowhere else.
+
+**Measured on 2026-09-01, with `clang++ -std=c++11 -pedantic-errors` as the
+oracle for "this is not C++11": fifteen C++14 forms, one of them accepted.**
+The one is worth the whole exercise:
+
+```cpp
+struct S { int i = 1; int j = 2; };
+S s = {5, 6};                        // file scope
+```
+
+[dcl.init.aggr]/1 in C++11 makes a class that writes an initialiser on a
+member *not an aggregate*, so this is ill-formed; C++14 removed that clause
+and it means 5 and 6. cxx1 printed 5 and 6. **A local went to the constructor
+path and was refused; a file-scope object is laid out by `flattenInit`, which
+knows nothing about constructors** - so the one declaration that never asks
+about a constructor was the one that needed to.
+
+**Beside it, and found the same afternoon: a class with a constructor at file
+scope never ran it.** `S s;` where `S::S` writes 7 read 0, and it compiled,
+linked and ran. The local path refuses a `static` one by name for want of the
+mechanism that runs it before main; the file-scope path had no test at all.
+That is not a C++14 question - it is C++11 silently not happening - but it
+lived in the same three lines and is refused by name now.
+
+**Everything else held**, and one of them holds deliberately: a `constexpr`
+non-static member function is implicitly `const` in C++11 and is not from
+C++14, and cxx1 answers C++11 on both halves - it accepts the call on a const
+object that C++14's clang refuses, and refuses the mutation that C++14's clang
+accepts. `ParserType.cpp` says so where it sets the flag.
+
+### A C++14 form has to be refused by name before its C++11 neighbour lands
+
+The two places the line matters most were already named with the version
+number in the message - `auto` as a parameter and `auto` as a return type.
+The rest were refused only by a parse error, because the *C++11* feature next
+to them does not parse either. **That is an accidental barrier, and it
+disappears the moment the neighbour is built.** So each now says what it is
+and which standard it belongs to:
+
+| Written | Refused with |
+| --- | --- |
+| `0b101` | a binary literal is C++14 |
+| `1'000` | a digit separator is C++14 |
+| `decltype(auto)` | is C++14; `decltype` of an expression works |
+| `[n = k]` | an init-capture is C++14 |
+| `S s = {1, 2}` with an NSDMI | not an aggregate in C++11; C++14 changed that rule |
+| `template <class T> T v = ...` | a variable template is C++14 |
+| `[[noreturn]]`, `[[deprecated]]` | no attribute parses; C++11 has two, `[[deprecated]]` is C++14 |
+
+The variable template is told from the two C++11 declarations by a token scan
+rather than a parse: a class or a function reaches a `(` or a class key before
+any `=`, and an out-of-line member writes a `::` before its own.
+
+**The rule this leaves behind:** when a C++11 feature in that table's left-hand
+column is built, the C++14 form beside it gets its named refusal in the same
+commit. `S s{1, 2}` calling a constructor is the next one to meet it - it is
+C++11, it is refused by name today as a missing feature, and the aggregate
+rule beside it is a different answer to a nearly identical program.
+
+## Three diagnostics that pointed the wrong way, and one name the assembler refused
+
+**A `::` in an Itanium symbol, which never linked.** A class written inside a
+function and handed to a function template came out `_Z1fI7main::LEiT_`: the
+tag is `main::L` and the mangler spelled it whole, where [mangle] has a
+`<local-name>` for exactly this - `Z <function> E <name>`, and clang writes
+`_Z1fIZ4mainE1LEiT_`. The Microsoft ABI wraps the same thing in `?1?`, and
+clang for that ABI writes `??$f@UL@?1??main@@9@@@YAHUL@?1??main@@9@@Z`. Both
+are what cxx1 writes now, measured against clang for all three ABIs.
+
+**The machinery was already there for a *member* of such a class** -
+`itaniumLocalMemberName` and the Microsoft `scopeOf`'s `localOwner` - and what
+was missing was the type being able to answer which function it was written
+in. `Type::localOwner()` is that, set where the parser already computed it.
+
+**Why no suite saw it.** `emit.sh` stops at assembly and the compiler exited
+0, so a name the assembler refuses passes there; `run.sh` had no case with a
+local class as a template argument; `names.sh` compares the cases that exist.
+`tests/cases/local-class-template-arg.cpp` is that case now. Assembling every
+emitted case would catch the class of fault - all 98 do assemble today - but
+`emit.sh` is deliberately the suite that needs no assembler and runs anywhere,
+so the case is the guard rather than a new step in it.
+
+**Three messages that sent the reader somewhere false**, all found by writing
+the program each one describes:
+
+* `static_cast<int &>` of a const lvalue said `const_cast` "is not supported
+  yet". It landed on 2026-08-30. The message now says what it says for
+  `reinterpret_cast` - that the two are written separately on purpose.
+* `A<int>::n` said "'A' is a class template, and instantiating one is not
+  supported yet", while `A<int> a;` compiles. The instantiation is not the
+  problem: reading a template-id as the qualifier of a name is, and
+  `typedef A<int> AI;` then `AI::n` works today. The message says that.
+* `auto f(int) -> int` said `auto` there "is C++14, and this compiler is
+  C++11". **A trailing return type is C++11**, and it is not deduction at all -
+  the reader wrote the type down. It is refused as the missing C++11 feature
+  it is. The C++14 forms next to it, `auto f() { }` and `decltype(auto)`, keep
+  their own answer. The arrow is found by stepping over the parameter list,
+  which is still ahead at that point - it was recorded to be read again, not
+  consumed.
+
+And `README.md` documented `-target`, which the driver has never accepted; the
+flag is `-arch`, as `tests/emit.sh` has always passed it.
 
 ## Rung 5: templates, done
 
@@ -2113,7 +2229,10 @@ that writes `throw` or `try` cannot be compiled with exceptions off, and one
 that does write them is asking for exactly the symbols the flag was hiding.
 Recorded as a divergence: clang emits `__clang_call_terminate` for the case
 where a destructor throws while an exception is already unwinding, and cxx1
-runs no destructors during unwinding yet - that is 6.4.
+emits no such guard. **This sentence used to say cxx1 ran no destructors
+during unwinding at all**, which was true when it was written and stopped
+being true when 6.4 landed a few hours later - the divergence is the missing
+guard, not the missing destructors.
 
 **Windows was unreachable when this landed** and the commit went in on two
 boxes with that said out loud - `da6bf71` is the one commit here whose message

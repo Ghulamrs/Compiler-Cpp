@@ -85,6 +85,13 @@ bool Lexer::isKeyword(const std::string &word) {
     return false;
 }
 
+void Lexer::digitSeparator(const std::string &s, std::size_t at) const {
+    if (at < s.size() && s[at] == '\'' && at + 1 < s.size() &&
+        std::isalnum(static_cast<unsigned char>(s[at + 1])))
+        src_.fail(at, "a digit separator is C++14, and this compiler is C++11 "
+                      "- write the digits with nothing between them");
+}
+
 std::vector<Token> Lexer::tokenize() {
     std::vector<Token> out;
     const std::string &s = src_.text();
@@ -180,6 +187,14 @@ std::vector<Token> Lexer::tokenize() {
             char *stop = nullptr;
 
             std::size_t j = i;
+            // **Refused by name because the legal neighbour is one character
+            // away.** `0x` is C++98 and `0b` is C++14, so without this the
+            // literal lexes as `0` followed by an identifier and the error
+            // lands on whatever comes after it rather than on the digits.
+            if (s[j] == '0' && j + 1 < s.size() &&
+                (s[j + 1] == 'b' || s[j + 1] == 'B'))
+                src_.fail(i, "a binary literal is C++14, and this compiler is "
+                             "C++11 - write the value in hexadecimal");
             bool isHex = (s[j] == '0' && j + 1 < s.size() &&
                           (s[j + 1] == 'x' || s[j + 1] == 'X'));
             bool floating = (s[j] == '.');
@@ -194,6 +209,7 @@ std::vector<Token> Lexer::tokenize() {
                 t.dvalue = std::strtold(s.c_str() + i, &stop);
                 i = static_cast<std::size_t>(stop - s.c_str());
 
+                digitSeparator(s, i);
                 if (i < s.size() && (s[i] == 'f' || s[i] == 'F')) { t.suffixF = true; i++; }
                 else if (i < s.size() && (s[i] == 'l' || s[i] == 'L')) { t.suffixL = true; i++; }
                 out.push_back(std::move(t));
@@ -205,6 +221,7 @@ std::vector<Token> Lexer::tokenize() {
             if (errno == ERANGE)
                 src_.fail(i, "this integer constant does not fit any type");
             i = static_cast<std::size_t>(stop - s.c_str());
+            digitSeparator(s, i);
 
             int us = 0, ls = 0;
             while (i < s.size()) {

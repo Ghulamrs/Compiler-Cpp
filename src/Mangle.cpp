@@ -148,6 +148,15 @@ public:
         }
     }
 
+    // The enclosing function as it goes inside `Z...E`: the mangled name
+    // with its `_Z` taken off, or - for main and anything extern "C", which
+    // have no mangled name to take apart - the plain name as a length and
+    // letters. Measured: _ZZ4mainEN1B3getEv.
+    static std::string functionComponent(const std::string &owner) {
+        if (owner.compare(0, 2, "_Z") == 0) return owner.substr(2);
+        return std::to_string(owner.size()) + owner;
+    }
+
     void prefix(const Type *cls, const std::string &fallback) {
         if (cls == nullptr) {
             // A namespace-qualified tag with no Type to walk: split it, the
@@ -493,6 +502,23 @@ private:
                 templateId(t);
                 subs_.push_back(Sub{ t, std::string() });
                 return;                       // pushed here, not below
+            }
+            // **A local class is a <local-name>, not a name with a scope in
+            // it.** `Z <function> E <name>`, measured against clang:
+            // `f(L)` where L is written inside main is _Z1fIZ4mainE1LEiT_.
+            // Spelling the tag whole put a `::` in the symbol, which the
+            // assembler refuses - so this was a hard failure at the assembler
+            // rather than a name two compilers disagreed about, and the emit
+            // suite could not see it because it stops before assembling.
+            if (!t->localOwner().empty()) {
+                out += 'Z';
+                out += functionComponent(t->localOwner());
+                out += 'E';
+                const std::string &one = t->localName();
+                out += std::to_string(one.size());
+                out += one;
+                subs_.push_back(Sub{ t, std::string() });
+                return;
             }
             const std::string *tag = tagOf(t);
             if (tag == nullptr) return;
@@ -983,6 +1009,15 @@ private:
             out += t->kind() == Kind::Union ? 'T'
                  : t->declaredClass()       ? 'V'
                                             : 'U';
+            // A class written inside a function carries that function round
+            // it here too, and `scopeOf` already knows the shape - it is what
+            // a *member* of such a class has been using. Measured against
+            // clang for this ABI: `??$f@UL@?1??main@@9@@@YAHUL@?1??main@@9@@Z`,
+            // where the `?1??main@@9` is the enclosing main.
+            if (!t->localOwner().empty()) {
+                scopeOf(t, std::string(), t->localOwner());
+                return;
+            }
             if (t->enclosing() != nullptr || t->isSpecialization() ||
                 t->inNamespace()) {
                 scopeOf(t, std::string());

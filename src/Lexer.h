@@ -42,5 +42,10 @@ public:
 private:
     const Source &src_;
 
+    // A `'` between digits is C++14's separator, and here it opens a
+    // character constant - so the number's own position is where it has to
+    // be named, not the unterminated literal three lines later.
+    void digitSeparator(const std::string &s, std::size_t at) const;
+
     static bool isKeyword(const std::string &word);
 };

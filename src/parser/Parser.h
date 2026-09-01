@@ -1079,6 +1079,10 @@ private:
                                         const Type *right) const;
 
     std::map<std::string, std::size_t> memberInit_;
+    // Whether this class wrote an initialiser on any of its members, which is
+    // what [dcl.init.aggr]/1 in C++11 makes the difference between an
+    // aggregate and a class that is not one.
+    bool hasMemberInitialiser(const std::string &tag) const;
     // To the ',' or ';' that ends one, counting brackets.
     void skipMemberInitialiser();
     // The statements a constructor of this class needs for the members it did

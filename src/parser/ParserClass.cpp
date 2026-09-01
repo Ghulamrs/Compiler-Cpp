@@ -2231,6 +2231,14 @@ void Parser::skipMemberInitialiser() {
 // while it is read, the same as a default argument: a member's initialiser may
 // name a global or an enumerator and cannot name a local of whatever function
 // happens to be compiling.
+bool Parser::hasMemberInitialiser(const std::string &tag) const {
+    const std::string prefix = tag + "::";
+    std::map<std::string, std::size_t>::const_iterator it =
+        memberInit_.lower_bound(prefix);
+    return it != memberInit_.end() &&
+           it->first.compare(0, prefix.size(), prefix) == 0;
+}
+
 std::vector<StmtPtr> Parser::memberInitialisers(const std::string &tag,
                                                 const Type *type, int thisSlot,
                                                 const std::set<std::string> &already,

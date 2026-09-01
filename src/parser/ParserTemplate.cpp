@@ -322,6 +322,32 @@ bool Parser::templateDeclaration() {
     decl.afterParams = at_;
     decl.pos = peek().pos;
 
+    // **A variable template is C++14, and it is told from the two C++11
+    // declarations by a token scan.** What follows `template <...>` here is a
+    // class, a function, or an out-of-line member; the first two reach a '('
+    // or a class key before any '=', and the third writes a '::' before its
+    // own. So an '=' at depth zero with neither ahead of it is
+    // `template <class T> T zero = ...`, which this compiler does not have and
+    // which would otherwise be reported as a function template that nobody
+    // defined.
+    if (!peek().is("struct") && !peek().is("class") && !peek().is("union")) {
+        int depth = 0;
+        for (std::size_t i = at_; i < tokens_.size(); i++) {
+            const Token &t = tokens_[i];
+            if (depth == 0) {
+                if (t.is("(") || t.is("::") || t.is("{") || t.is(";")) break;
+                if (t.is("="))
+                    src_.fail(t.pos, "a variable template is C++14, and this "
+                                     "compiler is C++11 - a class template "
+                                     "with a static member says the same "
+                                     "thing here");
+            }
+            if (t.is("[") || t.is("<")) depth++;
+            else if (t.is("]") || t.is(">")) depth--;
+            if (depth < 0) break;
+        }
+    }
+
     // Its own step, and refused by name until then: the declarator reads a
     // class *name* before the `::`, and reading a template-id there is what
     // an out-of-line constructor needs. A member function is different - it
@@ -1621,6 +1647,17 @@ void Parser::refuseTemplateId() {
     const std::size_t pos = peek().pos;
     at_++;
     if (peek().is("<")) skipTemplateArguments();
+    // **`A<int>::n` is not an instantiation this cannot do.** The type is
+    // made perfectly well in a declaration - `A<int> a;` works - and what is
+    // missing is reading a template-id as the qualifier of a name. Saying
+    // "instantiating one is not supported" there is false, and it sends the
+    // reader off to look for something that is already built. The typedef it
+    // names is the whole workaround.
+    if (peek().is("::"))
+        src_.fail(pos, "'" + name + "<...>::' - naming a member through a "
+                       "class template's argument list is not supported yet; "
+                       "the type itself is made, so 'typedef " + name +
+                       "<...> Name;' and then 'Name::' reaches the member");
     src_.fail(pos, "'" + name + "' is a " +
                    (templates_[name].isClass ? "class" : "function") +
                    " template, and instantiating one is not supported yet");

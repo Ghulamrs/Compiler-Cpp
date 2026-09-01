@@ -160,6 +160,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // is also what shadows a global class of the same name, since the
         // local scope is asked first.
         type->setLocalName(local);
+        type->setLocalOwner(localOwner);
         localClassOwner_[tag] = localOwner;
         localTypes_[local] = type;
     }
@@ -1047,6 +1048,14 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
                               "- not on an out-of-class definition of that "
                               "same constructor, and not on anything that is "
                               "not one");
+    // **`[[`, which is an attribute and not a type.** Named here because the
+    // C++11 attributes and the C++14 one are spelled identically and a reader
+    // who writes either is owed the version number rather than a complaint
+    // about a missing type.
+    if (peek().is("[") && peekAt(1).is("["))
+        src_.fail(peek().pos, "an attribute is not supported yet - C++11 has "
+                              "'[[noreturn]]' and '[[carries_dependency]]', "
+                              "and '[[deprecated]]' is C++14");
     if (const char *pending = notYetSupported(peek().text))
         src_.fail(peek().pos, std::string("'") + pending +
                               "' is not supported yet");
