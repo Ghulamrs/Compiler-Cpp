@@ -24,13 +24,13 @@ Trigraphs are still live in C++14, so write `'?\?'` and not `'??'` in any
 diagnostic. A C++ compiler's messages are full of quoted punctuation, so this
 will come up more here than it did in Compiler-S, where it cost an afternoon.
 
-## The parser is nine files
+## The parser is twelve files
 
 `Parser.cpp` was 9,639 lines and 450 KB, which is one translation unit: every
 build recompiled all of it, and every reader had to find their subject in it.
-It is nine files now, in `src/parser/` — `Parser.cpp` and eight `ParserXxx.cpp`
-beside it — still one class, declared as it always was in `Parser.h`, which
-moved in with them. `src/parser/` is laid out the way `src/backend/` already
+It is twelve files now, in `src/parser/` — `Parser.cpp` and eleven
+`ParserXxx.cpp` beside it — still one class, declared as it always was in
+`Parser.h`, which moved in with them. `src/parser/` is laid out the way `src/backend/` already
 was: the directory owns its headers, reaches the shared ones as `../Type.h`,
 and is included from outside by path, so `Driver.cpp` says
 `#include "parser/Parser.h"`. Both builds glob it — `SRCS` in the Makefile and
@@ -43,10 +43,35 @@ the source list in `msvc/build.cmd`.
 | `ParserType.cpp` | class, enum, the specifiers and the declarator |
 | `ParserOverload.cpp` | conversions, ranking, overload resolution |
 | `ParserClass.cpp` | constructors, destructors, vtables, thunks, implicit specials |
-| `ParserExpr.cpp` | primaries, calls, references, member access, throw, new |
+| `ParserExpr.cpp` | primaries, names, the named casts, `decltype`, references, postfix and unary |
+| `ParserExprCall.cpp` | arguments, defaults, by-value copies, member calls and their access checks |
+| `ParserExprLambda.cpp` | lambdas, closures, captures, the deduced return type |
+| `ParserExprNew.cpp` | `new`, `delete`, `throw`, and class temporaries |
 | `ParserInit.cpp` | initialisers, and the constant folding they need |
 | `ParserOperator.cpp` | one function per precedence level |
 | `ParserStmt.cpp` | statements, the top level, `parse()` |
+
+**`ParserExpr.cpp` was split a second time, 2026-09-01**, by the same method
+and for the first of the same two reasons: at 3,446 lines it was the largest
+file in the tree by nine hundred, and a reader looking for how a lambda is
+built had a third of a compiler to walk. Three files came out of it - calls,
+lambdas, and the expressions that make or destroy an object - and it keeps
+1,674 lines, which is the primary expression, the casts and the two operator
+levels below the ladder.
+
+**The seams were free this time**, which is worth writing down because last
+time they were not: `ParserExpr.cpp` had exactly one file-scope `static`, and
+its only two callers sat thirty lines below it. `binOpSpelling` has external
+linkage and is declared in the shared header already. So the cut could follow
+the subjects rather than the linkage, and `src/ParserInternal.h` did not gain
+an entry.
+
+**Cut by whole function, comment block included.** A range that starts at a
+signature leaves the paragraph above it behind, attached to nothing - so each
+function's extent was taken from the first line of its leading comment to the
+last line before the next one's. Checked afterwards by counting lines: every
+line of the original file is present in exactly one of the four, and the only
+additions are the three new headers and their includes.
 
 **Nothing was rewritten.** The split was cut by line range out of the old file
 and the units were reassembled from those ranges, so the diff is a move and
