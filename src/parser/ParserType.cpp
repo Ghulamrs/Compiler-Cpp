@@ -501,7 +501,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (peek().is(":")) {
                 std::size_t cpos = peek().pos;
                 at_++;
-                long w = constantExpression("a bit-field width");
+                long long w = constantExpression("a bit-field width");
                 if (!base->isInteger())
                     src_.fail(cpos, "a bit-field must have an integer type, not '" +
                                     base->describe() + "'");
@@ -602,7 +602,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (peek().is(":")) {
                 std::size_t cpos = peek().pos;
                 at_++;
-                long w = constantExpression("a bit-field width");
+                long long w = constantExpression("a bit-field width");
                 if (!d.type->isInteger())
                     src_.fail(d.pos, "a bit-field must have an integer type, not '" +
                                      d.type->describe() + "'");

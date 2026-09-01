@@ -503,11 +503,24 @@ long long Preprocessor::evalCondition(const std::string &raw, int fileIndex, int
             }
             bad(std::string("this condition has a stray '") + s[i] + "'");
         }
+        // **Everything below wraps rather than overflowing.** [cpp.cond] does
+        // this arithmetic in the widest signed type there is, where a result
+        // that does not fit is not something the standard defines - and this
+        // evaluator runs inside a compiler, so "undefined" would mean the
+        // compiler itself. The wrap is done through the unsigned type, which
+        // is defined, and it is what every preprocessor a program is likely
+        // to have met already does.
+        static long long wrap(unsigned long long v) {
+            return static_cast<long long>(v);
+        }
+
         long long unary() {
             skip();
             if (take("!")) return !unary();
             if (take("~")) return ~unary();
-            if (take("-")) return -unary();
+            // Negating the most negative value is the overflow that is
+            // easiest to reach and hardest to see.
+            if (take("-")) return wrap(0ULL - static_cast<unsigned long long>(unary()));
             if (take("+")) return unary();
             return primary();
         }
@@ -515,28 +528,54 @@ long long Preprocessor::evalCondition(const std::string &raw, int fileIndex, int
             long long v = unary();
             for (;;) {
                 skip();
-                if (take("*")) v = v * unary();
-                else if (take("/")) { long r = unary(); if (!r) bad("division by zero in this condition"); v = v / r; }
-                else if (take("%")) { long r = unary(); if (!r) bad("division by zero in this condition"); v = v % r; }
-                else return v;
+                if (take("*")) {
+                    const long long r = unary();
+                    v = wrap(static_cast<unsigned long long>(v) *
+                             static_cast<unsigned long long>(r));
+                } else if (take("/")) {
+                    const long long r = unary();
+                    if (!r) bad("division by zero in this condition");
+                    // The one division that overflows, and the one the
+                    // hardware traps on rather than wrapping.
+                    v = (v == (-9223372036854775807LL - 1) && r == -1) ? v : v / r;
+                } else if (take("%")) {
+                    const long long r = unary();
+                    if (!r) bad("division by zero in this condition");
+                    v = (v == (-9223372036854775807LL - 1) && r == -1) ? 0 : v % r;
+                } else return v;
             }
         }
         long long add() {
             long long v = mul();
             for (;;) {
                 skip();
-                if (take("+")) v = v + mul();
-                else if (take("-")) v = v - mul();
-                else return v;
+                if (take("+")) {
+                    const long long r = mul();
+                    v = wrap(static_cast<unsigned long long>(v) +
+                             static_cast<unsigned long long>(r));
+                } else if (take("-")) {
+                    const long long r = mul();
+                    v = wrap(static_cast<unsigned long long>(v) -
+                             static_cast<unsigned long long>(r));
+                } else return v;
             }
         }
         long long shift() {
             long long v = add();
             for (;;) {
                 skip();
-                if (take("<<")) v = v << add();
-                else if (take(">>")) v = v >> add();
-                else return v;
+                const bool left = take("<<");
+                if (!left && !take(">>")) return v;
+                const long long n = add();
+                // A count outside [0, 63] is undefined rather than large, and
+                // a left shift of a negative value is too - so the count is
+                // named where it is wrong and the shift itself is done in the
+                // unsigned type.
+                if (n < 0 || n > 63)
+                    bad("a shift of " + std::to_string(n) +
+                        " places in this condition, where a value has 64 bits");
+                v = left ? wrap(static_cast<unsigned long long>(v) << n)
+                         : (v < 0 ? -(-(v + 1) >> n) - 1 : v >> n);
             }
         }
         long long rel() {
@@ -559,11 +598,16 @@ long long Preprocessor::evalCondition(const std::string &raw, int fileIndex, int
                 else return v;
             }
         }
-        long bitAnd() { long v = eq(); for (;;) { skip(); if (take("&")) v = v & eq(); else return v; } }
-        long bitXor() { long v = bitAnd(); for (;;) { skip(); if (take("^")) v = v ^ bitAnd(); else return v; } }
-        long bitOr()  { long v = bitXor(); for (;;) { skip(); if (take("|")) v = v | bitXor(); else return v; } }
-        long land()   { long v = bitOr(); for (;;) { skip(); if (take("&&")) { long r = bitOr(); v = (v && r); } else return v; } }
-        long lor()    { long v = land(); for (;;) { skip(); if (take("||")) { long r = land(); v = (v || r); } else return v; } }
+        // **`long long`, not `long`.** A `long` is 32 bits where cl builds
+        // this compiler and 64 where gcc and clang do, so these five levels
+        // truncated a 64-bit value on one of the three boxes and kept it on
+        // the other two: `#if 0x300000002 & 0xFFFFFFFF` answered differently
+        // depending on which machine had built the preprocessor reading it.
+        long long bitAnd() { long long v = eq(); for (;;) { skip(); if (take("&")) v = v & eq(); else return v; } }
+        long long bitXor() { long long v = bitAnd(); for (;;) { skip(); if (take("^")) v = v ^ bitAnd(); else return v; } }
+        long long bitOr()  { long long v = bitXor(); for (;;) { skip(); if (take("|")) v = v | bitXor(); else return v; } }
+        long long land()   { long long v = bitOr(); for (;;) { skip(); if (take("&&")) { long long r = bitOr(); v = (v && r); } else return v; } }
+        long long lor()    { long long v = land(); for (;;) { skip(); if (take("||")) { long long r = land(); v = (v || r); } else return v; } }
         long long cond() {
             long long c = lor();
             skip();

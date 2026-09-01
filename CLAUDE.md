@@ -275,9 +275,9 @@ x86_64-linux, x86_64-windows and arm64-darwin. Suites at the last commit:
 
 | | run | emit | names vs clang | overload | names vs cl |
 | --- | --- | --- | --- | --- | --- |
-| Mac | 221 | 345 | 116 | 26 | - |
-| Linux | 221 | 345 | - | - | - |
-| Windows | 218 | - | - | - | 92 |
+| Mac | 223 | 348 | 117 | 26 | - |
+| Linux | 223 | 348 | - | - | - |
+| Windows | 220 | - | - | - | 93 |
 
 **Two of the four suites only ever run on one machine.** `names.sh` and
 `overload.sh` both ask clang, and the Linux box has no clang++ - they skip
@@ -1101,17 +1101,48 @@ function.
 | C-01 | A `Signature &` into `functions_` dangles across a default-argument re-parse | **fixed** 2026-09-01 |
 | C-02 | An array's size overflows a signed `int`; the assembler is handed a negative length | **fixed** 2026-09-01 |
 | C-03 | The host's `long double` decides the target's x87 constants | **fixed** 2026-09-01 |
-| C-04 | `long` narrowings make the front end behave differently on the Windows build | **partly fixed** - the array length is `long long`; the `#if` evaluator is not |
+| C-04 | `long` narrowings make the front end behave differently on the Windows build | **fixed** 2026-09-01 |
 
-**All nineteen are closed but the tail of C-04**, which is the preprocessor's
-`#if` evaluator still working in `long`. Everything else the audit found has a
-fix and a case, and every fix was verified on the three boxes before it was
-committed.
+**All nineteen are closed.** Every one has a fix and a case, and every fix was
+verified on the three boxes before it was committed. The two suspected items
+the report marks as reasoned rather than reproduced are still open and still
+suspected: `Trial` does not restore `angleSplit_`, and a diagnostic position
+is written to the first overload rather than the one being defined.
+
+**What the audit was worth, in the end.** Nineteen defects under a suite that
+was green on all three machines, and the fixes added 62 cases - the suite went
+from 201 run cases to 223, and from 292 emissions to 348. Four of the fixes
+were wrong the first time and the tests said so: a scratch register that held
+the base address, a proxy that was true of every synthesised type, a
+Microsoft unit rule that forgot a unit is charged for whole, and three
+existing cases that turned out to be pinning an ABI's answer as though it were
+a fact. Two of those four were caught only by running on the box that owns the
+target.
 
 Four more silent wrong answers are recorded in the report and not in this
 table because they were confirmed by a reviewer and not re-run here: `goto`
 past an initialisation, narrowing in list-initialisation, an ambiguity
 [over.ics.rank] requires that is silently resolved, and `const S s;` for a POD.
+
+### C-04: the widest integer there is, and which box decides how wide that is
+
+**[cpp.cond] evaluates a condition in the widest signed integer there is**, and
+five levels of this evaluator worked in `long`. A `long` is 64 bits where gcc
+and clang build this compiler and 32 where cl does, so a condition holding a
+value wider than 32 bits answered differently depending on which of the three
+boxes had built the preprocessor reading it - `#if 0x300000002 & 0xFFFFFFFF`
+among them. The same source, two answers, and no test could see it from one
+machine. The bit-field widths went the same way as the array length before
+them, for the same reason.
+
+**And the arithmetic wraps now rather than overflowing.** This evaluator runs
+inside a compiler, so "undefined behaviour on overflow" would mean the
+compiler itself - negating the most negative value, the one division that
+overflows, and a shift count outside 0 to 63 were each reachable from a
+`#if` line. The first two are defined through the unsigned type, which is what
+every preprocessor a program is likely to have met already does; the third is
+refused by name, because a count of 100 is a mistake rather than a large
+shift.
 
 ### A-03 and C-03: two ABIs' bitfields, and a constant the host was choosing
 
