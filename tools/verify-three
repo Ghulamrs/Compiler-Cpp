@@ -147,9 +147,12 @@ double 2.5" ]; then
     # same-compiler test cannot ask: cxx1 passed the hidden return pointer and
     # `this` in the opposite registers from cl, on both sides of every call it
     # generated, so every run.sh case agreed with itself and disagreed with
-    # the platform. 17 20 7 is what cl's own caller expects to read back.
+    # the platform. The fourth number is the small struct, which asks the
+    # other half of the member rule: the hidden pointer serves a member's
+    # return whatever its size, where cxx1 once kept the free-function size
+    # test and answered in eax. 17 20 7 19 is what cl's caller reads back.
     if ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\sret-check.cmd $REMOTE" \
-           2>/dev/null | tr -d '\r' | grep -q '^17 20 7$'; then
+           2>/dev/null | tr -d '\r' | grep -q '^17 20 7 19$'; then
         echo "  sret-check: cl called a cxx1 member and got its struct back"
     else
         echo "  sret-check: FAILED"

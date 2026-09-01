@@ -22,17 +22,27 @@ set WORK=%ROOT%\winsret
 if not exist %WORK% mkdir %WORK%
 del /q %WORK%\* 2>nul
 
+rem  The small struct asks the other half of the member rule: cl gives a
+rem  class returned from a member function the hidden pointer whatever its
+rem  size - Small comes back through rdx, with x moved along to r8 - where a
+rem  free function would return the same struct in eax. cxx1 kept the size
+rem  test for members and returned it in eax, on both sides of every call it
+rem  generated, so only this mixed link can see it.
 > %WORK%\holder.cpp echo struct Big { long long a, b, c; };
->> %WORK%\holder.cpp echo struct W { long long k; Big get(int x); };
+>> %WORK%\holder.cpp echo struct Small { int v; };
+>> %WORK%\holder.cpp echo struct W { long long k; Big get(int x); Small sm(int x); };
 >> %WORK%\holder.cpp echo Big W::get(int x) { Big r; r.a = k + x; r.b = k * 2; r.c = x; return r; }
+>> %WORK%\holder.cpp echo Small W::sm(int x) { Small r; r.v = (int)k + x; return r; }
 
 > %WORK%\caller.cpp echo #include ^<stdio.h^>
 >> %WORK%\caller.cpp echo struct Big { long long a, b, c; };
->> %WORK%\caller.cpp echo struct W { long long k; Big get(int x); };
+>> %WORK%\caller.cpp echo struct Small { int v; };
+>> %WORK%\caller.cpp echo struct W { long long k; Big get(int x); Small sm(int x); };
 >> %WORK%\caller.cpp echo int main() {
 >> %WORK%\caller.cpp echo   W w; w.k = 10;
 >> %WORK%\caller.cpp echo   Big b = w.get(7);
->> %WORK%\caller.cpp echo   printf("%%lld %%lld %%lld\n", b.a, b.b, b.c);
+>> %WORK%\caller.cpp echo   Small s = w.sm(9);
+>> %WORK%\caller.cpp echo   printf("%%lld %%lld %%lld %%d\n", b.a, b.b, b.c, s.v);
 >> %WORK%\caller.cpp echo   return 0;
 >> %WORK%\caller.cpp echo }
 

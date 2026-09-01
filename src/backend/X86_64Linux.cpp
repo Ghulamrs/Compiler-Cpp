@@ -935,10 +935,16 @@ void X86_64Linux::visit(const Call &n) {
 
     std::vector<bool> padBelow;
     bool byRef = abi_.aggregatesByReference;
+    // The Microsoft size test serves free functions only: a class returned by
+    // value from a member function travels through the hidden pointer whatever
+    // its size, so `hasThis` decides before `msInRegister` is asked. The
+    // parser made the same choice when it gave the callee its sret slot, and
+    // the two must not come apart.
     bool sret = n.type()->isStructOrUnion() &&
                (n.type()->nonTrivialCopy() || n.type()->hasDestructor() ||
                 containsX87(n.type(), target_) ||
-                (byRef ? !msInRegister(n.type()->size(target_))
+                (byRef ? (n.hasThis() ||
+                          !msInRegister(n.type()->size(target_)))
                        : n.type()->size(target_) > abi_.structReturnLimit));
     // **Where the hidden return pointer sits, and the one ABI that moves it.**
     // Itanium puts it in front of everything. The Microsoft ABI does too - for

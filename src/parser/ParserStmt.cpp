@@ -245,7 +245,7 @@ StmtPtr Parser::declarationBody() {
                 copyConstructorOf(d.type->unqualified()) == nullptr;
 
             if (made != nullptr && made->type() == d.type &&
-                returnsIndirectly(d.type)) {
+                returnsIndirectly(d.type, made->hasThis())) {
                 made->setResultSlot(off);
                 inits.push_back(StmtPtr(new ExprStmt(std::move(args[0]))));
             } else if (trivialCopy) {
@@ -2312,8 +2312,12 @@ void Parser::topLevel(Program &program) {
     functionName_ = d.name;
     staticSymbols_.clear();
 
+    // A member function is the second argument: on the Microsoft ABI the
+    // hidden pointer serves every class a member returns, whatever its size.
+    // Static member functions are refused by name, so member and `this`
+    // cannot come apart here.
     int sretSlot = 0;
-    if (d.type->isStructOrUnion() && returnsIndirectly(d.type)) {
+    if (d.type->isStructOrUnion() && returnsIndirectly(d.type, memberOf != nullptr)) {
         frameSize_ += 8;
         frameSize_ = alignTo(frameSize_, 8);
         sretSlot = frameSize_;

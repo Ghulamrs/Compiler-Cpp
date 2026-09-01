@@ -1295,9 +1295,13 @@ ExprPtr Parser::postfix() {
                 full.push_back(types_.pointerTo(types_.get(Kind::Void)));
                 for (std::size_t i = 0; i < fn->params().size(); i++)
                     full.push_back(fn->params()[i]);
+                // A call through a member function pointer is a member call,
+                // and the Microsoft ABI's answers - `this` first, and the
+                // hidden return pointer for a class of any size - follow the
+                // call, not the spelling.
                 n = completeCall(called, std::string(), std::move(n),
                                  fn->returns(), full, fn->isVariadicFn(), pos,
-                                 std::move(args));
+                                 std::move(args), true);
                 continue;
             }
             n = finishCall(called, called, std::move(n), fn->returns(),
