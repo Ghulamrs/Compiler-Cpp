@@ -2357,8 +2357,18 @@ void Parser::topLevel(Program &program) {
     // this class's during its own body even though the base already set the
     // pointer to its own table.
     //
-    if (memberOf != nullptr && d.name == localOf(d.qualifier) &&
-        memberOf->polymorphic()) {
+    // **And by its destructor, for the same reason running the other way.**
+    // [class.cdtor]/4: a virtual call from a destructor reaches the final
+    // overrider *in that destructor's class*, so as each level is torn down
+    // the object stops being what the level below it built. Constructors
+    // stored the pointer and destructors never did, so during `~A` the object
+    // still claimed to be a `B` and a virtual call from there ran B's
+    // override against a subobject B had already finished destroying. The
+    // store goes in front of the body and the base's destructor is appended
+    // after it, which is the order the standard fixes.
+    if (memberOf != nullptr && memberOf->polymorphic() &&
+        (d.name == localOf(d.qualifier) ||
+         d.name == "~" + localOf(d.qualifier))) {
         std::vector<StmtPtr> withVptr = storeVptrs(d.qualifier, memberOf, thisOffset_);
         withVptr.push_back(std::move(body));
         body = StmtPtr(new Block(std::move(withVptr)));

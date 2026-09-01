@@ -197,6 +197,9 @@ std::vector<Token> Lexer::tokenize() {
                              "C++11 - write the value in hexadecimal");
             bool isHex = (s[j] == '0' && j + 1 < s.size() &&
                           (s[j + 1] == 'x' || s[j + 1] == 'X'));
+            t.decimal = !(s[j] == '0' && j + 1 < s.size() &&
+                          (s[j + 1] == 'x' || s[j + 1] == 'X' ||
+                           std::isdigit(static_cast<unsigned char>(s[j + 1]))));
             bool floating = (s[j] == '.');
             if (!isHex && !floating) {
                 while (j < s.size() && std::isdigit(static_cast<unsigned char>(s[j]))) j++;

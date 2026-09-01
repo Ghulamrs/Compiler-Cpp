@@ -1,0 +1,2 @@
+x86_64-linux  every constructor and destructor here is written inside its class and is inline by nature, so clang emits one comdat copy as C2/D2 and no C1 or D1 where cxx1 emits both of Itanium's forms - see docs/CONFORMANCE.md, "An inline member function is a strong symbol"
+arm64-darwin  same, and narrower: only A's and B's C1, since neither is ever built as a complete object here - both exist only as bases of C. Every other name agrees, the deleting destructor included

@@ -227,7 +227,13 @@ ExprPtr Parser::comparison(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos) 
         n = ExprPtr(new Binary(op, convert(std::move(lhs), common),
                                    convert(std::move(rhs), common)));
     }
-    n->setType(types_.intType());
+    // **[expr.rel]/1 and [expr.eq]/1: the result is `bool`.** It had been
+    // `int`, which is C's answer, and the difference is visible three ways:
+    // `sizeof(a == b)` is 1 and not 4, overloading on `bool` against `int`
+    // picks the right one, and `auto b = (x == y)` gives something that can
+    // only hold true or false. A bool promotes to int wherever one is wanted,
+    // so nothing that used the old answer as a number has to change.
+    n->setType(types_.get(Kind::Bool));
     return n;
 }
 
@@ -1349,18 +1355,30 @@ ExprPtr Parser::primary(Program *program) {
                                             : fits(Kind::ULong) ? types_.get(Kind::ULong)
                                             : types_.get(Kind::ULongLong);
         else if (t.suffixL)              ty = fits(Kind::Long)  ? types_.get(Kind::Long)
-                                            : fits(Kind::ULong) ? types_.get(Kind::ULong)
-                                            : types_.get(Kind::LongLong);
+                                            : (!t.decimal && fits(Kind::ULong))
+                                                               ? types_.get(Kind::ULong)
+                                            : fits(Kind::LongLong)
+                                                               ? types_.get(Kind::LongLong)
+                                            : types_.get(Kind::ULongLong);
 
         else if (t.wide)                 ty = types_.get(target_.wcharType());
         // [lex.ccon]/2: an ordinary character literal has type char, where C
         // gives it int. So sizeof('a') is 1 here, and a program that stores
         // one in a char is not narrowing anything.
         else if (t.isChar)               ty = types_.get(Kind::Char);
+        // **[lex.icon] table 6, and the two ladders it holds.** A decimal
+        // literal with no suffix climbs int, long, long long and never
+        // reaches an unsigned type; a hexadecimal or octal one has an
+        // unsigned rung above each signed one. One ladder served both here,
+        // and it was neither: `0x80000000` came out `long` where it is
+        // `unsigned int`, so `sizeof` answered 8 for 4 and
+        // `0xFFFFFFFF == -1` was false where C++ makes it true.
         else if (fits(Kind::Int))        ty = types_.intType();
+        else if (!t.decimal && fits(Kind::UInt))
+                                         ty = types_.get(Kind::UInt);
         else if (fits(Kind::Long))       ty = types_.get(Kind::Long);
-
-        else if (fits(Kind::ULong))      ty = types_.get(Kind::ULong);
+        else if (!t.decimal && fits(Kind::ULong))
+                                         ty = types_.get(Kind::ULong);
         else if (fits(Kind::LongLong))   ty = types_.get(Kind::LongLong);
         else                             ty = types_.get(Kind::ULongLong);
         ExprPtr n(new Num(t.value));
@@ -2388,7 +2406,7 @@ ExprPtr Parser::unary() {
         v = decay(std::move(v));
         requireScalar(*v, pos, "'!'");
         ExprPtr node(new Unary('!', std::move(v)));
-        node->setType(types_.intType());
+        node->setType(types_.get(Kind::Bool));   // [expr.unary.op]/9
         return node;
     }
     if (consume("-")) {

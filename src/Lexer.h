@@ -13,6 +13,12 @@ struct Token {
     bool suffixU = false;
     bool suffixL = false;
     bool suffixLL = false;
+    // **[lex.icon] table 6 gives a hexadecimal or octal literal a different
+    // ladder of types from a decimal one** - the unsigned rungs are open to
+    // it and closed to decimal - so which base it was written in has to
+    // survive the lexer. `0x80000000` is `unsigned int`; `2147483648` is
+    // `long`, and never unsigned anything.
+    bool decimal = true;
     bool isFloat = false;
     bool suffixF = false;
 

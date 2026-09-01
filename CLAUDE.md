@@ -275,9 +275,9 @@ x86_64-linux, x86_64-windows and arm64-darwin. Suites at the last commit:
 
 | | run | emit | names vs clang | overload | names vs cl |
 | --- | --- | --- | --- | --- | --- |
-| Mac | 209 | 315 | 106 | 26 | - |
-| Linux | 209 | 315 | - | - | - |
-| Windows | 206 | - | - | - | 83 |
+| Mac | 212 | 324 | 109 | 26 | - |
+| Linux | 212 | 324 | - | - | - |
+| Windows | 209 | - | - | - | 85 |
 
 **Two of the four suites only ever run on one machine.** `names.sh` and
 `overload.sh` both ask clang, and the Linux box has no clang++ - they skip
@@ -1089,8 +1089,8 @@ function.
 | S-04 | By-value aggregates lose their tail bytes on arm64-darwin and x86_64-linux | **fixed** 2026-09-01 |
 | S-05 | Tail padding of a POD base is reused; `sizeof` wrong on all three | **fixed** 2026-09-01 |
 | S-06 | `delete` of a null pointer runs the destructor | **fixed** 2026-09-01 |
-| S-07 | A virtual call in a base destructor reaches the derived override | open |
-| S-08 | Comparisons yield `int`; hex literals skip `unsigned int` | open |
+| S-07 | A virtual call in a base destructor reaches the derived override | **fixed** 2026-09-01 |
+| S-08 | Comparisons yield `int`; hex literals skip `unsigned int` | **fixed** 2026-09-01 |
 | S-09 | Value-initialisation does not zero | open |
 | S-10 | A default argument leaks onto the next function declared | open |
 | A-01 | `this` and the sret pointer are swapped against cl on x86_64-windows | open |
@@ -1107,6 +1107,38 @@ Four more silent wrong answers are recorded in the report and not in this
 table because they were confirmed by a reviewer and not re-run here: `goto`
 past an initialisation, narrowing in list-initialisation, an ambiguity
 [over.ics.rank] requires that is silently resolved, and `const S s;` for a POD.
+
+### S-07 and S-08: the object during teardown, and two types
+
+**A destructor never stored the vptr.** [class.cdtor]/4 says a virtual call
+from a constructor or a destructor reaches the final overrider in *that*
+function's class - the object is what the level currently running built, and
+no more. Constructors stored the pointer as each level ran and destructors
+did not, so on the way down the object still claimed to be the most derived
+thing it had been: during `~A` a virtual call ran C's override, against
+subobjects C had already finished destroying.
+
+The fix is one condition. The store already existed and was already in the
+right place - in front of the body, with the base's call wrapped around it -
+and the test that reached it named only the constructor. A destructor gets it
+now, and a three-level trace matches clang both for an automatic object and
+through a base pointer.
+
+**A comparison yielded `int`, which is C's answer.** [expr.rel]/1 and its
+neighbours make it `bool`, and the difference is visible three ways: `sizeof`
+was 4 where it is 1, overloading on `bool` against `int` chose the wrong
+function, and `auto b = (x == y)` produced something that would hold 3. Four
+sites, one word each. Nothing that used the old answer as a number had to
+change, because a bool promotes to int wherever one is wanted.
+
+**And [lex.icon] table 6 holds two ladders, not one.** A decimal literal with
+no suffix climbs int, long, long long and never reaches an unsigned type; a
+hexadecimal or octal one has an unsigned rung above each signed one. One
+ladder served both, so `0x80000000` came out `long` where it is
+`unsigned int` - which changes `sizeof`, and changes the signedness of any
+comparison written against a mask: `0xFFFFFFFF == -1` was false where C++
+makes it true. Which base a literal was written in now survives the lexer,
+which is what the two ladders need to be told apart.
 
 ### S-06 and S-04, and a sixth site an audit of five missed
 

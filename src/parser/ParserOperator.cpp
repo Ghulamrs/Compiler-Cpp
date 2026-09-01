@@ -254,7 +254,7 @@ ExprPtr Parser::logicalAnd() {
         requireScalar(*n, pos, "'&&'");
         requireScalar(*r, pos, "'&&'");
         ExprPtr node(new Binary(BinOp::LAnd, std::move(n), std::move(r)));
-        node->setType(types_.intType());
+        node->setType(types_.get(Kind::Bool));   // [expr.log.and]/1
         n = std::move(node);
     }
     return n;
@@ -270,7 +270,7 @@ ExprPtr Parser::logicalOr() {
         requireScalar(*n, pos, "'||'");
         requireScalar(*r, pos, "'||'");
         ExprPtr node(new Binary(BinOp::LOr, std::move(n), std::move(r)));
-        node->setType(types_.intType());
+        node->setType(types_.get(Kind::Bool));   // [expr.log.or]/1
         n = std::move(node);
     }
     return n;
