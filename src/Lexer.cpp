@@ -85,6 +85,56 @@ bool Lexer::isKeyword(const std::string &word) {
     return false;
 }
 
+bool Lexer::exactlyADouble(const std::string &s, std::size_t from,
+                           std::size_t to) {
+    unsigned long long m = 0;
+    long long tenth = 0;              // digits seen after the point
+    bool afterPoint = false, overflowed = false, any = false;
+    std::size_t i = from;
+    for (; i < to; i++) {
+        const char c = s[i];
+        if (c == '.') { afterPoint = true; continue; }
+        if (c == 'e' || c == 'E') break;
+        if (!std::isdigit(static_cast<unsigned char>(c))) break;
+        any = true;
+        if (m > (0xFFFFFFFFFFFFFFFFULL - 9) / 10) overflowed = true;
+        else m = m * 10 + static_cast<unsigned long long>(c - '0');
+        if (afterPoint) tenth++;
+    }
+    if (!any || overflowed) return false;
+
+    long long exp10 = -tenth;
+    if (i < to && (s[i] == 'e' || s[i] == 'E')) {
+        i++;
+        bool neg = false;
+        if (i < to && (s[i] == '+' || s[i] == '-')) { neg = s[i] == '-'; i++; }
+        long long e = 0;
+        for (; i < to && std::isdigit(static_cast<unsigned char>(s[i])); i++) {
+            if (e > 100000) return false;
+            e = e * 10 + (s[i] - '0');
+        }
+        exp10 += neg ? -e : e;
+    }
+
+    // **A negative power of ten divides out only through its fives.** 10^-k
+    // is 2^-k / 5^k, and the halves are free in binary - so the value is a
+    // dyadic rational exactly when 5^k divides the digits.
+    while (exp10 < 0) {
+        if (m % 5 != 0) return false;
+        m /= 5;
+        exp10++;
+    }
+    // A positive power of ten is exact as long as it does not overflow the
+    // accumulator; anything it would is called inexact rather than guessed at.
+    while (exp10 > 0) {
+        if (m > 0xFFFFFFFFFFFFFFFFULL / 10) return false;
+        m *= 10;
+        exp10--;
+    }
+    while (m != 0 && m % 2 == 0) m /= 2;      // the factors of two are free
+    return m < (1ULL << 53);
+}
+
 void Lexer::digitSeparator(const std::string &s, std::size_t at) const {
     if (at < s.size() && s[at] == '\'' && at + 1 < s.size() &&
         std::isalnum(static_cast<unsigned char>(s[at + 1])))
@@ -210,7 +260,9 @@ std::vector<Token> Lexer::tokenize() {
             if (floating) {
                 t.isFloat = true;
                 t.dvalue = std::strtold(s.c_str() + i, &stop);
+                const std::size_t from = i;
                 i = static_cast<std::size_t>(stop - s.c_str());
+                t.exactInDouble = exactlyADouble(s, from, i);
 
                 digitSeparator(s, i);
                 if (i < s.size() && (s[i] == 'f' || s[i] == 'F')) { t.suffixF = true; i++; }

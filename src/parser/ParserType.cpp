@@ -235,6 +235,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     std::vector<Member> members;
     int widest = 1;
     long long bitCursor = 0;
+    // **The Microsoft ABI allocates bitfields in units of the declared type**,
+    // and starts a new unit whenever the declared type changes or the current
+    // one is full - where Itanium packs them end to end and lets a unit hold
+    // fields of different types. One walk served both, which is Itanium's, so
+    // `{int a:3; char b:2;}` was 4 bytes on Windows where cl says 8. These
+    // two track the unit that is open: where it starts, and how wide the type
+    // that opened it is. Zero means none is open.
+    const bool msBits = target_.microsoftNames();
+    long long msUnitStart = 0, msUnitBits = 0;
     long long widestBits = 0;
 
     // **The base subobject is laid down first, at offset 0**, and its members
@@ -500,14 +509,39 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 if (w < 0 || w > unitBits)
                     src_.fail(cpos, "a bit-field of " + std::to_string(w) +
                                     " bits does not fit in '" + base->describe() + "'");
+                // **A zero-width bitfield does not raise the class's
+                // alignment**, on either ABI. `{char a; int :0; char b;}` is
+                // 5 bytes aligned 1 on Itanium and 2 aligned 1 on Microsoft;
+                // cxx1 made it 8 aligned 4, which matched neither, because
+                // the `int` was allowed to widen the class the way a real
+                // member would.
                 int a = base->align(target_);
-                if (a > widest) widest = a;
+                if (a > widest && w != 0) widest = a;
                 if (w == 0) {
-                    bitCursor = alignTo(bitCursor, unitBits);
+                    // Itanium rounds the cursor to the next unit of this
+                    // type, which is what makes the *next* field start there.
+                    // The Microsoft ABI closes the open unit instead, and the
+                    // next field begins at the next whole byte.
+                    if (msBits) { bitCursor = alignTo(bitCursor, 8); msUnitBits = 0; }
+                    else        bitCursor = alignTo(bitCursor, unitBits);
                 } else if (kind != Kind::Union) {
-                    if (bitCursor % unitBits + w > unitBits)
-                        bitCursor = alignTo(bitCursor, unitBits);
-                    bitCursor += w;
+                    if (msBits) {
+                        if (msUnitBits != unitBits ||
+                            bitCursor - msUnitStart + w > msUnitBits) {
+                            const long long full = msUnitBits != 0
+                                ? msUnitStart + msUnitBits : bitCursor;
+                            const long long byteCursor =
+                                ((bitCursor > full ? bitCursor : full) + 7) / 8;
+                            msUnitStart = alignTo(byteCursor, a) * 8;
+                            msUnitBits = unitBits;
+                            bitCursor = msUnitStart;
+                        }
+                        bitCursor += w;
+                    } else {
+                        if (bitCursor % unitBits + w > unitBits)
+                            bitCursor = alignTo(bitCursor, unitBits);
+                        bitCursor += w;
+                    }
                 }
                 if (kind == Kind::Union && w > unitBits) w = unitBits;
                 if (kind == Kind::Union && w > widestBits) widestBits = w;
@@ -593,6 +627,32 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     at = 0;
                     bitOff = 0;
                     if (w > widestBits) widestBits = w;
+                } else if (msBits) {
+                    // A new unit whenever the declared type is not the one
+                    // that opened the current unit, or what is open cannot
+                    // hold this field. Measured with clang for this ABI:
+                    // `{char a:7; int b:25;}` is 8 bytes, the int starting a
+                    // unit of its own at offset 4 rather than joining the
+                    // char's.
+                    //
+                    // **A unit occupies its whole width once opened**, however
+                    // little of it a field uses - which is the half that
+                    // decides the size. `{int a:3; char b:2;}` puts the char
+                    // at offset 4 and not offset 1, and is 8 bytes rather
+                    // than 4.
+                    if (msUnitBits != unitBits ||
+                        bitCursor - msUnitStart + w > msUnitBits) {
+                        const long long full = msUnitBits != 0
+                            ? msUnitStart + msUnitBits : bitCursor;
+                        const long long byteCursor =
+                            ((bitCursor > full ? bitCursor : full) + 7) / 8;
+                        msUnitStart = alignTo(byteCursor, a) * 8;
+                        msUnitBits = unitBits;
+                        bitCursor = msUnitStart;
+                    }
+                    at = msUnitStart / 8;
+                    bitOff = bitCursor - msUnitStart;
+                    bitCursor += w;
                 } else {
                     if (bitCursor % unitBits + w > unitBits)
                         bitCursor = alignTo(bitCursor, unitBits);
@@ -674,7 +734,10 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                              ? types_.pointerTo(d.type->referent()) : d.type;
             int a = slot->align(target_);
             if (a > widest) widest = a;
-            long long byteCursor = (bitCursor + 7) / 8;
+            const long long openEnd = (msBits && msUnitBits != 0)
+                ? msUnitStart + msUnitBits : bitCursor;
+            long long byteCursor =
+                ((bitCursor > openEnd ? bitCursor : openEnd) + 7) / 8;
             long long at = (kind == Kind::Union) ? 0 : alignTo(byteCursor, a);
             members.push_back(Member{ d.name, d.type, static_cast<int>(at), 0, 0,
                                       access });
@@ -693,6 +756,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             long long endBits = (at + slot->size(target_)) * 8;
             if (kind == Kind::Union) { if (endBits > widestBits) widestBits = endBits; }
             else bitCursor = endBits;
+            msUnitBits = 0;          // a member that is not a bitfield closes the unit
             if (!consume(",")) break;
         }
         if (!heldBody) expect(";");
@@ -716,7 +780,12 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         if (widest < slot) widest = slot;
     }
 
-    long long totalBits = (kind == Kind::Union) ? widestBits : bitCursor;
+    // The open unit's full width counts toward the class's size, not just the
+    // bits a field used in it.
+    const long long lastBits = (msBits && msUnitBits != 0 &&
+                                msUnitStart + msUnitBits > bitCursor)
+                             ? msUnitStart + msUnitBits : bitCursor;
+    long long totalBits = (kind == Kind::Union) ? widestBits : lastBits;
 
     // **An empty class is legal in C++ and has size 1**, where C required at
     // least one member. That rule arrived with member functions rather than

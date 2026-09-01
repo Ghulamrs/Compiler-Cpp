@@ -275,9 +275,9 @@ x86_64-linux, x86_64-windows and arm64-darwin. Suites at the last commit:
 
 | | run | emit | names vs clang | overload | names vs cl |
 | --- | --- | --- | --- | --- | --- |
-| Mac | 219 | 339 | 114 | 26 | - |
-| Linux | 219 | 339 | - | - | - |
-| Windows | 216 | - | - | - | 90 |
+| Mac | 221 | 345 | 116 | 26 | - |
+| Linux | 221 | 345 | - | - | - |
+| Windows | 218 | - | - | - | 92 |
 
 **Two of the four suites only ever run on one machine.** `names.sh` and
 `overload.sh` both ask clang, and the Linux box has no clang++ - they skip
@@ -1095,18 +1095,71 @@ function.
 | S-10 | A default argument leaks onto the next function declared | **fixed** 2026-09-01 |
 | A-01 | `this` and the sret pointer are swapped against cl on x86_64-windows | **fixed** 2026-09-01 |
 | A-02 | A vtable references an implicit destructor that is never emitted | **fixed** 2026-09-01 |
-| A-03 | Bitfield layout is Itanium's on Windows; zero-width fields match no ABI | open |
+| A-03 | Bitfield layout is Itanium's on Windows; zero-width fields match no ABI | **fixed** 2026-09-01 |
 | A-04 | `double` to `unsigned long long` is a bare signed convert on x86 | **fixed** 2026-09-01 |
 | A-05 | An empty class argument consumes a register on arm64-darwin | **fixed** 2026-09-01 |
 | C-01 | A `Signature &` into `functions_` dangles across a default-argument re-parse | **fixed** 2026-09-01 |
 | C-02 | An array's size overflows a signed `int`; the assembler is handed a negative length | **fixed** 2026-09-01 |
-| C-03 | The host's `long double` decides the target's x87 constants | open |
-| C-04 | `long` narrowings make the front end behave differently on the Windows build | open |
+| C-03 | The host's `long double` decides the target's x87 constants | **fixed** 2026-09-01 |
+| C-04 | `long` narrowings make the front end behave differently on the Windows build | **partly fixed** - the array length is `long long`; the `#if` evaluator is not |
+
+**All nineteen are closed but the tail of C-04**, which is the preprocessor's
+`#if` evaluator still working in `long`. Everything else the audit found has a
+fix and a case, and every fix was verified on the three boxes before it was
+committed.
 
 Four more silent wrong answers are recorded in the report and not in this
 table because they were confirmed by a reviewer and not re-run here: `goto`
 past an initialisation, narrowing in list-initialisation, an ambiguity
 [over.ics.rank] requires that is silently resolved, and `const S s;` for a POD.
+
+### A-03 and C-03: two ABIs' bitfields, and a constant the host was choosing
+
+**One bitfield walk served both ABIs, and it was Itanium's.** Itanium packs
+bitfields end to end and lets one allocation unit hold fields of different
+declared types. The Microsoft ABI gives each declared type its own unit,
+starts a new one whenever the type changes or the current one is full, and
+**charges for the whole unit however little of it is used** - that last part
+is what decides the size, and it is what the first attempt here missed:
+`{int a:3; char b:2;}` puts the char at offset 4, not offset 1. Eight shapes
+are pinned in `tests/cases/bitfield-layout.cpp`, each measured with clang for
+the ABI it sits under.
+
+**A zero-width bitfield matched neither ABI.** `{char a; int :0; char b;}` is
+5 bytes aligned 1 on Itanium and 2 aligned 1 on Windows; cxx1 made it 8
+aligned 4, because the `int` was allowed to widen the class the way a real
+member would. It does not: it moves the next field and contributes nothing
+else.
+
+**And the host was choosing the target's constants.** A floating literal is
+read with the host's `strtold`, and the host is not the target: a `long double`
+carries 64 bits of significand where gcc built this compiler and 53 where
+clang did, so `long double x = 0.1L;` compiled for x86_64-linux was
+`0xCCCCCCCCCCCCD000` from a Mac-built cxx1 and the correct
+`0xCCCCCCCCCCCCCCCD` from a Linux-built one. **Three-box verification cannot
+see this**, and that is the interesting part: each box builds its own compiler
+and each agrees with itself.
+
+The question asked is now one the *digits* answer rather than the host: a
+literal that is exactly a double is parsed identically by every host and
+emitted identically by all three targets, and one that is not is refused where
+the target's `long double` is wider than a double - which today is
+x86_64-linux alone. `10^-k` divides out only through its fives, so the test is
+integer arithmetic on the digit string and nothing else.
+
+**This trades a capability for consistency, and says so.** A Linux-built cxx1
+could spell `0.1L` exactly and no longer will. Approximating it differently
+per build machine was the alternative, and a silent difference that only
+appears when someone rebuilds elsewhere is worth less than a refusal that says
+what is missing. Lifting it means converting decimal to binary in software,
+which is its own step and is written down as one.
+
+**Why there is no `.error` case for that refusal:** it fires for one target
+and not the other two, and `run.sh` compiles for the host. A case that is
+refused on the Linux box and accepted on the Mac would make the suite say
+different things on different machines, which is the fault this fix exists to
+remove. The positive half - the literals that are exact, and their emitted
+bytes - is a case.
 
 ### A-05 and C-02, and a proxy that was true of every class the parser builds
 

@@ -1416,6 +1416,34 @@ ExprPtr Parser::primary(Program *program) {
 
     if (peek().kind == TokenKind::Num && peek().isFloat) {
         const Token &t = peek();
+        // **A `long double` this compiler cannot spell the same way on every
+        // machine is refused.** The literal is parsed with the host's
+        // `strtold`, and the host is not the target: on the Linux box a
+        // `long double` carries 64 bits of significand and on the Mac it
+        // carries 53, so `long double x = 0.1L;` compiled for x86_64-linux
+        // gave a different constant depending on which machine built the
+        // compiler - 0xCCCCCCCCCCCCD000 against the correct
+        // 0xCCCCCCCCCCCCCCCD. Three-box verification cannot see that: each
+        // box agrees with itself.
+        //
+        // So the question asked is one the digits answer, not the host: a
+        // literal that *is* exactly a double is parsed exactly by every host
+        // and emitted identically by all three; one that is not is refused
+        // where the target's `long double` is wider than a double, which
+        // today is x86_64-linux alone. Approximating it differently per build
+        // machine is the one thing not on offer. Lifting this means a decimal
+        // to binary conversion in software, which is its own step.
+        if (t.suffixL && !t.exactInDouble &&
+            target_.sizeOf(Kind::LongDouble) > target_.sizeOf(Kind::Double))
+            src_.fail(t.pos, "this 'long double' literal needs more precision "
+                             "than a double holds, and this compiler reads a "
+                             "floating literal with the host's own "
+                             "'long double' - which is not always the "
+                             "target's. It would be a different constant "
+                             "depending on which machine built the compiler, "
+                             "so it is refused rather than approximated: "
+                             "write it as a 'double', or as a hexadecimal "
+                             "float once those arrive");
         ExprPtr n(new Num(t.dvalue));
         n->setType(types_.get(t.suffixF ? Kind::Float
                             : t.suffixL ? Kind::LongDouble : Kind::Double));
