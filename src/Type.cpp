@@ -21,7 +21,18 @@ int Type::size(const Target &t) const {
     // class with single inheritance. Measured with clang for both targets.
     if (kind_ == Kind::MemberPointer) return t.microsoftNames() ? 4 : 8;
     if (isReference()) return pointee_->size(t);
-    if (kind_ == Kind::Array) return static_cast<int>(length_) * pointee_->size(t);
+    // **In `long long`, because the multiply itself was the bug.** Both
+    // operands were `int`, so `static int a[600000000]` overflowed a signed
+    // int and the backend was handed a negative length: `.zero -1894967296`,
+    // emitted by the shipped `-O2` binary without a word. The parser refuses
+    // an array this compiler cannot lay out, at the declaration and by name,
+    // so the clamp below is unreachable - it is here so that the arithmetic
+    // is defined whatever reaches it.
+    if (kind_ == Kind::Array) {
+        const long long total =
+            length_ * static_cast<long long>(pointee_->size(t));
+        return total > 2147483647LL ? 2147483647 : static_cast<int>(total);
+    }
     if (kind_ == Kind::Struct || kind_ == Kind::Union) return size_;
     return t.sizeOf(kind_);
 }

@@ -136,6 +136,32 @@ Arm64Darwin::AggPlan Arm64Darwin::planFor(const Type *t) const {
     Kind elem;
     int n = homogeneousFloatCount(t, &elem);
     if (n > 0) { p.hfa = n; p.elem = elem; return p; }
+
+    // **An empty class is ignored in the parameter list on this platform**,
+    // and `sizeof` being 1 is not the question. Measured with clang:
+    // `take(Empty, int x, int y)` puts x in w0, and `take(Wrap, int x, int y)`
+    // - where Wrap's only member is an empty class - puts x in w1. cxx1 gave
+    // the empty one a register and shifted everything after it along, which
+    // was consistent with itself and wrong against anything clang compiled.
+    //
+    // **Asked as "no members and no vptr", not as `dataSize() == 0`.** The
+    // first attempt used dataSize, which the parser sets on classes it lays
+    // out and nothing sets on the types the compiler synthesises - so a
+    // pointer to a member function, which is a struct of one or two words
+    // built in TypeTable, answered 0 and was passed in no register at all.
+    // The member list is what actually says whether a class carries
+    // anything, whoever built it.
+    //
+    // Zero words falls through the loops that place and spill arguments
+    // without special-casing: no register is taken, and nothing is stored.
+    // The SysV backend already had this rule for returns, and its comment
+    // says arm64 "classif[ies] differently and w[as] unaffected" - it was
+    // affected, on the parameter side.
+    if (t->isStructOrUnion() && t->members().empty() && !t->polymorphic()) {
+        p.words = 0;
+        return p;
+    }
+
     int size = t->size(target_);
     if (size <= 16) { p.words = (size + 7) / 8; return p; }
     p.byRef = true;

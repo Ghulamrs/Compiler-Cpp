@@ -1110,7 +1110,12 @@ const Type *Parser::arraySuffix(const Type *base, std::size_t pos) {
     while (consume("[")) {
         if (consume("]")) { dims.push_back(-1); continue; }
         std::size_t dpos = peek().pos;
-        long n = constantExpression("an array length");
+        // `long long`, not `long`: this compiler is built by cl on one of its
+        // three machines, where a `long` is 32 bits - so `char a[0x100000001]`
+        // silently became `char a[1]` there and kept its full length on the
+        // other two. The same source, two answers, decided by which box built
+        // the compiler.
+        long long n = constantExpression("an array length");
         if (n <= 0)
             src_.fail(dpos, "an array length must be positive, not " +
                             std::to_string(n));
@@ -1122,8 +1127,21 @@ const Type *Parser::arraySuffix(const Type *base, std::size_t pos) {
             src_.fail(pos, "only the first dimension may be left empty - the "
                            "others decide how far one step moves");
 
-    for (std::size_t i = dims.size(); i-- > 0; )
+    // **An object this compiler cannot measure is refused where it is
+    // written.** Every size here is a signed 32-bit count - offsets, frame
+    // slots and the emitted `.zero` alike - and an array that overflows one
+    // used to be laid out anyway, with the negative result written straight
+    // into the assembly. Checked by division so the check itself cannot
+    // overflow.
+    for (std::size_t i = dims.size(); i-- > 0; ) {
+        const long long elem = base->size(target_);
+        if (dims[i] > 0 && elem > 0 && dims[i] > 2147483647LL / elem)
+            src_.fail(pos, "this array is larger than this compiler can lay "
+                           "out: " + std::to_string(dims[i]) + " elements of " +
+                           std::to_string(elem) + " bytes is past the "
+                           "2147483647 an object here is measured in");
         base = types_.arrayOf(base, dims[i]);
+    }
     return base;
 }
 

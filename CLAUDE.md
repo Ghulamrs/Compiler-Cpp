@@ -275,9 +275,9 @@ x86_64-linux, x86_64-windows and arm64-darwin. Suites at the last commit:
 
 | | run | emit | names vs clang | overload | names vs cl |
 | --- | --- | --- | --- | --- | --- |
-| Mac | 217 | 336 | 113 | 26 | - |
-| Linux | 217 | 336 | - | - | - |
-| Windows | 214 | - | - | - | 89 |
+| Mac | 219 | 339 | 114 | 26 | - |
+| Linux | 219 | 339 | - | - | - |
+| Windows | 216 | - | - | - | 90 |
 
 **Two of the four suites only ever run on one machine.** `names.sh` and
 `overload.sh` both ask clang, and the Linux box has no clang++ - they skip
@@ -1097,9 +1097,9 @@ function.
 | A-02 | A vtable references an implicit destructor that is never emitted | **fixed** 2026-09-01 |
 | A-03 | Bitfield layout is Itanium's on Windows; zero-width fields match no ABI | open |
 | A-04 | `double` to `unsigned long long` is a bare signed convert on x86 | **fixed** 2026-09-01 |
-| A-05 | An empty class argument consumes a register on arm64-darwin | open |
+| A-05 | An empty class argument consumes a register on arm64-darwin | **fixed** 2026-09-01 |
 | C-01 | A `Signature &` into `functions_` dangles across a default-argument re-parse | **fixed** 2026-09-01 |
-| C-02 | An array's size overflows a signed `int`; the assembler is handed a negative length | open |
+| C-02 | An array's size overflows a signed `int`; the assembler is handed a negative length | **fixed** 2026-09-01 |
 | C-03 | The host's `long double` decides the target's x87 constants | open |
 | C-04 | `long` narrowings make the front end behave differently on the Windows build | open |
 
@@ -1107,6 +1107,40 @@ Four more silent wrong answers are recorded in the report and not in this
 table because they were confirmed by a reviewer and not re-run here: `goto`
 past an initialisation, narrowing in list-initialisation, an ambiguity
 [over.ics.rank] requires that is silently resolved, and `const S s;` for a POD.
+
+### A-05 and C-02, and a proxy that was true of every class the parser builds
+
+**Apple's arm64 ABI ignores an empty class in the parameter list**, and
+`sizeof` being 1 is not the question. cxx1 gave one a register and shifted
+every argument after it along - consistent with itself, so only a mixed link
+showed it. Measured with clang: `take(Empty, int x, int y)` puts x in w0, and
+`take(Wrap, int x, int y)`, where Wrap's only member is an empty class, puts x
+in w1. An empty *base* is ignored; a member is not.
+
+**The first attempt asked `dataSize() == 0`**, which is true of every empty
+class the parser lays out - and also of every type the compiler *synthesises*,
+because nothing sets dataSize on those. A pointer to a member function is a
+struct of one or two words built in `TypeTable`, so it answered 0 and was
+passed in no register at all: `member-function-pointer` died with a bus error.
+The member list is what actually says whether a class carries anything,
+whoever built it, and that is what the test asks now. Worth remembering as a
+shape: a field the parser fills in is not a property of the type system, and
+the backends see both kinds.
+
+**And every size here is a signed 32-bit count.** `static int a[600000000]`
+overflowed one and was laid out anyway - `.zero -1894967296`, written into the
+assembly by the shipped `-O2` binary without a word. The multiply is in
+`long long` now, and an array this compiler cannot measure is refused where it
+is written, by name, with the arithmetic done by division so the check itself
+cannot overflow. The array length is read as `long long` rather than `long`
+while the line is open, which is half of C-04: on the box where cl builds this
+compiler a `long` is 32 bits, and `char a[0x100000001]` silently became
+`char a[1]` there and kept its length on the other two.
+
+**The sanitizer build is clean on the whole suite now**, where before it
+reported this overflow - which is the point of having kept the control: the
+same build still fails to report anything only because there is nothing left
+to report.
 
 ### A-01 and A-04: the register `this` travels in, and the one x86 lacks
 
