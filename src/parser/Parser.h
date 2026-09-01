@@ -1062,7 +1062,8 @@ private:
     ExprPtr completeCall(const std::string &name, const std::string &symbol,
                          ExprPtr callee, const Type *returns,
                          const std::vector<const Type *> &params, bool variadic,
-                         std::size_t pos, std::vector<ExprPtr> args);
+                         std::size_t pos, std::vector<ExprPtr> args,
+                        bool hasThis = false);
 
     void parameterTypes(std::vector<const Type *> &params, bool &variadic);
 

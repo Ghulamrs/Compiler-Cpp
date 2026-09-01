@@ -2511,6 +2511,10 @@ void Parser::topLevel(Program &program) {
                                          variadic, regSaveSlot, d.pos,
                                          std::move(fnVars_)));
     program.functions.back().setSymbol(definedSymbol);
+    // The definition side of the same question: a member's first parameter is
+    // its `this`, and on the Microsoft ABI that is what the hidden return
+    // pointer has to come *after*.
+    program.functions.back().setHasThis(!d.qualifier.empty());
     program.functions.back().setHasLandingPads(functionHasPads_);
     functionHasPads_ = false;
     functionTypeIndex_ = 0;

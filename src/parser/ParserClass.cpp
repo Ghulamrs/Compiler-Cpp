@@ -563,8 +563,10 @@ std::string Parser::synthesizeThunk(const std::string &cls, const Type *type,
             if (functions_[(*set)[k]].symbol == slot.symbol) target = &functions_[(*set)[k]];
     const Type *returns = target != nullptr ? target->returns : types_.get(Kind::Void);
 
+    // A thunk forwards a member call and carries the same `this`, which is
+    // what decides where the Microsoft ABI puts a hidden return pointer.
     ExprPtr call = completeCall(slot.name, slot.symbol, nullptr, returns, full,
-                                false, pos, std::move(args));
+                                false, pos, std::move(args), true);
     std::vector<StmtPtr> body;
     body.push_back(StmtPtr(new Return(returns->isVoid() ? nullptr : std::move(call))));
     if (returns->isVoid()) body.insert(body.begin(), StmtPtr(new ExprStmt(std::move(call))));

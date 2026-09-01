@@ -463,7 +463,8 @@ ExprPtr Parser::incDec(ExprPtr target, bool increment, bool prefix, std::size_t 
             const Signature &sig = resolveOverload(name, args, pos);
             applyDefaults(sig, args, pos);
             return completeCall(name, sig.symbol, nullptr, sig.returns,
-                                sig.params, sig.variadic, pos, std::move(args));
+                                sig.params, sig.variadic, pos, std::move(args),
+                                !sig.owner.empty());
         }
         case OperatorChoice::None:
             src_.fail(pos, std::string("'") + spelling + "' needs a '" + name +

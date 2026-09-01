@@ -706,6 +706,44 @@ void X86_64Linux::genConversion(const Type *from, const Type *to) {
     }
 
     const char *op = genKind(from) == Kind::Double ? "cvttsd2si" : "cvttss2si";
+
+    // **`cvttsd2si` is a *signed* conversion, and there is no unsigned one.**
+    // For anything narrower than 64 bits that costs nothing - convert to a
+    // signed 64 and truncate, which is what `canonicalise` does below - but a
+    // `double` at or above 2^63 has no signed answer, and the instruction
+    // returns the integer indefinite value: 0x8000000000000000. So
+    // `(unsigned long long)12000000000000000000.0` came out
+    // 9223372036854775808 on both x86 targets, where arm64 has `fcvtzu` and
+    // was right all along. The house bug class, one target correct and two
+    // not.
+    //
+    // Subtract 2^63 first where the value is at or above it, convert what is
+    // left, and put the bit back. This is the mirror of the halving trick the
+    // other direction already has a few lines up, and it branches rather than
+    // using `cmov` because the Microsoft speller knows `jae` and not `cmovb`.
+    if (to->size(target_) == 8 && !to->isSigned(target_)) {
+        const bool dbl = genKind(from) == Kind::Double;
+        const int id = nextLabel();
+        if (dbl) {
+            a_->ins("movabs", imm(0x43E0000000000000ULL), reg("%rdx"));
+            a_->ins("movq", reg("%rdx"), reg("%xmm1"));       // 2^63 as double
+        } else {
+            a_->ins("mov", imm(0x5F000000ULL), reg("%edx"));
+            a_->ins("movd", reg("%edx"), reg("%xmm1"));       // 2^63 as float
+        }
+        a_->ins(dbl ? "ucomisd" : "ucomiss", reg("%xmm1"), reg("%xmm0"));
+        a_->ins("jae", lbl(label("u64big", id)));
+        a_->ins(op, reg("%xmm0"), reg("%rax"));
+        a_->ins("jmp", lbl(label("u64end", id)));
+        a_->defLabel(label("u64big", id));
+        a_->ins(dbl ? "subsd" : "subss", reg("%xmm1"), reg("%xmm0"));
+        a_->ins(op, reg("%xmm0"), reg("%rax"));
+        a_->ins("movabs", imm(0x8000000000000000ULL), reg("%rdx"));
+        a_->ins("xor", reg("%rdx"), reg("%rax"));
+        a_->defLabel(label("u64end", id));
+        return;
+    }
+
     a_->ins(op, reg("%xmm0"), reg("%rax"));
     canonicalise(to);
 }
@@ -902,9 +940,28 @@ void X86_64Linux::visit(const Call &n) {
                 containsX87(n.type(), target_) ||
                 (byRef ? !msInRegister(n.type()->size(target_))
                        : n.type()->size(target_) > abi_.structReturnLimit));
-    int ints = sret ? 1 : 0, sses = sret && abi_.positional ? 1 : 0;
+    // **Where the hidden return pointer sits, and the one ABI that moves it.**
+    // Itanium puts it in front of everything. The Microsoft ABI does too - for
+    // a free function. For a *member* function cl passes `this` first and the
+    // return pointer second, measured with clang for this ABI:
+    // `movq 56(%rsp), %rcx; leaq 32(%rsp), %rdx; call ?get@W@@QEAA?AUBig@@H@Z`,
+    // and the callee reads its `k` through %rcx and writes its result through
+    // %rdx. cxx1 reserved slot 0 for the pointer ahead of every parameter
+    // including `this`, so it passed the two the other way round - on both
+    // sides of the call, which is why nothing inside cxx1 noticed and why any
+    // link against cl-compiled code was silently wrong.
+    const bool msThisFirst = sret && abi_.positional && n.hasThis();
+    int ints = (sret && !msThisFirst) ? 1 : 0;
+    int sses = (sret && abi_.positional && !msThisFirst) ? 1 : 0;
     int stackSlots = 0;
+    std::size_t argIndex = 0;
     for (const ExprPtr &arg : n.args()) {
+        // The pointer takes the slot after `this`, so everything from the
+        // second argument on starts one further along. Counted at the head of
+        // the turn that needs it rather than after the one before, because
+        // this loop leaves by more than one path.
+        if (msThisFirst && argIndex == 1) { ints++; sses++; }
+        argIndex++;
         const Type *t = arg->type();
         std::vector<bool> lanes;
         bool memory;
@@ -1067,7 +1124,9 @@ void X86_64Linux::visit(const Call &n) {
 
     if (n.callee() != nullptr) pop("%r11");
 
-    if (sret) a_->ins("lea", mem((-n.resultSlot()), "%rbp"), reg(abi_.intRegs[0]));
+    if (sret)
+        a_->ins("lea", mem((-n.resultSlot()), "%rbp"),
+                reg(abi_.intRegs[msThisFirst ? 1 : 0]));
 
     a_->ins("mov", imm(((n.isVariadic() && abi_.variadicSseCountInAl) ? sses : 0)), reg("%rax"));
 
@@ -1455,9 +1514,13 @@ void X86_64Linux::emit(const Function &fn) {
                  fn.hasLandingPads() ? ".Lexception." + fn.symbol()
                                      : std::string());
 
+    // The definition side of the same rule: for a member function on the
+    // Microsoft ABI the hidden return pointer arrives in the *second* integer
+    // register, `this` having taken the first.
     sretSlot_ = fn.sretSlot();
+    const bool msThisFirst = sretSlot_ != 0 && abi_.positional && fn.hasThis();
     if (sretSlot_ != 0)
-        a_->ins("mov", reg(abi_.intRegs[0]), local(sretSlot_));
+        a_->ins("mov", reg(abi_.intRegs[msThisFirst ? 1 : 0]), local(sretSlot_));
 
     regSave_ = fn.regSaveSlot();
     if (fn.isVariadic() && abi_.positional) {
@@ -1476,12 +1539,16 @@ void X86_64Linux::emit(const Function &fn) {
     }
 
     const std::vector<Param> &ps = fn.params();
-    int ints = (sretSlot_ != 0) ? 1 : 0;
-    int sses = (sretSlot_ != 0 && abi_.positional) ? 1 : 0;
+    int ints = (sretSlot_ != 0 && !msThisFirst) ? 1 : 0;
+    int sses = (sretSlot_ != 0 && abi_.positional && !msThisFirst) ? 1 : 0;
 
     int stackAt = 16 + abi_.shadowBytes;
     bool byRef = abi_.aggregatesByReference;
     for (std::size_t i = 0; i < ps.size(); i++) {
+        // Past `this`, and on this ABI the hidden return pointer sits between
+        // it and everything after - so the second parameter starts one slot
+        // further along than the count alone would say.
+        if (msThisFirst && i == 1) { ints++; sses++; }
         const Type *pt = ps[i].type;
         if (byRef && pt->isStructOrUnion()) {
             bool inReg = ints + 1 <= abi_.intCount;

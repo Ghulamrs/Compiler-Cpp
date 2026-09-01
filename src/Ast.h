@@ -247,6 +247,16 @@ public:
     int argSlot(std::size_t i) const {
         return i < argSlots_.size() ? argSlots_[i] : 0;
     }
+
+    // **Whether the first argument is a `this` pointer**, which the Microsoft
+    // ABI needs to know and the Itanium one does not: cl puts `this` in the
+    // first integer register and the hidden return pointer in the second,
+    // where a free function returning the same struct puts the return pointer
+    // first. The parser lowers a member call to an ordinary one with the
+    // object's address in front, so by the time a backend sees it the two are
+    // the same shape - this is the one bit that tells them apart.
+    bool hasThis() const { return hasThis_; }
+    void setHasThis(bool t) { hasThis_ = t; }
     void accept(Visitor &v) const override { v.visit(*this); }
 private:
     std::string name_;
@@ -257,6 +267,7 @@ private:
     int resultSlot_;
     int namedArgs_;
     std::vector<int> argSlots_;
+    bool hasThis_ = false;
 };
 
 class Postfix final : public Expr {
@@ -597,6 +608,11 @@ public:
     const std::string &symbol() const { return symbol_.empty() ? name_ : symbol_; }
     void setSymbol(std::string s) { symbol_ = std::move(s); }
 
+    // The definition side of Call::hasThis - the same question asked of the
+    // function being emitted rather than of a call to one.
+    bool hasThis() const { return hasThis_; }
+    void setHasThis(bool t) { hasThis_ = t; }
+
     // A second name for the same code, emitted as an extra label in front of
     // it. Itanium gives a constructor two - C1 for a complete object and C2
     // for a base subobject - and clang emits both, so an object file that
@@ -626,6 +642,7 @@ public:
     bool hasLandingPads() const { return landingPads_; }
     void setHasLandingPads(bool b) { landingPads_ = b; }
 private:
+    bool hasThis_ = false;
     std::string name_;
     std::string symbol_;
     std::string alias_;

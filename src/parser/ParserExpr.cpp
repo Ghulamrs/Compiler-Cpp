@@ -117,7 +117,8 @@ ExprPtr Parser::overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
         args.push_back(std::move(rhs));
         const Signature &sig = resolveOverload(name, args, pos);
         return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params,
-                            sig.variadic, pos, std::move(args));
+                            sig.variadic, pos, std::move(args),
+                            !sig.owner.empty());
     }
     case OperatorChoice::None:
         break;
@@ -159,7 +160,8 @@ ExprPtr Parser::overloadedUnary(const char *spelling, ExprPtr &operand,
         args.push_back(std::move(operand));
         const Signature &sig = resolveOverload(name, args, pos);
         return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params,
-                            sig.variadic, pos, std::move(args));
+                            sig.variadic, pos, std::move(args),
+                            !sig.owner.empty());
     }
     case OperatorChoice::None:
         break;
@@ -1537,7 +1539,8 @@ ExprPtr Parser::primary(Program *program) {
             const Signature &sig = resolveOverload(full, args, qpos);
             applyDefaults(sig, args, qpos);
             return completeCall(full, sig.symbol, nullptr, sig.returns,
-                                sig.params, sig.variadic, qpos, std::move(args));
+                                sig.params, sig.variadic, qpos, std::move(args),
+                                !sig.owner.empty());
         }
         if (ExprPtr v = objectRef(full)) return v;
         if (const EnumConst *e = findEnum(full)) {
@@ -1672,7 +1675,8 @@ ExprPtr Parser::primary(Program *program) {
             const Signature &sig = resolveOverload(name, args, pos);
             applyDefaults(sig, args, pos);
             return completeCall(name, sig.symbol, nullptr, sig.returns, sig.params,
-                                sig.variadic, pos, std::move(args));
+                                sig.variadic, pos, std::move(args),
+                                !sig.owner.empty());
         }
 
         at_++;
@@ -2204,7 +2208,7 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
                              ExprPtr callee, const Type *returns,
                              const std::vector<const Type *> &params,
                              bool variadic, std::size_t pos,
-                             std::vector<ExprPtr> args) {
+                             std::vector<ExprPtr> args, bool hasThis) {
     if (variadic ? args.size() < params.size() : args.size() != params.size())
         src_.fail(pos, "'" + name + "' takes " + (variadic ? "at least " : "") +
                        std::to_string(params.size()) + " argument(s), given " +
@@ -2256,6 +2260,7 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
     Call *call = new Call(name, std::move(callee), std::move(args), variadic,
                           slot, named, std::move(argSlots));
     call->setSymbol(symbol);
+    call->setHasThis(hasThis);
     ExprPtr n(call);
     n->setType(returns);
 
@@ -3349,8 +3354,12 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
     all.push_back(std::move(addr));
     for (std::size_t i = 0; i < args.size(); i++) all.push_back(std::move(args[i]));
 
+    // The object's address went in front of the written arguments a few lines
+    // up, which is what makes this an ordinary call from here down - and what
+    // the Microsoft ABI has to be told about, since it puts a hidden return
+    // pointer after `this` rather than in front of it.
     ExprPtr call = completeCall(name, sig.symbol, std::move(callee), sig.returns,
-                                full, sig.variadic, pos, std::move(all));
+                                full, sig.variadic, pos, std::move(all), true);
     if (keepAddress == nullptr) return call;
 
     // The address is saved, then the call reads it - in that order, which the

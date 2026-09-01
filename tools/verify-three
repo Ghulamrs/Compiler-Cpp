@@ -143,6 +143,19 @@ double 2.5" ]; then
         fail=$((fail + 1))
     fi
 
+    # **A cl caller against a cxx1 callee**, which is the one question a
+    # same-compiler test cannot ask: cxx1 passed the hidden return pointer and
+    # `this` in the opposite registers from cl, on both sides of every call it
+    # generated, so every run.sh case agreed with itself and disagreed with
+    # the platform. 17 20 7 is what cl's own caller expects to read back.
+    if ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\sret-check.cmd $REMOTE" \
+           2>/dev/null | tr -d '\r' | grep -q '^17 20 7$'; then
+        echo "  sret-check: cl called a cxx1 member and got its struct back"
+    else
+        echo "  sret-check: FAILED"
+        STATUS=1
+    fi
+
     # The mirror, and the one rung 6.5b is for: both halves compiled by cxx1,
     # so what it tests is the funclet and the FH3 tables rather than the
     # ThrowInfo chain the check above covers.

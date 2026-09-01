@@ -275,9 +275,9 @@ x86_64-linux, x86_64-windows and arm64-darwin. Suites at the last commit:
 
 | | run | emit | names vs clang | overload | names vs cl |
 | --- | --- | --- | --- | --- | --- |
-| Mac | 216 | 333 | 112 | 26 | - |
-| Linux | 216 | 333 | - | - | - |
-| Windows | 213 | - | - | - | 88 |
+| Mac | 217 | 336 | 113 | 26 | - |
+| Linux | 217 | 336 | - | - | - |
+| Windows | 214 | - | - | - | 89 |
 
 **Two of the four suites only ever run on one machine.** `names.sh` and
 `overload.sh` both ask clang, and the Linux box has no clang++ - they skip
@@ -1093,10 +1093,10 @@ function.
 | S-08 | Comparisons yield `int`; hex literals skip `unsigned int` | **fixed** 2026-09-01 |
 | S-09 | Value-initialisation does not zero | **fixed** 2026-09-01 |
 | S-10 | A default argument leaks onto the next function declared | **fixed** 2026-09-01 |
-| A-01 | `this` and the sret pointer are swapped against cl on x86_64-windows | open |
+| A-01 | `this` and the sret pointer are swapped against cl on x86_64-windows | **fixed** 2026-09-01 |
 | A-02 | A vtable references an implicit destructor that is never emitted | **fixed** 2026-09-01 |
 | A-03 | Bitfield layout is Itanium's on Windows; zero-width fields match no ABI | open |
-| A-04 | `double` to `unsigned long long` is a bare signed convert on x86 | open |
+| A-04 | `double` to `unsigned long long` is a bare signed convert on x86 | **fixed** 2026-09-01 |
 | A-05 | An empty class argument consumes a register on arm64-darwin | open |
 | C-01 | A `Signature &` into `functions_` dangles across a default-argument re-parse | **fixed** 2026-09-01 |
 | C-02 | An array's size overflows a signed `int`; the assembler is handed a negative length | open |
@@ -1107,6 +1107,45 @@ Four more silent wrong answers are recorded in the report and not in this
 table because they were confirmed by a reviewer and not re-run here: `goto`
 past an initialisation, narrowing in list-initialisation, an ambiguity
 [over.ics.rank] requires that is silently resolved, and `const S s;` for a POD.
+
+### A-01 and A-04: the register `this` travels in, and the one x86 lacks
+
+**cl passes `this` first and the hidden return pointer second; cxx1 passed
+them the other way round.** For a free function returning a large struct the
+pointer does come first, on every ABI - the Microsoft rule is about *member*
+functions, and cxx1 reserved integer slot 0 for the pointer ahead of every
+parameter including `this`. It did so on both sides of every call it
+generated, so every case agreed with itself and disagreed with the platform.
+
+Measured with clang for this ABI before anything was written:
+`movq 56(%rsp), %rcx; leaq 32(%rsp), %rdx; call ?get@W@@QEAA?AUBig@@H@Z`, and
+the callee reads its member through `%rcx` and writes its result through
+`%rdx`. That is what cxx1 emits now, on both sides.
+
+**The parser had to learn to say so.** A member call is lowered to an ordinary
+one with the object's address in front, which is what makes everything below
+it simple - and it is exactly the distinction the Microsoft ABI needs back.
+`Call::hasThis` and `Function::hasThis` carry the one bit; `Signature::owner`
+already knew the answer at every site that resolves an overload.
+
+**`tools/windows/sret-check.cmd` is how it is proved**, and it is the shape
+this class of bug needs: cxx1 compiles the member function, **cl compiles the
+caller**, and they are linked and run. A same-compiler test cannot ask this
+question - cxx1 was wrong in a way that was perfectly consistent with itself.
+It sits beside `throw-check` and `catch-check` in the Windows leg of
+`tools/verify-three`, and is the first thing in the fleet to check a calling
+convention against the platform's own compiler rather than against a second
+implementation of it.
+
+**And `cvttsd2si` is a signed conversion, which is the only one x86 has.**
+Below 2^63 that costs nothing; at or above it there is no signed answer and
+the instruction returns the integer indefinite value, so
+`(unsigned long long)12000000000000000000.0` came out 9223372036854775808 on
+both x86 targets. arm64 has `fcvtzu` and was right all along - the house bug
+class again, one target correct and two not. Subtract 2^63, convert what is
+left, put the bit back; it is the mirror of the halving trick the other
+direction already had, and it branches on `jae` rather than using `cmov`
+because the Microsoft speller knows the one and not the other.
 
 ### A-02: a vtable slot is a use, and the Microsoft table names one fewer
 
