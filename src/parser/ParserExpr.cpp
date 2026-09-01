@@ -632,6 +632,66 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
 // The temporary is destroyed at the end of the full expression, which is what
 // `pendingTemps_` is for - [class.temporary]/4 - so a class with a destructor
 // gets one call there and not at the end of the function.
+ExprPtr Parser::slotAccess(int slot, const Type *root,
+                           const std::vector<InitStep> &path) {
+    ExprPtr e(Var::local("$tmp", slot));
+    e->setType(root);
+    for (const InitStep &s : path) {
+        if (s.member != nullptr) {
+            const Member *m = s.member;
+            ExprPtr acc(new MemberAccess(std::move(e), m->name, m->offset,
+                                         m->width, m->bitOffset));
+            acc->setType(m->type);
+            e = std::move(acc);
+        } else {
+            const Type *elem = e->type()->pointee();
+            ExprPtr index(new Num(s.index));
+            index->setType(types_.intType());
+            ExprPtr sum = pointerAdd(decay(std::move(e)), std::move(index));
+            ExprPtr deref(new Unary('*', std::move(sum)));
+            deref->setType(elem);
+            e = std::move(deref);
+        }
+    }
+    return e;
+}
+
+void Parser::zeroLeaves(int slot, const Type *root, const Type *type,
+                        std::vector<InitStep> &path,
+                        std::vector<ExprPtr> &out) {
+    if (type->isArray()) {
+        const Type *elem = type->pointee();
+        for (long long i = 0; i < type->length(); i++) {
+            path.push_back(InitStep{ nullptr, i });
+            zeroLeaves(slot, root, elem, path, out);
+            path.pop_back();
+        }
+        return;
+    }
+    if (type->isStructOrUnion()) {
+        const std::vector<Member> &members = type->members();
+        // A union is zeroed through its first member, which is what
+        // [dcl.init]/8 asks for and what initZero already does.
+        const std::size_t count = type->kind() == Kind::Union
+                                ? (members.empty() ? std::size_t(0) : std::size_t(1))
+                                : members.size();
+        for (std::size_t i = 0; i < count; i++) {
+            if (members[i].name.empty()) continue;
+            path.push_back(InitStep{ &members[i], 0 });
+            zeroLeaves(slot, root, members[i].type, path, out);
+            path.pop_back();
+        }
+        return;
+    }
+    ExprPtr z;
+    if (type->isFloating()) { z.reset(new Num(0.0L)); z->setType(types_.doubleType()); }
+    else                    { z.reset(new Num(0LL));  z->setType(types_.intType()); }
+    ExprPtr target = slotAccess(slot, root, path);
+    ExprPtr store(new Assign(std::move(target), convert(std::move(z), type)));
+    store->setType(type);
+    out.push_back(std::move(store));
+}
+
 ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
     const Type *plain = cls->unqualified();
     std::vector<ExprPtr> args;
@@ -651,7 +711,38 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
             pendingTemps_.push_back(std::make_pair(slot, plain));
         ExprPtr obj(Var::local("$tmp", slot));
         obj->setType(plain);
-        if (args.empty()) return obj;
+        if (args.empty()) {
+            // **[dcl.init]/8: `P()` value-initialises, and for a class with
+            // no user-provided constructor that means zero-initialising it.**
+            // The slot was handed back as it stood, so `f(P())` read whatever
+            // the frame held - reproducibly, and differently per call site.
+            // "An object with nothing to set" was the wrong reading: there is
+            // no constructor to run, and that is exactly why the zeroing is
+            // the compiler's job.
+            std::vector<ExprPtr> zeros;
+            std::vector<InitStep> path;
+            zeroLeaves(slot, plain, plain, path, zeros);
+            if (zeros.empty()) return obj;
+            ExprPtr chain = std::move(zeros[0]);
+            for (std::size_t i = 1; i < zeros.size(); i++) {
+                const Type *t = zeros[i]->type();
+                ExprPtr next(new Comma(std::move(chain), std::move(zeros[i])));
+                next->setType(t);
+                chain = std::move(next);
+            }
+            // Comma'd with the object's *address* and dereferenced, which is
+            // the shape the argument path below already uses: a comma whose
+            // value is a class lvalue is not something every backend spells.
+            ExprPtr again(Var::local("$tmp", slot));
+            again->setType(plain);
+            ExprPtr at(new Unary('&', std::move(again)));
+            at->setType(types_.pointerTo(plain));
+            ExprPtr both(new Comma(std::move(chain), std::move(at)));
+            both->setType(types_.pointerTo(plain));
+            ExprPtr made(new Unary('*', std::move(both)));
+            made->setType(plain);
+            return made;
+        }
         checkAssignable(*args[0], plain, pos, "this temporary");
         ExprPtr store(new Assign(std::move(obj), std::move(args[0])));
         store->setType(plain);

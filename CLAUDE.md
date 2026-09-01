@@ -275,9 +275,9 @@ x86_64-linux, x86_64-windows and arm64-darwin. Suites at the last commit:
 
 | | run | emit | names vs clang | overload | names vs cl |
 | --- | --- | --- | --- | --- | --- |
-| Mac | 212 | 324 | 109 | 26 | - |
-| Linux | 212 | 324 | - | - | - |
-| Windows | 209 | - | - | - | 85 |
+| Mac | 215 | 330 | 111 | 26 | - |
+| Linux | 215 | 330 | - | - | - |
+| Windows | 212 | - | - | - | 87 |
 
 **Two of the four suites only ever run on one machine.** `names.sh` and
 `overload.sh` both ask clang, and the Linux box has no clang++ - they skip
@@ -1091,8 +1091,8 @@ function.
 | S-06 | `delete` of a null pointer runs the destructor | **fixed** 2026-09-01 |
 | S-07 | A virtual call in a base destructor reaches the derived override | **fixed** 2026-09-01 |
 | S-08 | Comparisons yield `int`; hex literals skip `unsigned int` | **fixed** 2026-09-01 |
-| S-09 | Value-initialisation does not zero | open |
-| S-10 | A default argument leaks onto the next function declared | open |
+| S-09 | Value-initialisation does not zero | **fixed** 2026-09-01 |
+| S-10 | A default argument leaks onto the next function declared | **fixed** 2026-09-01 |
 | A-01 | `this` and the sret pointer are swapped against cl on x86_64-windows | open |
 | A-02 | A vtable references an implicit destructor that is never emitted | open |
 | A-03 | Bitfield layout is Itanium's on Windows; zero-width fields match no ABI | open |
@@ -1107,6 +1107,40 @@ Four more silent wrong answers are recorded in the report and not in this
 table because they were confirmed by a reviewer and not re-run here: `goto`
 past an initialisation, narrowing in list-initialisation, an ambiguity
 [over.ics.rank] requires that is silently resolved, and `const S s;` for a POD.
+
+### S-09 and S-10: an object nobody set, and a default nobody asked for
+
+**`P()` handed back the frame slot as it stood.** [dcl.init]/8 makes `T()`
+value-initialisation, and for a class with no user-provided constructor that
+is zero-initialisation. The comment in `classTemporary` read "an object with
+nothing to set" - which is the wrong reading of a class that has no
+constructor to *run*, and exactly why the zeroing is the compiler's job.
+`f(P())` returned whatever the frame held, reproducibly and differently per
+call site.
+
+`initZero` already says this in statements, for a declaration; `zeroLeaves`
+says it as an expression, which is the only form a `T()` in an expression can
+take. The leaf walk is `initZero`'s and the access is `targetFor`'s, rooted at
+a frame slot rather than at a declared name. The case dirties the frame first,
+because on a clean stack the fault is invisible.
+
+**Worth knowing about the case:** clang zeroes a nested temporary with a call
+to `memset` where cxx1 writes the fields out. For a compiler that ships no
+runtime that is the answer it has to give, and it is recorded rather than
+matched.
+
+**A default argument was dropped where it belonged and read where it did
+not.** [dcl.fct.default]/4 lets a later declaration add a default the earlier
+one did not give. The redeclaration path cleared the `noexcept` it had just
+checked and left `pendingDefaults_` sitting in the parser, so `g`'s default
+was lost - and then attached to the *next* function declared, which made `h()`
+a legal call that evaluated g's token stream to fill it in. It returned 50.
+
+The defaults are merged now rather than replaced, which is what the rule
+actually says: what one declaration gave and the other did not is added, a
+second default for the same parameter is refused by name, and the union has to
+be a suffix even where neither half was on its own. Both halves are cases -
+`g()` works, which it did not before either, and `h()` is refused.
 
 ### S-07 and S-08: the object during teardown, and two types
 

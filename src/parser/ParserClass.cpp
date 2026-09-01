@@ -2083,6 +2083,35 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
             f.defined = true;
         }
         pendingNoexcept_ = false;
+
+        // **[dcl.fct.default]/4: a later declaration adds defaults, it does
+        // not discard them.** This path cleared the `noexcept` it had just
+        // checked and left the defaults sitting in the member, so `g`'s were
+        // dropped where they belonged and re-read as the *next* function's -
+        // which then accepted a call with an argument missing and evaluated
+        // g's token stream to fill it in. `h()` returned 50.
+        //
+        // Merged rather than replaced, because the whole point of the rule is
+        // that the declarations are read together: what one gave and the
+        // other did not is added, what both gave is refused, and the union
+        // has to be a suffix even where neither half was on its own.
+        if (!pendingDefaults_.empty()) {
+            std::vector<std::size_t> &have = defaultArgs_[f.symbol];
+            if (have.size() < pendingDefaults_.size())
+                have.resize(pendingDefaults_.size(), 0);
+            for (std::size_t i = 0; i < pendingDefaults_.size(); i++) {
+                if (pendingDefaults_[i] == 0) continue;
+                if (have[i] != 0)
+                    src_.fail(pos, "'" + key + "' already has a default for "
+                                   "parameter " + std::to_string(i + 1) +
+                                   " from an earlier declaration, and a later "
+                                   "one may add a default where there was none "
+                                   "but may not give a second");
+                have[i] = pendingDefaults_[i];
+            }
+            requireDefaultsAreASuffix(have, pos);
+        }
+        pendingDefaults_.clear();
         return;
     }
 

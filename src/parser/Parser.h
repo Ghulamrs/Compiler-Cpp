@@ -1174,6 +1174,17 @@ private:
         long long index = 0;
     };
 
+    // **[dcl.init]/8: `T()` on a class with no user-provided constructor is
+    // value-initialisation, which zeroes it.** `initZero` says the same thing
+    // in statements, for a declaration; these two say it as an expression,
+    // for a temporary, which is the only form a `T()` in an expression can
+    // take. The leaf walk is `initZero`'s and the access is `targetFor`'s,
+    // rooted at a frame slot rather than at a declared name.
+    ExprPtr slotAccess(int slot, const Type *root,
+                       const std::vector<InitStep> &path);
+    void zeroLeaves(int slot, const Type *root, const Type *type,
+                    std::vector<InitStep> &path, std::vector<ExprPtr> &out);
+
     struct InitCursor {
         std::vector<Init> *items = nullptr;
         std::size_t at = 0;
