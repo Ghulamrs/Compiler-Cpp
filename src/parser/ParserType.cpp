@@ -510,20 +510,39 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     src_.fail(cpos, "a bit-field of " + std::to_string(w) +
                                     " bits does not fit in '" + base->describe() + "'");
                 // **A zero-width bitfield does not raise the class's
-                // alignment**, on either ABI. `{char a; int :0; char b;}` is
-                // 5 bytes aligned 1 on Itanium and 2 aligned 1 on Microsoft;
-                // cxx1 made it 8 aligned 4, which matched neither, because
-                // the `int` was allowed to widen the class the way a real
-                // member would.
+                // alignment on Itanium**, whatever its type. `{char a; int
+                // :0; char b;}` is 5 bytes aligned 1 there and 2 aligned 1 on
+                // Microsoft; cxx1 made it 8 aligned 4, which matched neither,
+                // because the `int` was allowed to widen the class the way a
+                // real member would.
                 int a = base->align(target_);
                 if (a > widest && w != 0) widest = a;
                 if (w == 0) {
                     // Itanium rounds the cursor to the next unit of this
                     // type, which is what makes the *next* field start there.
-                    // The Microsoft ABI closes the open unit instead, and the
-                    // next field begins at the next whole byte.
-                    if (msBits) { bitCursor = alignTo(bitCursor, 8); msUnitBits = 0; }
-                    else        bitCursor = alignTo(bitCursor, unitBits);
+                    //
+                    // **The Microsoft ABI asks what the `:0` interrupts.**
+                    // One that terminates an open bitfield unit charges that
+                    // unit for whole, aligns what follows to its own declared
+                    // type, and gives the class that alignment too - measured
+                    // with clang for this ABI: `{short a:5; int :0; short
+                    // b:5;}` puts b at 4 and is 8 bytes aligned 4, and
+                    // `{long long a:33; char :0; char b;}` puts b at 8, after
+                    // the whole long long unit. One that follows a plain
+                    // member - or nothing at all - does none of that:
+                    // `{char a; int :0; char b;}` stays 2 bytes aligned 1.
+                    if (msBits) {
+                        if (msUnitBits != 0) {
+                            bitCursor = msUnitStart + msUnitBits;
+                            msUnitBits = 0;
+                            bitCursor = alignTo(bitCursor,
+                                                static_cast<long long>(a) * 8);
+                            if (a > widest) widest = a;
+                        } else {
+                            bitCursor = alignTo(bitCursor, 8);
+                        }
+                    }
+                    else bitCursor = alignTo(bitCursor, unitBits);
                 } else if (kind != Kind::Union) {
                     if (msBits) {
                         if (msUnitBits != unitBits ||

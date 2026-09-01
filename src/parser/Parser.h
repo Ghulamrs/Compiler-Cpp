@@ -590,7 +590,7 @@ private:
         if (t->nonTrivialCopy()) return true;
         return !target_.microsoftNames() && t->hasDestructor();
     }
-    bool returnsIndirectly(const Type *t) const {
+    bool returnsIndirectly(const Type *t, bool memberFn = false) const {
         int size = t->size(target_);
 
         // A class whose copy or destruction is a call is returned through a
@@ -598,8 +598,18 @@ private:
         // the callee builds into it. Both ABIs agree here, measured.
         if (t->nonTrivialCopy() || t->hasDestructor()) return true;
         if (containsX87(t, target_)) return true;
-        if (aggregatesByReference_)
+        if (aggregatesByReference_) {
+            // **The Microsoft size rule is for free functions only.** A class
+            // returned by value from a non-static member function goes through
+            // the hidden pointer whatever its size - `Small { int };` from a
+            // member comes back through %rdx where the same struct from a free
+            // function comes back in %eax. Measured with clang for this ABI:
+            // `?sget@W@@QEAA?AUSmall@@H@Z` takes `this` in %rcx, the pointer
+            // in %rdx, the first written parameter in %r8d, and stores through
+            // %rdx; `?freePair@@YA?AUPair@@H@Z` returns the bytes in %rax.
+            if (memberFn) return true;
             return !(size == 1 || size == 2 || size == 4 || size == 8);
+        }
         if (homogeneousFloatAggregates_) {
             Kind elem;
             if (homogeneousFloatCount(t, &elem) > 0) return false;

@@ -209,7 +209,7 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
     // the temporary this argument needs, and then no copy constructor runs at
     // all - which is what clang does at -O0 and what C++11 permits.
     if (Call *made = dynamic_cast<Call *>(arg.get())) {
-        if (made->type() == cls && returnsIndirectly(cls)) {
+        if (made->type() == cls && returnsIndirectly(cls, made->hasThis())) {
             made->setResultSlot(tmp);
             ExprPtr built(Var::local("$copy", tmp));
             built->setType(cls);
