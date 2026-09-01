@@ -143,14 +143,45 @@ Arm64Darwin::AggPlan Arm64Darwin::planFor(const Type *t) const {
     return p;
 }
 
+// **The tail is composed, not approximated.** A lane holding 3, 5, 6 or 7
+// live bytes used to be written with the single largest store that fit - two
+// bytes for a three-byte tail, four for a six - and the rest of the struct was
+// left as whatever the destination already held. `struct { char c[3]; }` passed
+// by value arrived with its last byte missing, which is silent and is data.
+//
+// The value register is dead after its own store at both call sites - each
+// lane's register is used once, and the result registers are overwritten
+// straight after - so the remainder is shifted down in place rather than into
+// a scratch, `base` being the address and not free to borrow.
 void Arm64Darwin::storeWord(const char *xreg, const char *base, int k, int size) {
-    int off = k * 8;
-    int left = size - off;
-    std::string w = std::string("w") + (xreg + 1);
-    if (left >= 8)      out_ << "  str "  << xreg << ", [" << base << ", #" << off << "]\n";
-    else if (left >= 4) out_ << "  str "  << w    << ", [" << base << ", #" << off << "]\n";
-    else if (left >= 2) out_ << "  strh " << w    << ", [" << base << ", #" << off << "]\n";
-    else                out_ << "  strb " << w    << ", [" << base << ", #" << off << "]\n";
+    const int off = k * 8;
+    const int left = size - off;
+    const std::string w = std::string("w") + (xreg + 1);
+    if (left >= 8) {
+        out_ << "  str " << xreg << ", [" << base << ", #" << off << "]\n";
+        return;
+    }
+
+    int done = 0, shifted = 0;
+    auto bring = [&](int want) {
+        if (want == shifted) return;
+        out_ << "  lsr " << xreg << ", " << xreg << ", #" << (want - shifted) * 8
+             << "\n";
+        shifted = want;
+    };
+    if (left - done >= 4) {
+        out_ << "  str " << w << ", [" << base << ", #" << (off + done) << "]\n";
+        done += 4;
+    }
+    if (left - done >= 2) {
+        bring(done);
+        out_ << "  strh " << w << ", [" << base << ", #" << (off + done) << "]\n";
+        done += 2;
+    }
+    if (left - done >= 1) {
+        bring(done);
+        out_ << "  strb " << w << ", [" << base << ", #" << (off + done) << "]\n";
+    }
 }
 
 void Arm64Darwin::genAddr(const Expr &e) {

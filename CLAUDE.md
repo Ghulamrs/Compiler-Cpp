@@ -275,9 +275,9 @@ x86_64-linux, x86_64-windows and arm64-darwin. Suites at the last commit:
 
 | | run | emit | names vs clang | overload | names vs cl |
 | --- | --- | --- | --- | --- | --- |
-| Mac | 207 | 309 | 104 | 26 | - |
-| Linux | 207 | 309 | - | - | - |
-| Windows | 204 | - | - | - | 82 |
+| Mac | 209 | 315 | 106 | 26 | - |
+| Linux | 209 | 315 | - | - | - |
+| Windows | 206 | - | - | - | 83 |
 
 **Two of the four suites only ever run on one machine.** `names.sh` and
 `overload.sh` both ask clang, and the Linux box has no clang++ - they skip
@@ -1086,9 +1086,9 @@ function.
 | S-01 | Returning a by-value parameter elides a copy [class.copy]/31 forbids; one object destroyed twice | **fixed** 2026-09-01 |
 | S-02 | A move-only class is copied bytewise and its deleted copy accepted | **fixed** 2026-09-01 |
 | S-03 | An override of a non-first base written without `virtual` dispatches statically | **fixed** 2026-09-01 |
-| S-04 | By-value aggregates lose their tail bytes on arm64-darwin and x86_64-linux | open |
+| S-04 | By-value aggregates lose their tail bytes on arm64-darwin and x86_64-linux | **fixed** 2026-09-01 |
 | S-05 | Tail padding of a POD base is reused; `sizeof` wrong on all three | **fixed** 2026-09-01 |
-| S-06 | `delete` of a null pointer runs the destructor | open |
+| S-06 | `delete` of a null pointer runs the destructor | **fixed** 2026-09-01 |
 | S-07 | A virtual call in a base destructor reaches the derived override | open |
 | S-08 | Comparisons yield `int`; hex literals skip `unsigned int` | open |
 | S-09 | Value-initialisation does not zero | open |
@@ -1107,6 +1107,46 @@ Four more silent wrong answers are recorded in the report and not in this
 table because they were confirmed by a reviewer and not re-run here: `goto`
 past an initialisation, narrowing in list-initialisation, an ambiguity
 [over.ics.rank] requires that is silently resolved, and `const S s;` for a POD.
+
+### S-06 and S-04, and a sixth site an audit of five missed
+
+**Deleting a null pointer ran the destructor.** [expr.delete]/2 says it has no
+effect; `operator delete` took null itself and always did, and what needed the
+guard is the destructor call in front of it - and, for a virtual destructor,
+the whole call, which loads the vtable through the pointer before it frees.
+`delete p;` on a pointer that may be null is the reason `delete` gets written,
+and it segfaulted. The guard is written `p != 0 ? (call, 1) : 0` rather than a
+conditional with void arms: the value is thrown away either way, and an int on
+both sides is a shape every backend already emits.
+
+**A partial lane was written with the largest single instruction that fit.**
+An aggregate whose size is not a multiple of eight ends in a lane of 3, 5, 6
+or 7 live bytes, and every place one moved wrote two bytes for a three-byte
+tail and four for a six - leaving the rest of the object as whatever the
+destination held. `struct { char c[3]; }` passed by value arrived with its
+last byte missing.
+
+The tails are composed now, on arm64 by shifting the value register down (it
+is dead after its own store at both sites) and on x86_64 by three helpers -
+memory to memory, register to memory, memory to register. **The last of those
+had to be written with no scratch register at all.** Building a value from the
+bottom up needs one, because a 32-bit write zeroes the upper half of its
+destination on this machine and an 8-byte read would read past the object; so
+it goes from the top down, shifting the accumulator up a byte and OR-ing the
+next one into its low eight bits, where an 8-bit write leaves the rest alone.
+
+**Two things this cost, and both are worth writing down.** The first attempt
+borrowed `%rcx` as a scratch and then kept reading the base address out of it,
+which segfaulted on a three-byte struct - on the Linux box, and only there,
+because the Mac's suite and both emit suites were green. `run.sh` runs the host
+target only, so x86_64 code is executed on exactly one machine in the fleet and
+`tools/verify-three` is the only thing that runs it.
+
+And the audit named five sites; there are six. The one it missed is the
+caller's load of an aggregate small enough to travel in registers - the most
+ordinary case there is, `take(v)` with a `struct { char c[3]; }` - which was
+found by bisecting sizes 1 to 15 on the box rather than by reading. Every size
+in that range is a case now.
 
 ### S-03 and S-05, the two that made the object model quietly wrong
 

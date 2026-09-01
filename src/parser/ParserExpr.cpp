@@ -3013,8 +3013,9 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
         }
         ExprPtr call = completeCall("~", std::string(), std::move(entry), ret,
                                     full, false, pos, std::move(args));
-        ExprPtr both(new Comma(std::move(save), std::move(call)));
-        both->setType(ret);
+        ExprPtr both(new Comma(std::move(save),
+                               guardAgainstNull(temp, slot, t, std::move(call))));
+        both->setType(types_.get(Kind::Void));
         return both;
     }
 
@@ -3035,7 +3036,8 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
         held->setType(t);
         ExprPtr run = destructorCall(std::move(held), *dtor, pos);
 
-        ExprPtr both(new Comma(std::move(save), std::move(run)));
+        ExprPtr both(new Comma(std::move(save),
+                               guardAgainstNull(temp, slot, t, std::move(run))));
         both->setType(types_.get(Kind::Void));
 
         ExprPtr again(Var::local(temp, slot));
@@ -3058,6 +3060,39 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
     return callAllocator(array ? "_ZdaPv" : "_ZdlPv",
                          array ? "??_V@YAXPEAX@Z" : "??3@YAXPEAX@Z",
                          types_.get(Kind::Void), std::move(raw), pos);
+}
+
+// **[expr.delete]/2: deleting a null pointer has no effect**, and running the
+// destructor on one is how this compiler crashed on `delete p;` where p was
+// null - ordinary code, since a pointer that may be null is the reason `delete`
+// is guarded at all. `operator delete` takes null itself and always did; what
+// had to be guarded is the destructor call in front of it, and the virtual
+// path's whole call, which frees as well as destroys.
+//
+// Written as `p != 0 ? (call, 1) : 0` rather than a conditional with void
+// arms: the value is thrown away either way, and an int on both sides is a
+// shape every backend already emits.
+ExprPtr Parser::guardAgainstNull(const std::string &temp, int slot,
+                                 const Type *ptr, ExprPtr body) {
+    ExprPtr probe(Var::local(temp, slot));
+    probe->setType(ptr);
+    ExprPtr n(new Num(static_cast<long long>(0)));
+    n->setType(types_.intType());
+    ExprPtr test(new Binary(BinOp::Ne, std::move(probe), convert(std::move(n), ptr)));
+    test->setType(types_.intType());
+
+    ExprPtr one(new Num(static_cast<long long>(1)));
+    one->setType(types_.intType());
+    ExprPtr ran(new Comma(std::move(body), std::move(one)));
+    ran->setType(types_.intType());
+
+    ExprPtr skipped(new Num(static_cast<long long>(0)));
+    skipped->setType(types_.intType());
+
+    ExprPtr guarded(new Conditional(std::move(test), std::move(ran),
+                                    std::move(skipped)));
+    guarded->setType(types_.intType());
+    return guarded;
 }
 
 // A call through an object: `p.move(1, 2)`. The object's address goes in front

@@ -151,10 +151,77 @@ static bool msInRegister(int size) {
 }
 
 static const char *narrower(const char *reg64, int bytes) {
-    bool isA = std::strcmp(reg64, "%rax") == 0;
-    if (bytes >= 4) return isA ? "%eax" : "%edx";
-    if (bytes >= 2) return isA ? "%ax"  : "%dx";
-    return isA ? "%al" : "%dl";
+    struct Row { const char *r64, *r32, *r16, *r8; };
+    static const Row rows[] = {
+        { "%rax", "%eax",  "%ax",   "%al"   },
+        { "%rdx", "%edx",  "%dx",   "%dl"   },
+        { "%rcx", "%ecx",  "%cx",   "%cl"   },
+        { "%r11", "%r11d", "%r11w", "%r11b" },
+    };
+    for (const Row &row : rows) {
+        if (std::strcmp(reg64, row.r64) != 0) continue;
+        return bytes >= 4 ? row.r32 : bytes >= 2 ? row.r16 : row.r8;
+    }
+    return reg64;
+}
+
+void X86_64Linux::storeTailFromReg(const char *reg64, long long off,
+                                   const char *base, int left) {
+    int done = 0, shifted = 0;
+    auto bring = [&](int want) {
+        if (want == shifted) return;
+        a_->ins("shr", imm((want - shifted) * 8), reg(reg64));
+        shifted = want;
+    };
+    if (left - done >= 4) {
+        a_->ins("movl", reg(narrower(reg64, 4)), mem(off + done, base));
+        done += 4;
+    }
+    if (left - done >= 2) {
+        bring(done);
+        a_->ins("movw", reg(narrower(reg64, 2)), mem(off + done, base));
+        done += 2;
+    }
+    if (left - done >= 1) {
+        bring(done);
+        a_->ins("movb", reg(narrower(reg64, 1)), mem(off + done, base));
+    }
+}
+
+void X86_64Linux::copyTailMem(long long from, long long to, int left) {
+    int done = 0;
+    if (left - done >= 4) {
+        a_->ins("movl", mem(from + done, "%rbp"), reg("%eax"));
+        a_->ins("movl", reg("%eax"), mem(to + done, "%rbp"));
+        done += 4;
+    }
+    if (left - done >= 2) {
+        a_->ins("movzwl", mem(from + done, "%rbp"), reg("%eax"));
+        a_->ins("movw", reg("%ax"), mem(to + done, "%rbp"));
+        done += 2;
+    }
+    if (left - done >= 1) {
+        a_->ins("movzbl", mem(from + done, "%rbp"), reg("%eax"));
+        a_->ins("movb", reg("%al"), mem(to + done, "%rbp"));
+    }
+}
+
+// **Built with no scratch at all, one byte at a time from the top down.**
+// The obvious way round - load the low four and OR the rest in above them -
+// needs a second register, because a 32-bit write zeroes the upper half of
+// its destination on this machine and an 8-byte OR would read past the
+// object. Going downwards needs none: shift the accumulator up a byte and OR
+// the next one into its low eight bits, where an 8-bit write leaves the rest
+// alone. The first attempt at this borrowed %rcx and then kept reading the
+// base out of it - which is how the Linux box, and only the Linux box,
+// segfaulted on a three-byte struct.
+void X86_64Linux::loadTailToReg(const char *reg64, long long off,
+                                const char *base, int left) {
+    a_->ins("movzbl", mem(off + left - 1, base), reg(narrower(reg64, 4)));
+    for (int i = left - 2; i >= 0; i--) {
+        a_->ins("shl", imm(8), reg(reg64));
+        a_->ins("orb", mem(off + i, base), reg(narrower(reg64, 1)));
+    }
 }
 
 void X86_64Linux::msAggregateToRax(const Type *t, int slot) {
@@ -914,11 +981,34 @@ void X86_64Linux::visit(const Call &n) {
         for (int k = slots; k-- > 0; ) {
             int off = k * 8;
             int left = size - off;
-            if (left >= 8)      a_->ins("mov", mem(off, "%rcx"), reg("%rax"));
-            else if (left >= 4) a_->ins("movl", mem(off, "%rcx"), reg("%eax"));
-            else if (left >= 2) a_->ins("movzwl", mem(off, "%rcx"), reg("%eax"));
-            else                a_->ins("movzbl", mem(off, "%rcx"), reg("%eax"));
-            push();
+            if (left >= 8) {
+                a_->ins("mov", mem(off, "%rcx"), reg("%rax"));
+                push();
+                continue;
+            }
+            // **A partial lane is pushed as a zeroed word and then filled.**
+            // %rcx holds the source and the loop still needs it, so there is
+            // no second register to build the value in - and the value must
+            // not be built by reading eight bytes, which would read past the
+            // object. Writing the live bytes straight into the slot needs
+            // neither.
+            a_->ins("push", immText("0"));
+            depth_++;
+            int done = 0;
+            if (left - done >= 4) {
+                a_->ins("movl", mem(off + done, "%rcx"), reg("%eax"));
+                a_->ins("movl", reg("%eax"), mem(done, "%rsp"));
+                done += 4;
+            }
+            if (left - done >= 2) {
+                a_->ins("movzwl", mem(off + done, "%rcx"), reg("%eax"));
+                a_->ins("movw", reg("%ax"), mem(done, "%rsp"));
+                done += 2;
+            }
+            if (left - done >= 1) {
+                a_->ins("movzbl", mem(off + done, "%rcx"), reg("%eax"));
+                a_->ins("movb", reg("%al"), mem(done, "%rsp"));
+            }
         }
         if (padBelow[i]) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
     }
@@ -964,9 +1054,12 @@ void X86_64Linux::visit(const Call &n) {
                 a_->ins("mov", mem(off, "%rax"), reg(abi_.intRegs[slot[i][k]]));
             } else {
 
-                if (left >= 4)      a_->ins("movl", mem(off, "%rax"), reg("%r11d"));
-                else if (left >= 2) a_->ins("movzwl", mem(off, "%rax"), reg("%r11d"));
-                else                a_->ins("movzbl", mem(off, "%rax"), reg("%r11d"));
+                // The sixth place a partial lane is moved, and the one an
+                // audit of the other five missed: an aggregate small enough
+                // to travel in registers, loaded a lane at a time. %rax is
+                // the object's address and %r11 the scratch, so the
+                // accumulator is built in %r11 and handed over whole.
+                loadTailToReg("%r11", off, "%rax", left);
                 a_->ins("mov", reg("%r11"), reg(abi_.intRegs[slot[i][k]]));
             }
         }
@@ -1022,10 +1115,8 @@ void X86_64Linux::visit(const Call &n) {
                 a_->ins(left >= 8 ? "movsd" : "movss", reg(sret[nextSse++]), mem(off, "%rbp"));
             } else {
                 const char *r = ret[nextInt++];
-                if (left >= 8)      a_->ins("mov", reg(r), mem(off, "%rbp"));
-                else if (left >= 4) a_->ins("movl", reg(narrower(r, 4)), mem(off, "%rbp"));
-                else if (left >= 2) a_->ins("movw", reg(narrower(r, 2)), mem(off, "%rbp"));
-                else                a_->ins("movb", reg(narrower(r, 1)), mem(off, "%rbp"));
+                if (left >= 8) a_->ins("mov", reg(r), mem(off, "%rbp"));
+                else           storeTailFromReg(r, off, "%rbp", left);
             }
         }
         a_->ins("lea", mem((-base), "%rbp"), reg("%rax"));
@@ -1185,11 +1276,7 @@ void X86_64Linux::visit(const Return &n) {
             } else if (left >= 8) {
                 a_->ins("mov", mem(off, "%rcx"), reg(ret[nextInt++]));
             } else {
-                const char *r = ret[nextInt++];
-                const char *e = narrower(r, 4);
-                if (left >= 4)      a_->ins("movl", mem(off, "%rcx"), reg(e));
-                else if (left >= 2) a_->ins("movzwl", mem(off, "%rcx"), reg(e));
-                else                a_->ins("movzbl", mem(off, "%rcx"), reg(e));
+                loadTailToReg(ret[nextInt++], off, "%rcx", left);
             }
         }
     }
@@ -1444,15 +1531,8 @@ void X86_64Linux::emit(const Function &fn) {
                 if (left >= 8) {
                     a_->ins("mov", mem(from, "%rbp"), reg("%rax"));
                     a_->ins("movq", reg("%rax"), mem(to, "%rbp"));
-                } else if (left >= 4) {
-                    a_->ins("movl", mem(from, "%rbp"), reg("%eax"));
-                    a_->ins("movl", reg("%eax"), mem(to, "%rbp"));
-                } else if (left >= 2) {
-                    a_->ins("movzwl", mem(from, "%rbp"), reg("%eax"));
-                    a_->ins("movw", reg("%ax"), mem(to, "%rbp"));
                 } else {
-                    a_->ins("movzbl", mem(from, "%rbp"), reg("%eax"));
-                    a_->ins("movb", reg("%al"), mem(to, "%rbp"));
+                    copyTailMem(from, to, left);
                 }
             }
             stackAt += slots * 8;
@@ -1469,10 +1549,8 @@ void X86_64Linux::emit(const Function &fn) {
                     a_->ins(left >= 8 ? "movsd" : "movss", reg(abi_.sseRegs[takeSlot(true, ints, sses)]), mem(off, "%rbp"));
                 } else {
                     a_->ins("mov", reg(abi_.intRegs[takeSlot(false, ints, sses)]), reg("%rax"));
-                    if (left >= 8)      a_->ins("movq", reg("%rax"), mem(off, "%rbp"));
-                    else if (left >= 4) a_->ins("movl", reg("%eax"), mem(off, "%rbp"));
-                    else if (left >= 2) a_->ins("movw", reg("%ax"), mem(off, "%rbp"));
-                    else                a_->ins("movb", reg("%al"), mem(off, "%rbp"));
+                    if (left >= 8) a_->ins("movq", reg("%rax"), mem(off, "%rbp"));
+                    else           storeTailFromReg("%rax", off, "%rbp", left);
                 }
             }
             continue;

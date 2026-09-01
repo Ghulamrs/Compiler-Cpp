@@ -166,6 +166,17 @@ private:
 
     void unsupported(const char *what);
 
+    // **The last lane of an aggregate is composed, never approximated.** A
+    // lane with 3, 5, 6 or 7 live bytes used to move with the single largest
+    // instruction that fit, and the rest of the object was left as whatever
+    // the destination held. These three write and read exactly `left` bytes,
+    // and never touch a byte past the object - which is why they compose
+    // rather than widening to a single 8-byte move.
+    void storeTailFromReg(const char *reg64, long long off, const char *base,
+                          int left);          // clobbers reg64
+    void copyTailMem(long long from, long long to, int left);   // via %rax
+    void loadTailToReg(const char *reg64, long long off, const char *base,
+                       int left);             // clobbers %rcx
     void msAggregateToRax(const Type *t, int slot);
     void msCopyToSlot(const Type *t, int slot, const char *from);
     int takeSlot(bool sse, int &ints, int &sses) const;

@@ -1038,6 +1038,10 @@ private:
     // The copy the caller makes for a by-value class argument: a temporary in
     // the caller's frame, built by the copy constructor, whose address is what
     // the callee receives.
+    // `p != 0 ? (body, 1) : 0` - what a `delete` of a possibly-null pointer
+    // has to wrap its destructor call in, [expr.delete]/2.
+    ExprPtr guardAgainstNull(const std::string &temp, int slot,
+                             const Type *ptr, ExprPtr body);
     ExprPtr materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
                             const std::string &what,
                             std::vector<std::pair<int, const Type *> > &destroy);
