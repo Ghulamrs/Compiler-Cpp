@@ -1128,8 +1128,19 @@ function.
 | C-03 | The host's `long double` decides the target's x87 constants | **fixed** 2026-09-01 |
 | C-04 | `long` narrowings make the front end behave differently on the Windows build | **fixed** 2026-09-01 |
 
-**All nineteen are closed.** Every one has a fix and a case, and every fix was
-verified on the three boxes before it was committed.
+**The nineteen in the table are closed** - each has a fix and a case, and each
+was verified on the boxes available when it was committed.
+
+**Four more were confirmed by a reviewer and never fixed**, and they are listed
+below the table rather than in it, which made "all nineteen are closed" read
+as more than it says. They are open, they are real, and two of them are silent
+wrong answers rather than refusals: a `goto` past an initialisation runs a
+destructor on an object that was never constructed, and narrowing in a braced
+initialiser turns 300 into 44 without a word. The other two are `const S s;`
+for a POD with no user-provided constructor, which C++11 refuses and this
+accepts, and an ambiguity [over.ics.rank] requires between `f(int)` and
+`f(const int &)` on an lvalue, which is silently resolved. Counting them, the
+audit found twenty-three and this compiler has fixed nineteen.
 
 **And the two the report marks as suspected are fixed too, still unreproduced.**
 `Trial` restores `angleSplit_` now, alongside the three things it already put
@@ -1137,14 +1148,22 @@ back; and the assignment that wrote a member's position into the *first*
 overload's entry is gone - a no-op when the member being defined was that one,
 and a corruption of somebody else's recorded position when it was not.
 
-Neither could be made to happen. The `>>` window needs a substitution failure
-thrown between the two halves of the token, which needs `typename T::type` in
-a member or a typedef - and neither parses here, while clang treats that shape
-as a hard error rather than SFINAE, so the window may not be reachable in C++
-at all as this compiler stands. Nothing reads a user overload's `pos`, so the
-second had nowhere to show either. Both fixes are correct whether or not the
-faults are reachable, and both are the kind that would be found the hard way
-later: state not restored, and a write to the wrong element.
+**The `>>` window is reachable, and the claim here that it might not be was
+wrong.** It was checked afterwards and a program was built that reaches it.
+The premise of the failed attempts was that a substitution failure needs
+`typename T::type`; inside a `Trial` *every* `src_.fail` becomes one, so an
+ill-formed array length in a nested template argument raises one between the
+halves just as well. One subtlety made it hard to find: any intervening `>>`
+launders the single-slot flag, so the poisoning call has to come first and the
+type that replays those tokens has to be named before it. With the two `split`
+lines reverted, the second call meets the stale index, swallows both halves at
+the inner list, and a program this compiler accepts fails to parse. So the fix
+is not hygiene - it repairs something a program can reach.
+
+The second one had nowhere to show, and that part holds: the only readers of a
+`Signature`'s `pos` are the three implicit-special synthesisers, and the old
+write's target is always a user declaration. It is deleted rather than
+corrected, so nothing remains to misfire.
 
 **What the audit was worth, in the end.** Nineteen defects under a suite that
 was green on all three machines, and the fixes added 62 cases - the suite went
