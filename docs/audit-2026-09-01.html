@@ -441,8 +441,9 @@ a:focus-visible, :focus-visible { outline: 2px solid var(--accent); outline-offs
 </header>
 
 <div class="verdict" style="border-left-color: var(--med); margin-bottom: 0;">
-  <p class="lead" style="font-size:1.05rem">Addendum, later the same day: S-01 and S-02 are fixed and verified on all three machines.</p>
-  <p>The findings below are left exactly as written. This page is the record of what was true at 29f8dfb, and correcting it as things are fixed would destroy the only thing a dated audit is good for. Current status for every finding lives in CLAUDE.md, under "The audit of 2026-09-01". The two double-frees are closed, with cases that pin the built-equals-destroyed invariant rather than a constructor count; suites now read 204 / 301 / 101 / 26 on the Mac, 204 / 301 on Linux, 202 and 82 names on Windows.</p>
+  <p class="lead" style="font-size:1.05rem">Addendum, 1 September 2026: all nineteen confirmed findings are closed, each with a fix and a test, each verified on the three machines.</p>
+  <p>The findings below are left exactly as written. This page is the record of what was true at 29f8dfb, and correcting it as things are fixed would destroy the only thing a dated audit is good for. Live status is in CLAUDE.md under &ldquo;The audit of 2026-09-01&rdquo;. The two <em>suspected</em> items are still open and still suspected.</p>
+  <p>The suite grew from 201 run cases to 223 and from 292 emissions to 348 along the way, and gained one thing it did not have: a check that compiles one side of a call with cl and the other with cxx1, which is the only way the calling-convention finding could be proved. Four fixes were wrong on the first attempt and the tests said so &mdash; two of them only on the box that owns the target.</p>
 </div>
 
 <div class="verdict">
