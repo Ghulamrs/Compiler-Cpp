@@ -2296,6 +2296,59 @@ void Parser::topLevel(Program &program) {
                 if (m->type->isConst())
                     src_.fail(epos, "a const member in an initialiser list is "
                                     "not supported yet");
+                // **`: k()` value-initialises the member** - [class.base.init]
+                // names [dcl.init], and for a scalar that is a zero; for a
+                // class with no user-provided constructor it is a zeroing
+                // too, built the way `P()` builds one. A class that has a
+                // constructor would need it *called on the member*, which the
+                // assignment shape below cannot say - refused by name rather
+                // than byte-copied around, because running a constructor on a
+                // temporary and moving the bytes is not running it on the
+                // member.
+                if (args.empty() && !m->type->isReference() &&
+                    !m->type->isArray()) {
+                    const Type *mt = m->type;
+                    if (mt->isStructOrUnion() && !mt->tag().empty() &&
+                        overloadsOf(constructorKey(mt->tag())) != nullptr)
+                        src_.fail(epos, "'" + entry + "()' would run '" +
+                                        mt->describe() + "''s constructor on "
+                                        "the member, and an initialiser list "
+                                        "cannot call one with no arguments "
+                                        "yet - give the member an argument");
+                    if (mt->isStructOrUnion()) {
+                        std::vector<ExprPtr> zeros;
+                        std::vector<InitStep> path;
+                        const int zslot = allocateFrameSlot(mt->unqualified());
+                        zeroLeaves(zslot, mt->unqualified(), mt->unqualified(),
+                                   path, zeros);
+                        ExprPtr zeroed(Var::local("$zero", zslot));
+                        zeroed->setType(mt->unqualified());
+                        if (!zeros.empty()) {
+                            ExprPtr chain = std::move(zeros[0]);
+                            for (std::size_t zi = 1; zi < zeros.size(); zi++) {
+                                const Type *zt = zeros[zi]->type();
+                                ExprPtr next(new Comma(std::move(chain),
+                                                       std::move(zeros[zi])));
+                                next->setType(zt);
+                                chain = std::move(next);
+                            }
+                            ExprPtr at(new Unary('&', std::move(zeroed)));
+                            at->setType(types_.pointerTo(mt->unqualified()));
+                            ExprPtr both(new Comma(std::move(chain),
+                                                   std::move(at)));
+                            both->setType(types_.pointerTo(mt->unqualified()));
+                            ExprPtr img(new Unary('*', std::move(both)));
+                            img->setType(mt->unqualified());
+                            zeroed = std::move(img);
+                        }
+                        args.push_back(std::move(zeroed));
+                    } else {
+                        ExprPtr z(new Num(0LL));
+                        z->setType(types_.intType());
+                        args.push_back(convert(std::move(z),
+                                               types_.withoutConst(mt)));
+                    }
+                }
                 if (args.size() != 1)
                     src_.fail(epos, "'" + entry + "' takes one value here, "
                                     "given " + std::to_string(args.size()));

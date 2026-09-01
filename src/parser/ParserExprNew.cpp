@@ -530,6 +530,48 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     ExprPtr where(new Unary('*', std::move(base)));
     where->setType(made);
 
+    // `new P()` for a class with no constructor is value-initialisation too,
+    // and [dcl.init]/8 makes that a zeroing - the same rule classTemporary
+    // follows for `P()` on the stack. It did not follow it here: the scalar
+    // branch below converted its literal 0 *to the class type*, which lowered
+    // to a copy whose source address was the zero itself, and `new P()`
+    // dereferenced null. The zeroing machinery is slot-bound, so a frame
+    // temporary is zeroed member by member and copied over in one struct
+    // assignment - a shape every backend already has.
+    if (!init && made->isStructOrUnion()) {
+        std::vector<ExprPtr> zeros;
+        std::vector<InitStep> path;
+        const int zslot = allocateFrameSlot(made);
+        zeroLeaves(zslot, made, made, path, zeros);
+        ExprPtr result0(Var::local(temp, slot));
+        result0->setType(pointer);
+        if (zeros.empty()) {
+            // An empty class: nothing observable to set, the allocation is
+            // the whole of the work.
+            ExprPtr all(new Comma(std::move(keep), std::move(result0)));
+            all->setType(pointer);
+            return all;
+        }
+        ExprPtr chain = std::move(zeros[0]);
+        for (std::size_t i = 1; i < zeros.size(); i++) {
+            const Type *t = zeros[i]->type();
+            ExprPtr next(new Comma(std::move(chain), std::move(zeros[i])));
+            next->setType(t);
+            chain = std::move(next);
+        }
+        ExprPtr zeroed(Var::local("$zero", zslot));
+        zeroed->setType(made);
+        ExprPtr fill(new Assign(std::move(where), std::move(zeroed)));
+        fill->setType(made);
+        ExprPtr ready(new Comma(std::move(chain), std::move(fill)));
+        ready->setType(made);
+        ExprPtr both(new Comma(std::move(keep), std::move(ready)));
+        both->setType(made);
+        ExprPtr all(new Comma(std::move(both), std::move(result0)));
+        all->setType(pointer);
+        return all;
+    }
+
     // `new int()` is value-initialisation, which for these types is a zero.
     ExprPtr value;
     if (init) {
