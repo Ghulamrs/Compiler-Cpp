@@ -1,0 +1,2 @@
+x86_64-linux  every constructor here is inline, so clang writes only the form a use asks for and cxx1 writes both of Itanium's - see docs/CONFORMANCE.md, "An inline member function is a strong symbol". Base is built only as a base subobject, so its C1 is the extra; the three derived C1s are the same rule. The Windows comparison has one name per constructor and agrees exactly, which is the half that checks this case's calls
+arm64-darwin  same: the C1 forms of Base, Ordinary, Empty and Silent are cxx1's extras, and every name clang does write agrees

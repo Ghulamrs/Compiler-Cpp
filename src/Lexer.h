@@ -20,13 +20,12 @@ struct Token {
     // `long`, and never unsigned anything.
     bool decimal = true;
     // **Whether this floating literal is exactly a `double`**, decided from
-    // the digits rather than from what the host's `long double` made of them.
-    // A literal that needs more than double's 53 bits is parsed here at
-    // whatever precision the *build machine* offers, which is 64 bits of
-    // significand on the Linux box and 53 on the Mac - so the same source
-    // produced different objects depending on which machine built the
-    // compiler. This is the bit that lets the parser refuse the ones it
-    // cannot spell the same way everywhere.
+    // the digits rather than from what any host library made of them. The
+    // compiler carries every floating constant as a `double`, read once with
+    // `strtod` so that each build machine reads the same number - but a
+    // target whose `long double` is wider deserves more than a double holds,
+    // and this is the bit that lets the parser refuse the literals it cannot
+    // spell the same way everywhere rather than approximate them.
     bool exactInDouble = true;
     bool isFloat = false;
     bool suffixF = false;

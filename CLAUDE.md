@@ -1146,6 +1146,67 @@ second had nowhere to show either. Both fixes are correct whether or not the
 faults are reachable, and both are the kind that would be found the hard way
 later: state not restored, and a write to the wrong element.
 
+### The verification round, and the neighbours it found standing
+
+**A verdict of "fixed" was checked by walking one door over from each fix, and
+three of the doors were open.** Each of these is the audited fault's own
+disease in a shape the fix did not cover, found by the reviewer who re-judged
+the audit and mended on `fable/src-mend`.
+
+**A base mem-initialiser never applied default arguments, and read past its
+vector.** `: Base(2)` against `Base(int, int = 6)` walked one argument per
+*declared* parameter and the shipped compiler died on three lines of ordinary
+C++11 - the same default-argument door C-01 came through, in the call that is
+built by hand in `topLevel`. `applyDefaults` is applied there now, and
+default-building a base goes through overload resolution instead of a search
+for an empty parameter list, so a constructor whose every parameter has a
+default serves as the default constructor [class.ctor]/5. The case is
+`default-arg-base-init.cpp`, and it watches both doors.
+
+**A class summed its members past the count one member is held to.** The
+array declarator refuses what C-02 refused, but `alignTo` takes an `int`, and
+two 2000000000-byte arrays in one struct were truncated in that call:
+`.zerofill` of -294967296, and `sizeof` the same negative number. Refused at
+the member list now, in `long long`, padding included - and worth remembering
+that **no sanitizer sees this one**, because the truncation is a defined
+conversion. `class-too-large.cpp`.
+
+**And C-03's rule - the build machine must not decide a constant - now holds
+for every floating constant, not only a suffixed literal.** Three lanes still
+diverged by host: a `double` literal was read through the host's `long
+double` and rounded twice on one box and once on another (a 72-digit literal
+measured `.quad ...409` from the Mac build, `...408` from the Linux build);
+a `float` literal the same, one rounding further down; and the constant
+folder computed x87 `long double` arithmetic in the host's own type, so one
+`+` of two individually exact literals walked past the literal gate. The
+lexer reads every literal once with `strtod` - `strtof` under an `f` suffix -
+which is single rounding to the value's own type on every host; that is the
+one thing taken on the hosts' word, since C requires those correctly rounded,
+and doing without them is the software decimal-to-binary rung the literal
+gate already named. The folder computes in `double` and refuses, by name, a
+folded x87 constant whose exact result does not fit one - measured by
+error-free transforms, TwoSum for the additions and an `fma` residue for the
+multiplies - and an integer past 53 bits is the same refusal when it reaches
+an x87 lane. `float-literal-exact.cpp` pins two literals built to sit
+astride the double-rounding boundary.
+
+**The digit test also stopped calling trailing zeros precision.**
+`2.5000000000000000000L` overflowed the accumulator and was refused while
+`2.5L` was exact, for one value; zeros are deferred to the exponent now and
+only multiplied in when a later significant digit needs them. What remains
+conservative, deliberately: an exact value whose *significant* digits pass
+nineteen - `1180591620717411303424.0L` is 2^70 exactly - still overflows the
+64-bit accumulator and is refused. Lifting that means arithmetic on the digit
+string itself; it is cheap to want and not cheap to write, and the refusal is
+the safe side of the trade the gate already made.
+
+**The `>>` window has a case now, `template-angle-split.cpp`.** The shape
+that reaches it: any diagnostic raised inside a `Trial` is a substitution
+failure, so instantiating a nested template argument whose *body* is
+ill-formed throws between the halves of a `>>` - and an intervening `>>`
+anywhere overwrites the one stale mark, which is why the case's typedef sits
+above `main` and why the window resisted reproduction the first time.
+
 **What the audit was worth, in the end.** Nineteen defects under a suite that
 was green on all three machines, and the fixes added 62 cases - the suite went
 from 201 run cases to 223, and from 292 emissions to 348. Four of the fixes

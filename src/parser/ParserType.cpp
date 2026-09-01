@@ -803,6 +803,23 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // member of it linked to nothing. Found while a class template with two
     // type parameters would not link, which is what an empty one happened to
     // be.
+    // **An object this compiler cannot measure is refused where it is
+    // written, and a member list is a place an object is written.** The array
+    // declarator got this rule first, so each member fits a signed 32-bit
+    // count on its own - but `alignTo` takes `int`, and a class whose members
+    // *sum* past 2^31 was truncated in that call and laid out anyway:
+    // two 2000000000-byte arrays made a `.zerofill` of -294967296, from the
+    // shipped binary, without a word. Done in `long long` with the padding
+    // included, so the check sees the same number the cast below would wreck.
+    // UBSan never finds this one - the truncation is a defined conversion.
+    const long long paddedBytes =
+        ((totalBits + 7) / 8 + widest - 1) / widest *
+        static_cast<long long>(widest);
+    if (paddedBytes > 2147483647LL)
+        src_.fail(pos, std::string("this ") + what + " is larger than this "
+                       "compiler can lay out: its members need " +
+                       std::to_string((totalBits + 7) / 8) + " bytes, past "
+                       "the 2147483647 an object here is measured in");
     int size = static_cast<int>(alignTo((totalBits + 7) / 8, widest));
     int align = widest;
     if (members.empty() && totalBits == 0) { size = 1; align = 1; }

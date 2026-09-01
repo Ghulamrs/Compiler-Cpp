@@ -89,6 +89,7 @@ bool Lexer::exactlyADouble(const std::string &s, std::size_t from,
                            std::size_t to) {
     unsigned long long m = 0;
     long long tenth = 0;              // digits seen after the point
+    long long zeros = 0;              // zeros seen and not yet needed
     bool afterPoint = false, overflowed = false, any = false;
     std::size_t i = from;
     for (; i < to; i++) {
@@ -97,13 +98,24 @@ bool Lexer::exactlyADouble(const std::string &s, std::size_t from,
         if (c == 'e' || c == 'E') break;
         if (!std::isdigit(static_cast<unsigned char>(c))) break;
         any = true;
+        if (afterPoint) tenth++;
+        // **A zero is held back until a later digit needs it.** Trailing
+        // zeros carry no precision - they only move the exponent - and
+        // multiplying them into the accumulator overflowed it, so
+        // `2.5000000000000000000L` was called inexact while `2.5L` was
+        // exact, for one value. Deferred, they land in the exponent below;
+        // only a zero *between* significant digits is ever multiplied in.
+        if (c == '0') { if (m != 0) zeros++; continue; }
+        while (zeros > 0 && !overflowed) {
+            if (m > (0xFFFFFFFFFFFFFFFFULL - 9) / 10) overflowed = true;
+            else { m *= 10; zeros--; }
+        }
         if (m > (0xFFFFFFFFFFFFFFFFULL - 9) / 10) overflowed = true;
         else m = m * 10 + static_cast<unsigned long long>(c - '0');
-        if (afterPoint) tenth++;
     }
     if (!any || overflowed) return false;
 
-    long long exp10 = -tenth;
+    long long exp10 = zeros - tenth;
     if (i < to && (s[i] == 'e' || s[i] == 'E')) {
         i++;
         bool neg = false;
@@ -259,14 +271,37 @@ std::vector<Token> Lexer::tokenize() {
 
             if (floating) {
                 t.isFloat = true;
-                t.dvalue = std::strtold(s.c_str() + i, &stop);
+                // **`strtod`, not `strtold` - the literal's value must not
+                // depend on which machine built the compiler.** `strtold`
+                // reads with the host's `long double`, which carries 64 bits
+                // of significand on the Linux box and 53 on the Mac, and a
+                // value later narrowed to `double` is rounded *twice* on one
+                // host and once on the other. There are decimal strings the
+                // two answers disagree on - measured: one 72-digit literal
+                // came out `.quad ...409` from the Mac build and `...408`
+                // from the Linux build, for the same target. `strtod` rounds
+                // once, to the type the value will actually have, and C
+                // requires it correctly rounded - which is the one thing here
+                // taken on the hosts' word; doing without it means a decimal
+                // to binary conversion in software, which is its own rung.
                 const std::size_t from = i;
+                t.dvalue = std::strtod(s.c_str() + i, &stop);
                 i = static_cast<std::size_t>(stop - s.c_str());
                 t.exactInDouble = exactlyADouble(s, from, i);
 
                 digitSeparator(s, i);
-                if (i < s.size() && (s[i] == 'f' || s[i] == 'F')) { t.suffixF = true; i++; }
-                else if (i < s.size() && (s[i] == 'l' || s[i] == 'L')) { t.suffixL = true; i++; }
+                if (i < s.size() && (s[i] == 'f' || s[i] == 'F')) {
+                    t.suffixF = true; i++;
+                    // A `float` literal is rounded once too. Through
+                    // `double` it is rounded twice - 53 bits and then 24 -
+                    // and the direct answer differs from the two-step one on
+                    // literals built to sit astride the boundary. [lex.fcon]
+                    // gives the literal the value of its own type, so
+                    // `strtof` is the conversion, not a shortcut.
+                    t.dvalue = std::strtof(s.c_str() + from, nullptr);
+                } else if (i < s.size() && (s[i] == 'l' || s[i] == 'L')) {
+                    t.suffixL = true; i++;
+                }
                 out.push_back(std::move(t));
                 continue;
             }
