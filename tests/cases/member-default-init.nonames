@@ -1,0 +1,2 @@
+x86_64-linux  one recorded rule, docs/CONFORMANCE.md "An inline member function is a strong symbol": every constructor and destructor here is inline, so clang writes only the form a use asks for and cxx1 writes both of Itanium's - the C1 and D1 forms are cxx1's extras and nothing else differs. The Windows comparison has one name per constructor and destructor and agrees on all thirty-four, which is the half that checks which constructor each member reaches
+arm64-darwin  same rule: B's C1 is cxx1's extra and every name clang writes agrees

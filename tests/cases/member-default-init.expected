@@ -1,0 +1,12 @@
+M S1 | 3
+~M M N M S2 | 3 5 3
+~M ~M M N S3 | 3 5
+~M M M S4 | 3 3
+~M ~M M S5 | 7 3
+~M N M S6 | 9 3
+~M B M S7 | 3
+~M M S8 | 3 4
+~M B M S9 | 3
+~M M C Mcopy Ccopy | 3 103
+~M ~M M D M Dcopy | 3 3
+~M ~M 
