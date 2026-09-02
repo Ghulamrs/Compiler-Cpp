@@ -145,5 +145,8 @@ Driver's own options (`-j`, `-g`, `-D`, `-masm=`) are exercised by nothing.
 7. `FunctionScope` and the `topLevel` extraction; `placeArguments` last, since it
    is the only one whose wrong step is a whole-suite churn.
 
-Nothing above is started. Each is a proposal with a first step and a way to prove
-it changed nothing, which is the form this tree asks for.
+**Step 1 landed the same day**: `tests/emit.sh --record` and a diff on every run
+after it, with `make golden` beside it - see CLAUDE.md under Build. The rest is
+not started. Each is a proposal with a first step and a way to prove it changed
+nothing, which is the form this tree asks for, and which step 1 is what makes
+possible.

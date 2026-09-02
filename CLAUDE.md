@@ -4780,6 +4780,26 @@ make test            run the four suites
 make clean
 ```
 
+**`tests/emit.sh --record` keeps what it emitted as a golden, and every later
+run diffs against it.** That is the oracle a refactor needs and the suite did not
+have: counting what compiled says nothing about what came out, so "this change
+emits the same code" was a claim rather than a measurement. Record before the
+change, run after it, and the answer is `golden - N of 411 files changed`. It
+never fails the run - a changed file may be the point of the change - and it
+prints the commit and date the golden was taken at on every run, so a stale one
+says so itself. `make golden` is the same thing.
+
+**The golden survives `make clean`, alone among `tests/out-*`.** It is recorded
+before a change and read after one, with a rebuild in between, so a clean that
+took it away would delete the baseline at the moment it was about to be used.
+Remove it by hand or record over it. It is not shipped to the other two boxes
+either: `tools/verify-three`'s tar excludes `tests/out-*`, so a run there says
+there is no golden, which is the truth - a golden is a *local* before-and-after,
+not a fact about the tree.
+
+The assembly is byte-stable across runs - measured, on all three targets - so a
+diff of it means what it looks like it means.
+
 `tests/run.sh` compiles and runs each case in `tests/cases/` on this machine
 and diffs against its `.expected`; a case with a `.error` file instead must
 fail to compile with that text in the message. `tests/emit.sh` compiles every

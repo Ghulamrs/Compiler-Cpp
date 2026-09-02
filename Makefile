@@ -87,7 +87,7 @@ BINDIR  ?= .
 # suffix that changes by platform is one more thing a script has to know.
 TARGET   = $(BINDIR)/cxx1.exe
 
-.PHONY: all test clean help
+.PHONY: all test golden clean help
 
 all: $(TARGET)
 
@@ -125,14 +125,25 @@ test: $(TARGET)
 help:
 	@echo "make            build cc1 with $(CXX)"
 	@echo "make test       build and run the four suites"
+	@echo "make golden     record what emit.sh emits now, to compare a change against"
 	@echo "make clean"
 	@echo ""
 	@echo "cc1 emits x86-64 System V assembly. It compiles anywhere this"
 	@echo "Makefile does; its output runs where that ABI does."
 
+# Before a change that is meant to emit exactly what it emits now: record, make
+# the change, run the suite, and it says how many files came out different.
+golden: $(TARGET)
+	@./tests/emit.sh --record
+
 clean:
 	rm -rf $(OBJDIR) $(TARGET)
 	rm -rf tests/out-run tests/out-emit
+# **tests/out-emit.golden is deliberately not on that line**, and this is the
+# exception the rule below is otherwise right about: a golden is recorded before
+# a change and read after one, with a rebuild in between, so a clean that took it
+# away would delete the baseline exactly when it was about to be used. Remove it
+# by hand - rm -rf tests/out-emit.golden - or record a new one over it.
 # A suite added since this rule was written leaves its output behind, and the
 # list is the only place that says so. tests/out-cross survived a clean until
 # 2026-08-26 for exactly that reason - eight object files nobody was looking
