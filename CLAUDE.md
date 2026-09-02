@@ -4294,6 +4294,84 @@ is that evaluator exposed to the user. It is not a rung-7 feature.
 `"'typeid' is not supported yet"`, not a parse error twenty tokens later.
 Diagnostics ship with the rule that intercepts them.
 
+## Understandable means checkable - the principle the 09-02 review applied
+
+**A change makes this compiler more understandable when it makes more of it
+*checkable*, and less when it buys tidiness with a fact nobody can re-measure.**
+That is the one sentence every proposal in `docs/DESIGN-REVIEW-2026-09-02.md`
+was judged against, and it is the reason that review reads as it does. What is
+being maximised is not how the code looks at a glance. It is how much of what
+the code claims a reader can go and confirm - against clang, against cl, against
+a suite that fails when the claim is wrong.
+
+Six rules fall out of it, each with the case in this tree that produced it.
+
+**1. A measured fact stays re-measurable, and stays beside its measurement.**
+`Abi` is eleven unlabelled positionals: the densest table of measured ABI facts
+in the tree, unreadable at exactly the place someone would go to check it. The
+mend names the fields without moving them. The same rule is what refuses an IR
+and a register allocator: they would make register choice a global property, and
+every `movq 56(%rsp), %rcx` recorded in this file would stop being a line anyone
+can put to clang.
+
+**2. Duplication is judged by which agreement it hides.** Two copies inside one
+target - the caller and the callee each classifying arguments by hand - must
+become one, because the agreement between them is what A-01 broke, consistently
+on both sides, where no suite could see it. Two copies across targets stay two,
+because divergence between targets is this project's house bug class and a
+shared abstraction is exactly what would hide it. The LSDA is the one exception
+and proves the rule: same table and same encoding bytes on both Itanium targets,
+the difference only in spelling - so the difference goes into a small struct
+where it is *visible*, rather than into a second hand-written copy where it is
+one missed edit away from silent divergence.
+
+**3. An invariant a person has to remember is a defect with a delay on it.**
+Seventeen accessors forward class state through `unqual_` by hand and three do
+not; `frameSize - slot` is computed at four sites; "mark this function used" is
+spelled three ways. Every one of those was already a bug once here. The mend is
+to make the rule structural - one `ClassInfo` the qualified copy points at, one
+`establisherOffset`, one `markUsed` - and not to write the reminder more loudly.
+A rule that can be forgotten will be.
+
+**4. Refuse by name, and never accept quietly.** This is the standing rule
+applied to design: a target that cannot do something says so where the reason is
+known, which is what `.notarget` and the parser's refusals are for, and what a
+`Backend::supports(feature)` table would take away by moving the refusal off the
+line that knows why. The corollary the review found is sharper: a refusal that is
+*unreachable*, or one that names a feature the compiler now has - `pending[]`
+still calls `template` and `virtual` unsupported - is worse than none, because it
+is a claim the compiler makes at the user and cannot support.
+
+**5. A claim with no oracle is not allowed to be believed.** `tests/emit.sh`
+compiles every case for three targets and counts what compiled; it never
+compares the assembly. So "this refactor changes no behaviour" had nothing in
+the suite to prove it with, and the whole plan reorders around building that
+first. The same instinct is already written down two sections up as *a green
+suite proves nothing until you prove what it ran against*; this is that rule
+turned on the refactor rather than on the compiler.
+
+**6. What must not change is half the finding.** Each of the four reports ends
+with shapes that look wrong and are load-bearing: absolute token indices, the
+by-value `Signature`, a member-function pointer wearing the shape of a struct,
+`unqualifiedSpecifiers` answering void for `Point::Point(`. A review that
+produces only a list of changes has not finished, because the next reader will
+tidy one of those away and find out why it was there from a failing suite - or
+worse, from a silent wrong answer.
+
+**Where this came from, honestly.** Four of the six were in the brief the
+reviewers were given: measure rather than read, refuse at the point of
+interception, the suites are the oracle, and name what should not change. Two
+were not. **The emit.sh gap was found unprompted and inverted the order of
+everything else**, and *make the invariant structural rather than remembered*
+was reached independently by three of the four, in three subsystems that share
+no code - which is the kind of agreement worth promoting from an observation to
+a rule.
+
+**The test to put a future proposal through**, in this order: does it leave every
+measured fact as easy to re-measure? Does it hide an agreement that is currently
+checked, or reveal one that currently is not? And can its own claim of "nothing
+changed" be *shown* - if not, build the thing that would show it first.
+
 ## How correctness is established
 
 Differential testing against gcc, clang and cl over a growing corpus. That is

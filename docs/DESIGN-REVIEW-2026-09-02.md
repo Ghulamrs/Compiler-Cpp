@@ -5,6 +5,12 @@ as it could be, and what would make it more so?** Read-only; nothing here was
 changed by them. Areas: the parser, the code generators, the front-end core
 (types, AST, mangling, lexer), and the tree as a thing a newcomer reads.
 
+**The principle they were judged by is written up in `CLAUDE.md` under
+"Understandable means checkable"**: a change makes this compiler more
+understandable when it makes more of it checkable, and less when it buys
+tidiness with a fact nobody can re-measure. Read that first; everything below is
+that sentence applied four times.
+
 Written against `d66ef16`, with the comment pass (`567c0a5`) landing after they
 read - so a line number below may be off by a few, and every claim was checked
 against the code and not against CLAUDE.md.
