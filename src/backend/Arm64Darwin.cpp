@@ -356,77 +356,15 @@ void Arm64Darwin::landingPad(int pointerSlot, int selectorSlot) {
 // **The language-specific data area, laid out exactly as clang lays it out** -
 // every number read off clang's output, since the personality routine trusts the
 // header. 255 LPStart omitted, 155 indirect pc-relative types, 1 uleb call sites.
+// The same table the x86 backend writes, in Mach-O's spelling: `L` temporaries,
+// a real symbol so `.subsections_via_symbols` cannot cut the second table away,
+// and a type_info reached through the GOT rather than through a local stub.
+static const Walker::LsdaSpelling kMachOLsda = {
+    "L", ".section __TEXT,__gcc_except_tab", true, "_", "@GOT"
+};
+
 void Arm64Darwin::emitLsda(const std::string &symbol) {
-    const std::string ex = "Lexception." + symbol;
-    const std::string ttbase = "Lttbase." + symbol;
-    const std::string ttref = "Lttbaseref." + symbol;
-    const std::string cstBegin = "Lcst.begin." + symbol;
-    const std::string cstEnd = "Lcst.end." + symbol;
-    const std::string fnBegin = "Lfunc.begin." + symbol;
-    const std::string fnEnd = "Lfunc.end." + symbol;
-
-    out_ << "  .section __TEXT,__gcc_except_tab\n";
-    out_ << "  .p2align 2\n";
-    // **A label that is not an `L` temporary, and it is load-bearing.** Mach-O's
-    // `.subsections_via_symbols` cuts sections at symbols, so with only `L` labels
-    // the second table in a file was never reached. clang writes a symbol too.
-    out_ << "GCC_except_table." << symbol << ":\n";
-    out_ << ex << ":\n";
-    out_ << "  .byte 255\n";
-    out_ << "  .byte 155\n";
-    out_ << "  .uleb128 " << ttbase << "-" << ttref << "\n";
-    out_ << ttref << ":\n";
-    out_ << "  .byte 1\n";
-    out_ << "  .uleb128 " << cstEnd << "-" << cstBegin << "\n";
-    out_ << cstBegin << ":\n";
-
-    // **Every call in the function has to be in this table, not only the ones
-    // inside a try**: a miss makes libc++abi call terminate. **And the action
-    // field is a byte offset plus one** - two bytes a record, so twice the count.
-    int action = 1;
-    std::string at = fnBegin;
-    for (std::size_t i = 0; i < callSites().size(); i++) {
-        const CallSite &c = callSites()[i];
-        out_ << "  .uleb128 " << at << "-" << fnBegin << "\n";
-        out_ << "  .uleb128 " << c.begin << "-" << at << "\n";
-        out_ << "  .byte 0\n";
-        out_ << "  .byte 0\n";
-        out_ << "  .uleb128 " << c.begin << "-" << fnBegin << "\n";
-        out_ << "  .uleb128 " << c.end << "-" << c.begin << "\n";
-        out_ << "  .uleb128 " << c.pad << "-" << fnBegin << "\n";
-        // No handler at all is a *cleanup*: the pad runs destructors and
-        // hands the exception back, and action 0 is how the table says so.
-        out_ << "  .uleb128 " << (c.types.empty() ? 0 : action) << "\n";
-        action += 2 * static_cast<int>(c.types.size());
-        at = c.end;
-    }
-    out_ << "  .uleb128 " << at << "-" << fnBegin << "\n";
-    out_ << "  .uleb128 " << fnEnd << "-" << at << "\n";
-    out_ << "  .byte 0\n";
-    out_ << "  .byte 0\n";
-    out_ << cstEnd << ":\n";
-
-    // The action table. Each record is a type index and the offset to the
-    // next record - `0` meaning there is no next, so the handler chain ends
-    // and the exception goes on unwinding.
-    lsdaTypes_.clear();
-    for (std::size_t i = 0; i < callSites().size(); i++) {
-        const CallSite &c = callSites()[i];
-        for (std::size_t k = 0; k < c.types.size(); k++) {
-            out_ << "  .byte " << (lsdaTypes_.size() + 1) << "\n";
-            out_ << "  .byte " << (k + 1 < c.types.size() ? 1 : 0) << "\n";
-            lsdaTypes_.push_back(c.types[k]);
-        }
-    }
-    out_ << "  .p2align 2\n";
-    for (std::size_t i = lsdaTypes_.size(); i-- > 0; ) {
-        const std::string here = "Lti." + symbol + "." + std::to_string(i);
-        out_ << here << ":\n";
-        if (lsdaTypes_[i].empty()) out_ << "  .long 0\n";   // catch (...)
-        else out_ << "  .long _" << lsdaTypes_[i] << "@GOT-" << here << "\n";
-    }
-    out_ << ttbase << ":\n";
-    out_ << "  .p2align 2\n";
+    out_ << lsdaTable(kMachOLsda, symbol, lsdaTypes_);
 }
 
 void Arm64Darwin::storeToStack(const Type *t, int off) {

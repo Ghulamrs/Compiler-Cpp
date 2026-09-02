@@ -11,6 +11,17 @@ class Source;
 
 class Walker : public CodeGen {
 public:
+    // **What differs between the two Itanium tables, and it is only spelling.**
+    // The bytes, the call-site rows, the action records and the reverse type
+    // table were written out twice by hand; these five fields are the difference.
+    struct LsdaSpelling {
+        const char *label;        // ".L" on ELF, "L" on Mach-O
+        const char *section;      // the directive this table is written into
+        bool atomSymbol;          // Mach-O cuts sections at symbols, so it needs one
+        const char *typePrefix;   // a type_info is reached through a local stub on
+        const char *typeSuffix;   // ELF and through the GOT on Mach-O
+    };
+
     void visit(const ExprStmt &n) override;
     void visit(const Block &n) override;
     void visit(const If &n) override;
@@ -84,6 +95,12 @@ protected:
     }
     const std::vector<CallSite> &callSites() const { return callSites_; }
     void clearCallSites() { callSites_.clear(); }
+
+    // The whole table, as text, for a caller that knows where to put it. ELF's
+    // stubs and its personality comdat are not here: they are that target's, and
+    // they follow the table rather than living in it.
+    std::string lsdaTable(const LsdaSpelling &sp, const std::string &symbol,
+                          std::vector<std::string> &types) const;
 
     // **Does this target call handlers, or jump to them?** Itanium unwinds to a
     // pad inside the frame; the Microsoft runtime calls the handler as a

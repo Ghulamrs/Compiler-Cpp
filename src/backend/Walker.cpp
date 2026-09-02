@@ -265,3 +265,83 @@ void Walker::visit(const Continue &n) {
         }
     }
 }
+
+// **One table, two spellings.** Every byte below was measured against clang for
+// both Itanium targets and was written out twice by hand until now; what differs
+// is in LsdaSpelling, where the next reader can see the whole of it.
+std::string Walker::lsdaTable(const LsdaSpelling &sp, const std::string &symbol,
+                              std::vector<std::string> &types) const {
+    const std::string L = sp.label;
+    const std::string ex = L + "exception." + symbol;
+    const std::string ttbase = L + "ttbase." + symbol;
+    const std::string ttref = L + "ttbaseref." + symbol;
+    const std::string cstBegin = L + "cst.begin." + symbol;
+    const std::string cstEnd = L + "cst.end." + symbol;
+    const std::string fnBegin = L + "func.begin." + symbol;
+    const std::string fnEnd = L + "func.end." + symbol;
+
+    std::string o;
+    o += std::string("  ") + sp.section + "\n";
+    o += "  .p2align 2\n";
+    // A label that is not a temporary, where the linker cuts sections at symbols:
+    // with only temporaries the second table in a file was never reached.
+    if (sp.atomSymbol) o += "GCC_except_table." + symbol + ":\n";
+    o += ex + ":\n";
+    o += "  .byte 255\n";                 // LPStart omitted: pads are function-relative
+    o += "  .byte 155\n";                 // the type table is indirect, pc-relative
+    o += "  .uleb128 " + ttbase + "-" + ttref + "\n";
+    o += ttref + ":\n";
+    o += "  .byte 1\n";                   // the call-site table is uleb128
+    o += "  .uleb128 " + cstEnd + "-" + cstBegin + "\n";
+    o += cstBegin + ":\n";
+
+    // **Every call in the function is a row, the ones outside a try included**: a
+    // miss makes libc++abi call terminate. **And the action field is a byte offset
+    // plus one**, not an index - each record is two bytes, so twice the count.
+    int action = 1;
+    std::string at = fnBegin;
+    for (std::size_t i = 0; i < callSites().size(); i++) {
+        const CallSite &c = callSites()[i];
+        o += "  .uleb128 " + at + "-" + fnBegin + "\n";
+        o += "  .uleb128 " + c.begin + "-" + at + "\n";
+        o += "  .byte 0\n";
+        o += "  .byte 0\n";
+        o += "  .uleb128 " + c.begin + "-" + fnBegin + "\n";
+        o += "  .uleb128 " + c.end + "-" + c.begin + "\n";
+        o += "  .uleb128 " + c.pad + "-" + fnBegin + "\n";
+        // No handler at all is a *cleanup*: the pad runs destructors and hands
+        // the exception back, and action 0 is how the table says so.
+        o += "  .uleb128 " + std::to_string(c.types.empty() ? 0 : action) + "\n";
+        action += 2 * static_cast<int>(c.types.size());
+        at = c.end;
+    }
+    o += "  .uleb128 " + at + "-" + fnBegin + "\n";
+    o += "  .uleb128 " + fnEnd + "-" + at + "\n";
+    o += "  .byte 0\n";
+    o += "  .byte 0\n";
+    o += cstEnd + ":\n";
+
+    // The action table: a type index and the offset to the next record, 0 saying
+    // there is no next, so the chain ends and the exception goes on unwinding.
+    types.clear();
+    for (std::size_t i = 0; i < callSites().size(); i++) {
+        const CallSite &c = callSites()[i];
+        for (std::size_t k = 0; k < c.types.size(); k++) {
+            o += "  .byte " + std::to_string(types.size() + 1) + "\n";
+            o += "  .byte " + std::string(k + 1 < c.types.size() ? "1" : "0") + "\n";
+            types.push_back(c.types[k]);
+        }
+    }
+    o += "  .p2align 2\n";
+    // **Written backwards**: index 1 is the entry just before Lttbase.
+    for (std::size_t i = types.size(); i-- > 0; ) {
+        const std::string here = L + "ti." + symbol + "." + std::to_string(i);
+        o += here + ":\n";
+        if (types[i].empty()) o += "  .long 0\n";          // catch (...)
+        else o += "  .long " + std::string(sp.typePrefix) + types[i] +
+                  sp.typeSuffix + "-" + here + "\n";
+    }
+    o += ttbase + ":\n";
+    o += "  .p2align 2\n";
+    return o;
+}
