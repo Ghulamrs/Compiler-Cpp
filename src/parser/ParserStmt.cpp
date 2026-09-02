@@ -576,7 +576,11 @@ StmtPtr Parser::rangeForStatement(int scope) {
     std::vector<StmtPtr> body;
     body.push_back(StmtPtr(new ExprStmt(std::move(take))));
     loopDepth_++;
+    loopMarks_.push_back(alive_.size());
+    breakMarks_.push_back(alive_.size());
     body.push_back(statement());
+    breakMarks_.pop_back();
+    loopMarks_.pop_back();
     loopDepth_--;
     leaveBlock();
     leaveScope();
@@ -596,10 +600,14 @@ StmtPtr Parser::rangeForStatement(int scope) {
 }
 
 StmtPtr Parser::forStatement() {
+    const std::size_t pos = peek().pos;
     expect("for");
     expect("(");
     enterScope();
     int scope = enterBlock();
+    // What the init-statement builds lives to the end of the for statement
+    // and no further - [stmt.for]/1 puts the whole loop in its own block.
+    const std::size_t aliveAtEntry = alive_.size();
 
     if (atRangeFor()) return rangeForStatement(scope);
 
@@ -617,8 +625,14 @@ StmtPtr Parser::forStatement() {
     if (!peek().is(")")) step = endFullExpression(decay(expr()));
     expect(")");
 
+    // The mark is taken after the init-statement: `for (S s; ...)` builds s
+    // once for the whole loop, and a break must not destroy it.
     loopDepth_++;
+    loopMarks_.push_back(alive_.size());
+    breakMarks_.push_back(alive_.size());
     StmtPtr body = statement();
+    breakMarks_.pop_back();
+    loopMarks_.pop_back();
     loopDepth_--;
 
     leaveBlock();
@@ -626,7 +640,26 @@ StmtPtr Parser::forStatement() {
     For *f = new For(std::move(init), std::move(cond),
                      std::move(step), std::move(body));
     f->setScope(scope);
-    return StmtPtr(f);
+    if (alive_.size() == aliveAtEntry) return StmtPtr(f);
+
+    // **`for (S s; ...)` destroys s when the loop is done**, here, the way a
+    // block destroys what it built at its '}'. It used to stay on alive_
+    // and be destroyed by the enclosing block instead - once, but late, and
+    // after everything that block went on to do. The same limit block()
+    // states applies: this compiler's cleanup regions are cut at block
+    // level, and a `try` in the function would have to know this one.
+    if (functionHasTry_ || inTryBody_)
+        src_.fail(pos, "a local with a destructor and a 'try' in one "
+                       "function is not supported yet - each is a range in "
+                       "the call-site table and one would have to split "
+                       "the other");
+    std::vector<StmtPtr> steps;
+    steps.push_back(StmtPtr(f));
+    emitDestructors(steps, aliveAtEntry, pos);
+    alive_.resize(aliveAtEntry);
+    Block *b = new Block(std::move(steps));
+    b->setScope(-1);
+    return StmtPtr(b);
 }
 
 // **`static_assert(cond, "message");` - a declaration that declares nothing and
@@ -950,7 +983,9 @@ StmtPtr Parser::switchStatement() {
 
     switches_.push_back(SwitchCtx{ {}, nullptr, governing, jumpGuards() });
     switchDepth_++;
+    breakMarks_.push_back(alive_.size());
     StmtPtr body = statement();
+    breakMarks_.pop_back();
     switchDepth_--;
 
     SwitchCtx ctx = std::move(switches_.back());
@@ -1013,7 +1048,7 @@ StmtPtr Parser::gotoLabel() {
     for (const LabelDef &l : labels_)
         if (l.name == name)
             src_.fail(pos, "label '" + name + "' is defined twice in this function");
-    labels_.push_back(LabelDef{ name, pos, jumpGuards(), aliveNow() });
+    labels_.push_back(LabelDef{ name, pos, jumpGuards(), alive_, nullptr });
 
     if (atDeclarationStart())
         src_.fail(peek().pos, "a label cannot be followed by a declaration - "
@@ -1052,10 +1087,19 @@ std::vector<Parser::JumpGuard> Parser::jumpGuards() const {
     return out;
 }
 
-std::vector<Parser::JumpGuard> Parser::aliveNow() const {
-    std::vector<JumpGuard> out;
-    for (const Alive &a : alive_) out.push_back(JumpGuard{ a.name, a.offset });
-    return out;
+// A jump that leaves a scope destroys what the scope built, innermost first,
+// before it goes - the calls the scope's end would have made, made here
+// instead, since the jump does not reach that end. [stmt.jump]/2. `return`
+// has always done this for the whole function; `break` and `continue` do it
+// for everything built since their loop or switch was entered.
+StmtPtr Parser::jumpLeaving(StmtPtr jump, std::size_t mark, std::size_t pos) {
+    std::vector<StmtPtr> steps;
+    emitDestructors(steps, mark, pos);
+    if (steps.empty()) return jump;
+    steps.push_back(std::move(jump));
+    Block *b = new Block(std::move(steps));
+    b->setScope(-1);
+    return StmtPtr(b);
 }
 
 void Parser::checkJump(const std::vector<JumpGuard> &from,
@@ -1087,26 +1131,26 @@ void Parser::resolveGotos() {
         checkJump(g.guards, target->guards, g.pos, "'goto " + g.name + "'",
                   "the goto");
 
-        // **A goto out of a scope holding a live object is refused**, by
-        // name: a scope's destructors are emitted at its end, and a jump
-        // that leaves early goes over them. The rule is precise where the
-        // one for `break` and `continue` is conservative, because a goto
-        // knows both of its ends by now: an object alive at the goto and not
-        // at the label is one the jump leaves, and one alive at both is one
-        // it stays inside. Until this check the jump was accepted and the
-        // destructor did not run - the conservative test that was meant to
-        // catch it sat on a line the goto branch had already returned from.
-        for (const JumpGuard &a : g.alive) {
+        // **A goto out of a scope destroys what it leaves**, innermost
+        // first - the same calls the scope's end makes, through the same
+        // routine, placed in the block that was left in front of the Goto
+        // for them. Both ends are known now: an object alive at the goto
+        // and not at the label is one the jump leaves; one alive at both is
+        // one it stays inside, and is left alone. The scope's own calls at
+        // its end are not reached by the jump, so nothing is destroyed
+        // twice. Until this, the jump was accepted and the destructor
+        // simply did not run: the refusal meant to catch it sat on a line
+        // the goto branch had already returned from.
+        for (std::size_t i = g.alive.size(); i > 0; i--) {
+            const Alive &a = g.alive[i - 1];
             bool atLabel = false;
-            for (const JumpGuard &b : target->alive)
+            for (const Alive &b : target->alive)
                 if (b.offset == a.offset) { atLabel = true; break; }
-            if (!atLabel)
-                src_.fail(g.pos, "'goto " + g.name + "' would leave the scope "
-                                 "holding '" + a.name + "', whose destructor "
-                                 "runs at the end of that scope - jumping over "
-                                 "a destructor is not supported yet. Leave the "
-                                 "block by falling off its end, or move '" +
-                                 a.name + "' out of it");
+            if (atLabel) continue;
+            std::vector<StmtPtr> call;
+            destroyObject(call, a, g.pos);
+            for (std::size_t k = 0; k < call.size(); k++)
+                g.cleanups->append(std::move(call[k]));
         }
     }
     labels_.clear();
@@ -1641,7 +1685,11 @@ StmtPtr Parser::statementBody() {
         ExprPtr cond = endFullExpression(decay(expr()));
         expect(")");
         loopDepth_++;
+        loopMarks_.push_back(alive_.size());
+        breakMarks_.push_back(alive_.size());
         StmtPtr body = statement();
+        breakMarks_.pop_back();
+        loopMarks_.pop_back();
         loopDepth_--;
         return StmtPtr(new While(std::move(cond), std::move(body)));
     }
@@ -1650,7 +1698,11 @@ StmtPtr Parser::statementBody() {
 
     if (consume("do")) {
         loopDepth_++;
+        loopMarks_.push_back(alive_.size());
+        breakMarks_.push_back(alive_.size());
         StmtPtr body = statement();
+        breakMarks_.pop_back();
+        loopMarks_.pop_back();
         loopDepth_--;
         expect("while");
         expect("(");
@@ -1667,44 +1719,47 @@ StmtPtr Parser::statementBody() {
         std::size_t pos = peek().pos;
         std::string name = expectIdent("a label to jump to");
         expect(";");
-        gotos_.push_back(LabelDef{ name, pos, jumpGuards(), aliveNow() });
-        return StmtPtr(new Goto(std::move(name)));
+        // **The jump destroys what it leaves, and cannot yet know what that
+        // is**: a forward label has not been read. So the goto is placed
+        // behind an empty block, and resolveGotos() fills that block with
+        // the destructor calls once both ends are known. What is alive here
+        // is copied now, because alive_ will have been cut back by then.
+        Block *cleanups = new Block({});
+        cleanups->setScope(-1);
+        gotos_.push_back(LabelDef{ name, pos, jumpGuards(), alive_, cleanups });
+        std::vector<StmtPtr> steps;
+        steps.push_back(StmtPtr(cleanups));
+        steps.push_back(StmtPtr(new Goto(std::move(name))));
+        Block *b = new Block(std::move(steps));
+        b->setScope(-1);
+        return StmtPtr(b);
     }
 
     if (peek().kind == TokenKind::Ident && peekAt(1).is(":")) return gotoLabel();
 
-    if (peek().is("break") || peek().is("continue")) {
-        // A jump can leave a scope without falling off its end, and this
-        // compiler runs destructors at the end. Rather than skip them
-        // silently - which loses a release, a close, a free - the jump is
-        // refused while anything is alive. Conservative: it refuses some
-        // programs whose jump would not have crossed the object at all. The
-        // precise rule needs each jump to know which scopes it leaves, and
-        // that is a change to how jumps are built rather than an addition.
-        // A goto knows both of its ends once the function has been read, so
-        // it gets the precise rule instead, in resolveGotos(). This test
-        // used to name goto too - on a line the goto branch above had
-        // already returned from, so it never ran for one.
-        if (!alive_.empty())
-            src_.fail(peek().pos, "'" + peek().text + "' would leave a scope "
-                                  "holding '" + alive_.back().name + "', whose "
-                                  "destructor runs at the end of that scope - "
-                                  "jumping over a destructor is not supported "
-                                  "yet");
-    }
-
-    if (consume("break")) {
+    // A jump can leave a scope without falling off its end, and this
+    // compiler runs destructors at the end - so each of these destroys what
+    // was built since its loop or switch was entered before it goes, the way
+    // `return` destroys what the function owes. A goto does the same in
+    // resolveGotos(), where its label is known. These used to be refused
+    // while anything at all was alive, and goto not at all: its refusal sat
+    // on a line the goto branch had already returned from.
+    if (peek().is("break")) {
+        const std::size_t pos = peek().pos;
+        at_++;
         if (loopDepth_ == 0 && switchDepth_ == 0)
-            src_.fail(peek().pos, "'break' is not inside a loop or a switch");
+            src_.fail(pos, "'break' is not inside a loop or a switch");
         expect(";");
-        return StmtPtr(new Break());
+        return jumpLeaving(StmtPtr(new Break()), breakMarks_.back(), pos);
     }
 
-    if (consume("continue")) {
+    if (peek().is("continue")) {
+        const std::size_t pos = peek().pos;
+        at_++;
         if (loopDepth_ == 0)
-            src_.fail(peek().pos, "'continue' is not inside a loop");
+            src_.fail(pos, "'continue' is not inside a loop");
         expect(";");
-        return StmtPtr(new Continue());
+        return jumpLeaving(StmtPtr(new Continue()), loopMarks_.back(), pos);
     }
     if (peek().is("{")) return block();
     if (consume(";")) return StmtPtr(new Block({}));

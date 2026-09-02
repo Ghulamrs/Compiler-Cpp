@@ -1,0 +1,3 @@
++o +s -s 0 -o +o d 1 -o | 
++o d0 end0 -o +o +s -s -o +o d2 end2 -o | 
++arg +copyarg +a -a | -arg -arg 

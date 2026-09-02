@@ -1,10 +1,9 @@
 // A jump can leave a scope without falling off its end, and destructors run at
-// the end. Rather than skip one silently - which loses whatever the object was
-// holding - the jump is refused while anything is alive.
-//
-// Conservative on purpose: this break would not actually cross the object.
-// Making the rule precise means each jump knowing which scopes it leaves, and
-// that is a change to how jumps are built rather than an addition to it.
+// the end. This break does not cross the object at all - `g` was built before
+// the loop - and used to be refused all the same, while anything was alive.
+// A break now destroys exactly what was built since its loop was entered,
+// which here is nothing, and the program compiles and prints nothing.
+// jump-out-destroys.cpp holds the jumps that do cross an object.
 class Guard {
 public:
     Guard();

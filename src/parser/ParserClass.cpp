@@ -471,24 +471,32 @@ void Parser::emitDestructors(std::vector<StmtPtr> &into, std::size_t from,
     for (std::size_t i = to; i > from; i--) {
         const Alive &a = alive_[i - 1];
         if (except >= 0 && a.offset == except && !a.byAddress) continue;
-        const Signature *dtor = destructorOf(a.cls);
-        if (dtor == nullptr) continue;
-
-        ExprPtr addr;
-        if (a.byAddress) {
-            // The slot holds the caller's pointer, and that pointer IS the
-            // object's address.
-            addr = ExprPtr(Var::local(a.name, a.offset));
-            addr->setType(types_.pointerTo(a.cls));
-        } else {
-            ExprPtr object(Var::local(a.name, a.offset));
-            object->setType(a.cls);
-            addr = ExprPtr(new Unary('&', std::move(object)));
-            addr->setType(types_.pointerTo(a.cls));
-        }
-        into.push_back(StmtPtr(new ExprStmt(destructorCall(std::move(addr),
-                                                           *dtor, pos))));
+        destroyObject(into, a, pos);
     }
+}
+
+// One object's destructor call, for the end of a scope and for every jump
+// that leaves one early - a goto fills these in after its label is known,
+// which is why this takes the record and not an index into alive_.
+void Parser::destroyObject(std::vector<StmtPtr> &into, const Alive &a,
+                           std::size_t pos) {
+    const Signature *dtor = destructorOf(a.cls);
+    if (dtor == nullptr) return;
+
+    ExprPtr addr;
+    if (a.byAddress) {
+        // The slot holds the caller's pointer, and that pointer IS the
+        // object's address.
+        addr = ExprPtr(Var::local(a.name, a.offset));
+        addr->setType(types_.pointerTo(a.cls));
+    } else {
+        ExprPtr object(Var::local(a.name, a.offset));
+        object->setType(a.cls);
+        addr = ExprPtr(new Unary('&', std::move(object)));
+        addr->setType(types_.pointerTo(a.cls));
+    }
+    into.push_back(StmtPtr(new ExprStmt(destructorCall(std::move(addr),
+                                                       *dtor, pos))));
 }
 
 // The vtable: one pointer per virtual function, in the order the base first

@@ -665,6 +665,18 @@ private:
     int switchDepth_ = 0;
     int caseIds_ = 0;
 
+    // Objects that have been constructed and not yet destroyed - the entries
+    // of alive_, below, innermost last.
+    struct Alive {
+        std::string name;
+        int offset;
+        const Type *cls;
+        // Set for a by-value class parameter that arrived by address: its slot
+        // holds the caller's pointer, so the object's address is what the slot
+        // *contains* rather than where the slot sits.
+        bool byAddress = false;
+    };
+
     // One automatic object a jump may not land past - see Local::guardsJump.
     // The frame slot is the identity, since no two objects of one function
     // share one and a name can be declared again in an inner block; the name
@@ -690,12 +702,20 @@ private:
         std::string name;
         std::size_t pos;
         std::vector<JumpGuard> guards;
-        // The objects alive there - alive_, by the same identity. A goto
-        // holding one its label does not is a jump out of that object's
-        // scope, and would have to destroy it on the way.
-        std::vector<JumpGuard> alive;
+        // The objects alive there - a copy of alive_. A goto holding one its
+        // label does not is a jump out of that object's scope, and destroys
+        // it on the way: the calls go into `cleanups`, a block placed in
+        // front of the Goto when it was parsed and filled in by
+        // resolveGotos() once the label is known. Null for a label.
+        std::vector<Alive> alive;
+        Block *cleanups;
     };
-    std::vector<JumpGuard> aliveNow() const;
+    // alive_.size() at the entry to each loop body, and to each loop body
+    // or switch body: what `continue` and `break` respectively destroy on
+    // the way out is everything built since.
+    std::vector<std::size_t> loopMarks_;
+    std::vector<std::size_t> breakMarks_;
+    StmtPtr jumpLeaving(StmtPtr jump, std::size_t mark, std::size_t pos);
     std::vector<LabelDef> labels_;
     std::vector<LabelDef> gotos_;
 
@@ -790,18 +810,12 @@ private:
     // is what the program wrote, which is exactly the question.
     bool podForLayout(const Type *t) const;
     ExprPtr destructorCall(ExprPtr address, const Signature &dtor, std::size_t pos);
+    void destroyObject(std::vector<StmtPtr> &into, const Alive &a, std::size_t pos);
 
     // Objects that have been constructed and not yet destroyed, innermost
-    // last. RAII is this list read backwards at the right moments.
-    struct Alive {
-        std::string name;
-        int offset;
-        const Type *cls;
-        // Set for a by-value class parameter that arrived by address: its slot
-        // holds the caller's pointer, so the object's address is what the slot
-        // *contains* rather than where the slot sits.
-        bool byAddress = false;
-    };
+    // last. RAII is this list read backwards at the right moments. The
+    // struct itself is defined beside the jump records above, which keep
+    // copies of it.
     std::vector<Alive> alive_;
     // `except` is the frame offset of an object not to destroy - the one
     // being returned, which the caller destroys instead.

@@ -557,18 +557,26 @@ own. That is not a detail: the expression may read an object that is about to
 be destroyed, and without the temporary the function would return a value taken
 out of an object after its destructor had been told it was finished.
 
-**A jump out of a scope holding a live object is refused** - `break` and
-`continue` conservatively, while anything at all is alive, which refuses some
-programs whose jump would not have crossed the object; and `goto` precisely,
-since by the end of the function both of its ends are known, and an object
-alive at the goto and not at the label is one the jump would leave. The
-precise rule for the other two needs each jump to know which scopes it
-leaves, which is a change to how jumps are built rather than an addition, and
-skipping a destructor silently is the one outcome worth refusing loudly. For
-a while it was skipped all the same: the `goto` half of the conservative test
-sat on a line the goto branch had already returned from, and `{ S s; goto
-out; }` compiled and never ran `~S`. Found while mending the rule below,
-2026-09-02; `tests/cases/goto-out-of-scope` pins the refusal.
+**A jump out of a scope destroys what the scope built, innermost first**,
+before it goes - [stmt.jump]/2, and the same calls the scope's end makes,
+through the same `destroyObject`. `return` has always done it for the whole
+function. `break` and `continue` do it for everything built since their loop
+or switch body was entered - a mark on `alive_` taken after a `for`'s
+init-statement, so `for (S s; ...)` keeps its `s` across a break. A `goto`
+cannot know at the time what it leaves, since a forward label has not been
+read, so it is emitted as a block in front of the jump, left empty, and
+`resolveGotos()` fills it with the calls for every object alive at the goto
+and not at the label. Measured against clang over ten shapes in
+`tests/cases/jump-out-destroys` - two scopes at once, a loop body, a
+backward jump, a switch, an inner loop only, several objects in one scope,
+an object destroyed only through a member's destructor - with identical
+output.
+
+Before this, `break` and `continue` were refused whenever anything at all
+was alive, and `goto` was not refused at all: its half of that test sat on a
+line the goto branch had already returned from, and `{ S s; goto out; }`
+compiled and never ran `~S`. Found 2026-09-02 while mending the rule below;
+`tests/cases/goto-out-of-scope` runs it now.
 
 **A jump may not land past an initialisation** - [stmt.dcl]/3, for `goto`
 forward, `goto` backward into a block, and a `switch` to its case labels
@@ -1392,7 +1400,8 @@ and `switch` neighbours), and narrowing in a braced initialiser
 (`tests/cases/narrowing-in-braces`, with its aggregate-member and file-scope
 neighbours). Mending the first found a third: a `goto` *out* of a block
 holding a live object skipped the destructor, because the refusal written for
-it was unreachable. The other two of the four stay open.
+it was unreachable - a jump destroys what it leaves now, `break` and
+`continue` included. The other two of the four stay open.
 
 ### C-04: the widest integer there is, and which box decides how wide that is
 

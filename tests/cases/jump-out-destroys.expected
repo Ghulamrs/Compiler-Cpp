@@ -1,0 +1,11 @@
++a +b +c -c -b -a | 
++a +b +c fell -c -b mid -a | 
++p 0 -p +p -p | 
++q -q +q -q +q -q 3 | 
++once +body +m -m -body -once | 
++once +body +m no -m -body -once | 
++p 0 -p +p -p +p 2 -p | 
++o +i -i +i -i 0 -o +o +i -i +i -i 1 -o | 
++s +t -t -s | 
+d | 
++w 1 -w +w -w +w 3 -w +w -w | 
