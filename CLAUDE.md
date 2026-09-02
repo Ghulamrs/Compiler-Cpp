@@ -1303,14 +1303,72 @@ done, and what each was measured against:
   cannot show it. Mended in the clone, and the Windows lane of
   `default-arg-member-init.cpp` is what would have failed.
 
-**Open, and recorded rather than reached: a user-written constructor does
-not build a class member it does not name.** `struct S { M m; S() {} };`
-with `M() : v(3) {}` leaves `m` holding whatever was on the stack - measured,
-prints 1 for 3 - where the implicit constructor builds it correctly.
-`: m(1)` for a class-typed member is refused by name ("'m' is 'struct M' and
-this is 'int'"), so only the silent shape is open. It is a separate disease
-from the default-argument one and it needs member construction in
-`topLevel` with the destructor's mirror; not begun.
+**A user-written constructor builds the class members it does not name.**
+[class.base.init]/8: a member the mem-initialiser list leaves out is
+default-initialised, and for a class type that is its default constructor.
+The implicit constructor did this from the start; a written one did not -
+`struct S { M m; S() {} };` with `M() : v(3) {}` left `m` holding the stack,
+printed 1 where clang prints 3, and then ran `~M` on it from the destructor
+the compiler wrote. A silent wrong answer with a destructor for an object
+nothing built. Mended by pulling the member's constructor call out of
+`synthesizeDefaultCtor` into `constructMember`, and walking the members
+*once*, in declaration order, in both constructors by the first of three
+rules that applies: named in the list, own initialiser, class with
+constructors. Two things followed from the one walk:
+
+- `: m(args)` on a class-typed member with constructors now *constructs*
+  it, through overload resolution and `applyDefaults`, where it was refused
+  as an assignment ("'n' is 'struct N' and this is 'int'") - so `: n(9)` and
+  a written copy constructor's `: m(o.m)` both reach the right constructor.
+  An array member named with arguments is refused by name, as clang refuses
+  it.
+- The implicit constructor used to apply a member's own initialiser and then
+  default-construct the same member over it; the walk applies one rule per
+  member, which is what /8's "otherwise" says.
+
+Measured against clang, constructors and destructors printing, in
+`member-default-init.cpp`: a user-provided default constructor, an
+all-defaulted one, the implicit non-trivial one nested two deep, an array
+member, a scalar named beside a class left unnamed, a base beside a member
+with either named, a non-default constructor, and two written copy
+constructors - every line identical, order included.
+`member-default-init-refused.cpp` is the member with no default constructor,
+refused where clang refuses it. A union's members are still not built.
+
+**Where that walk meets `: m()`, and which rule owns an empty pair.** The
+construction above and the value-initialisation `: m()` were written apart,
+against the same function, and the seam between them is one question:
+**parentheses with nothing between them are [dcl.init]/8 and not
+[class.base.init]/7.** So an entry the list left empty is recorded when the
+list is read, and the declaration-order walk asks *that* before it asks what
+the member is - construction is never handed an empty argument vector from a
+list. It cannot usefully take one: for `: p()` on a plain struct, `: k()` on
+an `int`, `: d()` on a `double` or `: arr()` there is no constructor to
+reach, and the answer is zeroing, which construction has nothing to say
+about. Handing it the empty vector anyway is what refused `: p()` with "'p'
+takes one value here, given 0", a form ordinary C++ writes daily.
+
+**And the arity check moved with the construction.** One value per entry used
+to be settled in the loop that reads the list, where every entry looks alike;
+a class-typed member now takes as many values as one of its constructors
+does, so the question is asked further down, after the member's own type has
+had its say, and only of the entries that are neither constructed nor
+value-initialised. `mem-init-two-rules.cpp` is the seam itself - one list
+carrying `: m(1, 2)`, `: p()`, `: k()`, `: d()`, `: m2()`, `: q()`, `: v()`
+and `: arr()`, measured against clang with every constructor and destructor
+printing - and `mem-init-arity-refused.cpp` is `: k(1, 2)` on an `int`, which
+is what proves the check moved rather than went.
+
+**The door beside it, measured and left: a class-typed member with its own
+initialiser is assigned, not built.** `struct E { M m = M(2); E() {} };`
+prints `M2 E ~M | 2 ~M` from cxx1 and `M2 E | 2 ~M` from clang: the
+temporary is constructed, *assigned* into storage nothing constructed, and
+destroyed - one constructor, two destructors - where clang elides it into
+the member. The implicit constructor prints clang's line for the same
+shape, `M2 | 2 ~M`, only because it never destroys the temporary. The mend
+is copy-initialisation through `constructMember` with the initialiser as
+the argument, which reaches the copy constructor and then meets the
+elision question docs/CONFORMANCE.md already records; not begun.
 
 **What the audit was worth, in the end.** Nineteen defects under a suite that
 was green on all three machines, and the fixes added 62 cases - the suite went

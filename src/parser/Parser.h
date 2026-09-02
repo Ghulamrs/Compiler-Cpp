@@ -1186,6 +1186,20 @@ private:
                                             const Type *type, int thisSlot,
                                             const std::set<std::string> &already,
                                             std::size_t pos);
+    // The same for one member: the store its own initialiser asks for, or
+    // nullptr where the class wrote none.
+    StmtPtr memberInitialiser(const std::string &tag, const Type *type,
+                              const Member &m, int thisSlot, std::size_t pos);
+    // The constructor call for a class-typed member - [class.base.init]/8
+    // with `args` empty, the mem-initialiser `: m(args)` otherwise. Answers
+    // nullptr for a member whose type has no constructors at all, which is
+    // the caller's cue to treat it as the scalar it behaves like - and then
+    // `args` is left untouched for that path to use. `implicit` only chooses
+    // the words a refusal is given.
+    StmtPtr constructMember(const std::string &cls, const Type *type,
+                            const Member &m, int thisSlot,
+                            std::vector<ExprPtr> &args, std::size_t pos,
+                            bool implicit);
     // [dcl.fct.default]/4: the defaults have to be a suffix of the parameter
     // list. Asked by both parameter-list parsers - the one for declarations
     // and the one a definition has of its own - because a definition may
