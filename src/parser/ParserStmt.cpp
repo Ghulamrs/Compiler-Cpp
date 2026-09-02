@@ -2031,12 +2031,8 @@ void Parser::topLevel(Program &program) {
         if (const std::vector<std::size_t> *set = overloadsOf(key)) {
             for (std::size_t k = 0; k < set->size() && member == nullptr; k++) {
                 const Signature &f = functions_[(*set)[k]];
-                if (f.params.size() != params.size() ||
-                    f.constThis != constThis) continue;
-                bool same = true;
-                for (std::size_t i = 0; i < params.size(); i++)
-                    if (f.params[i] != params[i]) { same = false; break; }
-                if (same) member = &f;
+                if (f.constThis == constThis && sameParameters(f.params, params))
+                    member = &f;
             }
         }
         if (member == nullptr)
@@ -2224,12 +2220,7 @@ void Parser::topLevel(Program &program) {
                 src_.fail(epos, "'" + m->name + "' takes one value here, "
                                 "given " + std::to_string(found->second.size()));
 
-            ExprPtr me(Var::local("this", thisOffset_));
-            me->setType(types_.pointerTo(memberOf));
-            ExprPtr obj(new Unary('*', std::move(me)));
-            obj->setType(memberOf);
-            ExprPtr field(new MemberAccess(std::move(obj), m->name, m->offset,
-                                           m->width, m->bitOffset));
+            ExprPtr field = thisMember(thisOffset_, memberOf, *m);
 
             // **A reference member is bound, not assigned**, and this is the one place
             // it can be. What the slot holds is an address, so the member is typed as

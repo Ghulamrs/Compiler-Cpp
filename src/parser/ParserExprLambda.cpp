@@ -447,12 +447,7 @@ ExprPtr Parser::capturedThisPointer() {
     const Local *self = findLocal("this");
     if (self == nullptr) return nullptr;
 
-    ExprPtr me(Var::local("this", self->offset));
-    me->setType(self->type);
-    ExprPtr obj(new Unary('*', std::move(me)));
-    obj->setType(self->type->pointee());
-    ExprPtr acc(new MemberAccess(std::move(obj), capturedThis(), held->offset,
-                                 0, 0));
+    ExprPtr acc = thisMember(self->offset, self->type->pointee(), *held);
     acc->setType(types_.pointerTo(outer->second));
     return acc;
 }
@@ -471,12 +466,6 @@ ExprPtr Parser::outerCaptureAccess(const std::string &name) {
     const Local *self = findLocal("this");
     if (self == nullptr) return nullptr;
 
-    ExprPtr me(Var::local("this", self->offset));
-    me->setType(self->type);
-    ExprPtr obj(new Unary('*', std::move(me)));
-    obj->setType(closure);
-    ExprPtr acc(new MemberAccess(std::move(obj), name, m->offset, m->width,
-                                 m->bitOffset));
-    acc->setType(m->type);
+    ExprPtr acc = thisMember(self->offset, closure, *m);
     return useReference(std::move(acc));
 }

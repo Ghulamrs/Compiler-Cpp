@@ -948,13 +948,8 @@ ExprPtr Parser::primary(Program *program) {
                 if (self == nullptr)
                     src_.fail(pos, "'" + name + "' is a member and there is no "
                                    "object here to read it from");
-                ExprPtr me(Var::local("this", self->offset));
-                me->setType(self->type);
-                ExprPtr obj(new Unary('*', std::move(me)));
                 const Type *held = self->type->pointee();
-                obj->setType(held);
-                ExprPtr acc(new MemberAccess(std::move(obj), name, m->offset,
-                                             m->width, m->bitOffset));
+                ExprPtr acc = thisMember(self->offset, held, *m);
                 // The same two rules as the `.` and `->` paths: a const
                 // object does not reach through a reference member, and a
                 // reference member is read by dereferencing what it holds.

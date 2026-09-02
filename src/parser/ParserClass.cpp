@@ -57,10 +57,7 @@ StmtPtr Parser::constructLocal(const Declared &d, int offset,
 bool Parser::overrides(const VSlot &s, const std::string &name,
                        const std::vector<const Type *> &params, bool constThis) {
     if (s.name != name || s.constThis != constThis) return false;
-    if (s.params.size() != params.size()) return false;
-    for (std::size_t i = 0; i < params.size(); i++)
-        if (s.params[i] != params[i]) return false;
-    return true;
+    return sameParameters(s.params, params);
 }
 
 std::string Parser::deletingDestructorSymbol(const std::string &cls) {
@@ -309,7 +306,7 @@ ExprPtr Parser::destructorCall(ExprPtr address, const Signature &dtor,
                                std::size_t pos) {
     // Calling one is what asks for a body, which is the only thing that makes
     // an implicit destructor a function at all.
-    functions_[static_cast<std::size_t>(&dtor - &functions_[0])].used = true;
+    markUsed(&dtor);
     std::vector<ExprPtr> args;
     args.push_back(std::move(address));
     std::vector<const Type *> params;
@@ -525,6 +522,29 @@ void Parser::markSymbolUsed(const std::string &symbol) {
         if (functions_[i].symbol == symbol) { functions_[i].used = true; return; }
 }
 
+void Parser::markUsed(const Signature *f) {
+    functions_[static_cast<std::size_t>(f - &functions_[0])].used = true;
+}
+
+bool Parser::sameParameters(const std::vector<const Type *> &a,
+                            const std::vector<const Type *> &b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); i++)
+        if (a[i] != b[i]) return false;
+    return true;
+}
+
+ExprPtr Parser::thisMember(int thisSlot, const Type *cls, const Member &m) {
+    ExprPtr me(Var::local("this", thisSlot));
+    me->setType(types_.pointerTo(cls));
+    ExprPtr obj(new Unary('*', std::move(me)));
+    obj->setType(cls);
+    ExprPtr acc(new MemberAccess(std::move(obj), m.name, m.offset,
+                                 m.width, m.bitOffset));
+    acc->setType(m.type);
+    return acc;
+}
+
 void Parser::emitVtable(const Type *cls, const std::string &tag,
                         std::size_t pos) {
     if (tag.empty())
@@ -632,11 +652,8 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
     std::vector<std::size_t> &set = functionIndex_[key];
     for (std::size_t k = 0; k < set.size(); k++) {
         const Signature &f = functions_[set[k]];
-        if (f.params.size() != params.size()) continue;
-        bool same = true;
-        for (std::size_t i = 0; i < params.size(); i++)
-            if (f.params[i] != params[i]) { same = false; break; }
-        if (same) src_.fail(pos, "'" + cls + "::" + cls + "' is declared twice");
+        if (sameParameters(f.params, params))
+            src_.fail(pos, "'" + cls + "::" + cls + "' is declared twice");
     }
 
     const char code = access == Access::Public    ? 'Q'
@@ -707,7 +724,7 @@ StmtPtr Parser::constructLocalArray(const Declared &d, int offset,
     // **Marked used, or an implicit one is declared and never emitted.** Every other
     // path to a constructor goes through `resolveOverload`, which marks it; this one
     // looks the default up directly. `S a[2];` called `S::S()` and nothing defined it.
-    functions_[static_cast<std::size_t>(ctor - &functions_[0])].used = true;
+    markUsed(ctor);
     // **Copied before the defaults are read**: reading one can parse an expression
     // that grows `functions_` under the pointer just taken into it. The defaults sit
     // inside the statement the loop repeats, so they are evaluated once per element.
@@ -947,12 +964,7 @@ void Parser::synthesizeDestructor(std::size_t which) {
             indexSlot = allocateFrameSlot(types_.intType());
         }
 
-        ExprPtr me(Var::local("this", thisSlot));
-        me->setType(self);
-        ExprPtr obj(new Unary('*', std::move(me)));
-        obj->setType(type);
-        ExprPtr acc(new MemberAccess(std::move(obj), ms[n].name, ms[n].offset));
-        acc->setType(mt);
+        ExprPtr acc = thisMember(thisSlot, type, ms[n]);
 
         ExprPtr address;
         if (mt->isArray()) {
@@ -1199,7 +1211,7 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
                            base->tag() + "' taking nothing is " +
                            (ctor->access == Access::Private ? "private"
                                                             : "protected"));
-        functions_[static_cast<std::size_t>(ctor - &functions_[0])].used = true;
+        markUsed(ctor);
         // Copied before the defaults are read - see constructLocalArray.
         const Signature chosen = *ctor;
         std::vector<ExprPtr> defaults;
@@ -1358,7 +1370,7 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
                            kind + " the compiler would write: the " + kind +
                            " of its base '" + base->tag() + "' is " +
                            (cc->access == Access::Private ? "private" : "protected"));
-        functions_[static_cast<std::size_t>(cc - &functions_[0])].used = true;
+        markUsed(cc);
         const std::string sym = assigning ? cc->symbol
                                           : baseConstructorSymbol(*cc, base);
         const Type *basePtr = types_.pointerTo(base);
@@ -1424,7 +1436,7 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
                                "', the type of '" + ms[i].name + "', is " +
                                (cc->access == Access::Private ? "private"
                                                               : "protected"));
-            functions_[static_cast<std::size_t>(cc - &functions_[0])].used = true;
+            markUsed(cc);
         }
 
         int indexSlot = 0;
@@ -1440,13 +1452,7 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
 
         // Both sides of the copy, as lvalues: this->m and that->m, or one
         // element of each when the member is an array.
-        ExprPtr me(Var::local("this", thisSlot));
-        me->setType(self);
-        ExprPtr meObj(new Unary('*', std::move(me)));
-        meObj->setType(type);
-        ExprPtr dst(new MemberAccess(std::move(meObj), ms[i].name, ms[i].offset,
-                                     ms[i].width, ms[i].bitOffset));
-        dst->setType(mt);
+        ExprPtr dst = thisMember(thisSlot, type, ms[i]);
 
         ExprPtr from(Var::local("that", thatSlot));
         from->setType(srcPtr);
@@ -1689,11 +1695,7 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
     const std::vector<const Type *> &params = fn->params();
     for (std::size_t k = 0; k < set.size(); k++) {
         const Signature &f = functions_[set[k]];
-        if (f.params.size() != params.size() || f.constThis != constThis) continue;
-        bool same = true;
-        for (std::size_t i = 0; i < params.size(); i++)
-            if (f.params[i] != params[i]) { same = false; break; }
-        if (same)
+        if (f.constThis == constThis && sameParameters(f.params, params))
             src_.fail(d.pos, "'" + key + "' is declared twice");
     }
 
@@ -1826,11 +1828,7 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
         // so that resolution can see it. It is not a declaration of that
         // name, so a function written with the same parameters is a new one.
         if (f.fromTemplate && instantiationKey_.empty()) continue;
-        if (f.params.size() != params.size() || f.variadic != variadic) continue;
-        bool same = true;
-        for (std::size_t i = 0; i < params.size(); i++)
-            if (f.params[i] != params[i]) { same = false; break; }
-        if (!same) continue;
+        if (f.variadic != variadic || !sameParameters(f.params, params)) continue;
 
         if (f.returns != returns)
             src_.fail(pos, "'" + key + "' was declared to return '" +
@@ -1934,11 +1932,8 @@ Parser::lookupSignature(const std::string &name,
     if (const std::vector<std::size_t> *set = overloadsOf(key)) {
         for (std::size_t k = 0; k < set->size(); k++) {
             const Signature &f = functions_[(*set)[k]];
-            if (f.params.size() != params.size() || f.variadic != variadic) continue;
-            bool same = true;
-            for (std::size_t i = 0; i < params.size(); i++)
-                if (f.params[i] != params[i]) { same = false; break; }
-            if (same) return f;
+            if (f.variadic == variadic && sameParameters(f.params, params))
+                return f;
         }
     }
     src_.fail(pos, "'" + name + "' was not declared - a prototype must come first");
@@ -2075,13 +2070,7 @@ StmtPtr Parser::memberInitialiser(const std::string &tag, const Type *type,
     locals_.swap(outer);
     at_ = resume;
 
-    ExprPtr me(Var::local("this", thisSlot));
-    me->setType(types_.pointerTo(type));
-    ExprPtr obj(new Unary('*', std::move(me)));
-    obj->setType(type);
-    ExprPtr field(new MemberAccess(std::move(obj), m.name, m.offset, m.width,
-                                   m.bitOffset));
-    field->setType(m.type);
+    ExprPtr field = thisMember(thisSlot, type, m);
     ExprPtr store(new Assign(std::move(field), std::move(value)));
     store->setType(m.type);
     return StmtPtr(new ExprStmt(std::move(store)));
@@ -2144,12 +2133,7 @@ StmtPtr Parser::constructMember(const std::string &cls, const Type *type,
         indexSlot = allocateFrameSlot(types_.intType());
     }
 
-    ExprPtr me(Var::local("this", thisSlot));
-    me->setType(types_.pointerTo(type));
-    ExprPtr obj(new Unary('*', std::move(me)));
-    obj->setType(type);
-    ExprPtr acc(new MemberAccess(std::move(obj), m.name, m.offset));
-    acc->setType(m.type);
+    ExprPtr acc = thisMember(thisSlot, type, m);
 
     ExprPtr addr;
     if (m.type->isArray()) {

@@ -202,7 +202,7 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
         }
     }
 
-    functions_[static_cast<std::size_t>(cc - &functions_[0])].used = true;
+    markUsed(cc);
 
     ExprPtr slot(Var::local("$copy", tmp));
     slot->setType(cls);
@@ -379,12 +379,10 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
         int index = -1;
         const std::vector<VSlot> &slots = vtables_[plain->tag()];
         for (std::size_t i = 0; i < slots.size(); i++) {
-            if (slots[i].name != name || slots[i].constThis != sig.constThis) continue;
-            if (slots[i].params.size() != sig.params.size()) continue;
-            bool same = true;
-            for (std::size_t k = 0; k < sig.params.size(); k++)
-                if (slots[i].params[k] != sig.params[k]) { same = false; break; }
-            if (same) { index = static_cast<int>(i); break; }
+            if (overrides(slots[i], name, sig.params, sig.constThis)) {
+                index = static_cast<int>(i);
+                break;
+            }
         }
         if (index < 0)
             src_.fail(pos, "'" + name + "' is virtual but has no vtable slot in "

@@ -452,6 +452,22 @@ private:
     // otherwise only ever comes from a call, and a slot holding a function's address is
     // not one - so an implicit virtual destructor got an entry and no body.
     void markSymbolUsed(const std::string &symbol);
+
+    // **Mark a signature that came out of `functions_` used, and the one place
+    // the pointer arithmetic this file warns about is written.** It is right for
+    // the same reason it was at each of the seven sites: nothing has parsed since.
+    void markUsed(const Signature *f);
+
+    // Two parameter lists compared as C++ compares them - same length, same
+    // types, in order. Six places asked it inline; what goes beside it, constThis
+    // or variadic, stays with the caller, because the answers differ.
+    static bool sameParameters(const std::vector<const Type *> &a,
+                               const std::vector<const Type *> &b);
+
+    // `(*this).m`, typed as the member is declared. Eight sites built the chain by
+    // hand, each remembering the pointer type on `this`, the class on the
+    // dereference and the member's bitfield width; another type is set by the caller.
+    ExprPtr thisMember(int thisSlot, const Type *cls, const Member &m);
     // The statements that set an object's vptrs - the primary one and any a
     // polymorphic second base needs. Every constructor emits these, written
     // or implicit, which is why they live in one place.

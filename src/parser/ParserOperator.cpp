@@ -555,7 +555,7 @@ ExprPtr Parser::assign() {
     // not by moving its bytes. Where the copy is trivial no such function was
     // declared, and this is the struct assignment it has always been.
     if (const Signature *op = copyAssignOf(to->unqualified())) {
-        functions_[static_cast<std::size_t>(op - &functions_[0])].used = true;
+        markUsed(op);
         const Type *selfPtr = types_.pointerTo(to->unqualified());
         ExprPtr addr(new Unary('&', std::move(n)));
         addr->setType(selfPtr);
