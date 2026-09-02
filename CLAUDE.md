@@ -1207,6 +1207,66 @@ ill-formed throws between the halves of a `>>` - and an intervening `>>`
 anywhere overwrites the one stale mark, which is why the case's typedef sits
 above `main` and why the window resisted reproduction the first time.
 
+**Re-judged on `fable/src-mend`, 2026-09-02, one door over from each of the
+three.** The tip that recorded the paragraphs above had never been built; it
+built, and two of its three fixes stood while the third was missing entirely -
+the base mem-initialiser fix had been lost to the `git checkout` its author
+reported, and the compiler still died on the audit's three lines. What was
+done, and what each was measured against:
+
+- **Default arguments, everywhere a constructor call is built by hand.**
+  `defaultConstructorOf` now answers [class.ctor]/5 - a constructor whose
+  every parameter has a default *is* the default constructor - instead of
+  searching for an empty parameter list, and the five hand-built calls apply
+  the defaults: the base a mem-initialiser named with fewer arguments (the
+  crash), the base it did not name, the bases and members of the implicit
+  default constructor, a local array, and `new M` / `new P(1)` - which was
+  refused as "takes 2 argument(s), given 1" after resolution had accepted
+  it. `default-arg-member-init.cpp` proves each against clang, with a
+  counter in the default to show it is evaluated once per call, three
+  times for an array of three. Two constructors that both take nothing are
+  refused as before, with the old wording where clang says "ambiguous".
+- **The base list, before the member list.** Two 2000000000-byte bases with
+  no members of their own passed the member-list guard as a `.zerofill` of
+  -294967295, because a base's offset is an `int` and the cursor the guard
+  reads is derived from it; a third base wrapped the offset negative before
+  the guard saw anything. Refused per base now, where the sum is still a
+  sum. `class-too-large-bases.cpp`.
+- **Fives, not tens.** The digit test multiplied its accumulator by ten for
+  a positive exponent and overflowed at 1e20, so `100000000000000000000.0L`
+  - exactly 2^20 * 5^20 - was refused as inexact. It multiplies by five now,
+  the twos being free, and an overflow there is the true answer: the odd
+  part is past 2^64. 1e22L is accepted and 1e23L refused for x86_64-linux,
+  which is the real boundary of a double. `float-literal-tens.cpp`.
+- **What is verified about the three floating lanes, and on which box.**
+  The strtod/strtof reads and the double-only fold are checked here on the
+  Mac, where the host's `long double` is a double and so cannot tell a
+  once-rounded read from a twice-rounded one. The Linux build is the one
+  that can, and `float-literal-exact.cpp` fails there by printing `0 1 5`
+  if a read is still going through `strtold`. Three-box verification has
+  not run on this branch yet. The x87 refusals - `0.5L + 2^53`, `1.0L /
+  3.0L`, an integer past 53 bits, `1e23L` - were measured by hand for all
+  three targets and fire for x86_64-linux alone, but **no case pins a
+  refusal that fires for one target only**: `.error` is judged on the host
+  target and emit.sh knows no expected refusal. That is a suite change, and
+  it was left for the session that owns the three boxes.
+- **Found beside the case, not in the audit: a cloned operand lost its
+  linker name.** `clonePure` rebuilt a global as `Var::global(name)` and
+  dropped the symbol, so on the Windows target `++n` and `n += 1` took the
+  address of `n` - `EXTERN n:PROC` - where the definition is `?n@@3HA`. A
+  link error on the one target that mangles a variable; the Itanium targets
+  cannot show it. Mended in the clone, and the Windows lane of
+  `default-arg-member-init.cpp` is what would have failed.
+
+**Open, and recorded rather than reached: a user-written constructor does
+not build a class member it does not name.** `struct S { M m; S() {} };`
+with `M() : v(3) {}` leaves `m` holding whatever was on the stack - measured,
+prints 1 for 3 - where the implicit constructor builds it correctly.
+`: m(1)` for a class-typed member is refused by name ("'m' is 'struct M' and
+this is 'int'"), so only the silent shape is open. It is a separate disease
+from the default-argument one and it needs member construction in
+`topLevel` with the destructor's mirror; not begun.
+
 **What the audit was worth, in the end.** Nineteen defects under a suite that
 was green on all three machines, and the fixes added 62 cases - the suite went
 from 201 run cases to 223, and from 292 emissions to 348. Four of the fixes
