@@ -1200,10 +1200,12 @@ private:
     // for a temporary, which is the only form a `T()` in an expression can
     // take. The leaf walk is `initZero`'s and the access is `targetFor`'s,
     // rooted at a frame slot rather than at a declared name.
-    ExprPtr slotAccess(int slot, const Type *root,
-                       const std::vector<InitStep> &path);
-    void zeroLeaves(int slot, const Type *root, const Type *type,
+    ExprPtr pathAccess(ExprPtr root, const std::vector<InitStep> &path);
+    void zeroLeaves(const Expr &root, const Type *type,
                     std::vector<InitStep> &path, std::vector<ExprPtr> &out);
+    ExprPtr zeroChain(const Expr &root, const Type *type);
+    ExprPtr functionalCast(const Type *to, std::size_t pos);
+    const Type *simpleTypeKeyword() const;
 
     struct InitCursor {
         std::vector<Init> *items = nullptr;

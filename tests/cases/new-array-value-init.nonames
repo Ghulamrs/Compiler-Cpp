@@ -1,0 +1,1 @@
+arm64-darwin  clang spells the zeroing of the array `bzero` on Darwin where cxx1 calls `memset`, which is what clang itself calls for the same line on x86_64-linux and x86_64-windows, where all 5 names agree. Two spellings of one libc call, not an ABI name.
