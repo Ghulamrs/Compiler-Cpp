@@ -2423,6 +2423,14 @@ void Parser::topLevel(Program &program) {
                 chosenArgs.swap(named->second);
                 chosen = resolveOverload(key, chosenArgs, d.pos);
                 found = true;
+            } else if (building) {
+                // No entry names this base, so its default constructor runs
+                // - the one overload resolution with no arguments would
+                // pick, which `S(int a = 1)` is as much as `S()` is.
+                if (const Signature *dc = defaultConstructorOf(base)) {
+                    chosen = *dc;
+                    found = true;
+                }
             } else {
                 for (std::size_t k = 0; k < set->size(); k++)
                     if (functions_[(*set)[k]].params.empty()) {
@@ -2434,6 +2442,13 @@ void Parser::topLevel(Program &program) {
                 src_.fail(d.pos, "'" + base->tag() + "' has no constructor "
                                  "taking nothing - name one in the initialiser "
                                  "list, ': " + base->tag() + "(...)'");
+            // **The defaults the entry left out are read here, as every
+            // other call reads them.** This call is built by hand below,
+            // one argument per parameter of `chosen`, and it used to walk
+            // `chosen.params` against a `chosenArgs` that held only what
+            // was written - `: Base(1)` against `Base(int, int = 6)` read
+            // one past the end of the vector, and the compiler died.
+            if (building) applyDefaults(chosen, chosenArgs, d.pos);
 
             std::string symbol = chosen.symbol;
             if (!target_.microsoftNames()) {
