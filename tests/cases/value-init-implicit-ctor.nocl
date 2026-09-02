@@ -1,0 +1,5 @@
+The same one name .nonames records against clang on all three targets, now
+against cl: cxx1 passes the temporary in `g(V())` through V's implicit move
+constructor, ??0V@@QEAA@$$QEAU0@@Z, where cl - like clang - builds the
+argument in place and needs no such function. A strategy difference, not an
+ABI one; the values the case checks agree on every line.

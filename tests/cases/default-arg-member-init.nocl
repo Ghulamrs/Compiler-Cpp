@@ -1,0 +1,12 @@
+cl builds an array member of class type through the CRT's helpers and cxx1
+builds the loop itself: ??_H, the vector constructor iterator, and ??_FM@@,
+M's default constructor closure that the iterator calls once per element.
+Neither is an ABI name - nothing outside the object refers to them, and the
+cases run and agree - but cl has two symbols here that cxx1 does not.
+
+Measured with cl on the Windows box, and worth saying how it was missed: the
+case's .nonames claimed "the Windows comparison has one name per constructor
+and no cleanup, and it agrees exactly". That claim was made from clang's
+x86_64-pc-windows-msvc output by an agent that had no access to the box.
+clang does not use ??_H; cl does. This is what cl-is-the-primary-oracle is
+for, and the sentence has been corrected.
