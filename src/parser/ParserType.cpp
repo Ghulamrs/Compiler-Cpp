@@ -262,7 +262,24 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // Each base starts where the last one's data ended, aligned to its own
         // requirement. The first therefore sits at 0 and the rest do not.
         long long byteCursor = (bitCursor + 7) / 8;
-        const int at = static_cast<int>(alignTo(byteCursor, b->align(target_)));
+        // **The same refusal the member list gets, one base earlier.** The
+        // sum of the bases is measured here in `long long`, but `at` is an
+        // `int` and everything after it - the inherited offsets, the cursor
+        // the members start from - is derived from that `int`. Two
+        // 2000000000-byte bases were caught by the member-list check below
+        // because the cursor still held the true sum; a third wrapped `at`
+        // to a negative number first, and every later number was computed
+        // from the wreck. So the sum is checked where it is still a sum.
+        const long long basesEnd = (byteCursor + b->align(target_) - 1) /
+                                   b->align(target_) * b->align(target_) +
+                                   b->dataSize();
+        if (basesEnd > 2147483647LL)
+            src_.fail(pos, std::string("this ") + what + " is larger than this "
+                           "compiler can lay out: its bases need " +
+                           std::to_string(basesEnd) + " bytes, past the "
+                           "2147483647 an object here is measured in");
+        const int at = static_cast<int>(alignTo(static_cast<int>(byteCursor),
+                                                b->align(target_)));
 
         const std::vector<Member> &inherited = b->members();
         for (std::size_t i = 0; i < inherited.size(); i++) {
