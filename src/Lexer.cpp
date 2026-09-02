@@ -136,14 +136,20 @@ bool Lexer::exactlyADouble(const std::string &s, std::size_t from,
         m /= 5;
         exp10++;
     }
-    // A positive power of ten is exact as long as it does not overflow the
-    // accumulator; anything it would is called inexact rather than guessed at.
+    // **A positive power of ten multiplies in only through its fives**, for
+    // the same reason: 10^k is 5^k * 2^k, and the twos cost nothing. Done as
+    // tens, `100000000000000000000.0L` - which is 2^20 * 5^20, and 5^20 sits
+    // well inside 53 bits - overflowed the accumulator at 1e20 and was
+    // refused for an exact value. As fives, the odd part of the value is
+    // exactly what accumulates, so an overflow here is a value whose odd
+    // part is past 2^64, and therefore past 2^53: refusing it is the true
+    // answer, not the safe one.
+    while (m != 0 && m % 2 == 0) m /= 2;      // the factors of two are free
     while (exp10 > 0) {
-        if (m > 0xFFFFFFFFFFFFFFFFULL / 10) return false;
-        m *= 10;
+        if (m > 0xFFFFFFFFFFFFFFFFULL / 5) return false;
+        m *= 5;
         exp10--;
     }
-    while (m != 0 && m % 2 == 0) m /= 2;      // the factors of two are free
     return m < (1ULL << 53);
 }
 
