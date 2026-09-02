@@ -40,7 +40,7 @@ const std::size_t kThreadFrom = 4;
 
 void Driver::usage(char *file) {
     std::fprintf(stderr,
-        "usage: %s <file.c> [more.c ...] [-S|-c] [-o out] [-D n[=v]] [-U n]\n"
+        "usage: %s <file.cpp> [more.cpp ...] [-S|-c] [-o out] [-D n[=v]] [-U n]\n"
         "               [-I dir] [-j n] [-arch a] [-masm=m] [-g] [-time]\n"
         "       with neither -S nor -c the inputs are compiled, assembled and\n"
         "         linked into a program, named by -o, or a.out - a.exe on a\n"
@@ -60,7 +60,7 @@ void Driver::usage(char *file) {
         "         this machine's\n"
         "       -masm picks the assembly syntax for x86_64-windows: 'masm' for\n"
         "         ml64, which is the default, or 'gnu' for the GNU spelling\n"
-        "       -g writes a line table, so a debugger can stop on a line of C\n"
+        "       -g writes a line table, so a debugger can stop on a line of C++\n"
         "         and step through it; x86_64-linux and arm64-darwin only\n"
         "       -time reports how long each phase took\n", file);
 }
@@ -481,7 +481,7 @@ bool Driver::parseArguments(int argc, char **argv) {
 
     if (debug_ && !backend_->emitsLineTable()) {
         std::fprintf(stderr,
-                     "%s: -g asks where each line of C went, and this compiler "
+                     "%s: -g asks where each line of C++ went, and this compiler "
                      "writes no such thing for %s in the MASM spelling: MASM "
                      "carries no line table and ml64 builds none from it, and "
                      "a native Windows debugger wants CodeView rather than "

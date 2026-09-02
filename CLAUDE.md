@@ -122,8 +122,22 @@ arrives. Both now answer `'friend' is not supported yet` and so on.
 list on the class that `checkAccessible` consults as well as a declaration
 path that puts the function outside the class it is written in. Both of those
 now exist - see "`friend`, and why it landed beside the operators" - and the
-description above is exactly what the implementation turned out to be. The
-rest of the list is still only named and not read.
+description above is exactly what the implementation turned out to be.
+
+**And then the list went on saying they were missing.** Eight of the keywords in
+`pending[]` had been implemented by 2026-09-02 - `catch`, `friend`, `mutable`,
+`namespace`, `operator`, `template`, `using`, `virtual` - so `int x = template;`
+was answered "'template' is not supported yet", which is a claim about the
+compiler where the truth was about the place. There are two lists now, and the
+second answers "'template' is implemented, but it does not begin an expression"
+at the same three doors.
+
+**Which eight was measured, one keyword at a time, and the guess was wrong
+twice.** A review had named seven, including `inline`, which is *not*
+implemented; it missed `catch`, `mutable` and `using`, which are. The check is a
+one-line program per keyword in a place the keyword belongs, and it is what to
+run before moving a name between the two lists - a keyword in the wrong list is
+a diagnostic that lies in one direction or the other.
 
 ## Rung 5 reopened: a real tuple, 2026-08-29
 

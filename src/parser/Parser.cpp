@@ -18,16 +18,26 @@ int alignTo(int n, int a) { return (n + a - 1) / a * a; }
 const char *notYetSupported(const std::string &word) {
     static const char *const pending[] = {
         "alignas", "alignof", "and", "and_eq", "asm",
-        "bitand", "bitor", "catch", "char16_t", "char32_t", "compl",
-
-        "export", "friend", "inline", "mutable", "namespace",
-        "not", "not_eq", "operator", "or",
-        "or_eq",
-        "template", "thread_local",
-        "typeid", "using", "virtual",
+        "bitand", "bitor", "char16_t", "char32_t", "compl",
+        "export", "inline",
+        "not", "not_eq", "or", "or_eq",
+        "thread_local", "typeid",
         "xor", "xor_eq"
     };
     for (const char *k : pending)
+        if (word == k) return k;
+    return nullptr;
+}
+
+// **A keyword this parser does implement, standing where it has no rule for it.**
+// Each was measured in a place of its own before being moved here, because the
+// two answers are different claims: one says the compiler cannot, one says not here.
+const char *implementedElsewhere(const std::string &word) {
+    static const char *const elsewhere[] = {
+        "catch", "friend", "mutable", "namespace",
+        "operator", "template", "using", "virtual"
+    };
+    for (const char *k : elsewhere)
         if (word == k) return k;
     return nullptr;
 }
@@ -88,6 +98,10 @@ std::string Parser::expectIdent(const char *what) {
         if (const char *pending = notYetSupported(peek().text))
             src_.fail(peek().pos, std::string("'") + pending +
                                   "' is not supported yet");
+        if (const char *here = implementedElsewhere(peek().text))
+            src_.fail(peek().pos, std::string("'") + here + "' is implemented, "
+                                  "but it cannot be a name - " + what +
+                                  " was wanted here");
         src_.fail(peek().pos, std::string("expected ") + what);
     }
     std::string name = peek().text;

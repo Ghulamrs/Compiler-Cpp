@@ -33,6 +33,11 @@ bool isNullConstant(const Expr &e);
 // consumed it: in an expression, where a type was wanted, and where a name was.
 const char *notYetSupported(const std::string &word);
 
+// The keyword, if it is one this parser *does* implement and this is not a place
+// it may stand. Asked at the same three doors and answered differently, since
+// "not supported yet" about a feature the compiler has is a claim it cannot keep.
+const char *implementedElsewhere(const std::string &word);
+
 // How a BinOp is written in source, which is what `operator` is followed by
 // when one is overloaded. Wanted where the operator is dispatched and again
 // where a compound assignment on a class is refused, and those are two units.

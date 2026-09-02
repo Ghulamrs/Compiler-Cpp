@@ -14,7 +14,7 @@
 #
 # Two different -j live in this repository and they are not related. This one is
 # make's, building the compiler, and it stays at 1 because a C++ translation
-# unit here costs 142 MB. cc1's own -j compiles several C files at once and is
+# unit here costs 142 MB. cxx1's own -j compiles several files at once and is
 # nothing like as hungry: a whole unit peaks at 4 MB.
 
 # The host decides the compiler unless you say otherwise: "make CXX=g++-14" and
@@ -30,7 +30,7 @@ ifeq ($(origin CXX),default)
   endif
 endif
 
-# The headers cc1 ships live in lib/, and are found by an absolute path baked in
+# The headers cxx1 ships live in lib/, and are found by an absolute path baked in
 # here because nothing installs this compiler - it runs from the tree it was
 # built in. Taken from $(CURDIR) rather than written down, so a clone built
 # somewhere else finds its own lib/ and not the one belonging to the tree this
@@ -82,8 +82,8 @@ DEPS     = $(OBJS:.o=.d)
 # step is a step that can be forgotten, and was.
 BINDIR  ?= .
 
-# cc1.exe on every machine, not only Windows. The three programs in this family
-# - RStudio, cc1 and shc - carry one name each wherever they are, and a
+# cxx1.exe on every machine, not only Windows. The programs in this family -
+# RStudio, cc1, shc and this one - carry one name each wherever they are, and a
 # suffix that changes by platform is one more thing a script has to know.
 TARGET   = $(BINDIR)/cxx1.exe
 
@@ -123,13 +123,14 @@ test: $(TARGET)
 	@./tests/overload.sh
 
 help:
-	@echo "make            build cc1 with $(CXX)"
+	@echo "make            build cxx1 with $(CXX)"
 	@echo "make test       build and run the four suites"
 	@echo "make golden     record what emit.sh emits now, to compare a change against"
 	@echo "make clean"
 	@echo ""
-	@echo "cc1 emits x86-64 System V assembly. It compiles anywhere this"
-	@echo "Makefile does; its output runs where that ABI does."
+	@echo "cxx1 emits assembly for x86_64-linux, x86_64-windows and"
+	@echo "arm64-darwin. It builds anywhere this Makefile does; -arch picks"
+	@echo "the target, and one that is not this machine implies -S."
 
 # Before a change that is meant to emit exactly what it emits now: record, make
 # the change, run the suite, and it says how many files came out different.

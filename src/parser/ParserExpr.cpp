@@ -542,6 +542,9 @@ ExprPtr Parser::primary(Program *program) {
         if (const char *pending = notYetSupported(peek().text))
             src_.fail(peek().pos, std::string("'") + pending +
                                   "' is not supported yet");
+        if (const char *here = implementedElsewhere(peek().text))
+            src_.fail(peek().pos, std::string("'") + here + "' is implemented, "
+                                  "but it does not begin an expression");
     }
 
     // A template named in an expression. A function template with its arguments

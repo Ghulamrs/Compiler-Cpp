@@ -980,6 +980,9 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     if (const char *pending = notYetSupported(peek().text))
         src_.fail(peek().pos, std::string("'") + pending +
                               "' is not supported yet");
+    if (const char *here = implementedElsewhere(peek().text))
+        src_.fail(peek().pos, std::string("'") + here + "' is implemented, but "
+                              "not where a type was wanted");
     if (*storage != StorageNone || quals->isConst || quals->isVolatile)
         src_.fail(start, "this declaration has no type; write one");
     src_.fail(start, "expected a type");
