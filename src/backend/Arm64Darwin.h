@@ -113,6 +113,23 @@ private:
 
     int aggStackSlot(const Type *t, const AggPlan &p, int &at) const;
 
+    // **Where one argument goes, decided once for both ends of the call.** The
+    // call site and the function's own prologue each walked the parameter list
+    // by hand; two copies of one rule is the shape A-01 came out of on x86.
+    struct ArgPlace {
+        AggPlan plan;             // meaningful where the argument is a class
+        bool inRegister = false;
+        int firstReg = 0;         // the first x or d register it claims
+        int stackOffset = -1;     // from the caller's base; the callee adds 16
+    };
+    struct Placement {
+        std::vector<ArgPlace> args;
+        int intsUsed = 0;
+        int floatsUsed = 0;
+        int stackBytes = 0;       // what the named arguments occupy
+    };
+    Placement placeArguments(const std::vector<const Type *> &types) const;
+
     void storeToStack(const Type *t, int off);
     int namedStackBytes_ = 0;
 

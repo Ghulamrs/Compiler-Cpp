@@ -649,6 +649,62 @@ void Arm64Darwin::visit(const Postfix &n) {
     out_ << "  mov x0, x1\n";
 }
 
+// **One walk of the parameter list, for the call site and the prologue alike.**
+// Both made this decision by hand, and on x86 the same shape let the caller and
+// the callee agree wrongly with nothing in the suite able to see it.
+Arm64Darwin::Placement Arm64Darwin::placeArguments(
+        const std::vector<const Type *> &types) const {
+    Placement out;
+    out.args.resize(types.size());
+    int ints = 0, floats = 0, at = 0;
+    for (std::size_t i = 0; i < types.size(); i++) {
+        const Type *t = types[i];
+        ArgPlace &p = out.args[i];
+        if (t->isStructOrUnion()) {
+            p.plan = planFor(t);
+            // A homogeneous float aggregate takes float registers or none: once
+            // it goes to the stack the rest of its kind follow it there, which
+            // is what saturating the counter says.
+            if (p.plan.hfa > 0) {
+                if (floats + p.plan.hfa <= abi_.sseCount) {
+                    p.inRegister = true;
+                    p.firstReg = floats;
+                    floats += p.plan.hfa;
+                } else {
+                    p.stackOffset = aggStackSlot(t, p.plan, at);
+                    floats = abi_.sseCount;
+                }
+            } else {
+                if (ints + p.plan.words <= abi_.intCount) {
+                    p.inRegister = true;
+                    p.firstReg = ints;
+                    ints += p.plan.words;
+                } else {
+                    p.stackOffset = aggStackSlot(t, p.plan, at);
+                    ints = abi_.intCount;
+                }
+            }
+            continue;
+        }
+        if (t->isFloating()) {
+            if (floats < abi_.sseCount) {
+                p.inRegister = true;
+                p.firstReg = floats++;
+                continue;
+            }
+        } else if (ints < abi_.intCount) {
+            p.inRegister = true;
+            p.firstReg = ints++;
+            continue;
+        }
+        p.stackOffset = stackArgSlot(t, at);
+    }
+    out.intsUsed = ints;
+    out.floatsUsed = floats;
+    out.stackBytes = at;
+    return out;
+}
+
 void Arm64Darwin::visit(const Call &n) {
     const std::vector<ExprPtr> &args = n.args();
     std::size_t named = static_cast<std::size_t>(n.namedArgs());
@@ -658,58 +714,36 @@ void Arm64Darwin::visit(const Call &n) {
     bool sret = n.type()->isStructOrUnion() &&
                 planFor(n.type()).byRef;
 
+    // The placement both ends of the call read. `dest` is only this side's
+    // spelling of it: the register a scalar is popped into, and empty for
+    // anything that travels on the stack or is a class.
+    std::vector<const Type *> types;
+    types.reserve(named);
+    for (std::size_t i = 0; i < named; i++) types.push_back(args[i]->type());
+    const Placement plan = placeArguments(types);
+
     std::vector<std::string> dest;
-    std::vector<AggPlan> plans(named);
-    std::vector<int> firstReg(named, 0);
-    std::vector<int> stackOff(named, -1);
-    int ints = 0, floats = 0;
-    int stackAt = 0;
+    dest.reserve(named);
     for (std::size_t i = 0; i < named; i++) {
         const Type *t = args[i]->type();
-        if (t->isStructOrUnion()) {
-            plans[i] = planFor(t);
-
-            if (plans[i].hfa > 0) {
-                if (floats + plans[i].hfa <= abi_.sseCount) {
-                    firstReg[i] = floats;
-                    floats += plans[i].hfa;
-                } else {
-                    stackOff[i] = aggStackSlot(t, plans[i], stackAt);
-                    floats = abi_.sseCount;
-                }
-            } else {
-                if (ints + plans[i].words <= abi_.intCount) {
-                    firstReg[i] = ints;
-                    ints += plans[i].words;
-                } else {
-                    stackOff[i] = aggStackSlot(t, plans[i], stackAt);
-                    ints = abi_.intCount;
-                }
-            }
-            dest.push_back("");
-            continue;
-        }
-        if (t->isFloating()) {
-            if (floats < abi_.sseCount) { dest.push_back(fpReg(t, floats++)); continue; }
-        } else {
-            if (ints < abi_.intCount) { dest.push_back(abi_.intRegs[ints++]); continue; }
-        }
-        stackOff[i] = stackArgSlot(t, stackAt);
-        dest.push_back("");
+        const ArgPlace &p = plan.args[i];
+        if (t->isStructOrUnion() || !p.inRegister) dest.push_back("");
+        else if (t->isFloating())                  dest.push_back(fpReg(t, p.firstReg));
+        else                                       dest.push_back(abi_.intRegs[p.firstReg]);
     }
 
-    int variadicBase = alignTo(stackAt, 8);
+    int variadicBase = alignTo(plan.stackBytes, 8);
     int extraBytes = alignTo(variadicBase + static_cast<int>(extra) * 8, 16);
     if (extraBytes > 0) {
         movImm("x9", extraBytes);
         out_ << "  sub sp, sp, x9\n";
     }
     for (std::size_t i = 0; i < named; i++) {
-        if (stackOff[i] < 0) continue;
+        if (plan.args[i].stackOffset < 0) continue;
 
         if (args[i]->type()->isStructOrUnion()) continue;
         args[i]->accept(*this);
-        storeToStack(args[i]->type(), stackOff[i]);
+        storeToStack(args[i]->type(), plan.args[i].stackOffset);
     }
     for (std::size_t k = 0; k < extra; k++) {
         const ExprPtr &a = args[named + k];
@@ -752,29 +786,29 @@ void Arm64Darwin::visit(const Call &n) {
         if (!t->isStructOrUnion()) continue;
         movImm("x9", n.argSlot(i));
         out_ << "  sub x9, x29, x9\n";
-        const AggPlan &p = plans[i];
+        const AggPlan &p = plan.args[i].plan;
 
-        if (stackOff[i] >= 0) {
+        if (plan.args[i].stackOffset >= 0) {
             if (p.byRef) {
-                out_ << "  str x9, [sp, #" << stackOff[i] << "]\n";
+                out_ << "  str x9, [sp, #" << plan.args[i].stackOffset << "]\n";
             } else {
-                out_ << "  add x11, sp, #" << stackOff[i] << "\n";
+                out_ << "  add x11, sp, #" << plan.args[i].stackOffset << "\n";
                 copyBlock(args[i]->type()->size(target_), "x9", "x11");
             }
             continue;
         }
 
         if (p.byRef) {
-            out_ << "  mov " << abi_.intRegs[firstReg[i]] << ", x9\n";
+            out_ << "  mov " << abi_.intRegs[plan.args[i].firstReg] << ", x9\n";
         } else if (p.hfa > 0) {
             const char *w = (p.elem == Kind::Float) ? "s" : "d";
             int step = (p.elem == Kind::Float) ? 4 : 8;
             for (int k = 0; k < p.hfa; k++)
-                out_ << "  ldr " << w << (firstReg[i] + k)
+                out_ << "  ldr " << w << (plan.args[i].firstReg + k)
                      << ", [x9, #" << (k * step) << "]\n";
         } else {
             for (int k = 0; k < p.words; k++)
-                out_ << "  ldr " << abi_.intRegs[firstReg[i] + k]
+                out_ << "  ldr " << abi_.intRegs[plan.args[i].firstReg + k]
                      << ", [x9, #" << (k * 8) << "]\n";
         }
     }
@@ -1032,20 +1066,21 @@ void Arm64Darwin::emitFunction(const Function &fn) {
         out_ << "  str x8, [x9]\n";
     }
 
+    // **The same walk the call site made, made once.** placeArguments answers
+    // where each parameter is; the base is this side's, an incoming stack
+    // argument sitting above the saved frame pointer and return address.
     const std::vector<Param> &ps = fn.params();
-    int ints = 0, floats = 0;
-    int stackAt = 0;
-    for (std::size_t i = 0; i < ps.size(); i++) {
-        if (ps[i].type->isStructOrUnion()) {
-            AggPlan p = planFor(ps[i].type);
+    std::vector<const Type *> ptypes;
+    ptypes.reserve(ps.size());
+    for (std::size_t i = 0; i < ps.size(); i++) ptypes.push_back(ps[i].type);
+    const Placement plan = placeArguments(ptypes);
 
-            bool inRegister = p.hfa > 0 ? floats + p.hfa <= abi_.sseCount
-                                        : ints + p.words <= abi_.intCount;
-            int from = inRegister ? -1 : aggStackSlot(ps[i].type, p, stackAt);
-            if (!inRegister) {
-                if (p.hfa > 0) floats = abi_.sseCount;
-                else           ints = abi_.intCount;
-            }
+    for (std::size_t i = 0; i < ps.size(); i++) {
+        const ArgPlace &pl = plan.args[i];
+        if (ps[i].type->isStructOrUnion()) {
+            const AggPlan &p = pl.plan;
+            const bool inRegister = pl.inRegister;
+            const int from = pl.stackOffset;
 
             movImm("x9", ps[i].offset);
             out_ << "  sub x9, x29, x9\n";
@@ -1059,47 +1094,40 @@ void Arm64Darwin::emitFunction(const Function &fn) {
             }
 
             if (p.byRef) {
-
                 out_ << "  mov x11, x9\n";
-                copyBlock(ps[i].type->size(target_), abi_.intRegs[ints++], "x11");
+                copyBlock(ps[i].type->size(target_), abi_.intRegs[pl.firstReg], "x11");
             } else if (p.hfa > 0) {
                 const char *w = (p.elem == Kind::Float) ? "s" : "d";
                 int step = (p.elem == Kind::Float) ? 4 : 8;
                 for (int k = 0; k < p.hfa; k++)
-                    out_ << "  str " << w << (floats + k)
+                    out_ << "  str " << w << (pl.firstReg + k)
                          << ", [x9, #" << (k * step) << "]\n";
-                floats += p.hfa;
             } else {
                 for (int k = 0; k < p.words; k++)
-                    storeWord(abi_.intRegs[ints + k], "x9", k,
+                    storeWord(abi_.intRegs[pl.firstReg + k], "x9", k,
                               ps[i].type->size(target_));
-                ints += p.words;
             }
             continue;
         }
-        bool inRegister = ps[i].type->isFloating() ? floats < abi_.sseCount
-                                                   : ints < abi_.intCount;
         movImm("x9", ps[i].offset);
         out_ << "  sub x9, x29, x9\n";
 
-        if (!inRegister) {
-
-            int off = stackArgSlot(ps[i].type, stackAt);
+        if (!pl.inRegister) {
             out_ << "  mov x11, x9\n";
-            out_ << "  add x9, x29, #" << (16 + off) << "\n";
+            out_ << "  add x9, x29, #" << (16 + pl.stackOffset) << "\n";
             copyBlock(ps[i].type->size(target_), "x9", "x11");
             continue;
         }
 
         if (ps[i].type->isFloating()) {
-            out_ << "  str " << fpReg(ps[i].type, floats++) << ", [x9]\n";
+            out_ << "  str " << fpReg(ps[i].type, pl.firstReg) << ", [x9]\n";
         } else {
-            out_ << "  mov x0, " << abi_.intRegs[ints++] << "\n";
+            out_ << "  mov x0, " << abi_.intRegs[pl.firstReg] << "\n";
             storeThrough(ps[i].type, "x9");
         }
     }
 
-    namedStackBytes_ = alignTo(stackAt, 8);
+    namedStackBytes_ = alignTo(plan.stackBytes, 8);
 
     fn.body().accept(*this);
 
