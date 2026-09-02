@@ -92,6 +92,11 @@ private:
     void endFunclet(const std::string &resume) override;
     void endCleanupFunclet() override;
     void closeFunclet(const std::string &tail);
+    // **A Windows local is `frameSize - slot` above the establisher frame**, and
+    // that is the whole translation between how cxx1 addresses a local and how
+    // every FH3 table has to describe one. Written here so it is written once.
+    int establisherOffset(int slot) const;
+
     void storeUnwindHelp(int slot) override;
     void emitExceptionTables(const Function &fn) override;
     void emitCleanupTables(const Function &fn);

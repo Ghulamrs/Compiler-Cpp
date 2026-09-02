@@ -503,9 +503,16 @@ void MasmSpelling::postamble(std::ostream &sink) {
 // **The chain the Microsoft ABI wants before anything may be thrown** - ??_R0H@8,
 // _CT??_R0H@84, _CTA1H, _TI1H - measured from cl's listing, `imagerel` throughout
 // and in cl's segments. Then -2, the scratch word saying nothing is entered yet.
+int MasmCodeGen::establisherOffset(int slot) const {
+    return masm_.frameSize_ - slot;
+}
+
+// **Through the assembler rather than as a raw string**, so the renderer's
+// `+ frameSize_` is the only place the frame moves: `[rbp-slot]` written here
+// comes out as `[rbp + frameSize - slot]` there, which is the same arithmetic
+// establisherOffset does for the tables.
 void MasmCodeGen::storeUnwindHelp(int slot) {
-    masm_.raw("  mov QWORD PTR [rbp+" +
-              std::to_string(masm_.frameSize_ - slot) + "], -2\n");
+    a_->ins("movq", imm(-2), mem(-slot, "%rbp"));
 }
 
 // **A funclet is a slice of the ordinary output, lifted.** Walking the handler
@@ -594,7 +601,6 @@ void MasmCodeGen::closeFunclet(const std::string &tail) {
 void MasmCodeGen::emitCleanupTables(const Function &fn) {
     (void)fn;
     const std::string m = masm_.mangledName();
-    const int frame = masm_.frameSize_;
     const std::size_t states = msTries().size();
 
     std::string o;
@@ -610,7 +616,7 @@ void MasmCodeGen::emitCleanupTables(const Function &fn) {
     o += "  DD 00H\n";                      // and so no try map
     o += "  DD " + std::to_string(states + 1) + "\n";
     o += "  DD imagerel $ip2state$" + m + "\n";
-    o += "  DD " + std::to_string(frame - msTries()[0].unwindHelpSlot) + "\n";
+    o += "  DD " + std::to_string(establisherOffset(msTries()[0].unwindHelpSlot)) + "\n";
     o += "  DD 00H\n";
     o += "  DD 01H\n";
 
@@ -643,7 +649,6 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
     }
 
     const std::string m = masm_.mangledName();
-    const int frame = masm_.frameSize_;
 
     // **Cleanups and handlers never share a function**, which the parser enforces
     // on every target: a local with a destructor and a `try` in one function is
@@ -673,7 +678,7 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
     o += "  DD imagerel $tryMap$" + m + "\n";
     o += "  DD " + std::to_string(ipRows + 1) + "\n";
     o += "  DD imagerel $ip2state$" + m + "\n";
-    o += "  DD " + std::to_string(frame - msTries()[0].unwindHelpSlot) + "\n";
+    o += "  DD " + std::to_string(establisherOffset(msTries()[0].unwindHelpSlot)) + "\n";
     o += "  DD 00H\n";                      // no exception specification
     o += "  DD 01H\n";                      // EHFlags: compiled with /EHsc
 
@@ -703,9 +708,11 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
             o += h.descriptor.empty() ? "  DD 00H\n"
                                       : "  DD imagerel " + h.descriptor + "\n";
             o += "  DD " + std::to_string(h.objectSlot == 0
-                                              ? 0 : frame - h.objectSlot) + "\n";
+                                              ? 0 : establisherOffset(h.objectSlot)) + "\n";
             o += "  DD imagerel " + h.funclet + "\n";
-            o += "  DD " + std::to_string(frame) + "\n";
+            // The frame size itself, not an offset into it: what the runtime
+            // adds to the establisher to reach the handler's own frame.
+            o += "  DD " + std::to_string(masm_.frameSize_) + "\n";
         }
     }
 
