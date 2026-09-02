@@ -35,14 +35,13 @@ static const char *const kSseRegs[] = { "d0", "d1", "d2", "d3",
                                         "d4", "d5", "d6", "d7" };
 
 // AAPCS64 as Apple writes it. `homogeneousFloatAggregates` is the float rule only
-// this target has. **`aggregatesByReference` is read by the parser here and not by
-// this backend**, which plans a return with planFor() - see Abi.h, and the review.
+// this target has, and `aggregatesByReference` is deliberately **not** set: it is
+// Microsoft's exact-size rule, and this target's is size <= 16 - see Abi.h.
 static Abi aapcs64Apple() {
     Abi a;
     a.intRegs = kArgRegs;               a.intCount = 8;
     a.sseRegs = kSseRegs;               a.sseCount = 8;
     a.structReturnLimit = 16;
-    a.aggregatesByReference = true;
     a.scratch = "x9";                   a.scratch32 = "w9";
     a.homogeneousFloatAggregates = true;
     return a;

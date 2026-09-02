@@ -30,9 +30,15 @@ struct Abi {
     // the question rather than refining it.
     int structReturnLimit = 0;
 
-    // **Microsoft returns a class in a register only if its size is exactly 1,
-    // 2, 4 or 8** - not "up to 8" - and a member function returns through the
-    // pointer whatever the size. Measured with clang for this ABI.
+    // **Microsoft's rule, and only Microsoft's: a class returns in a register
+    // only if its size is exactly 1, 2, 4 or 8** - not "up to 8" - and a member
+    // function returns through the pointer whatever the size. Measured with clang.
+    //
+    // arm64 set this too and read it nowhere, so the *parser* asked Microsoft's
+    // question about an AAPCS64 return: a 16-byte class was called indirect where
+    // the backend returned it in x0/x1, and the callee stored an uninitialised x8
+    // into a slot nobody passed. Whatever sets this must be the target that means
+    // it, since the parser cannot tell one true flag from another.
     bool aggregatesByReference = false;
 
     // A variadic call puts the number of SSE registers it used in al. SysV
