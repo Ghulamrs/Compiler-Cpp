@@ -132,7 +132,6 @@ Kind X86_64Linux::genKind(const Type *t) const {
     return t->kind();
 }
 
-static int alignTo(int n, int a) { return (n + a - 1) / a * a; }
 
 const char *X86_64Linux::acc(const Type *t) const {
     return t->size(target_) == 8 ? "%rax" : "%eax";
@@ -906,12 +905,80 @@ void X86_64Linux::visit(const Binary &n) {
     a_->ins("movzbq", reg("%al"), reg("%rax"));
 }
 
-void X86_64Linux::visit(const Call &n) {
-    std::vector<std::vector<bool> > isSse;
-    std::vector<std::vector<int> > slot;
-    std::vector<bool> onStack;
+// **One walk of the parameter list, for the caller and the callee alike.** Both
+// used to make this decision by hand, in two loops that had to stay in step; the
+// hidden-return-pointer bug A-01 was them agreeing wrongly on both sides at once.
+X86_64Linux::Placement X86_64Linux::placeArguments(
+        const std::vector<const Type *> &types, bool hasThis, bool sret) const {
+    // Microsoft puts `this` before the hidden pointer and Itanium puts the
+    // pointer before everything - so who has claimed a register by the time the
+    // first written argument is placed is the whole of the difference.
+    const bool msThisFirst = sret && abi_.positional && hasThis;
+    int ints = (sret && !msThisFirst) ? 1 : 0;
+    int sses = (sret && abi_.positional && !msThisFirst) ? 1 : 0;
+    int words = 0;
 
-    std::vector<bool> padBelow;
+    Placement out;
+    out.args.reserve(types.size());
+    for (std::size_t i = 0; i < types.size(); i++) {
+        // The pointer takes the slot after `this`, so everything from the second
+        // argument on starts one further along.
+        if (msThisFirst && i == 1) { ints++; sses++; }
+        const Type *t = types[i];
+        ArgPlace p;
+
+        if (abi_.aggregatesByReference && t->isStructOrUnion()) {
+            p.inMemory = ints + 1 > abi_.intCount;
+            if (p.inMemory) {
+                p.stackOffset = words * 8;
+                p.stackWords = 1;
+                words += 1;
+            } else {
+                p.lanes.push_back(false);
+                p.regs.push_back(takeSlot(false, ints, sses));
+            }
+            out.args.push_back(p);
+            continue;
+        }
+
+        bool memory = isX87(t) || containsX87(t, target_) ||
+                      (t->isStructOrUnion() &&
+                       t->size(target_) > abi_.structReturnLimit);
+        if (!memory) {
+            if (t->isStructOrUnion()) p.lanes = classifyEightbytes(t, target_);
+            else                      p.lanes.push_back(t->isFloating());
+            int wantInt = 0, wantSse = 0;
+            for (bool sse : p.lanes) { if (sse) wantSse++; else wantInt++; }
+            memory = ints + wantInt > abi_.intCount ||
+                     sses + wantSse > abi_.sseCount;
+        }
+
+        if (memory) {
+            p.lanes.clear();
+            p.inMemory = true;
+            int size = (t->isStructOrUnion() || isX87(t)) ? t->size(target_) : 8;
+            // An argument aligned to 16 starts on an even word, which the caller
+            // buys with a pad underneath and the callee reads as an aligned
+            // offset - the same rule, said from the two ends.
+            if (t->align(target_) >= 16 && words % 2 != 0) {
+                p.padBelow = true;
+                words += 1;
+            }
+            p.stackOffset = words * 8;
+            p.stackWords = (size + 7) / 8;
+            words += p.stackWords;
+        } else {
+            for (bool sse : p.lanes) p.regs.push_back(takeSlot(sse, ints, sses));
+        }
+        out.args.push_back(p);
+    }
+    out.intsUsed = ints;
+    out.ssesUsed = sses;
+    out.stackWords = words;
+    return out;
+}
+
+void X86_64Linux::visit(const Call &n) {
     bool byRef = abi_.aggregatesByReference;
     // The Microsoft size test serves free functions only: a class returned from a
     // member function travels through the hidden pointer whatever its size, so
@@ -922,67 +989,15 @@ void X86_64Linux::visit(const Call &n) {
                 (byRef ? (n.hasThis() ||
                           !msInRegister(n.type()->size(target_)))
                        : n.type()->size(target_) > abi_.structReturnLimit));
-    // **Where the hidden return pointer sits, and the one ABI that moves it.**
-    // Itanium puts it in front of everything and Microsoft does too - except for
-    // a member function, which passes `this` first. Measured with clang.
     const bool msThisFirst = sret && abi_.positional && n.hasThis();
-    int ints = (sret && !msThisFirst) ? 1 : 0;
-    int sses = (sret && abi_.positional && !msThisFirst) ? 1 : 0;
-    int stackSlots = 0;
-    std::size_t argIndex = 0;
-    for (const ExprPtr &arg : n.args()) {
-        // The pointer takes the slot after `this`, so everything from the second
-        // argument on starts one further along. Counted at the head of the turn
-        // that needs it, because this loop leaves by more than one path.
-        if (msThisFirst && argIndex == 1) { ints++; sses++; }
-        argIndex++;
-        const Type *t = arg->type();
-        std::vector<bool> lanes;
-        bool memory;
-        if (byRef && t->isStructOrUnion()) {
-            lanes.push_back(false);
-            memory = ints + 1 > abi_.intCount;
-            if (memory) lanes.clear();
-            std::vector<int> regs;
-            if (memory) stackSlots += 1;
-            else        regs.push_back(takeSlot(false, ints, sses));
-            onStack.push_back(memory);
-            isSse.push_back(lanes);
-            slot.push_back(regs);
-            padBelow.push_back(false);
-            continue;
-        }
 
-        memory = isX87(t) || containsX87(t, target_) ||
-                 (t->isStructOrUnion() &&
-                  t->size(target_) > abi_.structReturnLimit);
-        if (!memory) {
-            if (t->isStructOrUnion()) lanes = classifyEightbytes(t, target_);
-            else                      lanes.push_back(t->isFloating());
-            int wantInt = 0, wantSse = 0;
-            for (bool sse : lanes) { if (sse) wantSse++; else wantInt++; }
-            memory = ints + wantInt > abi_.intCount ||
-                     sses + wantSse > abi_.sseCount;
-        }
-
-        std::vector<int> regs;
-        bool pad = false;
-        if (memory) {
-            lanes.clear();
-            int size = (t->isStructOrUnion() || isX87(t)) ? t->size(target_) : 8;
-            if (t->align(target_) >= 16 && stackSlots % 2 != 0) {
-                pad = true;
-                stackSlots += 1;
-            }
-            stackSlots += (size + 7) / 8;
-        } else {
-            for (bool sse : lanes) regs.push_back(takeSlot(sse, ints, sses));
-        }
-        onStack.push_back(memory);
-        isSse.push_back(lanes);
-        slot.push_back(regs);
-        padBelow.push_back(pad);
-    }
+    std::vector<const Type *> types;
+    types.reserve(n.args().size());
+    for (const ExprPtr &arg : n.args()) types.push_back(arg->type());
+    const Placement plan = placeArguments(types, n.hasThis(), sret);
+    const std::vector<ArgPlace> &place = plan.args;
+    const int sses = plan.ssesUsed;
+    const int stackSlots = plan.stackWords;
 
     int shadowSlots = abi_.shadowBytes / 8;
 
@@ -990,20 +1005,20 @@ void X86_64Linux::visit(const Call &n) {
     if (padSlots) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
 
     for (std::size_t i = n.args().size(); i-- > 0; ) {
-        if (!onStack[i]) continue;
+        if (!place[i].inMemory) continue;
         const Type *t = n.args()[i]->type();
         n.args()[i]->accept(*this);
         if (byRef && t->isStructOrUnion()) {
             msAggregateToRax(t, n.argSlot(i));
             push();
-            if (padBelow[i]) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
+            if (place[i].padBelow) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
             continue;
         }
         if (!t->isStructOrUnion()) {
             if (isX87(t))             pushX87();
             else if (t->isFloating()) pushF();
             else                      push();
-            if (padBelow[i]) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
+            if (place[i].padBelow) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
             continue;
         }
         int size = t->size(target_);
@@ -1038,7 +1053,7 @@ void X86_64Linux::visit(const Call &n) {
                 a_->ins("movb", reg("%al"), mem(done, "%rsp"));
             }
         }
-        if (padBelow[i]) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
+        if (place[i].padBelow) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
     }
 
     if (n.callee() != nullptr) {
@@ -1047,46 +1062,46 @@ void X86_64Linux::visit(const Call &n) {
     }
 
     for (const ExprPtr &arg : n.args()) {
-        if (onStack[&arg - &n.args()[0]]) continue;
+        if (place[static_cast<std::size_t>(&arg - &n.args()[0])].inMemory) continue;
         arg->accept(*this);
         if (arg->type()->isFloating()) pushF(); else push();
     }
     for (std::size_t i = n.args().size(); i-- > 0; ) {
-        if (onStack[i]) continue;
+        if (place[i].inMemory) continue;
         const Type *t = n.args()[i]->type();
         if (!t->isStructOrUnion()) {
-            if (isSse[i][0]) {
+            if (place[i].lanes[0]) {
 
                 if (abi_.positional && n.isVariadic() &&
                     static_cast<int>(i) >= n.namedArgs())
-                    a_->ins("mov", mem("%rsp"), reg(abi_.intRegs[slot[i][0]]));
-                popF(abi_.sseRegs[slot[i][0]]);
+                    a_->ins("mov", mem("%rsp"), reg(abi_.intRegs[place[i].regs[0]]));
+                popF(abi_.sseRegs[place[i].regs[0]]);
             } else {
-                pop(abi_.intRegs[slot[i][0]]);
+                pop(abi_.intRegs[place[i].regs[0]]);
             }
             continue;
         }
         pop("%rax");
         if (byRef) {
             msAggregateToRax(t, n.argSlot(i));
-            a_->ins("mov", reg("%rax"), reg(abi_.intRegs[slot[i][0]]));
+            a_->ins("mov", reg("%rax"), reg(abi_.intRegs[place[i].regs[0]]));
             continue;
         }
         int size = t->size(target_);
-        for (std::size_t k = 0; k < isSse[i].size(); k++) {
+        for (std::size_t k = 0; k < place[i].lanes.size(); k++) {
             int off = static_cast<int>(k) * 8;
             int left = size - off;
-            if (isSse[i][k]) {
-                a_->ins(left >= 8 ? "movsd" : "movss", mem(off, "%rax"), reg(abi_.sseRegs[slot[i][k]]));
+            if (place[i].lanes[k]) {
+                a_->ins(left >= 8 ? "movsd" : "movss", mem(off, "%rax"), reg(abi_.sseRegs[place[i].regs[k]]));
             } else if (left >= 8) {
-                a_->ins("mov", mem(off, "%rax"), reg(abi_.intRegs[slot[i][k]]));
+                a_->ins("mov", mem(off, "%rax"), reg(abi_.intRegs[place[i].regs[k]]));
             } else {
 
                 // The sixth place a partial lane is moved, and the one an audit
                 // of the other five missed: an aggregate small enough to travel
                 // in registers, %rax its address and %r11 the accumulator.
                 loadTailToReg("%r11", off, "%rax", left);
-                a_->ins("mov", reg("%r11"), reg(abi_.intRegs[slot[i][k]]));
+                a_->ins("mov", reg("%r11"), reg(abi_.intRegs[place[i].regs[k]]));
             }
         }
     }
@@ -1445,26 +1460,27 @@ void X86_64Linux::emit(const Function &fn) {
     }
 
     const std::vector<Param> &ps = fn.params();
-    int ints = (sretSlot_ != 0 && !msThisFirst) ? 1 : 0;
-    int sses = (sretSlot_ != 0 && abi_.positional && !msThisFirst) ? 1 : 0;
+    // **The same walk the caller made, made once.** placeArguments answers where
+    // each parameter is; what is left here is reading it out of there, and the
+    // base is this side's: an incoming stack argument starts above the return
+    // address, and above Microsoft's shadow space where there is one.
+    std::vector<const Type *> ptypes;
+    ptypes.reserve(ps.size());
+    for (std::size_t i = 0; i < ps.size(); i++) ptypes.push_back(ps[i].type);
+    const Placement plan = placeArguments(ptypes, fn.hasThis(), sretSlot_ != 0);
+    const int stackBase = 16 + abi_.shadowBytes;
 
-    int stackAt = 16 + abi_.shadowBytes;
     bool byRef = abi_.aggregatesByReference;
     for (std::size_t i = 0; i < ps.size(); i++) {
-        // Past `this`, and on this ABI the hidden return pointer sits between
-        // it and everything after - so the second parameter starts one slot
-        // further along than the count alone would say.
-        if (msThisFirst && i == 1) { ints++; sses++; }
+        const ArgPlace &pl = plan.args[i];
         const Type *pt = ps[i].type;
         if (byRef && pt->isStructOrUnion()) {
-            bool inReg = ints + 1 <= abi_.intCount;
+            bool inReg = !pl.inMemory;
             std::string src;
             if (inReg) {
-                src = abi_.intRegs[takeSlot(false, ints, sses)];
+                src = abi_.intRegs[pl.regs[0]];
             } else {
-
-                a_->ins("mov", mem(stackAt, "%rbp"), reg("%rax"));
-                stackAt += 8;
+                a_->ins("mov", mem(stackBase + pl.stackOffset, "%rbp"), reg("%rax"));
                 src = "%rax";
             }
             int size = pt->size(target_);
@@ -1480,25 +1496,11 @@ void X86_64Linux::emit(const Function &fn) {
             }
             continue;
         }
-        bool memory = isX87(pt) || containsX87(pt, target_) ||
-                      (pt->isStructOrUnion() &&
-                       pt->size(target_) > abi_.structReturnLimit);
-        if (!memory) {
-            std::vector<bool> lanes;
-            if (pt->isStructOrUnion()) lanes = classifyEightbytes(pt, target_);
-            else                       lanes.push_back(pt->isFloating());
-            int wantInt = 0, wantSse = 0;
-            for (bool sse : lanes) { if (sse) wantSse++; else wantInt++; }
-            memory = ints + wantInt > abi_.intCount ||
-                     sses + wantSse > abi_.sseCount;
-        }
-        if (memory) {
+        if (pl.inMemory) {
             int size = pt->size(target_);
-            int slots = (size + 7) / 8;
-
-            if (pt->align(target_) >= 16) stackAt = alignTo(stackAt, 16);
+            int slots = pl.stackWords;
             for (int k = 0; k < slots; k++) {
-                int from = stackAt + k * 8;
+                int from = stackBase + pl.stackOffset + k * 8;
                 int to = k * 8 - ps[i].offset;
                 int left = size - k * 8;
                 if (left >= 8) {
@@ -1508,20 +1510,18 @@ void X86_64Linux::emit(const Function &fn) {
                     copyTailMem(from, to, left);
                 }
             }
-            stackAt += slots * 8;
             continue;
         }
 
         if (ps[i].type->isStructOrUnion()) {
-            std::vector<bool> lanes = classifyEightbytes(ps[i].type, target_);
             int size = ps[i].type->size(target_);
-            for (std::size_t k = 0; k < lanes.size(); k++) {
+            for (std::size_t k = 0; k < pl.lanes.size(); k++) {
                 int off = static_cast<int>(k) * 8 - ps[i].offset;
                 int left = size - static_cast<int>(k) * 8;
-                if (lanes[k]) {
-                    a_->ins(left >= 8 ? "movsd" : "movss", reg(abi_.sseRegs[takeSlot(true, ints, sses)]), mem(off, "%rbp"));
+                if (pl.lanes[k]) {
+                    a_->ins(left >= 8 ? "movsd" : "movss", reg(abi_.sseRegs[pl.regs[k]]), mem(off, "%rbp"));
                 } else {
-                    a_->ins("mov", reg(abi_.intRegs[takeSlot(false, ints, sses)]), reg("%rax"));
+                    a_->ins("mov", reg(abi_.intRegs[pl.regs[k]]), reg("%rax"));
                     if (left >= 8) a_->ins("movq", reg("%rax"), mem(off, "%rbp"));
                     else           storeTailFromReg("%rax", off, "%rbp", left);
                 }
@@ -1529,16 +1529,17 @@ void X86_64Linux::emit(const Function &fn) {
             continue;
         }
         if (ps[i].type->isFloating()) {
-            a_->ins("movsd", reg(abi_.sseRegs[takeSlot(true, ints, sses)]), reg("%xmm0"));
+            a_->ins("movsd", reg(abi_.sseRegs[pl.regs[0]]), reg("%xmm0"));
         } else {
-            a_->ins("mov", reg(abi_.intRegs[takeSlot(false, ints, sses)]), reg("%rax"));
+            a_->ins("mov", reg(abi_.intRegs[pl.regs[0]]), reg("%rax"));
         }
         storeAt(ps[i].type, ps[i].offset);
     }
 
-    varGp_ = ints * 8;
-    varFp_ = 48 + sses * 16;
-    varOverflow_ = abi_.positional ? 16 + ints * 8 : stackAt;
+    varGp_ = plan.intsUsed * 8;
+    varFp_ = 48 + plan.ssesUsed * 16;
+    varOverflow_ = abi_.positional ? 16 + plan.intsUsed * 8
+                                   : stackBase + plan.stackWords * 8;
 
     fn.body().accept(*this);
 

@@ -171,6 +171,33 @@ private:
     void msAggregateToRax(const Type *t, int slot);
     void msCopyToSlot(const Type *t, int slot, const char *from);
     int takeSlot(bool sse, int &ints, int &sses) const;
+
+    // **Where one argument goes, decided once for both ends of the call.** The
+    // caller and the callee each classified the parameter list by hand, and
+    // agreeing was a property of two copies staying in step - which is what A-01
+    // broke, consistently on both sides, where no suite could see it.
+    struct ArgPlace {
+        std::vector<bool> lanes;   // empty when the argument travels in memory
+        std::vector<int> regs;     // one register slot per lane
+        bool inMemory = false;
+        bool padBelow = false;     // the caller pushes 8 bytes under this one
+        int stackOffset = 0;       // bytes from the base the callee supplies
+        int stackWords = 0;        // and how many 8-byte words it occupies
+    };
+
+    // The whole list, in order. `sret` says a hidden return pointer is passed,
+    // `hasThis` that the first argument is an object - between them they decide
+    // which register the first written argument actually gets.
+    // The list, and what it used up: the register counts a variadic call needs
+    // for its save area and al, and the words the arguments occupy on the stack.
+    struct Placement {
+        std::vector<ArgPlace> args;
+        int intsUsed = 0;
+        int ssesUsed = 0;
+        int stackWords = 0;
+    };
+    Placement placeArguments(const std::vector<const Type *> &types,
+                             bool hasThis, bool sret) const;
 };
 
 std::vector<bool> classifyEightbytes(const Type *t, const Target &target);
