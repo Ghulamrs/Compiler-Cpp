@@ -1416,16 +1416,27 @@ and `: arr()`, measured against clang with every constructor and destructor
 printing - and `mem-init-arity-refused.cpp` is `: k(1, 2)` on an `int`, which
 is what proves the check moved rather than went.
 
-**The door beside it, measured and left: a class-typed member with its own
-initialiser is assigned, not built.** `struct E { M m = M(2); E() {} };`
-prints `M2 E ~M | 2 ~M` from cxx1 and `M2 E | 2 ~M` from clang: the
-temporary is constructed, *assigned* into storage nothing constructed, and
-destroyed - one constructor, two destructors - where clang elides it into
-the member. The implicit constructor prints clang's line for the same
-shape, `M2 | 2 ~M`, only because it never destroys the temporary. The mend
-is copy-initialisation through `constructMember` with the initialiser as
-the argument, which reaches the copy constructor and then meets the
-elision question docs/CONFORMANCE.md already records; not begun.
+**The door beside it, and it is mended now: a class-typed member with its own
+initialiser is built from it.** `struct E { M m = M(2); E() {} };` printed
+`M2 E ~M | 2 ~M`: the temporary constructed, its bytes *assigned* into storage
+nothing had constructed, and then destroyed - one constructor and two
+destructors, and for a class that owns anything, the member left holding what
+the temporary's destructor had given back.
+
+`memberInitialiser` builds the member through `constructMember` -
+[dcl.init]/17 copy-initialisation, the same overload resolution `: m(x)` does,
+reaching the copy, the move or a converting constructor - and **the
+initialiser's temporaries are destroyed at the end of it**, which they were not.
+They sat on the pending list until something else flushed them, so the temporary
+died late; once the member was built by a copy rather than handed the bytes, it
+would not have died at all. Both halves were needed and the case would have
+caught either one alone.
+
+What is left is the elision, recorded rather than open: clang builds `M(2)`
+straight into the member and cxx1 makes the copy C++11 also permits. Live-object
+counts agree and constructor counts do not, which is why
+`member-init-class.cpp` counts the first and why it carries a `.nonames` - the
+copy constructor cxx1 emits is one clang never needed.
 
 **What the audit was worth, in the end.** Nineteen defects under a suite that
 was green on all three machines, and the fixes added 62 cases - the suite went

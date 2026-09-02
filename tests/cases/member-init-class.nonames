@@ -1,0 +1,3 @@
+x86_64-linux  cxx1 emits M's copy constructor and clang does not, which is this case's whole subject: clang elides `M m = M(2);` straight into the member and never needs the function, where cxx1 makes the copy C++11 also permits - see docs/CONFORMANCE.md. The implicit constructors and destructors here carry the usual inline-symbol extras beside it, C1 and D1 where clang writes only what a use asked for
+x86_64-windows  the same copy constructor, ??0M@@QEAA@AEBU0@@Z, emitted here and elided there
+arm64-darwin  the same, __ZN1MC1ERKS_ and __ZN1MC2ERKS_, and the same inline-symbol extras

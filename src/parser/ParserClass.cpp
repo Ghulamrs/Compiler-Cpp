@@ -2065,15 +2065,44 @@ StmtPtr Parser::memberInitialiser(const std::string &tag, const Type *type,
     outer.swap(locals_);
     at_ = it->second;
     ExprPtr value = decay(assign());
-    checkAssignable(*value, m.type, pos, "'" + m.name + "'");
-    value = convert(std::move(value), m.type);
+
+    // **A class-typed member is *built* from its initialiser, not assigned one.**
+    // `struct E { M m = M(2); };` used to construct a temporary, move its bytes
+    // into storage nothing had constructed, and then destroy the temporary - one
+    // constructor and two destructors, and for a class that owns anything, the
+    // member holding what the temporary's destructor had just given back. It is
+    // copy-initialisation, [dcl.init]/17, so it goes through the same overload
+    // resolution `: m(x)` does and reaches the copy or the move constructor.
+    StmtPtr made;
+    if (memberClass(m.type) != nullptr && !m.type->isReference() &&
+        overloadsOf(constructorKey(memberClass(m.type)->tag())) != nullptr) {
+        std::vector<ExprPtr> one;
+        one.push_back(std::move(value));
+        made = constructMember(tag, type, m, thisSlot, one, pos, false);
+        if (made == nullptr) value = std::move(one[0]);
+    }
+    if (made == nullptr) {
+        checkAssignable(*value, m.type, pos, "'" + m.name + "'");
+        value = convert(std::move(value), m.type);
+        ExprPtr field = thisMember(thisSlot, type, m);
+        ExprPtr store(new Assign(std::move(field), std::move(value)));
+        store->setType(m.type);
+        made = StmtPtr(new ExprStmt(std::move(store)));
+    }
     locals_.swap(outer);
     at_ = resume;
 
-    ExprPtr field = thisMember(thisSlot, type, m);
-    ExprPtr store(new Assign(std::move(field), std::move(value)));
-    store->setType(m.type);
-    return StmtPtr(new ExprStmt(std::move(store)));
+    // **The initialiser is a full expression, and its temporaries die at the end
+    // of it** - [class.temporary]/4, which here means before the next member is
+    // built and not at the end of the constructor. They were left on the pending
+    // list until something else flushed them, which made `M m = M(2);` destroy
+    // its temporary late; through the copy constructor it would not have
+    // destroyed it at all.
+    std::vector<StmtPtr> all;
+    all.push_back(std::move(made));
+    flushTemporaries(all);
+    if (all.size() == 1) return std::move(all[0]);
+    return StmtPtr(new Block(std::move(all)));
 }
 
 // **A class-typed member is built, not left.** [class.base.init]/8: one the list does

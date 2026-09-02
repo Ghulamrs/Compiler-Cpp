@@ -118,8 +118,29 @@ That third one is not only a choice about how many constructors run. Copying
 the bytes out *without* eliding the destruction would destroy the same object
 twice, once in the callee and once in the caller.
 
+**And one place cxx1 does not elide where clang does**: a class-typed member
+with its own initialiser.
+
+```cpp
+struct E { M m = M(2); };       // clang: one construction, built into the member
+                                // cxx1:  the temporary, then the copy, then ~M
+```
+
+Both are C++11 - [class.copy]/31 permits the elision and does not require it -
+and the difference is visible only through a copy constructor that does
+something. It reaches the symbol table too, which is why
+`tests/cases/member-init-class.nonames` exists: cxx1 emits `M`'s copy
+constructor and clang, having elided the call, never needs it.
+
+**And here the two oracles agree with each other**, which they do not on the
+return above: measured on the Windows box, cl elides this one as well and does
+not emit the copy constructor either - `member-init-class.nocl` records it. So
+cxx1 is alone in making the copy, and the case counts live objects rather than
+constructions precisely so that all three can be compared at all.
+
 So a program that *counts* constructor calls has no single right answer here,
 and `tests/cases/by-value.cpp` deliberately does not count them.
+`member-init-class.cpp` counts *live objects* instead, which is 0 either way.
 
 ## A `const` member does not make the special members deleted
 
