@@ -1,0 +1,2 @@
+x86_64-linux  two differences of strategy, neither an ABI name: clang zeroes the class member with a memset it invents where cxx1 writes the stores, and W's constructor is written inside the class so clang emits the C2 variant only where cxx1 emits both of Itanium's forms - see return-copy-balance.nonames. arm64-darwin agrees on every name.
+x86_64-windows  clang's invented memset again.

@@ -1,0 +1,1 @@
+'new T[n](x)' cannot initialise an array - only the empty '()' is allowed there, and it zeroes every element

@@ -27,10 +27,8 @@
 // The temporary is destroyed at the end of the full expression, which is what
 // `pendingTemps_` is for - [class.temporary]/4 - so a class with a destructor
 // gets one call there and not at the end of the function.
-ExprPtr Parser::slotAccess(int slot, const Type *root,
-                           const std::vector<InitStep> &path) {
-    ExprPtr e(Var::local("$tmp", slot));
-    e->setType(root);
+ExprPtr Parser::pathAccess(ExprPtr root, const std::vector<InitStep> &path) {
+    ExprPtr e = std::move(root);
     for (const InitStep &s : path) {
         if (s.member != nullptr) {
             const Member *m = s.member;
@@ -51,14 +49,21 @@ ExprPtr Parser::slotAccess(int slot, const Type *root,
     return e;
 }
 
-void Parser::zeroLeaves(int slot, const Type *root, const Type *type,
+// **Zero every scalar leaf of `type` reachable from `root`**, one store per
+// leaf in declaration order, appended to `out`. The root is whatever names
+// the object - a frame slot, `*p` for a pointer held in one, a member of
+// `*this` - and is copied for each leaf with clonePure, which is why it has
+// to be a pure expression. It used to be a slot number, and that is the
+// whole reason the first heap fix zeroed a frame temporary and copied it
+// over: the object it wanted to zero had no slot.
+void Parser::zeroLeaves(const Expr &root, const Type *type,
                         std::vector<InitStep> &path,
                         std::vector<ExprPtr> &out) {
     if (type->isArray()) {
         const Type *elem = type->pointee();
         for (long long i = 0; i < type->length(); i++) {
             path.push_back(InitStep{ nullptr, i });
-            zeroLeaves(slot, root, elem, path, out);
+            zeroLeaves(root, elem, path, out);
             path.pop_back();
         }
         return;
@@ -73,7 +78,7 @@ void Parser::zeroLeaves(int slot, const Type *root, const Type *type,
         for (std::size_t i = 0; i < count; i++) {
             if (members[i].name.empty()) continue;
             path.push_back(InitStep{ &members[i], 0 });
-            zeroLeaves(slot, root, members[i].type, path, out);
+            zeroLeaves(root, members[i].type, path, out);
             path.pop_back();
         }
         return;
@@ -81,10 +86,31 @@ void Parser::zeroLeaves(int slot, const Type *root, const Type *type,
     ExprPtr z;
     if (type->isFloating()) { z.reset(new Num(0.0L)); z->setType(types_.doubleType()); }
     else                    { z.reset(new Num(0LL));  z->setType(types_.intType()); }
-    ExprPtr target = slotAccess(slot, root, path);
+    ExprPtr again = clonePure(root);
+    if (again == nullptr)
+        src_.fail(0, "internal: value-initialisation was asked to zero an "
+                     "object it cannot name twice");
+    ExprPtr target = pathAccess(std::move(again), path);
     ExprPtr store(new Assign(std::move(target), convert(std::move(z), type)));
     store->setType(type);
     out.push_back(std::move(store));
+}
+
+// The stores zeroLeaves makes, chained by commas into one expression - or
+// nullptr when there is no leaf to set, which is what an empty class is.
+ExprPtr Parser::zeroChain(const Expr &root, const Type *type) {
+    std::vector<ExprPtr> zeros;
+    std::vector<InitStep> path;
+    zeroLeaves(root, type->unqualified(), path, zeros);
+    if (zeros.empty()) return nullptr;
+    ExprPtr chain = std::move(zeros[0]);
+    for (std::size_t i = 1; i < zeros.size(); i++) {
+        const Type *t = zeros[i]->type();
+        ExprPtr next(new Comma(std::move(chain), std::move(zeros[i])));
+        next->setType(t);
+        chain = std::move(next);
+    }
+    return chain;
 }
 
 ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
@@ -117,17 +143,8 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
             // "An object with nothing to set" was the wrong reading: there is
             // no constructor to run, and that is exactly why the zeroing is
             // the compiler's job.
-            std::vector<ExprPtr> zeros;
-            std::vector<InitStep> path;
-            zeroLeaves(slot, plain, plain, path, zeros);
-            if (zeros.empty()) return obj;
-            ExprPtr chain = std::move(zeros[0]);
-            for (std::size_t i = 1; i < zeros.size(); i++) {
-                const Type *t = zeros[i]->type();
-                ExprPtr next(new Comma(std::move(chain), std::move(zeros[i])));
-                next->setType(t);
-                chain = std::move(next);
-            }
+            ExprPtr chain = zeroChain(*obj, plain);
+            if (chain == nullptr) return obj;
             // Comma'd with the object's *address* and dereferenced, which is
             // the shape the argument path below already uses: a comma whose
             // value is a class lvalue is not something every backend spells.
@@ -157,6 +174,13 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
         return made;
     }
 
+    // **Read before the argument list is touched.** [dcl.init]/8's other
+    // half: `P()` for a class whose default constructor nobody wrote is
+    // zero-initialised *and then* that constructor runs - the vptr, the
+    // members with initialisers and the members with constructors of their
+    // own are what it sets, and every other scalar is the zeroing's. A
+    // user-provided constructor gets no zeroing, which is the same paragraph.
+    const bool valueInit = args.empty();
     const Signature &ctor = resolveOverload(key, args, pos);
     applyDefaults(ctor, args, pos);
     if (ctor.access != Access::Public && currentClass_ != plain &&
@@ -164,6 +188,7 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
         src_.fail(pos, "'" + plain->describe() + "' has no public constructor "
                        "taking these arguments - the one that matches is " +
                        (ctor.access == Access::Private ? "private" : "protected"));
+    const bool zeroFirst = valueInit && ctor.implicit;
 
     const int slot = allocateFrameSlot(plain);
     if (destructorOf(plain) != nullptr)
@@ -185,6 +210,15 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
     ExprPtr call = completeCall(plain->tag(), ctor.symbol, nullptr,
                                 types_.get(Kind::Void), full, false, pos,
                                 std::move(all));
+    if (zeroFirst) {
+        ExprPtr fresh(Var::local("$tmp", slot));
+        fresh->setType(plain);
+        if (ExprPtr chain = zeroChain(*fresh, plain)) {
+            ExprPtr seq(new Comma(std::move(chain), std::move(call)));
+            seq->setType(types_.get(Kind::Void));
+            call = std::move(seq);
+        }
+    }
 
     // **A dereference of a pointer, not the object beside a comma.** The
     // obvious shape is `(ctor(&tmp, ...), tmp)`, and `isGlvalue` says a comma
@@ -444,11 +478,18 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     bool hasInit = false;
     ExprPtr init;
     if (peek().is("(")) {
-        if (array)
-            src_.fail(peek().pos, "'new T[n](...)' cannot initialise an array");
         at_++;
         hasInit = true;
-        if (constructed) {
+        if (array) {
+            // **`new T[n]()` value-initialises every element** - [expr.new]/17
+            // allows exactly the empty pair there and nothing inside it, so
+            // `new int[n](5)` is refused the way clang refuses it. What the
+            // empty pair means is n zeroed elements, below.
+            if (!consume(")"))
+                src_.fail(peek().pos, "'new T[n](x)' cannot initialise an "
+                                      "array - only the empty '()' is allowed "
+                                      "there, and it zeroes every element");
+        } else if (constructed) {
             if (!peek().is(")")) parseArguments(ctorArgs);
             else at_++;
         } else if (!consume(")")) {
@@ -472,6 +513,20 @@ ExprPtr Parser::newExpression(std::size_t pos) {
         ExprPtr total(new Binary(BinOp::Mul, std::move(n), std::move(bytes)));
         total->setType(sizeT);
         bytes = std::move(total);
+    }
+    // The byte count is wanted twice for `new T[n]()` - once by the allocator
+    // and once by the zeroing - and n is any expression, so it is computed
+    // once into a slot and the allocator reads the assignment's value.
+    int bytesSlot = 0;
+    std::string bytesTemp;
+    if (array && hasInit) {
+        bytesSlot = allocateFrameSlot(sizeT);
+        bytesTemp = ".newn" + std::to_string(newTemps_);
+        ExprPtr held(Var::local(bytesTemp, bytesSlot));
+        held->setType(sizeT);
+        ExprPtr save(new Assign(std::move(held), std::move(bytes)));
+        save->setType(sizeT);
+        bytes = std::move(save);
     }
 
     const Type *pointer = types_.pointerTo(made);
@@ -497,9 +552,57 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     ExprPtr keep(new Assign(std::move(held), std::move(typed)));
     keep->setType(pointer);
 
+    if (array) {
+        // **n elements zeroed by the platform's `memset`**, the same way the
+        // storage came from the platform's `operator new[]`: n is a run-time
+        // value, and this expression language has no loop, so the one shape
+        // that can zero a run-time count is a call. It is also exactly what
+        // clang emits for the same line. Scalars, and classes with no
+        // constructor to run, are all that reach here - a class with one is
+        // refused above, since its elements would each need the call.
+        const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+        std::vector<ExprPtr> args;
+        ExprPtr at(Var::local(temp, slot));
+        at->setType(pointer);
+        ExprPtr asVoid(new Cast(voidPtr, std::move(at)));
+        asVoid->setType(voidPtr);
+        args.push_back(std::move(asVoid));
+        ExprPtr zero(new Num(0LL));
+        zero->setType(types_.intType());
+        args.push_back(std::move(zero));
+        ExprPtr n(Var::local(bytesTemp, bytesSlot));
+        n->setType(sizeT);
+        args.push_back(std::move(n));
+        std::vector<int> argSlots(args.size(), 0);
+        Call *fill = new Call("memset", nullptr, std::move(args), false, 0, -1,
+                              std::move(argSlots));
+        fill->setSymbol("memset");
+        ExprPtr filled(fill);
+        filled->setType(voidPtr);
+
+        ExprPtr result(Var::local(temp, slot));
+        result->setType(pointer);
+        ExprPtr both(new Comma(std::move(keep), std::move(filled)));
+        both->setType(voidPtr);
+        ExprPtr all(new Comma(std::move(both), std::move(result)));
+        all->setType(pointer);
+        return all;
+    }
+
     if (constructed) {
         const Signature &ctor = resolveOverload(constructorKey(made->tag()),
                                                 ctorArgs, pos);
+        // `new V()` - and not `new V` - for a class whose default constructor
+        // nobody wrote: zeroed first, then built, the rule classTemporary
+        // follows for `V()`. Read before the call is assembled, as there.
+        //
+        // **Before applyDefaults, and the order is the point.** A default
+        // argument is appended to ctorArgs below, so asking whether the list
+        // is empty afterwards asks a different question than the one this
+        // rule wants. An implicit default constructor takes no parameters, so
+        // the two cannot collide today - but they would the moment an
+        // implicit member grew one, and reading first costs nothing.
+        const bool zeroFirst = hasInit && ctorArgs.empty() && ctor.implicit;
         // **The defaults, as every other constructor call reads them.** This
         // call is built by hand, one argument per parameter, and `new M` of
         // an `M(int a = 5)` was refused as "takes 2 argument(s), given 1"
@@ -521,6 +624,18 @@ ExprPtr Parser::newExpression(std::size_t pos) {
         ExprPtr build = completeCall(made->tag(), ctor.symbol, nullptr,
                                      types_.get(Kind::Void), full, false, pos,
                                      std::move(all));
+        if (zeroFirst) {
+            ExprPtr p(Var::local(temp, slot));
+            p->setType(pointer);
+            ExprPtr obj(new Unary('*', std::move(p)));
+            obj->setType(made);
+            if (ExprPtr chain = zeroChain(*obj, made)) {
+                const Type *ct = chain->type();
+                ExprPtr seq(new Comma(std::move(keep), std::move(chain)));
+                seq->setType(ct);
+                keep = std::move(seq);
+            }
+        }
         ExprPtr made2(new Comma(std::move(keep), std::move(build)));
         made2->setType(types_.get(Kind::Void));
 
@@ -535,6 +650,31 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     base->setType(pointer);
     ExprPtr where(new Unary('*', std::move(base)));
     where->setType(made);
+
+    // **`new P()` for a class with no constructor is value-initialisation
+    // too**, and [dcl.init]/8 makes that a zeroing - the rule classTemporary
+    // follows for `P()` on the stack and did not follow here: the scalar
+    // branch below converted its literal 0 *to the class type*, which lowered
+    // to a copy whose source address was the zero itself, and `new P()` read
+    // address 0 and died. The stores go straight through the pointer.
+    if (!init && made->isStructOrUnion()) {
+        ExprPtr result0(Var::local(temp, slot));
+        result0->setType(pointer);
+        ExprPtr chain = zeroChain(*where, made);
+        if (chain == nullptr) {
+            // An empty class: nothing observable to set, the allocation is
+            // the whole of the work.
+            ExprPtr all(new Comma(std::move(keep), std::move(result0)));
+            all->setType(pointer);
+            return all;
+        }
+        const Type *ct = chain->type();
+        ExprPtr both(new Comma(std::move(keep), std::move(chain)));
+        both->setType(ct);
+        ExprPtr all(new Comma(std::move(both), std::move(result0)));
+        all->setType(pointer);
+        return all;
+    }
 
     // `new int()` is value-initialisation, which for these types is a zero.
     ExprPtr value;

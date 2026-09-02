@@ -2274,6 +2274,9 @@ void Parser::topLevel(Program &program) {
         at_++;
         std::map<std::string, std::vector<ExprPtr> > memberExprs;
         std::map<std::string, std::size_t> where;
+        // The members written `: m()`, and for one with a constructor the
+        // index of the one to run; functions_.size() says there is none.
+        std::map<std::string, std::size_t> valueInit;
         for (;;) {
             std::size_t epos = peek().pos;
             std::string entry = expectIdent("a member or base to initialise");
@@ -2296,7 +2299,49 @@ void Parser::topLevel(Program &program) {
                 if (m->type->isConst())
                     src_.fail(epos, "a const member in an initialiser list is "
                                     "not supported yet");
-                if (args.size() != 1)
+                // **`: m()` value-initialises the member** - [class.base.init]
+                // hands the empty pair to [dcl.init]/8. A scalar zeroes; a
+                // class with no constructor zeroes leaf by leaf; a class whose
+                // default constructor nobody wrote zeroes *and then* runs it;
+                // a class with a user-provided one runs that and nothing else.
+                // The zeroing and the call are both statements on the member
+                // itself, emitted in the declaration-order loop below - not
+                // an assignment of a temporary's bytes, which would not be
+                // running a constructor on the member.
+                if (args.empty()) {
+                    if (m->type->isReference())
+                        src_.fail(epos, "'" + entry + "()' would leave a "
+                                        "reference member bound to nothing - "
+                                        "give it what it refers to");
+                    const Type *mt = m->type->unqualified();
+                    const Type *mc = mt;
+                    while (mc->isArray()) mc = mc->pointee();
+                    mc = mc->isStructOrUnion() ? mc->unqualified() : nullptr;
+                    std::size_t ctorIndex = functions_.size();
+                    if (mc != nullptr && !mc->tag().empty() &&
+                        overloadsOf(constructorKey(mc->tag())) != nullptr) {
+                        if (mt->isArray())
+                            src_.fail(epos, "'" + entry + "()' would run '" +
+                                            mc->describe() + "''s constructor "
+                                            "once per element, which an "
+                                            "initialiser list cannot say yet");
+                        const Signature *ctor = defaultConstructorOf(mc);
+                        if (ctor == nullptr)
+                            src_.fail(epos, "'" + entry + "()' needs a "
+                                            "constructor of '" + mc->describe() +
+                                            "' taking nothing, and it has none");
+                        if (ctor->access != Access::Public &&
+                            currentClass_ != mc && !isFriendOf(mc))
+                            src_.fail(epos, "'" + entry + "()' would call a " +
+                                            std::string(ctor->access == Access::Private
+                                                        ? "private" : "protected") +
+                                            " constructor of '" + mc->describe() +
+                                            "'");
+                        ctorIndex = static_cast<std::size_t>(ctor - &functions_[0]);
+                        functions_[ctorIndex].used = true;
+                    }
+                    valueInit[entry] = ctorIndex;
+                } else if (args.size() != 1)
                     src_.fail(epos, "'" + entry + "' takes one value here, "
                                     "given " + std::to_string(args.size()));
                 memberExprs[entry] = std::move(args);
@@ -2345,6 +2390,33 @@ void Parser::topLevel(Program &program) {
                 continue;
             }
             field->setType(m->type);
+
+            std::map<std::string, std::size_t>::const_iterator vi =
+                valueInit.find(m->name);
+            if (vi != valueInit.end()) {
+                const Type *mt = m->type->unqualified();
+                const bool hasCtor = vi->second != functions_.size();
+                // The zeroing first, cloned from the member's own access so
+                // every store lands on the member; then the constructor, on
+                // the member's address, when there is one to run.
+                if (!hasCtor || functions_[vi->second].implicit)
+                    if (ExprPtr chain = zeroChain(*field, mt))
+                        memberInits.push_back(StmtPtr(new ExprStmt(std::move(chain))));
+                if (hasCtor) {
+                    const Type *ptr = types_.pointerTo(mt);
+                    ExprPtr addr(new Unary('&', std::move(field)));
+                    addr->setType(ptr);
+                    std::vector<ExprPtr> one;
+                    one.push_back(std::move(addr));
+                    std::vector<const Type *> ps;
+                    ps.push_back(ptr);
+                    memberInits.push_back(StmtPtr(new ExprStmt(
+                        completeCall(mt->tag(), functions_[vi->second].symbol,
+                                     nullptr, types_.get(Kind::Void), ps, false,
+                                     epos, std::move(one)))));
+                }
+                continue;
+            }
 
             ExprPtr value = decay(std::move(found->second[0]));
             checkAssignable(*value, m->type, epos, "'" + m->name + "'");

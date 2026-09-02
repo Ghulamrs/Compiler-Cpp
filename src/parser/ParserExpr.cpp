@@ -460,6 +460,59 @@ ExprPtr Parser::reinterpretCast(std::size_t pos) {
     return c;
 }
 
+// The type one keyword names, for [expr.type.conv], which takes exactly one
+// simple-type-specifier: `unsigned(x)` is a cast and `unsigned long(x)` is
+// ill-formed - clang: "expected '(' for function-style cast". Nothing is
+// consumed; nullptr says the token is not one of these.
+const Type *Parser::simpleTypeKeyword() const {
+    static const struct { const char *word; Kind kind; } t[] = {
+        { "void", Kind::Void },     { "bool", Kind::Bool },
+        { "char", Kind::Char },     { "short", Kind::Short },
+        { "int", Kind::Int },       { "long", Kind::Long },
+        { "signed", Kind::Int },    { "unsigned", Kind::UInt },
+        { "float", Kind::Float },   { "double", Kind::Double },
+    };
+    for (const auto &k : t)
+        if (peek().is(k.word)) return types_.get(k.kind);
+    if (peek().is("wchar_t")) return types_.get(target_.wcharType());
+    return nullptr;
+}
+
+// `T(x)` and `T()` for a T that is not a class, the '(' still ahead.
+ExprPtr Parser::functionalCast(const Type *to, std::size_t pos) {
+    expect("(");
+    if (consume(")")) {
+        if (to->isVoid())
+            src_.fail(pos, "'void()' has no value");
+        // The zero that convert can carry to any scalar: a null pointer
+        // constant for a pointer, 0.0 for a floating type, 0 for the rest.
+        ExprPtr z;
+        if (to->isPointer()) {
+            z.reset(new Num(0LL));
+            z->setType(types_.get(Kind::NullPtr));
+        } else if (to->isFloating()) {
+            z.reset(new Num(0.0L));
+            z->setType(types_.doubleType());
+        } else {
+            z.reset(new Num(0LL));
+            z->setType(types_.intType());
+        }
+        return convert(std::move(z), types_.withoutConst(to));
+    }
+    ExprPtr v = decay(assign());
+    if (peek().is(","))
+        src_.fail(peek().pos, "'" + to->describe() + "(a, b)' would need a "
+                              "constructor, and '" + to->describe() +
+                              "' is not a class");
+    expect(")");
+    if (to->isVoid()) {
+        ExprPtr c(new Cast(to, std::move(v)));
+        c->setType(to);
+        return c;
+    }
+    return convert(std::move(v), types_.withoutConst(to));
+}
+
 ExprPtr Parser::primary(Program *program) {
     if (peek().is("static_cast")) {
         std::size_t pos = peek().pos;
@@ -770,6 +823,28 @@ ExprPtr Parser::primary(Program *program) {
     // eaten while it keeps naming one, so `N::M::g` works, and what is left is
     // a key every table here already holds.
     // **`N::S(4)` - a temporary of a class named through its scope.** The
+    // **`int()` and `int(x)` - a fundamental type written as a function.**
+    // [expr.type.conv]: with one value it is the cast `(int)x`, and with none
+    // it is value-initialisation, which for these types is a zero. Neither
+    // was parsed at all - "expected an expression" - though `P()` for a class
+    // has been since rung 2, so `int i = int();` was refused beside a `P p =
+    // P();` that ran. One keyword only: `unsigned long(x)` is ill-formed.
+    if (const Type *to = simpleTypeKeyword()) {
+        const std::size_t tpos = peek().pos;
+        const std::string word = peek().text;
+        at_++;
+        if (simpleTypeKeyword() != nullptr)
+            src_.fail(tpos, "'" + word + " " + peek().text + "(...)' is not a "
+                            "functional cast - [expr.type.conv] takes one "
+                            "type name, so write '(" + word + " " +
+                            peek().text + ")x', or a typedef of the type");
+        if (!peek().is("("))
+            src_.fail(tpos, "'" + word + "' is a type, and in an expression a "
+                            "type needs '(' after it - '" + word + "(x)' "
+                            "converts x, '" + word + "()' is its zero");
+        return functionalCast(to, tpos);
+    }
+
     // unqualified `S(4)` is caught further down, where the name is already in
     // hand; a qualified one has to be recognised before either '::' branch
     // takes it, since to them it is a name followed by a call.
@@ -921,6 +996,12 @@ ExprPtr Parser::primary(Program *program) {
             if (named != nullptr && named->isStructOrUnion()) {
                 at_ += 2;
                 return classTemporary(named, pos);
+            }
+            // A typedef of anything else, or an enumeration: `I()` and
+            // `Color(1)` are the fundamental forms above under another name.
+            if (named != nullptr) {
+                at_++;
+                return functionalCast(named, pos);
             }
         }
 
