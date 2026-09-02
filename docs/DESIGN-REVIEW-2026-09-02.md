@@ -156,8 +156,24 @@ Driver's own options (`-j`, `-g`, `-D`, `-masm=`) are exercised by nothing.
 7. `FunctionScope` and the `topLevel` extraction; `placeArguments` last, since it
    is the only one whose wrong step is a whole-suite churn.
 
-**Step 1 landed the same day**: `tests/emit.sh --record` and a diff on every run
-after it, with `make golden` beside it - see CLAUDE.md under Build. The rest is
-not started. Each is a proposal with a first step and a way to prove it changed
-nothing, which is the form this tree asks for, and which step 1 is what makes
-possible.
+**All seven landed, 2026-09-02**, in the order above and each measured against
+the golden step 1 built:
+
+| step | commits | what the golden said |
+| --- | --- | --- |
+| 1 | `adc3e5f` | it is the oracle |
+| 2 | `b4e8163`, `884ab47` | 0 of 411; then 135 at one line each |
+| 3 | `85b5bdf` | 0 of 411 |
+| 4 | `25e7e01` | the corpus split, 365/58/1, every failing case read |
+| 5 | `f219aec` | 0 of 411 |
+| 6 | `24481ce`, `6646af7`, `f42ced4` | 15 at one spelling; 0; 0 |
+| 7 | `1aec752`, `f1edf01`, `c998f6c` | 6 arm64 files smaller; 0; 0 |
+
+Three of them changed emitted code, and each change was named, counted and
+accounted for line by line before it was taken - which is the whole of what the
+first step bought.
+
+**Two findings the review did not have**, both turned up by doing the work: the
+arm64 sret disagreement, found in step 3 while writing a comment and mended in
+step 7, and two member-access chains that dropped a bitfield's width, found in
+step 5 and latent. Both are recorded where they were found.
