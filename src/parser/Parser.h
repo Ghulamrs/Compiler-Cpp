@@ -52,6 +52,14 @@ private:
         // ([class.copy]/32 treats it as an rvalue first), and on a reference
         // parameter it copies, because the object is the caller's.
         bool byValueByAddress = false;
+        // **[stmt.dcl]/3: a jump may not enter this object's scope.** Set for
+        // an automatic object that has an initialiser, a constructor or a
+        // destructor - the three things a jump landing past its declaration
+        // would skip. A label and a goto each record which of these are in
+        // scope where they stand, and a jump that finds one at the label and
+        // not at its origin is refused. An uninitialised scalar, a POD with
+        // no initialiser and a static are not marked: a jump may pass them.
+        bool guardsJump = false;
     };
 
     struct GlobalSym {
@@ -657,14 +665,37 @@ private:
     int switchDepth_ = 0;
     int caseIds_ = 0;
 
+    // One automatic object a jump may not land past - see Local::guardsJump.
+    // The frame slot is the identity, since no two objects of one function
+    // share one and a name can be declared again in an inner block; the name
+    // is for the message.
+    struct JumpGuard { std::string name; int offset; };
+    std::vector<JumpGuard> jumpGuards() const;
+    void checkJump(const std::vector<JumpGuard> &from,
+                   const std::vector<JumpGuard> &to, std::size_t pos,
+                   const std::string &jump, const std::string &origin) const;
+
     struct SwitchCtx {
         std::vector<const Case *> cases;
         const Case *deflt;
         const Type *governing;
+        // What was in scope at the `switch` itself, which is where every one
+        // of its case labels is jumped to from.
+        std::vector<JumpGuard> guards;
     };
     std::vector<SwitchCtx> switches_;
 
-    struct LabelDef { std::string name; std::size_t pos; };
+    // A label or a goto, with what was in scope where it was written.
+    struct LabelDef {
+        std::string name;
+        std::size_t pos;
+        std::vector<JumpGuard> guards;
+        // The objects alive there - alive_, by the same identity. A goto
+        // holding one its label does not is a jump out of that object's
+        // scope, and would have to destroy it on the way.
+        std::vector<JumpGuard> alive;
+    };
+    std::vector<JumpGuard> aliveNow() const;
     std::vector<LabelDef> labels_;
     std::vector<LabelDef> gotos_;
 
@@ -1266,6 +1297,10 @@ private:
                        std::vector<StmtPtr> &out);
     void emitInit(const std::string &name, std::vector<InitStep> &path,
                   const Type *type, Init &in, std::vector<StmtPtr> &out);
+    // [dcl.init.list]/7: a value inside braces may not narrow. Asked of every
+    // scalar a braced list reaches, for a local and at file scope alike.
+    void checkNarrowing(const Type *to, const Expr &value, std::size_t pos,
+                        const std::string &what);
 
     void flattenScalar(const Type *type, Init &in, int base,
                        std::vector<GlobalPiece> &out);

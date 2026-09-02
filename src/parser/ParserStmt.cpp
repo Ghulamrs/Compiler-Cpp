@@ -117,6 +117,7 @@ StmtPtr Parser::declarationBody() {
                                      "ends - an array of a class with only "
                                      "constructors works");
                 int off = declare(d.name, d.type, d.pos);
+                locals_.back().guardsJump = true;
                 int indexSlot = allocateFrameSlot(types_.intType());
                 inits.push_back(constructLocalArray(d, off, indexSlot));
                 if (!consume(",")) break;
@@ -207,6 +208,7 @@ StmtPtr Parser::declarationBody() {
             }
 
             int off = declare(d.name, d.type, d.pos);
+            locals_.back().guardsJump = true;
 
             // **Copy elision, in the one case worth having it.** When the
             // initialiser is a call that already returns one of these through
@@ -306,6 +308,7 @@ StmtPtr Parser::declarationBody() {
                                      std::to_string(args.size()) + " arguments");
                 checkAssignable(*args[0], d.type, d.pos, "'" + d.name + "'");
                 const int off = declare(d.name, d.type, d.pos);
+                locals_.back().guardsJump = true;
                 ExprPtr target(Var::local(d.name, off));
                 target->setType(d.type);
                 ExprPtr store(new Assign(std::move(target), std::move(args[0])));
@@ -340,6 +343,7 @@ StmtPtr Parser::declarationBody() {
             at_++;
             ExprPtr init = assign();
             int off = declare(d.name, d.type, d.pos);
+            locals_.back().guardsJump = true;
             const Type *slot = types_.pointerTo(d.type->referent());
             ExprPtr addr = bindReference(d.type, std::move(init), d.pos,
                                          "'" + d.name + "'");
@@ -403,6 +407,9 @@ StmtPtr Parser::declarationBody() {
         const int off = declare(d.name, d.type, d.pos);
         locals_.back().isConst = d.type->isConst();
         locals_.back().isRegister = (sc == StorageRegister);
+        // An initialiser to skip, or a destructor that would run on what was
+        // never built: either makes this a declaration no jump may land past.
+        locals_.back().guardsJump = hasInit || destructorOf(d.type) != nullptr;
         if (hasInit) {
             long long value = 0;
             if (constantInitialiser(d.type, in, &value)) {
@@ -941,7 +948,7 @@ StmtPtr Parser::switchStatement() {
     cond = convert(std::move(cond), governing);
     expect(")");
 
-    switches_.push_back(SwitchCtx{ {}, nullptr, governing });
+    switches_.push_back(SwitchCtx{ {}, nullptr, governing, jumpGuards() });
     switchDepth_++;
     StmtPtr body = statement();
     switchDepth_--;
@@ -974,6 +981,14 @@ StmtPtr Parser::caseLabel() {
     }
     expect(":");
 
+    // **Every case label is a jump from the `switch`**, so what is in scope
+    // here and was not there has been jumped past. [stmt.dcl]/3 names the
+    // switch alongside goto, and clang refuses it the same way.
+    checkJump(switches_.back().guards, jumpGuards(), pos,
+              isDefault ? std::string("'default:'")
+                        : "'case " + std::to_string(value) + ":'",
+              "the 'switch'");
+
     if (atDeclarationStart())
         src_.fail(peek().pos, "a label cannot be followed by a declaration - "
                               "put it in a block");
@@ -998,7 +1013,7 @@ StmtPtr Parser::gotoLabel() {
     for (const LabelDef &l : labels_)
         if (l.name == name)
             src_.fail(pos, "label '" + name + "' is defined twice in this function");
-    labels_.push_back(LabelDef{ name, pos });
+    labels_.push_back(LabelDef{ name, pos, jumpGuards(), aliveNow() });
 
     if (atDeclarationStart())
         src_.fail(peek().pos, "a label cannot be followed by a declaration - "
@@ -1009,13 +1024,90 @@ StmtPtr Parser::gotoLabel() {
     return StmtPtr(new Label(std::move(name), statement()));
 }
 
+// **[stmt.dcl]/3: a jump may not enter the scope of an initialised object.**
+// "A program that jumps from a point where a variable with automatic storage
+// duration is not in scope to a point where it is in scope is ill-formed
+// unless the variable has scalar type, class type with a trivial default
+// constructor and a trivial destructor, ... and is declared without an
+// initializer." The three jumps this compiler has - `goto` forward, `goto`
+// backward into a block, and a `switch` to its case labels - all fall under
+// it, and clang refuses each of them.
+//
+// Before this rule, `goto done; S s; done:` compiled, and the block's end
+// destroyed an `s` whose constructor had never run; `goto done; int x = 5;
+// done: return x;` compiled and returned whatever the slot held. Both silent.
+//
+// The test is set membership. Each object a jump may not land past is marked
+// when it is declared (Local::guardsJump); a label and a goto each keep the
+// marked objects in scope where they stand; and a jump is refused when the
+// label's list holds one the origin's does not. Forward and backward need no
+// separate rules, because the lists say what is in scope and not where the
+// statements are - a backward goto into a block that has since closed finds
+// the block's objects at the label and not at itself, and is refused by the
+// same comparison.
+std::vector<Parser::JumpGuard> Parser::jumpGuards() const {
+    std::vector<JumpGuard> out;
+    for (const Local &l : locals_)
+        if (l.guardsJump) out.push_back(JumpGuard{ l.name, l.offset });
+    return out;
+}
+
+std::vector<Parser::JumpGuard> Parser::aliveNow() const {
+    std::vector<JumpGuard> out;
+    for (const Alive &a : alive_) out.push_back(JumpGuard{ a.name, a.offset });
+    return out;
+}
+
+void Parser::checkJump(const std::vector<JumpGuard> &from,
+                       const std::vector<JumpGuard> &to, std::size_t pos,
+                       const std::string &jump, const std::string &origin) const {
+    for (const JumpGuard &g : to) {
+        bool inScopeAtOrigin = false;
+        for (const JumpGuard &f : from)
+            if (f.offset == g.offset) { inScopeAtOrigin = true; break; }
+        if (inScopeAtOrigin) continue;
+        src_.fail(pos, jump + " jumps past the initialisation of '" + g.name +
+                       "', which is in scope at the label and not at " +
+                       origin + " - a jump may not enter the scope of a "
+                       "variable that has an initialiser, a constructor or a "
+                       "destructor, because the object would be used and "
+                       "destroyed without ever having been built. Declare '" +
+                       g.name + "' before " + origin + ", or put it in a "
+                       "block that ends before the label");
+    }
+}
+
 void Parser::resolveGotos() {
     for (const LabelDef &g : gotos_) {
-        bool found = false;
+        const LabelDef *target = nullptr;
         for (const LabelDef &l : labels_)
-            if (l.name == g.name) { found = true; break; }
-        if (!found)
+            if (l.name == g.name) { target = &l; break; }
+        if (target == nullptr)
             src_.fail(g.pos, "no label '" + g.name + "' in this function");
+        checkJump(g.guards, target->guards, g.pos, "'goto " + g.name + "'",
+                  "the goto");
+
+        // **A goto out of a scope holding a live object is refused**, by
+        // name: a scope's destructors are emitted at its end, and a jump
+        // that leaves early goes over them. The rule is precise where the
+        // one for `break` and `continue` is conservative, because a goto
+        // knows both of its ends by now: an object alive at the goto and not
+        // at the label is one the jump leaves, and one alive at both is one
+        // it stays inside. Until this check the jump was accepted and the
+        // destructor did not run - the conservative test that was meant to
+        // catch it sat on a line the goto branch had already returned from.
+        for (const JumpGuard &a : g.alive) {
+            bool atLabel = false;
+            for (const JumpGuard &b : target->alive)
+                if (b.offset == a.offset) { atLabel = true; break; }
+            if (!atLabel)
+                src_.fail(g.pos, "'goto " + g.name + "' would leave the scope "
+                                 "holding '" + a.name + "', whose destructor "
+                                 "runs at the end of that scope - jumping over "
+                                 "a destructor is not supported yet. Leave the "
+                                 "block by falling off its end, or move '" +
+                                 a.name + "' out of it");
+        }
     }
     labels_.clear();
     gotos_.clear();
@@ -1575,13 +1667,13 @@ StmtPtr Parser::statementBody() {
         std::size_t pos = peek().pos;
         std::string name = expectIdent("a label to jump to");
         expect(";");
-        gotos_.push_back(LabelDef{ name, pos });
+        gotos_.push_back(LabelDef{ name, pos, jumpGuards(), aliveNow() });
         return StmtPtr(new Goto(std::move(name)));
     }
 
     if (peek().kind == TokenKind::Ident && peekAt(1).is(":")) return gotoLabel();
 
-    if (peek().is("break") || peek().is("continue") || peek().is("goto")) {
+    if (peek().is("break") || peek().is("continue")) {
         // A jump can leave a scope without falling off its end, and this
         // compiler runs destructors at the end. Rather than skip them
         // silently - which loses a release, a close, a free - the jump is
@@ -1589,6 +1681,10 @@ StmtPtr Parser::statementBody() {
         // programs whose jump would not have crossed the object at all. The
         // precise rule needs each jump to know which scopes it leaves, and
         // that is a change to how jumps are built rather than an addition.
+        // A goto knows both of its ends once the function has been read, so
+        // it gets the precise rule instead, in resolveGotos(). This test
+        // used to name goto too - on a line the goto branch above had
+        // already returned from, so it never ran for one.
         if (!alive_.empty())
             src_.fail(peek().pos, "'" + peek().text + "' would leave a scope "
                                   "holding '" + alive_.back().name + "', whose "

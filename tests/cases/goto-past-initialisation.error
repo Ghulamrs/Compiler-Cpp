@@ -1,0 +1,1 @@
+'goto done' jumps past the initialisation of 'p'
