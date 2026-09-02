@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{9CCC91A3-EF5C-130A-8C1D-A127C1300F62}</ProjectGuid>
+    <RootNamespace>cxx1</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)build\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)build\$(Configuration)\obj\</IntDir>
+    <TargetName>cxx1</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp14</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <DisableSpecificWarnings>4996;4267;4244;4456;4146</DisableSpecificWarnings>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\msvc\compat;$(ProjectDir)..\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;CXX1_INCLUDE_DIR="$([System.String]::Copy('$(ProjectDir)..\lib').Replace('\','/'))";%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link><SubSystem>Console</SubSystem></Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile><Optimization>MaxSpeed</Optimization></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile><Optimization>Disabled</Optimization></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\Driver.cpp" />
+    <ClCompile Include="..\src\Lexer.cpp" />
+    <ClCompile Include="..\src\Mangle.cpp" />
+    <ClCompile Include="..\src\Operator.cpp" />
+    <ClCompile Include="..\src\Preprocessor.cpp" />
+    <ClCompile Include="..\src\Source.cpp" />
+    <ClCompile Include="..\src\Type.cpp" />
+    <ClCompile Include="..\src\main.cpp" />
+    <ClCompile Include="..\src\parser\Parser.cpp" />
+    <ClCompile Include="..\src\parser\ParserClass.cpp" />
+    <ClCompile Include="..\src\parser\ParserExpr.cpp" />
+    <ClCompile Include="..\src\parser\ParserExprCall.cpp" />
+    <ClCompile Include="..\src\parser\ParserExprLambda.cpp" />
+    <ClCompile Include="..\src\parser\ParserExprNew.cpp" />
+    <ClCompile Include="..\src\parser\ParserInit.cpp" />
+    <ClCompile Include="..\src\parser\ParserOperator.cpp" />
+    <ClCompile Include="..\src\parser\ParserOverload.cpp" />
+    <ClCompile Include="..\src\parser\ParserStmt.cpp" />
+    <ClCompile Include="..\src\parser\ParserTemplate.cpp" />
+    <ClCompile Include="..\src\parser\ParserType.cpp" />
+    <ClCompile Include="..\src\backend\Arm64Darwin.cpp" />
+    <ClCompile Include="..\src\backend\Backend.cpp" />
+    <ClCompile Include="..\src\backend\Dwarf.cpp" />
+    <ClCompile Include="..\src\backend\Masm.cpp" />
+    <ClCompile Include="..\src\backend\Spelling.cpp" />
+    <ClCompile Include="..\src\backend\Walker.cpp" />
+    <ClCompile Include="..\src\backend\X86_64Linux.cpp" />
+    <ClCompile Include="..\src\backend\X86_64Windows.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\src\Abi.h" />
+    <ClInclude Include="..\src\Ast.h" />
+    <ClInclude Include="..\src\Driver.h" />
+    <ClInclude Include="..\src\Lexer.h" />
+    <ClInclude Include="..\src\Mangle.h" />
+    <ClInclude Include="..\src\Operator.h" />
+    <ClInclude Include="..\src\Preprocessor.h" />
+    <ClInclude Include="..\src\Source.h" />
+    <ClInclude Include="..\src\Type.h" />
+    <ClInclude Include="..\src\parser\Parser.h" />
+    <ClInclude Include="..\src\parser\ParserInternal.h" />
+    <ClInclude Include="..\src\backend\Arm64Darwin.h" />
+    <ClInclude Include="..\src\backend\Backend.h" />
+    <ClInclude Include="..\src\backend\Dwarf.h" />
+    <ClInclude Include="..\src\backend\Masm.h" />
+    <ClInclude Include="..\src\backend\Spelling.h" />
+    <ClInclude Include="..\src\backend\Walker.h" />
+    <ClInclude Include="..\src\backend\X86_64Linux.h" />
+    <ClInclude Include="..\src\backend\X86_64Windows.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

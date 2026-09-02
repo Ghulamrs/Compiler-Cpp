@@ -10,3 +10,13 @@ tests/out-*/
 cxx1 *.exe
 obj-msvc/
 cxx1-msvc.exe
+
+# What the two IDE projects write beside themselves. `ide/build` is MSBuild's,
+# and Xcode keeps its own products under ~/Library unless somebody points
+# -derivedDataPath elsewhere; xcuserdata is one person's window layout and
+# scheme selection, which is why the shared scheme is checked in instead.
+ide/build/
+xcuserdata/
+*.xcuserdatad
+.vs/
+*.vcxproj.user
