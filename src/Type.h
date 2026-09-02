@@ -5,11 +5,9 @@
 
 enum class Kind {
     Void,
-    // **`decltype(nullptr)`**, and it sits here rather than beside Pointer for
-    // two reasons. It is a fundamental type, so TypeTable has to build one and
-    // only one of it - which is what the Void..Function range below does - and
-    // it must stay outside the integer range that isInteger() checks, since
-    // the whole point of it is that it is *not* an integer 0.
+    // **`decltype(nullptr)`**, here rather than beside Pointer for two reasons: it
+    // is a fundamental type, so TypeTable builds exactly one, and it must stay
+    // outside the integer range isInteger() checks - its point is not being 0.
     NullPtr,
     // bool sits inside the integer range and at the bottom of it, which is
     // what lets isInteger() stay a range check. Its position in this enum is
@@ -27,47 +25,29 @@ enum class Kind {
     // from Void to Function, and a reference is never one of those - it is
     // always a reference *to* something and so always derived.
     LValueRef,
-    // **An rvalue reference, and it is the same machine as an lvalue one.**
-    // Both are a slot holding an address, both are read by dereferencing it,
-    // and `isReference()` answers for either - which is why almost nothing
-    // outside binding and mangling had to learn this exists. What differs is
-    // what may bind: `T &&` takes a value with nowhere to live, `T &` takes
-    // an object that has one.
+    // **An rvalue reference, and it is the same machine as an lvalue one**: a slot
+    // holding an address, read by dereferencing it, and `isReference()` answers
+    // for either. What differs is what may bind - a value with nowhere to live.
     RValueRef,
-    // **The expansion of a parameter pack**, `Ts...`, which appears in a
-    // pattern where the pack's own members appear in the substituted
-    // signature. Itanium writes `Dp` and then the parameter - `DpT0_` - and
-    // says the same thing however many members the pack has, which is what
-    // makes one pattern serve every specialization.
+    // **The expansion of a parameter pack**, `Ts...`, standing in a pattern where
+    // the pack's members stand in the substituted signature. Itanium writes
+    // `DpT0_` however many there are, which is what makes one pattern serve all.
     PackExpansion,
-    // **`auto`, standing where a type will be.** [dcl.spec.auto] deduces it
-    // as if by template argument deduction from a function call, so it is the
-    // same kind of stand-in `TemplateParam` is and is replaced the same way -
-    // before anything but the deduction has looked at it.
+    // **`auto`, standing where a type will be.** [dcl.spec.auto] deduces it as if
+    // by template argument deduction from a call, so it is the same kind of
+    // stand-in `TemplateParam` is and is replaced the same way.
     Deduced,
-    // **A pointer to a data member**, `int S::*`. It is not a pointer to
-    // anything: what it holds is an *offset* into an object of the class, so
-    // `s.*p` is `&s` plus that offset and no backend had to be told this kind
-    // exists. `pointee()` is the member's type and `enclosing()` is the class.
-    //
-    // Its size is the one thing that is not the same everywhere: Itanium
-    // stores a `ptrdiff_t` and Microsoft an `int` for a class with single
-    // inheritance, so 8 and 4 - measured, not read.
+    // **A pointer to a data member**, `int S::*`, holding an *offset* and not an
+    // address - so no backend had to be told it exists. `pointee()` is the
+    // member's type and `enclosing()` the class; its size is 8 Itanium, 4 cl.
     MemberPointer,
-    // **A template parameter, and it is not a type anything is made of.** It
-    // exists so that a template's signature can be written down as the
-    // *pattern* it was declared as - `T twice(T)` rather than
-    // `int twice(int)` - which is what the Itanium mangler has to read: a
-    // specialization's name spells `T_` where the substituted signature has
-    // lost all record of where the int came from. Nothing but the manglers
-    // ever sees one; a parameter has no size, no alignment and no value.
+    // **A template parameter, and it is not a type anything is made of.** It lets a
+    // template's signature be written as the pattern it was declared as, which is
+    // what the Itanium mangler reads back as `T_`. Only the manglers see one.
     TemplateParam,
     // **A member type of something that is not known yet** - `T::type`, or
-    // `Value<T>::type`. Like TemplateParam it exists only in a pattern, and
-    // for the same reason: Itanium spells a function template's return type
-    // from the pattern, and `_Z4takeIiEN5ValueIT_E4typeES1_` says
-    // `Value<T>::type` where the substituted signature says int and has
-    // forgotten where it came from.
+    // `Value<T>::type`. Like TemplateParam it exists only in a pattern, because
+    // Itanium spells a function template's return type from the pattern.
     DependentMember
 };
 
@@ -75,15 +55,9 @@ class Target;
 
 class Type;
 
-// One template argument: a type, or a value of a type. `type` is the argument
-// itself for a type argument and the *parameter's* type for a non-type one,
-// because that is what both ABIs write beside the value - Itanium `Li3E`,
-// Microsoft `$02`.
-//
-// It lives here rather than beside the manglers because a class that is a
-// specialization carries its arguments: the tag is "Box<int,3>", which is
-// what every table in the parser is keyed by, and neither ABI spells a name
-// that way.
+// One template argument: a type, or a value of a type. `type` is the argument for
+// a type argument and the *parameter's* type for a non-type one, which is what
+// both ABIs write beside the value. Here because a specialization carries them.
 struct TemplateArg {
     const Type *type = nullptr;
     bool isType = true;
@@ -127,11 +101,9 @@ public:
 
     Kind kind() const { return kind_; }
 
-    // Constness belongs to the type, not to the object that has it: a
-    // 'const char *' and a 'char *' must be two different types, because
-    // overload resolution ranks between them and the mangler spells them
-    // differently. An array is const when its elements are - there is no
-    // separate qualifier to hang on the array itself.
+    // Constness belongs to the type, not to the object that has it: `const char *`
+    // and `char *` must be two types, overload resolution ranking between them and
+    // the mangler spelling them apart. An array is const when its elements are.
     bool isConst() const {
         return const_ || (kind_ == Kind::Array && pointee_->isConst());
     }
@@ -142,23 +114,18 @@ public:
 
     bool isPointer() const { return kind_ == Kind::Pointer; }
 
-    // A reference is a pointer that has lost the right to be written or read
-    // as one: it holds an address and occupies a pointer's worth of storage,
-    // and every use of it goes through that address without saying so. The
-    // parser lowers it away, so no backend ever sees this kind.
+    // A reference is a pointer that has lost the right to be written or read as
+    // one: it holds an address, occupies a pointer's storage, and every use goes
+    // through it. The parser lowers it away, so no backend sees this kind.
     bool isReference() const {
         return kind_ == Kind::LValueRef || kind_ == Kind::RValueRef;
     }
     bool isRValueReference() const { return kind_ == Kind::RValueRef; }
     const Type *referent() const { return pointee_; }
     bool isArray() const { return kind_ == Kind::Array; }
-    // [basic.types]/9 counts std::nullptr_t among the scalar types, and that
-    // is what lets `!nullptr` and `nullptr && x` be written - a contextual
-    // conversion to bool, which convert() lowers to a comparison against zero
-    // like any other. It does *not* make `bool b = nullptr;` legal: that is
-    // copy-initialization, and the gate for it is requireConvertible, which
-    // has no rule taking nullptr to bool. [conv.bool] gives that conversion
-    // for direct-initialization only.
+    // [basic.types]/9 counts std::nullptr_t among the scalar types, which is what
+    // lets `!nullptr` be written - a contextual conversion to bool. It does not
+    // make `bool b = nullptr;`: [conv.bool] is direct-initialization only.
     bool isScalar() const {
         return isArithmetic() || isPointer() || isNullPtr();
     }
@@ -196,45 +163,32 @@ public:
 
     const std::string &tag() const { return unqual_ ? unqual_->tag() : tag_; }
 
-    // `class X` and `struct X` build the same kind of type and differ only in
-    // the default access - and in what a diagnostic should call it. A message
-    // that says "struct Account" about something the program wrote as a class
-    // sends the reader looking for a declaration that is not there.
+    // `class X` and `struct X` build the same kind of type and differ only in the
+    // default access - and in what a diagnostic should call it. "struct Account"
+    // for something written as a class sends the reader after a missing line.
     bool declaredClass() const { return unqual_ ? unqual_->declaredClass() : isClass_; }
     void setDeclaredClass(bool c) { isClass_ = c; }
 
-    // **A class written inside another one.** `tag()` is the qualified name -
-    // "Outer::Inner" - because every table in the parser is keyed by it and a
-    // nested class must not collide with a global of the same name.
-    // `localName()` is the single component, which is what both ABIs spell,
-    // and `enclosing()` is the class it was written in, which is what the
-    // Itanium substitution table has to be able to recognise: a parameter of
-    // type Outer::Inner inside a member of Outer is NS_5InnerE, and the S_ is
-    // Outer being found in that table rather than spelled again.
+    // **A class written inside another one.** `tag()` is the qualified name, every
+    // table being keyed by it; `localName()` is the component both ABIs spell, and
+    // `enclosing()` is what Itanium's substitution table has to recognise.
     const std::string &localName() const {
         if (unqual_) return unqual_->localName();
         return local_.empty() ? tag_ : local_;
     }
     void setLocalName(std::string n) { local_ = std::move(n); }
 
-    // **A class written inside a namespace**, whose tag carries the namespaces
-    // for the same reason a nested class's carries its enclosing classes -
-    // except that there is no Type to point `enclosing()` at, because a
-    // namespace is not one. Asked by the manglers, which have to tell "N::S"
-    // apart from a local class's "f::L": the first is a scope both ABIs write
-    // and the second is a name they spell whole.
+    // **A class written inside a namespace**, whose tag carries the namespaces as a
+    // nested class's carries its classes - with nothing for `enclosing()` to point
+    // at. The manglers ask it to tell "N::S" from a local class's "f::L".
     bool inNamespace() const {
         return unqual_ ? unqual_->inNamespace() : inNamespace_;
     }
     void setInNamespace() { inNamespace_ = true; }
 
-    // **A class written inside a function**, carrying the linkage name of the
-    // function it was written in. Both ABIs wrap that name round this one -
-    // Itanium as `Z <function> E <name>`, the Microsoft ABI as `?1?` and the
-    // whole function - and until the type could answer this, only a *member*
-    // of such a class was named that way: the class as a template argument
-    // was spelled `7main::L`, which is a colon in a symbol and no assembler
-    // takes it.
+    // **A class written inside a function**, carrying that function's linkage name,
+    // which both ABIs wrap round this one. Until the type could answer this, such a
+    // class as a template argument was spelled `7main::L` - a colon in a symbol.
     const std::string &localOwner() const {
         if (unqual_) return unqual_->localOwner();
         return localOwner_;
@@ -262,44 +216,31 @@ public:
     }
     void setNestedAccess(Access a) { nestedAccess_ = a; }
 
-    // The one base class, or null. A base subobject sits at offset 0 - measured
-    // - so a derived object's address IS its base's address and no adjustment
-    // is needed anywhere. Multiple inheritance is what ends that, and it is a
-    // Whether this class has any virtual function, its bases' included. It
-    // decides the layout - a polymorphic object carries a vptr at offset 0 and
-    // its members start after it - so it has to be answerable before the
-    // members are placed.
+    // The one base class, or null: a base subobject sits at offset 0, so a derived
+    // object's address is its base's. And whether any virtual function exists here
+    // or in a base, which decides the layout before the members are placed.
     bool polymorphic() const { return unqual_ ? unqual_->polymorphic() : polymorphic_; }
     void setPolymorphic(bool p) { polymorphic_ = p; }
 
-    // **Whether copying this class is a function call rather than a move of
-    // bytes**, which both platform ABIs make a question about how it is
-    // *passed*: a class with a non-trivial copy constructor goes by address,
-    // whatever its size, where a trivially copyable one of the same size goes
-    // in a register. Measured with cl and with clang for both Itanium
-    // targets. The backends need to agree with the parser about this, which
-    // is why it lives on the type rather than in the function table where
-    // copy constructors are actually kept.
+    // **Whether copying this class is a function call rather than a move of bytes**,
+    // which both platform ABIs make a question about how it is *passed*. Measured
+    // with cl and clang; on the type, because the backends must agree with the parser.
     bool nonTrivialCopy() const {
         return unqual_ ? unqual_->nonTrivialCopy() : nonTrivialCopy_;
     }
     void setNonTrivialCopy(bool n) { nonTrivialCopy_ = n; }
 
-    // **Whether this class has a destructor to run.** It decides how the class
-    // is *passed*, and the two ABIs disagree about how: Itanium passes such a
-    // class by address whatever its size and has the caller destroy the copy,
-    // where Microsoft passes it by the ordinary size rules and has the callee
-    // destroy its own. Both return it through a hidden pointer. All measured.
+    // **Whether this class has a destructor to run.** It decides how the class is
+    // passed, and the ABIs disagree: Itanium by address whatever the size with the
+    // caller destroying, Microsoft by size with the callee. Measured.
     bool hasDestructor() const {
         return unqual_ ? unqual_->hasDestructor() : hasDestructor_;
     }
     void setHasDestructor(bool h) { hasDestructor_ = h; }
 
-    // **Every base, with the offset it sits at.** The first is at 0 and any
-    // second is not - measured: `class C : public A, public B` puts A at 0 and
-    // B at 4 - which is the whole difference multiple inheritance makes. A
-    // pointer to the second base is the object's address plus that offset, and
-    // so is the `this` its member functions expect.
+    // **Every base, with the offset it sits at.** The first is at 0 and a second is
+    // not - measured, A at 0 and B at 4 - which is the whole difference multiple
+    // inheritance makes, to a pointer and to the `this` a member expects.
     struct BaseSpec {
         const Type *type;
         int offset;
@@ -328,9 +269,8 @@ public:
     const Member *findMember(const std::string &name) const;
 
     // **A static data member is one object shared by the class, not one per
-    // object.** It has no offset and takes no room, so it is kept apart from
-    // the members rather than among them - neither the size computation nor
-    // anything walking members() has to learn to skip it.
+    // object.** It has no offset and takes no room, so it is kept apart from the
+    // members: neither the size computation nor members() has to skip it.
     struct StaticMember {
         std::string name;
         const Type *type;
@@ -352,13 +292,9 @@ public:
 
     void complete(std::vector<Member> members, int size, int align);
 
-    // **Where this class's data actually ends, before the padding.** A base
-    // subobject occupies this rather than sizeof, so a derived class may put
-    // its first member in the base's tail padding - which is what the Itanium
-    // ABI says and what clang does: a base of {vptr, int} ends at 12 and pads
-    // to 16, and a derived int lands at 12, making the whole thing 16 rather
-    // than 24. Equal to size() for anything with no tail padding, which is why
-    // this stayed invisible until a class had some.
+    // **Where this class's data actually ends, before the padding.** A base occupies
+    // this rather than sizeof, so a derived class may sit in the base's tail
+    // padding - what Itanium says and clang does. Equal to size() without one.
     int dataSize() const { return unqual_ ? unqual_->dataSize() : dataSize_; }
     void setDataSize(int d) { dataSize_ = d; }
 
@@ -369,17 +305,9 @@ public:
     bool isMemberPointer() const {
         return unqual_ ? unqual_->isMemberPointer() : kind_ == Kind::MemberPointer;
     }
-    // **A pointer to a member *function* wears the shape of a struct.** It has
-    // to: Itanium keeps a pair - a code address and a `this` adjustment, 16
-    // bytes - and Microsoft a single code pointer, and every backend already
-    // knows how to copy, pass and return an aggregate. Giving it a new kind
-    // instead would have meant teaching three code generators the same lesson
-    // they had already learnt for classes, at each of the dozen places they
-    // ask `isStructOrUnion()`.
-    //
-    // So `kind_` is Struct and this flag is what tells `describe()` and the
-    // manglers what they are really looking at. `pointee()` is the function
-    // type and `enclosing()` is the class.
+    // **A pointer to a member *function* wears the shape of a struct**, so that
+    // every backend already knows how to copy, pass and return one. `kind_` is
+    // Struct, and this flag tells describe() and the manglers what it really is.
     bool isMemberFunctionPointer() const {
         return unqual_ ? unqual_->isMemberFunctionPointer() : memberFn_;
     }
@@ -393,10 +321,9 @@ private:
     friend class TypeTable;
     Kind kind_;
 
-    // Set only on a qualified type, and it points at the unqualified one it
-    // was made from. Everything that depends on state a struct gains later -
-    // its members, its size - is asked of that one rather than of this copy,
-    // which was taken before the struct was complete.
+    // Set only on a qualified type, pointing at the unqualified one it was made
+    // from. Everything that depends on state a struct gains later is asked of that
+    // one, this copy having been taken before the struct was complete.
     const Type *unqual_ = nullptr;
     bool const_ = false;
 

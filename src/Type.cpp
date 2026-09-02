@@ -21,13 +21,9 @@ int Type::size(const Target &t) const {
     // class with single inheritance. Measured with clang for both targets.
     if (kind_ == Kind::MemberPointer) return t.microsoftNames() ? 4 : 8;
     if (isReference()) return pointee_->size(t);
-    // **In `long long`, because the multiply itself was the bug.** Both
-    // operands were `int`, so `static int a[600000000]` overflowed a signed
-    // int and the backend was handed a negative length: `.zero -1894967296`,
-    // emitted by the shipped `-O2` binary without a word. The parser refuses
-    // an array this compiler cannot lay out, at the declaration and by name,
-    // so the clamp below is unreachable - it is here so that the arithmetic
-    // is defined whatever reaches it.
+    // **In `long long`, because the multiply itself was the bug.** Two int
+    // operands overflowed for `static int a[600000000]` and the backend was
+    // handed `.zero -1894967296`; the parser refuses it, so this only defines it.
     if (kind_ == Kind::Array) {
         const long long total =
             length_ * static_cast<long long>(pointee_->size(t));
@@ -91,10 +87,9 @@ std::string Type::describe() const {
     return name();
 }
 
-// Every one of these interning loops skips the qualified types, and must.
-// A 'char * const' is a Kind::Pointer whose pointee is char, so a pointerTo()
-// that did not skip it would hand back the const one and quietly make every
-// 'char *' in the file read-only.
+// Every one of these interning loops skips the qualified types, and must. A
+// `char * const` is a Kind::Pointer whose pointee is char, so a pointerTo() that
+// did not skip it would hand back the const one for every `char *` in the file.
 const Type *TypeTable::functionType(const Type *returns,
                                     std::vector<const Type *> params,
                                     bool variadic) {
@@ -160,10 +155,9 @@ const Type *TypeTable::memberPointerTo(const Type *cls, const Type *member) {
     return derived_.back();
 }
 
-// A pointer to a member *function*, built with the shape of a struct so that
-// every backend already knows how to copy, pass and return one - see
-// Type::isMemberFunctionPointer. The members are what the ABI actually keeps:
-// a code address, and on Itanium a `this` adjustment beside it.
+// A pointer to a member *function*, built with the shape of a struct so every
+// backend already knows how to copy, pass and return one. Its members are what
+// the ABI keeps: a code address, and on Itanium a `this` adjustment beside it.
 const Type *TypeTable::memberFunctionPointerTo(const Type *cls, const Type *fn,
                                                bool microsoft) {
     for (Type *d : derived_)
@@ -192,10 +186,9 @@ const Type *TypeTable::referenceTo(const Type *t) {
     return derived_.back();
 }
 
-// The index is kept in length_, which nothing else on a template parameter
-// uses. Interned like every other derived type - and the interning loop skips
-// a qualified copy for the same reason every other loop here does, or
-// `const T` would be handed back for `T`.
+// The index is kept in length_, which nothing else on a template parameter uses.
+// Interned like every other derived type, and the loop skips a qualified copy
+// for the same reason every loop here does, or `const T` comes back for `T`.
 const Type *TypeTable::templateParam(int index) {
     for (Type *d : derived_)
         if (!d->isConst() && d->kind() == Kind::TemplateParam &&
@@ -251,22 +244,9 @@ const Type *TypeTable::arrayOf(const Type *t, long long length) {
 }
 
 const Member *Type::findMember(const std::string &name) const {
-    // **members(), not members_** - the qualified copy has none of its own.
-    // A `const X` interned before X was completed carries an empty members_
-    // forever, and every question about what a struct gained later has to go
-    // to the unqualified one. This read did not, so a member function taking
-    // `const X &` could not see a member of it while a free function could:
-    // the free function's parameter type was interned after the class closed,
-    // the member function's while it was still open.
-    // **Backwards, because a derived member hides a base's.** The list is
-    // built base-first - each base's members are copied in at their offsets
-    // and the class's own are appended - so it runs from most-base to
-    // most-derived, and the last match is the one C++ says the name means.
-    //
-    // Forwards, `struct Tuple<T, Rest...> : Tuple<Rest...> { T head; }` read
-    // the *innermost* head at every level: three members called head, and
-    // every use found the first. It gave wrong values and no diagnostic,
-    // which is the reason this is written out.
+    // **members(), not members_**: the qualified copy has none of its own, so a
+    // `const X` interned before X closed would forever see an empty list.
+    // **Backwards**: the list is base-first, and a derived member hides a base's.
     const std::vector<Member> &all = members();
     for (std::size_t i = all.size(); i > 0; i--)
         if (all[i - 1].name == name) return &all[i - 1];

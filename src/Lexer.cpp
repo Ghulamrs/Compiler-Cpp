@@ -50,14 +50,9 @@ static long long unescape(const std::string &s, std::size_t &i, std::size_t,
 }
 
 bool Lexer::isKeyword(const std::string &word) {
-    // Every C++11 keyword, including the ones nothing here can parse yet.
-    // Recognising a word is not the same as implementing it: a keyword the
-    // front end has no rule for is refused by name in the parser, which is a
-    // better error than the parse failure twenty tokens later that an
-    // unrecognised identifier produces.
-    //
-    // The alternative-token spellings (and, or, not, bitand, ...) are keywords
-    // in C++, not macros as they are in C's <iso646.h>.
+    // Every C++11 keyword, including the ones nothing here can parse yet:
+    // recognising a word is not implementing it, and a keyword with no rule is
+    // refused by name. The alternative spellings are keywords here, not macros.
     static const char *const kw[] = {
         "alignas", "alignof", "and", "and_eq", "asm", "auto",
         "bitand", "bitor", "bool", "break",
@@ -99,12 +94,9 @@ bool Lexer::exactlyADouble(const std::string &s, std::size_t from,
         if (!std::isdigit(static_cast<unsigned char>(c))) break;
         any = true;
         if (afterPoint) tenth++;
-        // **A zero is held back until a later digit needs it.** Trailing
-        // zeros carry no precision - they only move the exponent - and
-        // multiplying them into the accumulator overflowed it, so
-        // `2.5000000000000000000L` was called inexact while `2.5L` was
-        // exact, for one value. Deferred, they land in the exponent below;
-        // only a zero *between* significant digits is ever multiplied in.
+        // **A zero is held back until a later digit needs it.** Trailing zeros
+        // only move the exponent, and multiplying them in overflowed the
+        // accumulator; only a zero between significant digits is multiplied in.
         if (c == '0') { if (m != 0) zeros++; continue; }
         while (zeros > 0 && !overflowed) {
             if (m > (0xFFFFFFFFFFFFFFFFULL - 9) / 10) overflowed = true;
@@ -136,14 +128,9 @@ bool Lexer::exactlyADouble(const std::string &s, std::size_t from,
         m /= 5;
         exp10++;
     }
-    // **A positive power of ten multiplies in only through its fives**, for
-    // the same reason: 10^k is 5^k * 2^k, and the twos cost nothing. Done as
-    // tens, `100000000000000000000.0L` - which is 2^20 * 5^20, and 5^20 sits
-    // well inside 53 bits - overflowed the accumulator at 1e20 and was
-    // refused for an exact value. As fives, the odd part of the value is
-    // exactly what accumulates, so an overflow here is a value whose odd
-    // part is past 2^64, and therefore past 2^53: refusing it is the true
-    // answer, not the safe one.
+    // **A positive power of ten multiplies in only through its fives**: 10^k is
+    // 5^k * 2^k and the twos cost nothing, so what accumulates is the odd part -
+    // an overflow there is past 2^53, which makes refusing it the true answer.
     while (m != 0 && m % 2 == 0) m /= 2;      // the factors of two are free
     while (exp10 > 0) {
         if (m > 0xFFFFFFFFFFFFFFFFULL / 5) return false;
@@ -256,9 +243,8 @@ std::vector<Token> Lexer::tokenize() {
 
             std::size_t j = i;
             // **Refused by name because the legal neighbour is one character
-            // away.** `0x` is C++98 and `0b` is C++14, so without this the
-            // literal lexes as `0` followed by an identifier and the error
-            // lands on whatever comes after it rather than on the digits.
+            // away.** `0x` is C++98 and `0b` is C++14; without this the literal
+            // lexes as `0` and an identifier, and the error lands past the digits.
             if (s[j] == '0' && j + 1 < s.size() &&
                 (s[j + 1] == 'b' || s[j + 1] == 'B'))
                 src_.fail(i, "a binary literal is C++14, and this compiler is "
@@ -277,19 +263,9 @@ std::vector<Token> Lexer::tokenize() {
 
             if (floating) {
                 t.isFloat = true;
-                // **`strtod`, not `strtold` - the literal's value must not
-                // depend on which machine built the compiler.** `strtold`
-                // reads with the host's `long double`, which carries 64 bits
-                // of significand on the Linux box and 53 on the Mac, and a
-                // value later narrowed to `double` is rounded *twice* on one
-                // host and once on the other. There are decimal strings the
-                // two answers disagree on - measured: one 72-digit literal
-                // came out `.quad ...409` from the Mac build and `...408`
-                // from the Linux build, for the same target. `strtod` rounds
-                // once, to the type the value will actually have, and C
-                // requires it correctly rounded - which is the one thing here
-                // taken on the hosts' word; doing without it means a decimal
-                // to binary conversion in software, which is its own rung.
+                // **`strtod`, not `strtold` - a literal's value must not depend
+                // on which machine built the compiler.** A host `long double`
+                // rounds twice on one box and once on the next; measured, differing.
                 const std::size_t from = i;
                 t.dvalue = std::strtod(s.c_str() + i, &stop);
                 i = static_cast<std::size_t>(stop - s.c_str());
@@ -298,12 +274,9 @@ std::vector<Token> Lexer::tokenize() {
                 digitSeparator(s, i);
                 if (i < s.size() && (s[i] == 'f' || s[i] == 'F')) {
                     t.suffixF = true; i++;
-                    // A `float` literal is rounded once too. Through
-                    // `double` it is rounded twice - 53 bits and then 24 -
-                    // and the direct answer differs from the two-step one on
-                    // literals built to sit astride the boundary. [lex.fcon]
-                    // gives the literal the value of its own type, so
-                    // `strtof` is the conversion, not a shortcut.
+                    // A `float` literal is rounded once too: through `double` it
+                    // is rounded twice, 53 bits and then 24. [lex.fcon] gives the
+                    // literal the value of its own type, so `strtof` is that.
                     t.dvalue = std::strtof(s.c_str() + from, nullptr);
                 } else if (i < s.size() && (s[i] == 'l' || s[i] == 'L')) {
                     t.suffixL = true; i++;

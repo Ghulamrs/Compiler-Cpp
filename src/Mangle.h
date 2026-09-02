@@ -5,47 +5,17 @@
 #include <string>
 #include <vector>
 
-// The linkage name of something with C++ linkage, in the ABI of the platform
-// it is being compiled for. Conforming to the platform ABI rather than
-// inventing one is what lets clang and cl be oracles at the object level:
-// these names can be diffed against theirs, and objects can be linked with
-// theirs. Everything here was checked against
-//
-//   clang++ -target x86_64-linux-gnu       (Itanium, Linux and Darwin)
-//   clang++ -target x86_64-pc-windows-msvc (Microsoft)
-//
-// rather than read off a description of the ABI.
-//
-// Each returns false and fills 'problem' when a type has no name to give -
-// an unnamed class is the case that turns up - so the caller can refuse at
-// the declaration with a position rather than emit something that will not
-// link.
-// 'internal' is what 'static' at file scope makes a function. Itanium says so
-// in the name, with an L after the _Z; the Microsoft ABI does not distinguish
-// them, and takes the flag only so the two can be called the same way.
+// The linkage name of something with C++ linkage, in the platform's own ABI -
+// which is what lets clang and cl be oracles at the object level; every rule was
+// measured. `internal` is `static`: Itanium writes an L for it, Microsoft not.
 bool itaniumFunctionName(const std::string &name, const Type *fn, bool internal,
                          std::string *out, std::string *problem);
 
 // TemplateArg lives in Type.h: a specialization carries its arguments.
 
-// A function template specialization. The two ABIs want two different things
-// here and the difference is not cosmetic:
-//
-// **Itanium is given the template's PATTERN** - `T twice(T)`, with the
-// parameters still in it as Kind::TemplateParam - because the name it writes
-// spells `T_` where the parameter came from a template parameter, and the
-// substituted signature has lost all record of that. It also encodes a return
-// type, which an ordinary function's name does not. Measured:
-// `_Z5twiceIiET_S0_`, and `_Z2f4IiEvT_S0_` for `void f4(T, T)`, whose second
-// `T_` is `S0_` and not `S_` - the template *name* is substitution candidate
-// zero.
-//
-// **Microsoft is given the substituted signature**, which is what it spells:
-// `??$twice@H@@YAHH@Z` writes H for the return type where Itanium writes T_.
-// Its template-id carries back-reference tables of its own - measured with
-// cl on `??$same@US@@@@YA?AUS@@U0@`, where the parameter's name
-// back-reference 0 is the S the *return type* pushed, not the S written
-// inside the argument list.
+// A function template specialization, where the two ABIs want different things.
+// **Itanium is given the template's pattern**, since it spells `T_` and encodes
+// a return type; **Microsoft the substituted signature**, with tables of its own.
 bool itaniumTemplateFunctionName(const std::string &name, const Type *pattern,
                                  const std::vector<TemplateArg> &args,
                                  bool internal,
@@ -55,25 +25,14 @@ bool microsoftTemplateFunctionName(const std::string &name, const Type *fn,
                                    const std::vector<TemplateArg> &args,
                                    std::string *out, std::string *problem);
 
-// The Itanium name of a type's `std::type_info` object: `_ZTI` and then the
-// type, spelled exactly as it is spelled in a signature - `_ZTIi`, `_ZTId`.
-// For a *fundamental* type the object itself lives in the standard library,
-// so naming it is all a compiler has to do; for anything else the compiler
-// has to emit the object too, and this refuses those by name.
+// The Itanium name of a type's `std::type_info`: `_ZTI` and then the type as a
+// signature spells it. For a fundamental type the object lives in the standard
+// library, so naming it is all there is; anything else is refused by name.
 bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem);
 
-// **What the Microsoft ABI wants before it will let you throw**: not one
-// pointer but a chain of four objects, each naming the next.
-//
-//   _TI1H          the ThrowInfo the runtime is handed
-//   _CTA1H         the array of types this exception can be caught as
-//   _CT??_R0H@84   one catchable type: its descriptor, its size, how to copy
-//   ??_R0H@8       the RTTI type descriptor, whose name is '.' and the type
-//
-// All four are measured from cl. `decorated` is what goes in the descriptor -
-// `.H` for int - and `size` is the object's, which the catchable type
-// carries. Refuses anything but a fundamental type, for the same reason the
-// Itanium side does: a class would need a descriptor cxx1 does not emit.
+// **What the Microsoft ABI wants before it will let you throw**: not one pointer
+// but a chain of four objects each naming the next - _TI1H, _CTA1H,
+// _CT??_R0H@84, ??_R0H@8 - measured from cl. Fundamental types only.
 struct MicrosoftThrow {
     std::string descriptor;
     std::string catchable;
@@ -88,20 +47,9 @@ bool microsoftThrowNames(const Type *t, int size, MicrosoftThrow *out,
 bool microsoftFunctionName(const std::string &name, const Type *fn, bool internal,
                            std::string *out, std::string *problem);
 
-// A non-static member function. Both ABIs spell the class into the name, and
-// both record whether `this` is const - Itanium with a K after the _ZN,
-// Microsoft with a B where a non-const one has an A.
-//
-// **The Microsoft name carries the access and the Itanium name does not**,
-// which is measured rather than assumed: Q is public, I protected, A private,
-// and clang writes ?priv@C@@AEAAHXZ for a private member of C. So a member
-// that changes from private to public changes its symbol on Windows and keeps
-// it on Linux.
-// `clsType` is the class's own Type, and the Itanium mangler needs it for the
-// substitution table: the class spelled in the nested-name prefix is candidate
-// zero, so a parameter that mentions the class again is S_ - measured,
-// _ZN1X1mERKS_ where spelling it out gives _ZN1X1mERK1X, which clang does not
-// write. The Microsoft mangler repeats names by index and needs nothing.
+// A non-static member function. Both ABIs spell the class in and record a const
+// `this`; **the Microsoft name carries the access and the Itanium one does not**.
+// `clsType` feeds Itanium's substitution table, where the class is candidate S_.
 bool itaniumMemberName(const std::string &cls, const Type *clsType,
                        const std::string &name,
                        const Type *fn, bool constThis,
@@ -112,21 +60,9 @@ bool microsoftMemberName(const std::string &cls, const Type *clsType,
                          const Type *fn, char access, bool constThis,
                          std::string *out, std::string *problem);
 
-// A member function of a class defined inside a function body. Both ABIs spell
-// it by wrapping the *enclosing function's whole name* round the ordinary one,
-// which is what keeps two functions' `struct L` apart in one object file.
-// `owner` is that function's linkage name. All of it measured:
-//
-//   _ZZ1fvEN1L3getEv          Itanium: _ZZ <function> E <the ordinary entity>
-//   ?get@L@?1??f@@YAHXZ@QEAAHXZ   Microsoft: ?1? and the whole name, as a scope
-//
-// **Two owners do not look like the rest and both are ordinary in real code.**
-// A function with no decorated name - `main`, or anything `extern "C"` - is
-// written by Itanium as a plain length-and-letters component (`4main`, no _Z to
-// take off) and by Microsoft as `?main@@9`, the `9` being its way of saying a
-// name carries no type information. A `static` function needs nothing special:
-// its Itanium name is `_ZL4stati` and the L simply comes along inside the
-// wrapper, `_ZZL4statiEN1A3getEv`.
+// A member function of a class defined inside a function body: both ABIs wrap the
+// enclosing function's whole name round the ordinary one, `owner` being that
+// name. One with no decorated name is `4main` to Itanium and `?main@@9` to cl.
 bool itaniumLocalMemberName(const std::string &owner, const std::string &cls,
                             const Type *clsType, const std::string &name,
                             const Type *fn, bool constThis,
@@ -137,14 +73,9 @@ bool microsoftLocalMemberName(const std::string &owner, const std::string &cls,
                               const Type *fn, char access, bool constThis,
                               std::string *out, std::string *problem);
 
-// A constructor. **Itanium gives one constructor two names** - C1 for a
-// complete object and C2 for a base subobject - and clang emits both. Only C1
-// is spelled here, because C2 is called from a derived class's constructor and
-// there is no inheritance yet - but both are emitted anyway, C2 as a second
-// label in front of C1's body, because an object file missing one is not the
-// object file clang produces. Which one a construction *calls* was measured by
-// reading the call: C1. The Microsoft ABI has one name, ??0, and writes '@' where a
-// member function writes its return type.
+// A constructor. **Itanium gives one constructor two names** - C1 complete and C2
+// base - and clang emits both, so both are emitted here though only C1 is spelled.
+// Microsoft has one, ??0, writing '@' where a member function writes its return.
 bool itaniumConstructorName(const std::string &cls, const Type *clsType,
                             const Type *fn,
                             bool complete, std::string *out, std::string *problem);
@@ -153,10 +84,9 @@ bool microsoftConstructorName(const std::string &cls, const Type *clsType,
                               const Type *fn, char access,
                               std::string *out, std::string *problem);
 
-// A destructor. The same two-name split as a constructor - D1 complete, D2
-// base - and the same reason for emitting both. Microsoft writes ??1. There is
-// also a D0, the deleting destructor, which belongs to polymorphic delete and
-// so to rung 4; clang emits none here.
+// A destructor: the same two-name split as a constructor, D1 complete and D2
+// base, emitted for the same reason. Microsoft writes ??1. D0, the deleting
+// destructor, belongs to polymorphic delete and so to rung 4.
 bool itaniumDestructorName(const std::string &cls, const Type *clsType,
                            bool complete, std::string *out);
 
@@ -172,15 +102,9 @@ std::string itaniumDeletingDestructorName(const std::string &cls,
 std::string microsoftDeletingDestructorName(const std::string &cls,
                                             const Type *clsType);
 
-// The copy assignment operator, the one operator this compiler names so far.
-// Itanium spells `operator=` as the two-letter code `aS` where a member
-// function writes its name's length and letters, and writes no return type;
-// Microsoft replaces the whole `?name@` with `??4` and - unlike a constructor,
-// which writes a bare '@' there - does write the return type. Both measured,
-// cl first: ??4Poly@@QEAAAEAU0@AEBU0@@Z and _ZN4PolyaSERKS_.
-//
-// One operator and not a table of them: the rest arrive with operator
-// overloading, and until then `operator` is refused by name.
+// The copy assignment operator. Itanium spells `operator=` as the code `aS` and
+// writes no return type; Microsoft replaces `?name@` with `??4` and does write
+// one. Measured, cl first: ??4Poly@@QEAAAEAU0@AEBU0@@Z and _ZN4PolyaSERKS_.
 bool itaniumCopyAssignName(const std::string &cls, const Type *clsType,
                            const Type *fn, std::string *out, std::string *problem);
 
@@ -188,14 +112,9 @@ bool microsoftCopyAssignName(const std::string &cls, const Type *clsType,
                              const Type *fn, char access,
                              std::string *out, std::string *problem);
 
-// A static data member: one object shared by the class rather than one per
-// object, and so a global that the class gave its name to. Itanium spells it
-// like a member function without the parameters and without any note of the
-// access - `_ZN1C3pubE` whether it is public or private. Microsoft writes the
-// access as a **digit** where a member function writes a letter, measured with
-// cl: 2 public, 1 protected, 0 private, and then the type exactly as a
-// namespace-scope variable has it - `?pub@C@@2HA`, `?priv@C@@0HA`,
-// `?k@S@@2HB` for a const one.
+// A static data member: a global the class gave its name to. Itanium spells it
+// like a member function without the parameters and without the access;
+// Microsoft writes the access as a digit - 2 public, 1 protected, 0 private.
 std::string itaniumStaticMemberName(const std::string &cls, const Type *clsType,
                                     const std::string &name);
 
@@ -213,7 +132,6 @@ bool microsoftDataName(const std::string &name, const Type *t,
 std::string itaniumDataName(const std::string &name, bool internal);
 
 // A class's vtable, by tag. The tag may carry namespaces - "N::B" - which both
-// ABIs write as a scope list rather than as part of the name, so the two
-// call sites in the parser cannot just concatenate. Measured: `N::B` is
-// `_ZTVN1N1BE` and `??_7B@N@@6B@`.
+// ABIs write as a scope list rather than part of the name, so the parser's two
+// call sites cannot concatenate. Measured: `_ZTVN1N1BE` and `??_7B@N@@6B@`.
 std::string vtableSymbol(const std::string &tag, bool microsoft);

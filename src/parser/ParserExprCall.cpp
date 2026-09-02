@@ -1,10 +1,6 @@
-// The parser: calls, and what a call has to do to its arguments.
-//
-// Reading an argument list, filling in defaults, copying a by-value class
-// parameter, and the full expression's temporaries. Member calls are here as
-// well, with the access checks they answer to: `obj.f(1)` is an ordinary call
-// once the object's address is in front of the written arguments, and this is
-// where that happens.
+// The parser: calls, and what a call has to do to its arguments. Reading an
+// argument list, filling in defaults, copying a by-value class parameter, the
+// full expression's temporaries, and the member calls that lower to all of that.
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
@@ -17,10 +13,9 @@
 void Parser::parseArguments(std::vector<ExprPtr> &args) {
     if (consume(")")) return;
     for (;;) {
-        // **`rest...` - one thing written, one argument per member.** The
-        // names were made when the parameter list expanded, so this is a
-        // lookup and not a substitution: whatever `rest$0` and `rest$1` are
-        // now, that is what goes here.
+        // **`rest...` - one thing written, one argument per member.** The names
+        // were made when the parameter list expanded, so this is a lookup and not
+        // a substitution: whatever `rest$0` and `rest$1` are now is what goes.
         if (peek().kind == TokenKind::Ident && peekAt(1).is("...")) {
             auto pk = packs_.find(peek().text);
             if (pk != packs_.end() && !pk->second.names.empty()) {
@@ -50,10 +45,9 @@ void Parser::parseArguments(std::vector<ExprPtr> &args) {
     }
 }
 
-// **Split from completeCall so that overload resolution can stand between
-// them.** Choosing a function needs the arguments, and converting the
-// arguments needs the function, so the two cannot happen in one pass. A call
-// through a function pointer has nothing to choose and still comes here.
+// **Split from completeCall so that overload resolution can stand between them.**
+// Choosing a function needs the arguments and converting them needs the function,
+// so the two cannot be one pass. A call through a pointer still comes here.
 ExprPtr Parser::finishCall(const std::string &name, const std::string &symbol,
                            ExprPtr callee, const Type *returns,
                            const std::vector<const Type *> &params,
@@ -64,26 +58,9 @@ ExprPtr Parser::finishCall(const std::string &name, const std::string &symbol,
                         variadic, pos, std::move(args));
 }
 
-// The caller's half of passing a class by value: a temporary in this frame,
-// the copy constructor run into it, and its address handed over. The whole
-// thing is one expression - `(ctor(&tmp, arg), &tmp)` - so it needs no
-// statement to sit in and works wherever a call does.
-//
-// The temporary belongs to the caller on the Itanium targets, which is also
-// who destroys it. The Microsoft ABI puts that on the callee; see
-// docs/CONFORMANCE.md, which records the difference and what it costs.
-// The end of a full expression, where the temporaries it made are destroyed,
-// in the reverse of the order they were made. The value has to be put
-// somewhere first, because the destructors run between the expression and its
-// value being used: `(r = <expr>, ~T(&tmp), r)`.
-//
-// Called from the places an expression becomes a statement or a condition. A
-// site that forgets to call it does not lose the destructor - the temporary
-// stays on the list and goes at the next full expression - so the failure
-// mode is late rather than absent.
-// The same end-of-full-expression rule where the expression has already
-// become statements - a declaration's initialiser - so there is no value to
-// carry past the destructors and they are simply appended.
+// The caller's half of passing a class by value - a temporary, the copy run into
+// it, its address handed over, all one expression - and below it the end of a full
+// expression, where those temporaries are destroyed in the reverse of their order.
 void Parser::flushTemporaries(std::vector<StmtPtr> &into) {
     if (pendingTemps_.empty()) return;
     std::vector<std::pair<int, const Type *> > mine;
@@ -142,26 +119,16 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
                                 const std::string &what,
                                 std::vector<std::pair<int, const Type *> > &destroy) {
     const Type *cls = type->unqualified();
-    // **A by-value parameter is initialised from the argument, so anything
-    // that is not an lvalue moves into it.** [dcl.init]/17 makes this
-    // ordinary initialisation and overload resolution over the constructors,
-    // which picks the move for an xvalue and for a prvalue alike; this path
-    // predates rvalue references and reaches for the copy by name, so the
-    // choice is made here instead. Without it `take(static_cast<S &&>(e))`
-    // copies, silently, and `e` is left untouched where C++ says it has been
-    // emptied - and `take(make())`, a temporary, insists on the copy
-    // constructor of a class that may not have one to spare.
+    // **A by-value parameter is initialised from the argument, so anything that is
+    // not an lvalue moves into it.** This path predates rvalue references and
+    // reaches for the copy by name, so the choice is made here instead.
     const Signature *cc = nullptr;
     if (!isLvalue(*arg)) cc = moveConstructorOf(cls);
     if (cc == nullptr) cc = copyConstructorOf(cls);
 
-    // **[dcl.init]/17 makes this copy-initialization, so the constructor it
-    // picks may not be `explicit`.** A by-value parameter is the third place
-    // that rule bites, after `S b = a;` and `return s;` - and the least
-    // obvious of the three, since nothing at the call site is written with an
-    // `=` in it. The check is here rather than in overload resolution because
-    // the copy is not a candidate set: this path reaches for the copy or move
-    // constructor by name.
+    // **[dcl.init]/17 makes this copy-initialization, so the constructor it picks
+    // may not be `explicit`** - the third place that rule bites and the least
+    // obvious, nothing at the call site being written with an `=` in it.
     if (cc != nullptr && cc->isExplicit)
         src_.fail(pos, what + " is a '" + cls->describe() + "' passed by "
                        "value, which copy-initialises it from the argument - "
@@ -169,12 +136,9 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
                        "class copies with. Take it by reference, or make the "
                        "copy constructor not explicit");
 
-    // **A class that declares a move constructor cannot be passed by value
-    // from an lvalue.** [class.copy]/7 deletes its implicit copy constructor,
-    // and here that deletion is an absence - no copy was ever declared - so
-    // without this the byte path below would answer for it, silently, and
-    // two objects would own one resource. An xvalue or a temporary took the
-    // move above and never reaches this.
+    // **A class that declares a move constructor cannot be passed by value from an
+    // lvalue**: [class.copy]/7 deletes its implicit copy constructor, and here that
+    // deletion is an absence, which the byte path below would answer for.
     if (cc == nullptr) {
         const Signature *mv = moveConstructorOf(cls);
         if (mv != nullptr && !mv->implicit)
@@ -187,11 +151,9 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
                            "constructor");
     }
 
-    // **A class that only has a destructor still goes by address on Itanium**,
-    // and the copy the caller makes for it is a move of bytes rather than a
-    // call - there is no copy constructor, because copying it is trivial. What
-    // is not trivial is destroying it, which is why it travels this way at
-    // all.
+    // **A class that only has a destructor still goes by address on Itanium**, and
+    // the caller's copy is a move of bytes rather than a call, copying it being
+    // trivial. What is not trivial is destroying it, which is why it travels so.
     if (cc == nullptr) {
         checkAssignable(*arg, cls, pos, what);
         const int plain = allocateFrameSlot(cls);
@@ -224,10 +186,9 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
     if (destructorOf(cls) != nullptr)
         destroy.push_back(std::make_pair(tmp, cls));
 
-    // **Elision, where the argument is already one of these coming back
-    // through a hidden pointer.** The call can build its result straight into
-    // the temporary this argument needs, and then no copy constructor runs at
-    // all - which is what clang does at -O0 and what C++11 permits.
+    // **Elision, where the argument is already one of these coming back through a
+    // hidden pointer.** The call builds its result straight into the temporary this
+    // argument needs, so no copy constructor runs - as clang does at -O0.
     if (Call *made = dynamic_cast<Call *>(arg.get())) {
         if (made->type() == cls && returnsIndirectly(cls, made->hasThis())) {
             made->setResultSlot(tmp);
@@ -278,10 +239,9 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
                        std::to_string(params.size()) + " argument(s), given " +
                        std::to_string(args.size()));
 
-    // **A call through a pointer promises nothing.** The specification is not
-    // part of the type in C++11, so a `int (*)()` says nothing about whether
-    // what it points at throws - and `noexcept(p())` is false for every
-    // function pointer, which is what clang answers too.
+    // **A call through a pointer promises nothing.** The specification is not part
+    // of the type in C++11, so `noexcept(p())` is false for every function pointer,
+    // which is what clang answers too.
     if (callee != nullptr) mayThrow_++;
 
     // Temporaries this call makes for its by-value class arguments, and which
@@ -298,11 +258,9 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
             args[i] = bindReference(params[i], std::move(args[i]), pos, what);
             continue;
         }
-        // **A class whose copy is a constructor call is copied by the
-        // caller**, into a temporary the caller owns, and what the callee
-        // receives is that temporary's address. Measured on all three
-        // targets: clang and cl each emit the copy constructor at the call
-        // site and then pass a pointer.
+        // **A class whose copy is a constructor call is copied by the caller**,
+        // into a temporary the caller owns, and the callee receives its address.
+        // Measured on all three targets: clang and cl copy at the call site.
         if (passedByAddress(params[i])) {
             args[i] = materialiseCopy(params[i], std::move(args[i]), pos, what,
                                       destroy);
@@ -328,12 +286,9 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
     ExprPtr n(call);
     n->setType(returns);
 
-    // **The caller destroys the copies it made** - measured from clang, which
-    // emits the destructor of the argument temporary in the caller. The
-    // Microsoft ABI puts that on the callee instead; docs/CONFORMANCE.md has
-    // the difference and what it costs. They are handed to the full
-    // expression rather than destroyed here, because that is when the
-    // standard says they go.
+    // **The caller destroys the copies it made** - measured from clang. The
+    // Microsoft ABI puts that on the callee; docs/CONFORMANCE.md has the cost.
+    // They go to the full expression, which is when the standard destroys them.
     if (!target_.microsoftNames())
         for (std::size_t k = 0; k < destroy.size(); k++)
             pendingTemps_.push_back(destroy[k]);
@@ -344,10 +299,9 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
     return useReference(std::move(n));
 }
 
-// A call through an object: `p.move(1, 2)`. The object's address goes in front
-// of the written arguments and the declared parameters gain a matching leading
-// pointer, so from here down it is an ordinary call - arity, conversions and
-// the backends all see what they already knew how to handle.
+// A call through an object: `p.move(1, 2)`. The object's address goes in front of
+// the written arguments and the declared parameters gain a matching leading
+// pointer, so from here down it is an ordinary call.
 const Type *Parser::findMemberOwner(const Type *cls,
                                     const std::string &name) const {
     if (cls == nullptr) return nullptr;
@@ -366,23 +320,17 @@ ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
     return memberCallWith(std::move(object), cls, name, pos, std::move(args));
 }
 
-// The same call with its arguments already in hand. **An overloaded operator
-// is what split this in two**: `a + b` has parsed its right operand long
-// before it knows there is a call here at all, so the arguments cannot come
-// off the token stream the way `a.f(b)` takes them.
+// The same call with its arguments already in hand. **An overloaded operator is
+// what split this in two**: `a + b` has parsed its right operand long before it
+// knows there is a call here, so the arguments cannot come off the token stream.
 ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
                                const std::string &name, std::size_t pos,
                                std::vector<ExprPtr> args) {
     const Type *plain = cls->unqualified();
 
-    // **A member function is looked for up the base chain**, unlike a data
-    // member, which the layout already copied down. The two are asymmetric on
-    // purpose: a member lives at an offset and can be copied, a function lives
-    // under a name and cannot be without inventing a second symbol for it.
-    //
-    // The first class that has the name wins outright - the derived class's
-    // set hides the base's rather than joining it, which is [class.member.
-    // lookup] and the reason a derived `f(int)` stops `f()` from being found.
+    // **A member function is looked for up the base chain**, unlike a data member,
+    // which the layout copied down: a member lives at an offset and a function
+    // under a name. The first class with the name wins - [class.member.lookup].
     const Type *owner = findMemberOwner(plain, name);
     if (owner == nullptr) owner = plain;
     std::string key = owner->tag() + "::" + name;
@@ -410,10 +358,9 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
     const Type *pointee = sig.constThis ? types_.withConst(self) : self;
     const Type *thisType = types_.pointerTo(pointee);
 
-    // **`this` is the base's address, not the object's**, and those differ
-    // once a class has a second base: B sits at offset 4 in C, so B's member
-    // functions expect &c + 4. convert() knows how to move a pointer to a
-    // base, so the address is built as a Derived * and handed to it.
+    // **`this` is the base's address, not the object's**, and they differ once a
+    // class has a second base: B sits at offset 4 in C, so B's member functions
+    // expect &c + 4. convert() moves a pointer to a base, so it is built as one.
     ExprPtr addr(new Unary('&', std::move(object)));
     addr->setType(types_.pointerTo(plain));
     if (owner != plain) addr = convert(std::move(addr), thisType);
@@ -424,10 +371,8 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
     for (std::size_t i = 0; i < sig.params.size(); i++) full.push_back(sig.params[i]);
 
     // **A virtual call reads the slot rather than naming the function.** The
-    // object's first word is the vptr; the slot is at a fixed index, the same
-    // index in every class in the chain, which is what the table's ordering
-    // bought. Everything below the load is an ordinary indirect call - the
-    // machinery a call through a function pointer already used.
+    // object's first word is the vptr and the slot is at the same index in every
+    // class of the chain; below the load it is an ordinary indirect call.
     ExprPtr callee;
     ExprPtr keepAddress;
     if (sig.isVirtual) {
@@ -449,10 +394,9 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
         const Type *fnPtr = types_.pointerTo(fnType);
         const Type *table = types_.pointerTo(fnPtr);       // what the vptr is
 
-        // **The address is needed twice** - once to read the vptr out of the
-        // object, once as the `this` argument - and an expression is used up
-        // when it is moved. So it goes into a slot first and both readers name
-        // that, which is the shape bindReference and `new` already use.
+        // **The address is needed twice** - to read the vptr out of the object and
+        // as the `this` argument - and an expression is used up when it is moved.
+        // So it goes into a slot and both readers name that, as `new` does.
         int slot = allocateFrameSlot(thisType);
         std::string temp = ".vc" + std::to_string(refTemps_++);
 
@@ -489,10 +433,9 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
     all.push_back(std::move(addr));
     for (std::size_t i = 0; i < args.size(); i++) all.push_back(std::move(args[i]));
 
-    // The object's address went in front of the written arguments a few lines
-    // up, which is what makes this an ordinary call from here down - and what
-    // the Microsoft ABI has to be told about, since it puts a hidden return
-    // pointer after `this` rather than in front of it.
+    // The object's address went in front of the written arguments a few lines up,
+    // which is what makes this an ordinary call from here down - and what the
+    // Microsoft ABI has to be told, its hidden return pointer following `this`.
     ExprPtr call = completeCall(name, sig.symbol, std::move(callee), sig.returns,
                                 full, sig.variadic, pos, std::move(all), true);
     if (keepAddress == nullptr) return call;
@@ -506,13 +449,8 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
 }
 
 // [class.access]: a member that is not public may be named only from inside the
-// class. There is no inside yet - member functions are the next step of this
-// rung - so from here every non-public member is out of reach, which is exactly
-// what a class with private data and no member functions means.
-// [class.friend]: is the function whose body is being read one this class
-// granted access to? Asked by every access check, beside the question about
-// being inside the class - the two are the only ways past a private member,
-// and they are asked in the same breath everywhere.
+// class - and [class.friend], by a function the class granted access to. Those two
+// are the only ways past a private member, and are asked in the same breath.
 bool Parser::isFriendOf(const Type *cls) const {
     if (cls == nullptr || currentFunction_.empty()) return false;
     std::map<std::string, std::vector<std::string> >::const_iterator it =
@@ -524,13 +462,8 @@ bool Parser::isFriendOf(const Type *cls) const {
 }
 
 // **A lambda has the access of the function it was written in** -
-// [expr.prim.lambda]/7 gives the closure's call operator the context's access.
-// Inside one, `currentClass_` is the closure, so without this a lambda in a
-// member function could not read its own class's privates. Both access checks
-// ask this rather than comparing `currentClass_` themselves, because they had
-// already drifted apart once: the data-member check learned about closures and
-// the member-function one did not, so a private field was readable from a
-// lambda and a private method was not.
+// [expr.prim.lambda]/7. Inside one `currentClass_` is the closure, and both access
+// checks ask this rather than comparing it themselves, having drifted apart once.
 bool Parser::insideAccessOf(const Type *cls) const {
     if (cls == nullptr || currentClass_ == nullptr) return false;
     const Type *want = cls->unqualified();

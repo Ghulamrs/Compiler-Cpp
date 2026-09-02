@@ -1,9 +1,6 @@
-// The parser: statements, and the top level.
-//
-// Declarations as statements, every control-flow statement including try and
-// the range-based for, the goto labels resolved at the end of a function, and
-// above them the top level that reads a translation unit and the parse() that
-// drives the whole thing.
+// The parser: statements, and the top level. Declarations as statements, every
+// control-flow statement including try and the range-based for, the goto labels
+// resolved at a function's end, and the top level that reads a translation unit.
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
@@ -30,10 +27,9 @@ StmtPtr Parser::declarationBody() {
         do {
             Declared td = declarator(base);
             typedefFunctionSuffix(td);
-            // [dcl.typedef]/2 lets a typedef-name be redeclared to the same
-            // type, which is what makes the C idiom "typedef struct S S;"
-            // legal now that the tag already names the type by itself. Only a
-            // redeclaration to a *different* type is an error.
+            // [dcl.typedef]/2 lets a typedef-name be redeclared to the same type,
+            // which is what makes the C idiom "typedef struct S S;" legal now that
+            // the tag names the type by itself. Only a different type is an error.
             if (const Type *had = findTypedef(td.name))
                 if (had != td.type)
                     src_.fail(td.pos, "'" + td.name + "' is typedefed twice, "
@@ -74,17 +70,9 @@ StmtPtr Parser::declarationBody() {
         Declared d = declarator(base);
         if (mentionsDeduced(d.type)) d.type = deduceAuto(d.type, d.name, d.pos);
 
-        // An object of a class that declares constructors is built by calling
-        // one, and that has to be asked before the branch below - `Point p(1)`
-        // and a function declaration look the same until the type is known to
-        // be a class with constructors.
-        // **An array of a class with constructors.** The branch below asks
-        // isStructOrUnion(), and an array of S is an array - so `S a[4]` fell
-        // through to an ordinary uninitialised local and every element held
-        // whatever was on the stack. It compiled, linked and ran, which made
-        // it the one construction that was silently not happening: a member
-        // array is built by the memberwise path and `new T[n]` is refused by
-        // name, and only this had nothing at all.
+        // An object of a class with constructors is built by calling one, asked before
+        // the branch below - `Point p(1)` and a function declaration look alike until
+        // the type is known. **And an array of one**, which used to fall through.
         {
             const Type *elem = d.type;
             while (elem != nullptr && elem->isArray()) elem = elem->pointee();
@@ -101,14 +89,9 @@ StmtPtr Parser::declarationBody() {
                                      plain->describe() + "' is not supported "
                                      "yet - each element gets the default "
                                      "constructor");
-                // **Destruction is refused rather than half-built.**
-                // [class.dtor] destroys the elements in reverse, and the place
-                // that emits a scope's destructors is shared with the
-                // exception paths on all three targets. One object per entry
-                // is what it knows; teaching it a count belongs with that
-                // machinery and not beside a declaration. Refused by name here
-                // so that nothing is silently left undestroyed - which is the
-                // failure this whole branch exists to stop.
+                // **Destruction is refused rather than half-built.** [class.dtor]
+                // destroys the elements in reverse, and the shared code that emits a
+                // scope's destructors knows one object per entry and not a count.
                 if (destructorOf(plain) != nullptr)
                     src_.fail(d.pos, "an array of '" + plain->describe() +
                                      "' is not supported yet because it has a "
@@ -131,15 +114,9 @@ StmtPtr Parser::declarationBody() {
                 src_.fail(d.pos, "'" + d.name + "' is static and has a "
                                  "constructor - running one before main is not "
                                  "supported yet");
-            // **A braced initialiser, and the two different answers it
-            // has.** [dcl.init.aggr]/1 in C++11 says a class with a member
-            // initialiser is *not* an aggregate, so `S s = {1, 2}` on one is
-            // ill-formed here and legal from C++14 - a rule this compiler has
-            // to keep on the C++11 side of, and the only place where having
-            // written member initialisers changes what an older program
-            // means. Where the class wrote none, the braces are asking for
-            // list-initialisation through a constructor, which is C++11 and
-            // simply is not built yet.
+            // **A braced initialiser, and the two different answers it has.**
+            // [dcl.init.aggr]/1 in C++11 makes a class with a member initialiser no
+            // aggregate; where it wrote none, the braces want C++11 list-init.
             if (peek().is("{") || (peek().is("=") && peekAt(1).is("{"))) {
                 if (hasMemberInitialiser(d.type->tag()))
                     src_.fail(d.pos, "'" + d.type->describe() + "' writes an "
@@ -166,31 +143,21 @@ StmtPtr Parser::declarationBody() {
                                      ";' for the default constructor");
                 parseArguments(args);
             } else if (consume("=")) {
-                // **Copy-initialisation.** `X b = a;` is a constructor called
-                // with one argument, chosen by the ordinary overload rules -
-                // the copy constructor for an `X`, a converting constructor
-                // for anything else. What separates it from `X b(a);` is that
-                // an `explicit` constructor may not be picked here, which
-                // `constructLocal` is told below.
+                // **Copy-initialisation.** `X b = a;` is a constructor called with one
+                // argument, chosen by the ordinary overload rules. What separates it
+                // from `X b(a);` is that an `explicit` constructor may not be picked.
                 copyInit = true;
                 args.push_back(assign());
             }
 
-            // **An elided copy still needs a copy constructor that may be
-            // chosen.** [class.copy]/31 selects and checks the constructor
-            // even where the copy itself is elided, so `S b = make();` is
-            // refused when S's copy constructor is `explicit` though nothing
-            // would have called it. Checked here because the two branches
-            // below - copy elision and the trivial-copy store - both reach
-            // past `constructLocal`, which is where the rule otherwise lives.
+            // **An elided copy still needs a copy constructor that may be chosen.**
+            // [class.copy]/31 selects and checks it even where the copy itself is
+            // elided. Checked here: both branches below reach past `constructLocal`.
             if (copyInit && args.size() == 1 && args[0]->type() != nullptr &&
                 args[0]->type()->unqualified() == d.type->unqualified()) {
-                // The constructor the rule checks is the one resolution would
-                // pick: the move for a source that is not an lvalue and has
-                // one to be picked, the copy otherwise. An explicit copy
-                // beside a plain move does not make `S b = make();`
-                // ill-formed - the move is chosen, and it is the move's
-                // explicit-ness that would matter.
+                // The constructor the rule checks is the one resolution would pick:
+                // the move for a source that is not an lvalue and has one, the copy
+                // otherwise. An explicit copy beside a plain move does not bite.
                 const Signature *mc = moveConstructorOf(d.type->unqualified());
                 const Signature *sel = !isLvalue(*args[0]) && mc != nullptr
                                      ? mc
@@ -210,37 +177,15 @@ StmtPtr Parser::declarationBody() {
             int off = declare(d.name, d.type, d.pos);
             locals_.back().guardsJump = true;
 
-            // **Copy elision, in the one case worth having it.** When the
-            // initialiser is a call that already returns one of these through
-            // a hidden pointer, the object is built straight into this
-            // variable and no copy constructor runs at all. clang does this at
-            // -O0 on both Itanium targets; cl at /O0 makes the copy instead,
-            // and C++11 permits either - which is why a case that counts
-            // constructor calls cannot have one recorded output for all three
-            // machines, and why the suite's cases do not count them.
+            // **Copy elision, in the one case worth having it**: where the initialiser
+            // is a call already returning through a hidden pointer, the object is built
+            // straight into this variable. clang does it at -O0, cl does not; both may.
             Call *made = args.size() == 1 && d.type->nonTrivialCopy()
                        ? dynamic_cast<Call *>(args[0].get()) : nullptr;
 
-            // **A trivial copy, in a class that does have constructors.** No
-            // copy constructor was declared for it, because copying it is a
-            // move of bytes and cl and clang both emit no function for one -
-            // so there is nothing for overload resolution to find, and what
-            // the standard asks for here is those bytes.
-            // **A class that declares a move constructor has no trivial
-            // copy**, and reading this branch as though it did is how a
-            // move-only class came to be copied byte for byte.
-            // [class.copy]/7: declaring a move constructor *deletes* the
-            // implicit copy. Here the copy was never declared either, which
-            // looks the same to `copyConstructorOf` and means something
-            // entirely different - so the byte path answered, the move
-            // constructor never ran, and two objects owned one resource.
-            //
-            // With the move constructor in the way, the initialisation goes
-            // through `constructLocal` and overload resolution picks between
-            // the constructors the class actually has: the move for an
-            // xvalue, and nothing at all for an lvalue - which is the
-            // deletion, and is refused just below rather than left to a
-            // resolution failure that would name the wrong reason.
+            // **A trivial copy, in a class that does have constructors** - none was
+            // declared for it and the standard asks for the bytes. **But a class that
+            // declares a move has no trivial copy**, and reading it so copied one.
             const Signature *mover = moveConstructorOf(d.type->unqualified());
             const bool sameClass =
                 args.size() == 1 && args[0]->type() != nullptr &&
@@ -281,18 +226,9 @@ StmtPtr Parser::declarationBody() {
             continue;
         }
 
-        // **`X q(p);` where X has no constructor at all.** Its copy is
-        // trivial, so there is no constructor to call and none was declared -
-        // what the standard asks for here is the bytes, which is the struct
-        // assignment the backends already emit. This is the lowering trade
-        // again: an operation that exists is cheaper than a fourth thing for
-        // three code generators to know about.
-        //
-        // A parameter list begins with a type name and this does not, which is
-        // what tells `X q(p);` from a function declaration. The same question
-        // is asked above for a class that does have constructors; here it is
-        // asked the other way round because there is no overload set to
-        // resolve against.
+        // **`X q(p);` where X has no constructor at all.** Its copy is trivial, so what
+        // the standard asks for is the bytes - the struct assignment the backends
+        // already emit. A parameter list begins with a type name and this does not.
         if (peek().is("(") && d.type->isStructOrUnion() && sc != StorageStatic) {
             const std::size_t save = at_;
             at_++;
@@ -425,12 +361,9 @@ StmtPtr Parser::declarationBody() {
                              "initialiser - there is nothing for it to be");
         }
 
-        // **An object with a destructor is alive from here**, whether or not
-        // it had a constructor to run. A class can have one and not the
-        // other, and before implicit destructors existed nothing but the
-        // constructor path ever added to this list - so a class with a member
-        // that needed destroying and no constructor of its own was destroyed
-        // by nobody.
+        // **An object with a destructor is alive from here**, whether or not it had a
+        // constructor to run. Before implicit destructors existed only the constructor
+        // path added to this list, so such a class was destroyed by nobody.
         if (destructorOf(d.type) != nullptr)
             alive_.push_back(Alive{ d.name, off, d.type->unqualified() });
 
@@ -446,9 +379,8 @@ StmtPtr Parser::declarationBody() {
 }
 
 // **A declaration followed by `:` rather than `;`.** Telling that from
-// `for (int x = a ? b : c; ...)` is the whole difficulty: a `?` claims the
-// next `:`, so they are counted. `::` is one token from the lexer and cannot
-// be mistaken for this one.
+// `for (int x = a ? b : c; ...)` is the whole difficulty: a `?` claims the next `:`,
+// so they are counted. `::` is one token from the lexer and cannot be mistaken.
 bool Parser::atRangeFor() const {
     int depth = 0;
     int question = 0;
@@ -471,16 +403,9 @@ bool Parser::atRangeFor() const {
     }
 }
 
-// **[stmt.ranged] is a rewrite, and this does the rewrite.** The standard
-// says what `for (T x : a)` means by writing another loop, and every node
-// that loop needs was already here:
-//
-//     T *__b = a;            the array, decayed
-//     T *__e = __b + N;
-//     for (; __b != __e; __b = __b + 1) { T x = *__b; <body> }
-//
-// The range is evaluated exactly once, which is what binding it to a name
-// buys in the standard's version and what assigning it to `__b` buys here.
+// **[stmt.ranged] is a rewrite, and this does the rewrite.** The standard says what
+// `for (T x : a)` means by writing another loop, and every node that loop needs was
+// already here. The range is evaluated once, which assigning it to `__b` buys.
 StmtPtr Parser::rangeForStatement(int scope) {
     StorageClass sc;
     Qualifiers quals;
@@ -527,12 +452,9 @@ StmtPtr Parser::rangeForStatement(int scope) {
     from->setType(elemPtr);
     ExprPtr count(new Num(rt->length()));
     count->setType(types_.get(target_.sizeType()));
-    // **Through `arithmetic`, not a bare Binary.** `p + 1` on an `int *`
-    // advances four bytes, and that scaling lives in the helper the ordinary
-    // expression path uses. Building the node by hand and stamping a type on
-    // it produced a loop that read the array one byte at a time - the first
-    // element right and every one after it garbage, which is what a missing
-    // scale looks like.
+    // **Through `arithmetic`, not a bare Binary.** `p + 1` on an `int *` advances four
+    // bytes, and that scaling lives in the helper the ordinary expression path uses.
+    // Built by hand it produced a loop that read the array one byte at a time.
     ExprPtr past = arithmetic(BinOp::Add, std::move(from), std::move(count),
                               rpos);
     ExprPtr e(Var::local(eName, eSlot));
@@ -642,12 +564,9 @@ StmtPtr Parser::forStatement() {
     f->setScope(scope);
     if (alive_.size() == aliveAtEntry) return StmtPtr(f);
 
-    // **`for (S s; ...)` destroys s when the loop is done**, here, the way a
-    // block destroys what it built at its '}'. It used to stay on alive_
-    // and be destroyed by the enclosing block instead - once, but late, and
-    // after everything that block went on to do. The same limit block()
-    // states applies: this compiler's cleanup regions are cut at block
-    // level, and a `try` in the function would have to know this one.
+    // **`for (S s; ...)` destroys s when the loop is done**, here, the way a block
+    // destroys what it built at its '}'. It used to stay on alive_ and be destroyed by
+    // the enclosing block instead - once, but late, and after all that block did.
     if (functionHasTry_ || inTryBody_)
         src_.fail(pos, "a local with a destructor and a 'try' in one "
                        "function is not supported yet - each is a range in "
@@ -662,26 +581,9 @@ StmtPtr Parser::forStatement() {
     return StmtPtr(b);
 }
 
-// **`static_assert(cond, "message");` - a declaration that declares nothing and
-// emits nothing.** All of it happens here: the condition is folded, and a zero
-// is a diagnostic carrying the program's own words. Nothing reaches the AST, so
-// no backend and no emitter had to learn it exists.
-//
-// **The message is required.** C++17 made it optional and C++11 did not, so
-// the one-argument form is refused by name - accepting it would make a file
-// that builds here stop building on the C++11 compiler it was written for,
-// which is the same reason `namespace N::M {}` is refused.
-//
-// **The condition has to be an integral constant expression**, which is
-// narrower than the standard's "contextually converted constant expression of
-// type bool" - `static_assert(1.5, "")` and a string literal are both legal
-// and both refused here. Neither is a thing anybody writes, and `fold` answers
-// about integers; widening it is constant-evaluation work rather than
-// static_assert work.
-//
-// Written as one function because the three places a static_assert may appear
-// - file scope, a block, and a class body - are three different loops in three
-// different files, and the rule is one rule.
+// **`static_assert(cond, "message");` - a declaration that declares nothing and emits
+// nothing.** The message is required in C++11, so the one-argument form is refused by
+// name; the condition must be an integral constant expression, narrower than the rule.
 bool Parser::staticAssertion() {
     if (!peek().is("static_assert")) return false;
     const std::size_t pos = peek().pos;
@@ -721,20 +623,9 @@ bool Parser::staticAssertion() {
     return true;
 }
 
-// **The exception specification, and the one thing it does not touch.** In
-// C++11 it is *not* part of the function's type - measured, `void f() noexcept`
-// and `void f()` both mangle to `_Z1fv` on Itanium and `?f@@YAXXZ` on
-// Microsoft - so nothing about a name, a signature match or an overload set
-// changes here. That is a C++17 rule, and this compiler targets C++11.
-//
-// What it does buy is a compile-time answer: the `noexcept(e)` operator asks
-// whether every function `e` calls has promised not to throw.
-//
-// `throw()` is the C++03 spelling of `noexcept` and is taken as one.
-// `throw(int)` is the *dynamic* exception specification, a different feature
-// that would need a run-time check against a type list - it is refused by name
-// rather than quietly read as `throw()`, which would be a promise the program
-// did not make.
+// **The exception specification, and the one thing it does not touch.** In C++11 it is
+// *not* part of the function's type - measured, both spellings mangle alike - so what
+// it buys is `noexcept(e)`. `throw()` is taken as one; `throw(int)` is refused.
 bool Parser::exceptionSpecification() {
     if (consume("noexcept")) {
         if (!consume("(")) return true;
@@ -769,18 +660,13 @@ long long Parser::constantExpression(const char *what) {
 }
 
 bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
-    // **A name, when it names a constant.** The object is real and has an
-    // address; what is answered here is what it is worth when read, which
-    // [expr.const] says a const integral object initialised by a constant
-    // expression may be asked for. Locals first, because a local of the same
-    // name shadows the global - the same order every other lookup uses.
+    // **A name, when it names a constant.** The object is real and has an address; what
+    // is answered here is what it is worth when read, which [expr.const] allows of a
+    // const integral. Locals first, a local shadowing the global as everywhere else.
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
-        // **Inside a constexpr call, a local name is a parameter.** The body
-        // being folded belongs to another function entirely, so its Vars name
-        // slots in a frame that does not exist - what they are worth is what
-        // the call was given, and that is on the top of this stack. Only the
-        // top: a recursive call pushes its own, and the same slot numbers mean
-        // that call's arguments while it is being read.
+        // **Inside a constexpr call, a local name is a parameter.** The body being
+        // folded belongs to another function, so its Vars name slots in a frame that
+        // does not exist; what they are worth is on the top of this stack.
         if (v->isLocal() && !constexprFrames_.empty()) {
             const std::vector<std::pair<int, long long> > &frame =
                 constexprFrames_.back();
@@ -796,14 +682,9 @@ bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
             if (g->isConstantValue) { *out = g->constantValue; return true; }
         return false;
     }
-    // **A call to a constexpr function.** C++11 lets its body be one return
-    // statement, so running it is folding that expression with the parameters
-    // standing for the arguments - no statements to step through, no state to
-    // carry, and recursion falls out of the folding being recursive already.
-    //
-    // A call to anything else simply does not fold, which is the answer the
-    // contexts that ask want: an array bound says it is not a constant
-    // expression and names the place, rather than this deciding what to say.
+    // **A call to a constexpr function.** C++11 lets its body be one return statement,
+    // so running it is folding that expression with the parameters standing for the
+    // arguments. A call to anything else simply does not fold, which is the answer.
     if (const Call *c = dynamic_cast<const Call *>(&e)) {
         auto it = constexprFns_.find(c->symbol());
         if (it == constexprFns_.end()) return false;
@@ -822,10 +703,9 @@ bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
         std::vector<std::pair<int, long long> > frame;
         for (std::size_t i = 0; i < c->args().size(); i++) {
             long long v = 0;
-            // **Folded outside the new frame, in the caller's.** An argument
-            // is an expression where the call is written, so `fact(n - 1)`
-            // reads the *caller's* n; folding it after the push would read
-            // the callee's parameter of the same slot instead.
+            // **Folded outside the new frame, in the caller's.** An argument is an
+            // expression where the call is written, so `fact(n - 1)` reads the
+            // caller's n; folding it after the push would read the callee's slot.
             if (!fold(*c->args()[i], &v, pos)) return false;
             frame.push_back(std::make_pair(fn.slots[i], v));
         }
@@ -920,26 +800,9 @@ bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
     return false;
 }
 
-// **[expr.const]/3: a named integral constant is a constant expression.** A
-// const object of integral or enumeration type, initialised with a constant
-// expression, is one - which is the rule that lets C++ write
-// `const int n = 4; int a[n];` where C has to use a macro or an enum. It is
-// the whole of what a `constexpr` *variable* adds over `const`, minus the
-// demand that the initialiser really is constant.
-//
-// Only integral, because that is what fold() answers in. A const double is a
-// constant expression in C++ too and is not one here; nothing asks for a
-// floating constant expression, since every context that wants one - array
-// bounds, case labels, enumerators, non-type template arguments - wants an
-// integer.
-// The one expression a C++11 `constexpr` function body is allowed to be.
-// Answers null for anything else, and the caller turns that into the
-// diagnostic - which has to name the restriction, because a body that would
-// be perfectly ordinary in C++14 is refused here.
-//
-// A block wrapping a block is unwrapped: nothing in this parser makes one for
-// a plain `{ return e; }`, but a body that has been wrapped for cleanups or a
-// constructor's member initialisers would be, and being tolerant costs a loop.
+// **[expr.const]/3: a named integral constant is a constant expression**, which is the
+// rule that lets C++ write `const int n = 4; int a[n];`. Only integral, because that
+// is what fold() answers in. Below it: the one expression a constexpr body may be.
 const Expr *Parser::singleReturnValue(const Stmt &body) const {
     const Stmt *at = &body;
     for (;;) {
@@ -1059,27 +922,9 @@ StmtPtr Parser::gotoLabel() {
     return StmtPtr(new Label(std::move(name), statement()));
 }
 
-// **[stmt.dcl]/3: a jump may not enter the scope of an initialised object.**
-// "A program that jumps from a point where a variable with automatic storage
-// duration is not in scope to a point where it is in scope is ill-formed
-// unless the variable has scalar type, class type with a trivial default
-// constructor and a trivial destructor, ... and is declared without an
-// initializer." The three jumps this compiler has - `goto` forward, `goto`
-// backward into a block, and a `switch` to its case labels - all fall under
-// it, and clang refuses each of them.
-//
-// Before this rule, `goto done; S s; done:` compiled, and the block's end
-// destroyed an `s` whose constructor had never run; `goto done; int x = 5;
-// done: return x;` compiled and returned whatever the slot held. Both silent.
-//
-// The test is set membership. Each object a jump may not land past is marked
-// when it is declared (Local::guardsJump); a label and a goto each keep the
-// marked objects in scope where they stand; and a jump is refused when the
-// label's list holds one the origin's does not. Forward and backward need no
-// separate rules, because the lists say what is in scope and not where the
-// statements are - a backward goto into a block that has since closed finds
-// the block's objects at the label and not at itself, and is refused by the
-// same comparison.
+// **[stmt.dcl]/3: a jump may not enter the scope of an initialised object.** All three
+// jumps this compiler has fall under it, and clang refuses each. The test is set
+// membership: refused when the label's live list holds one the origin's does not.
 std::vector<Parser::JumpGuard> Parser::jumpGuards() const {
     std::vector<JumpGuard> out;
     for (const Local &l : locals_)
@@ -1087,11 +932,9 @@ std::vector<Parser::JumpGuard> Parser::jumpGuards() const {
     return out;
 }
 
-// A jump that leaves a scope destroys what the scope built, innermost first,
-// before it goes - the calls the scope's end would have made, made here
-// instead, since the jump does not reach that end. [stmt.jump]/2. `return`
-// has always done this for the whole function; `break` and `continue` do it
-// for everything built since their loop or switch was entered.
+// A jump that leaves a scope destroys what the scope built, innermost first, before it
+// goes - the calls the scope's end would have made, made here instead. [stmt.jump]/2.
+// `break` and `continue` destroy everything built since their loop was entered.
 StmtPtr Parser::jumpLeaving(StmtPtr jump, std::size_t mark, std::size_t pos) {
     std::vector<StmtPtr> steps;
     emitDestructors(steps, mark, pos);
@@ -1131,16 +974,9 @@ void Parser::resolveGotos() {
         checkJump(g.guards, target->guards, g.pos, "'goto " + g.name + "'",
                   "the goto");
 
-        // **A goto out of a scope destroys what it leaves**, innermost
-        // first - the same calls the scope's end makes, through the same
-        // routine, placed in the block that was left in front of the Goto
-        // for them. Both ends are known now: an object alive at the goto
-        // and not at the label is one the jump leaves; one alive at both is
-        // one it stays inside, and is left alone. The scope's own calls at
-        // its end are not reached by the jump, so nothing is destroyed
-        // twice. Until this, the jump was accepted and the destructor
-        // simply did not run: the refusal meant to catch it sat on a line
-        // the goto branch had already returned from.
+        // **A goto out of a scope destroys what it leaves**, innermost first, in the
+        // block left in front of the Goto for them: alive at the goto and not at the
+        // label is left behind, alive at both is stayed inside. Never twice.
         for (std::size_t i = g.alive.size(); i > 0; i--) {
             const Alive &a = g.alive[i - 1];
             bool atLabel = false;
@@ -1169,11 +1005,9 @@ StmtPtr Parser::block() {
     bool isBody = atFunctionBody_;
     atFunctionBody_ = false;
     int scope = isBody ? 0 : enterBlock();
-    // **Where each object became alive**, as a statement index and how many
-    // objects were alive after it. A cleanup region runs from one of these to
-    // the next, and destroys exactly what was built by then - which is why
-    // the ranges are split rather than one region for the whole block: an
-    // exception thrown before the second object exists must not destroy it.
+    // **Where each object became alive**, as a statement index and how many were alive
+    // after it. A cleanup region runs from one of these to the next and destroys
+    // exactly what was built by then, so an exception cannot destroy what is not.
     std::vector<std::pair<std::size_t, std::size_t> > built;
     std::vector<StmtPtr> body;
     while (!peek().is("}")) {
@@ -1220,27 +1054,13 @@ StmtPtr Parser::statement() {
     return s;
 }
 
-// **`try` is a block, a landing pad, and no new statement machinery.**
-//
-// The pad is where the runtime arrives, and everything from there on is built
-// here out of nodes that already existed: the selector the personality
-// routine chose is compared against 1, 2, 3 - the order the handlers are
-// written in, which is the order their types go into the table - and each arm
-// is `__cxa_begin_catch`, a copy into the caught variable, the handler's own
-// body, and `__cxa_end_catch`. What no handler matches falls through to
-// `_Unwind_Resume`, which is what "this frame does not want it after all"
-// means.
-//
-// The chain is nested if/else rather than labels and jumps, because that is a
-// shape the backends already walk.
+// **`try` is a block, a landing pad, and no new statement machinery.** Everything from
+// the pad on is built out of nodes that already existed: the selector compared in the
+// order the handlers are written, each arm begin/copy/body/end, the rest resumed.
 StmtPtr Parser::tryStatement(std::size_t pos) {
-    // **The two ABIs disagree about who picks the handler**, so this reads one
-    // grammar and builds two shapes. Itanium hands the frame an exception
-    // pointer and a selector and lets the frame's own code decide, which is
-    // the if/else chain below. Microsoft decides in the runtime, from tables,
-    // and *calls* the chosen handler as a function of its own - so there the
-    // handlers are kept whole and none of __cxa_begin_catch, the selector or
-    // _Unwind_Resume is built at all.
+    // **The two ABIs disagree about who picks the handler**, so this reads one grammar
+    // and builds two shapes: Itanium's if/else chain on a selector, and Microsoft's
+    // handlers kept whole for the runtime to call.
     const bool microsoft = target_.microsoftNames();
     functionHasTry_ = true;
     if (inTryBody_)
@@ -1312,11 +1132,9 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         const int scope = enterBlock();
         std::vector<StmtPtr> steps;
 
-        // **The Microsoft handler is the block and nothing else.** The runtime
-        // has already chosen it, already made the caught object in the frame
-        // slot the table names, and will end the catch itself when the funclet
-        // returns - so every one of the three calls the Itanium shape wraps
-        // the body in has a counterpart that is not this frame's business.
+        // **The Microsoft handler is the block and nothing else.** The runtime has
+        // chosen it, made the caught object in the slot the table names, and ends the
+        // catch when the funclet returns - so the three Itanium calls are not here.
         if (microsoft) {
             MsHandler mh;
             if (caught != nullptr) {
@@ -1327,10 +1145,9 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                     src_.fail(cpos, "'catch' cannot name this type: " + why);
                 mh.descriptor = names.descriptor;
                 mh.objectSize = caught->size(target_);
-                // The descriptor is emitted by the same pass that emits a
-                // thrown type's, so a type that is only ever *caught* has to
-                // join that list or the handler map would name a symbol
-                // nothing defines.
+                // The descriptor is emitted by the same pass that emits a thrown
+                // type's, so a type that is only ever *caught* has to join that list
+                // or the handler map would name a symbol nothing defines.
                 bool had = false;
                 for (std::size_t k = 0; k < current_->thrown.size(); k++)
                     if (current_->thrown[k] == caught) had = true;
@@ -1391,10 +1208,9 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         Try *t = new Try(std::move(guardedMs), nullptr, pointerSlot,
                          selectorSlot, std::move(types));
         t->setHandlers(std::move(msHandlers));
-        // The runtime's scratch word, which the personality routine finds
-        // through the FuncInfo's dispUnwindHelp and the parent sets to -2 on
-        // entry. A frame slot like any other, so that the whole of where it
-        // lives is decided by the code that decides where locals live.
+        // The runtime's scratch word, which the personality routine finds through the
+        // FuncInfo's dispUnwindHelp and the parent sets to -2 on entry. A frame slot
+        // like any other, so where it lives is decided where every local's is.
         t->setUnwindHelpSlot(allocateFrameSlot(voidPtr));
         return StmtPtr(t);
     }
@@ -1434,11 +1250,9 @@ StmtPtr Parser::statementBody() {
     // becomes is the empty one - the same shape the using-directive takes.
     if (staticAssertion()) return StmtPtr(new Block({}));
 
-    // **`using namespace N;` inside a block**, which is the same directive as
-    // the one at file scope and differs only in when it stops applying: at the
-    // end of this block, which `block()` undoes by truncating the list. It
-    // declares nothing and builds nothing, so the statement it becomes is the
-    // empty one.
+    // **`using namespace N;` inside a block**, the same directive as the one at file
+    // scope, differing only in when it stops applying: at the end of this block, which
+    // `block()` undoes by truncating the list. It becomes the empty statement.
     if (peek().is("using") && peekAt(1).is("namespace")) {
         at_ += 2;
         std::string opened = expectIdent("a namespace name");
@@ -1504,12 +1318,9 @@ StmtPtr Parser::statementBody() {
                                "caller could read it");
         } else {
             checkAssignable(*value, returnType_, pos, "this function's return type");
-            // Does the operand name a by-value parameter of this function?
-            // One that arrived by address was lowered to a reference, so it
-            // reads back as `*slot` - the dereference is unwrapped here, and
-            // `byValueByAddress` is what tells it from a genuine `T &t` or
-            // `*p`, both of which name an object the caller owns and must be
-            // copied, not moved.
+            // Does the operand name a by-value parameter of this function? One that
+            // arrived by address was lowered to a reference and reads back as `*slot`;
+            // `byValueByAddress` is what tells it from a genuine `T &t` or `*p`.
             {
                 const Expr *named = value.get();
                 bool viaDeref = false;
@@ -1523,24 +1334,14 @@ StmtPtr Parser::statementBody() {
                                                   ? l->byValueByAddress
                                                   : !l->type->isReference();
             }
-            // **[class.copy]/31 again: returning by value copy-initializes the
-            // caller's object**, so its copy constructor is selected and
-            // checked even though the copy is elided a few lines below. A
-            // class whose copy constructor is `explicit` cannot be returned by
-            // value at all - the function is ill-formed on its own, before any
-            // caller is looked at, which is the surprising half and the reason
-            // it is checked here rather than at the call.
+            // **[class.copy]/31 again: returning by value copy-initializes the caller's
+            // object**, so its copy constructor is selected and checked though the copy
+            // is elided below. An explicit one makes the function ill-formed alone.
             if (returnType_->isStructOrUnion() && value->type() != nullptr &&
                 value->type()->unqualified() == returnType_->unqualified()) {
-                // **Which constructor `return` selects is decided rvalue-first
-                // for an automatic object** - [class.copy]/32: where elision
-                // is permitted, or would be save that the operand is a
-                // parameter, overload resolution runs first as if the operand
-                // were an rvalue, and only if that fails as the lvalue it is.
-                // So a local or a parameter with a move constructor returns by
-                // move, and the explicit-ness that matters is the selected
-                // constructor's - a class with an explicit copy and a plain
-                // move still returns fine.
+                // **Which constructor `return` selects is decided rvalue-first for an
+                // automatic object** - [class.copy]/32: resolution runs first as if the
+                // operand were an rvalue, and only then as the lvalue it is.
                 bool asRvalue = !isGlvalue(*value) || value->isXvalue() ||
                                 returnedParameter;
                 if (const Var *v = dynamic_cast<const Var *>(value.get()))
@@ -1564,30 +1365,9 @@ StmtPtr Parser::statementBody() {
         }
         expect(";");
 
-        // **A return runs every destructor the function still owes, and the
-        // value is computed first.** The order is not a detail: the expression
-        // may read an object that is about to be destroyed, so it goes into a
-        // slot of its own, then the destructors run, then the slot is
-        // returned. Without the temporary this would return a value read out
-        // of an object after its destructor had been told it was finished.
-        // **The object being returned is not destroyed here.** Returning a
-        // local by value puts it in the caller's storage, and the caller
-        // destroys it there; running the local's destructor as well would
-        // destroy the same object twice - once here and once in the caller -
-        // which for a class that owns anything is a double free.
-        //
-        // That is copy elision, which [class.copy] permits and clang takes at
-        // -O0 where cl does not. Taking it is what makes the two consistent:
-        // the bytes go straight to the caller's storage with no copy
-        // constructor called, and a copy that was not made must not be
-        // destroyed either.
-        // **[class.copy]/31 names one automatic object and excludes a
-        // parameter**, and the exclusion is the whole point rather than a
-        // detail: the caller made the argument and the caller destroys it, so
-        // eliding here leaves the caller holding two objects over one set of
-        // bytes and destroying both. `T pass(T t) { return t; }` built two
-        // objects and destroyed three - a double free for any class that owns
-        // anything.
+        // **A return runs every destructor the function still owes, and the value is
+        // computed first**, into a slot of its own. **What is returned is not destroyed
+        // here** - that is elision, and [class.copy]/31 excludes a parameter from it.
         bool elidable = false;
         if (const Var *v = dynamic_cast<const Var *>(value.get()))
             if (v->isLocal()) {
@@ -1595,19 +1375,9 @@ StmtPtr Parser::statementBody() {
                 elidable = l == nullptr || !l->isParameter;
             }
 
-        // **A `return` of a glvalue this function does not own has to call
-        // the copy constructor**, and until now nothing did: the return path
-        // moved the bytes and left the elision of the *destructor* to stand
-        // in for the copy. That works for exactly one case - an automatic
-        // object of this function, where the standard also allows the copy
-        // itself to go - and is wrong for every other: a parameter, a member,
-        // `*p`. Each of those left the caller with a byte copy that no
-        // constructor had made and that the source would also destroy.
-        //
-        // The copy is built into a slot of this frame and *that* slot is the
-        // one elided: one constructor runs, its bytes become the caller's
-        // object, and nothing destroys it here. That is the copy the standard
-        // asks for plus the elision it allows, which is what clang emits.
+        // **A `return` of a glvalue this function does not own has to call the copy
+        // constructor**, and nothing did: the byte move let the destructor's elision
+        // stand in. The copy is built into a slot of this frame, and that is elided.
         std::vector<StmtPtr> before;
         if (returnType_->isStructOrUnion() && !elidable &&
             value->type() != nullptr &&
@@ -1620,13 +1390,9 @@ StmtPtr Parser::statementBody() {
             rv.type = returnType_;
             rv.pos = pos;
             const int slot = declare(rv.name, rv.type, pos);
-            // **A returned parameter moves.** [class.copy]/32 again, now on
-            // the copy that is actually built: the operand is designated an
-            // rvalue first, so a class with a move constructor gives it up
-            // rather than being copied - and a move-only class can be
-            // returned by value at all, which C++11 promises. The lvalue
-            // second stage is the fall-through: no move constructor, and
-            // resolution below finds the copy as before.
+            // **A returned parameter moves.** [class.copy]/32 again, on the copy that
+            // is actually built: the operand is designated an rvalue first, so a
+            // move-only class can be returned by value at all, as C++11 promises.
             if (returnedParameter &&
                 moveConstructorOf(returnType_->unqualified()) != nullptr)
                 value->setXvalue();
@@ -1719,11 +1485,9 @@ StmtPtr Parser::statementBody() {
         std::size_t pos = peek().pos;
         std::string name = expectIdent("a label to jump to");
         expect(";");
-        // **The jump destroys what it leaves, and cannot yet know what that
-        // is**: a forward label has not been read. So the goto is placed
-        // behind an empty block, and resolveGotos() fills that block with
-        // the destructor calls once both ends are known. What is alive here
-        // is copied now, because alive_ will have been cut back by then.
+        // **The jump destroys what it leaves, and cannot yet know what that is**: a
+        // forward label has not been read. So the goto is placed behind an empty block
+        // that resolveGotos() fills. What is alive here is copied now, not later.
         Block *cleanups = new Block({});
         cleanups->setScope(-1);
         gotos_.push_back(LabelDef{ name, pos, jumpGuards(), alive_, cleanups });
@@ -1737,13 +1501,9 @@ StmtPtr Parser::statementBody() {
 
     if (peek().kind == TokenKind::Ident && peekAt(1).is(":")) return gotoLabel();
 
-    // A jump can leave a scope without falling off its end, and this
-    // compiler runs destructors at the end - so each of these destroys what
-    // was built since its loop or switch was entered before it goes, the way
-    // `return` destroys what the function owes. A goto does the same in
-    // resolveGotos(), where its label is known. These used to be refused
-    // while anything at all was alive, and goto not at all: its refusal sat
-    // on a line the goto branch had already returned from.
+    // A jump can leave a scope without falling off its end, and this compiler runs
+    // destructors at the end - so each of these destroys what was built since its loop
+    // or switch was entered, the way `return` destroys what the function owes.
     if (peek().is("break")) {
         const std::size_t pos = peek().pos;
         at_++;
@@ -1879,10 +1639,9 @@ void Parser::topLevel(Program &program) {
         do {
             Declared td = declarator(base);
             typedefFunctionSuffix(td);
-            // [dcl.typedef]/2 lets a typedef-name be redeclared to the same
-            // type, which is what makes the C idiom "typedef struct S S;"
-            // legal now that the tag already names the type by itself. Only a
-            // redeclaration to a *different* type is an error.
+            // [dcl.typedef]/2 lets a typedef-name be redeclared to the same type,
+            // which is what makes the C idiom "typedef struct S S;" legal now that the
+            // tag already names the type by itself. Only a different type is an error.
             if (const Type *had = findTypedef(td.name))
                 if (had != td.type)
                     src_.fail(td.pos, "'" + td.name + "' is typedefed twice, "
@@ -1907,36 +1666,22 @@ void Parser::topLevel(Program &program) {
     frameSize_ = 0;
     Declared d = declarator(base);
 
-    // **A `constexpr` function is 7.5b and is refused by name until then.**
-    // Accepting it and treating it as an ordinary function would compile and
-    // run correctly - a constexpr function may always be called at run time -
-    // and would then quietly fail to be constant in the one place the keyword
-    // was written for, with the reader told only that an array bound is not
-    // constant. Evaluating a call needs an interpreter over the AST, which is
-    // a second execution model beside the three backends.
-    // The '(' is still ahead at this point - a function is told from an
-    // object here by what follows the declarator, not by its type, which is
-    // still the *return* type. The three ways of arriving are a definition or
-    // declaration written out (`peek().is("(")`), one whose parameters have
-    // been recorded to re-read (`paramsAt`), and one declared through a
-    // typedef, whose type really is a function type.
+    // **A `constexpr` function was refused by name until 7.5b**: accepting it as an
+    // ordinary function would compile and then quietly fail to be constant where the
+    // keyword was written for. The '(' still ahead tells a function from an object.
     const bool constexprFunction =
         quals.isConstexpr &&
         (peek().is("(") || d.paramsAt != 0 || d.type->isFunction());
 
-    // **`constexpr` does not make the return type const**, and it is measured
-    // rather than reasoned: cl and clang both spell `constexpr int sq(int)` as
-    // ?sq@@YAHH@Z, which is `H` for int and not `?BH` for const int. The
-    // keyword sets isConst because on an *object* that is exactly what it
-    // means; on a function it must be taken off again or every constexpr
-    // function would carry a name no other compiler writes.
+    // **`constexpr` does not make the return type const**, and it is measured rather
+    // than reasoned: cl and clang both spell `constexpr int sq(int)` as ?sq@@YAHH@Z.
+    // The keyword sets isConst because on an *object* that is exactly what it means.
     if (constexprFunction && !d.type->isFunction())
         d.type = types_.withoutConst(d.type);
 
-    // `int Counter::total = 0;` - a static member's definition. A member
-    // *function*'s definition is spelled the same way up to here and is told
-    // apart by the '(' that follows, which is the same question the class body
-    // asks about a member.
+    // `int Counter::total = 0;` - a static member's definition. A member *function*'s
+    // is spelled the same way up to here and told apart by the '(' that follows, which
+    // is the same question the class body asks about a member.
     if (!d.qualifier.empty() && !peek().is("(") && d.paramsAt == 0 &&
         !d.type->isFunction()) {
         defineStaticMember(d, program);
@@ -1970,19 +1715,9 @@ void Parser::topLevel(Program &program) {
                                  "supported yet - make it a local or a "
                                  "pointer");
 
-            // **A class with a constructor, at file scope.** The local path
-            // refuses a `static` one by name for want of the mechanism that
-            // runs it before main; this path had no such test at all, so the
-            // object was laid out as bytes and the constructor never ran -
-            // `S s;` at file scope read 0 where the constructor had written
-            // 7, and it compiled, linked and ran. A silently missing
-            // construction is the one failure worth a refusal.
-            //
-            // The braced form is asked first and separately: a class that
-            // writes a member initialiser is not an aggregate in C++11
-            // ([dcl.init.aggr]/1) and *is* one from C++14, so what a reader
-            // needs to be told there is which standard refuses them, not
-            // which mechanism is missing.
+            // **A class with a constructor, at file scope.** This path had no test at
+            // all, so the object was laid out as bytes and the constructor never ran.
+            // The braced form is asked first: C++11 makes such a class no aggregate.
             if (d.type->isStructOrUnion() && !d.type->tag().empty()) {
                 const bool braced = peek().is("=") && peekAt(1).is("{");
                 if (braced && hasMemberInitialiser(d.type->tag()))
@@ -2061,19 +1796,17 @@ void Parser::topLevel(Program &program) {
                 continue;
             }
 
-            // A variable declared in a namespace is keyed and mangled by its
-            // qualified name, the same as a function. `extern "C"` does not
-            // reach into one, so a name with C linkage keeps what it was
-            // written with.
+            // A variable declared in a namespace is keyed and mangled by its qualified
+            // name, the same as a function. `extern "C"` does not reach into one, so a
+            // name with C linkage keeps what it was written with.
             const std::string gname =
                 (namespaceStack_.empty() || cLinkage_ > 0)
                     ? d.name : namespacePrefix() + d.name;
             globalIndex_[gname] = globals_.size();
             bool objectIsConst = d.type->isConst();
-            // A const object at namespace scope has internal linkage of its
-            // own - [basic.link]/3 - which is why a header may define one and
-            // C, where it would be external, may not. Nothing outside can
-            // name it, so it keeps the name it was written with.
+            // A const object at namespace scope has internal linkage of its own -
+            // [basic.link]/3 - which is why a header may define one and C, where it
+            // would be external, may not. Nothing outside can name it.
             bool internal = sc == StorageStatic ||
                             (objectIsConst && sc != StorageExtern);
             std::string symbol = dataSymbol(gname, d.type, internal, d.pos);
@@ -2091,13 +1824,9 @@ void Parser::topLevel(Program &program) {
         return;
     }
 
-    // **A trailing return type is C++11, and it arrives here wearing the same
-    // `auto`.** `auto f(int) -> int` says what the return type is rather than
-    // asking for it to be deduced, so blaming C++14 is wrong twice over: the
-    // standard is the wrong one, and the reader is told a type cannot be
-    // worked out when they had written it down.
-    // The parameter list is still ahead here - it was recorded to be read
-    // again, not consumed - so the arrow is found by stepping over it.
+    // **A trailing return type is C++11, and it arrives here wearing the same `auto`.**
+    // `auto f(int) -> int` says what the return type is rather than asking for it to be
+    // deduced. The parameter list is still ahead, so the arrow is found past it.
     bool trailingArrow = false;
     if (peek().is("(")) {
         int depth = 0;
@@ -2135,22 +1864,17 @@ void Parser::topLevel(Program &program) {
     bool sawUnnamed = false;
     std::size_t aliveParams = 0;
 
-    // **`this` is parameter zero, and it is declared before any written one so
-    // that it takes the first slot.** That is the whole of how a member
-    // function differs from a free one at the machine: an extra leading
-    // pointer, which every backend already knows how to pass. It is not in
-    // `params`, because `params` is the declared signature - what overload
-    // resolution ranks and what the mangler spells - and `this` is in neither.
+    // **`this` is parameter zero, and it is declared before any written one so that it
+    // takes the first slot.** That is the whole of how a member function differs at the
+    // machine. It is not in `params`, which is the declared signature.
     const Type *memberOf = nullptr;
     if (!d.qualifier.empty()) {
         memberOf = findTypedef(d.qualifier);
         if (memberOf == nullptr || !memberOf->isStructOrUnion())
             src_.fail(d.pos, "'" + d.qualifier + "' is not a class");
-        // `void S::f()` written inside `namespace N` defines `N::S::f`, and
-        // every table downstream is keyed by the qualified tag - the member
-        // lookup, the mangled name, the constructor test against
-        // `localOf(qualifier)`. Take the name the class was found under rather
-        // than the one that was written.
+        // `void S::f()` written inside `namespace N` defines `N::S::f`, and every table
+        // downstream is keyed by the qualified tag. Take the name the class was found
+        // under rather than the one that was written.
         d.qualifier = memberOf->tag();
         currentClass_ = memberOf;
     }
@@ -2199,23 +1923,9 @@ void Parser::topLevel(Program &program) {
                 if (pd.type->isArray())
                     pd.type = types_.pointerTo(pd.type->pointee());
 
-                // **A class whose copy is a constructor call arrives by
-                // address**, on both ABIs and whatever its size - measured
-                // with cl and with clang for both Itanium targets. So the
-                // parameter is *lowered to a reference*: its frame slot holds
-                // the caller's pointer, and every mention of it dereferences
-                // that, which is the machinery a reference already has and
-                // which no backend had to be told about.
-                //
-                // The declared type is untouched - `params` still says the
-                // class - so the mangler and overload resolution go on seeing
-                // a parameter passed by value, which is what it is.
-                //
-                // The object itself belongs to the caller: it built the copy
-                // and it destroys it. That is the Itanium rule; the Microsoft
-                // ABI has the callee destroy its parameter instead, which is
-                // in docs/CONFORMANCE.md as a difference that only shows when
-                // an object of cxx1's is linked with one of cl's.
+                // **A class whose copy is a constructor call arrives by address**, on
+                // both ABIs and whatever its size. The parameter is lowered to a
+                // reference; the declared type is untouched, and the caller owns it.
                 const bool byAddress = passedByAddress(pd.type);
                 const Type *held = byAddress ? types_.referenceTo(pd.type)
                                              : pd.type;
@@ -2235,11 +1945,8 @@ void Parser::topLevel(Program &program) {
                     locals_.back().byValueByAddress = byAddress;
 
                     // **On Microsoft the callee destroys its by-value class
-                    // parameter**, whether it arrived in a register or as the
-                    // address of a copy the caller made - measured with cl,
-                    // whose ?useSmall calls ??1Small on its own parameter.
-                    // Itanium puts that on the caller instead, which is where
-                    // the temporary is made.
+                    // parameter**, in a register or by address alike - measured with
+                    // cl. Itanium puts it on the caller, where the temporary is made.
                     if (target_.microsoftNames() && pd.type->isStructOrUnion() &&
                         pd.type->hasDestructor()) {
                         alive_.push_back(Alive{ pd.name, off,
@@ -2252,10 +1959,9 @@ void Parser::topLevel(Program &program) {
                 paramSlots.push_back(Param{ held->isReference()
                                             ? types_.pointerTo(held->referent())
                                             : held, off });
-                // A default written on the *definition*. The parameter list
-                // here is read by this loop and not by parameterTypes, so the
-                // same recording has to happen twice - and it is recorded the
-                // same way, as a place in the token stream.
+                // A default written on the *definition*. The parameter list here is
+                // read by this loop and not by parameterTypes, so the same recording
+                // happens twice, and the same way: a place in the token stream.
                 defaults.resize(params.size(), 0);
                 if (consume("=")) {
                     if (peek().is("{"))
@@ -2271,11 +1977,9 @@ void Parser::topLevel(Program &program) {
     }
     if (resumeAt != 0) at_ = resumeAt;
 
-    // Hand what this parameter list collected to whichever declare() runs
-    // below, the same way parameterTypes hands over its own. **Before the
-    // prototype branch and not after it**: `int f(int a, int b = 3);` declared
-    // here and defined further down is the ordinary way to write one, and that
-    // branch returns as soon as it has declared the function.
+    // Hand what this parameter list collected to whichever declare() runs below, the
+    // same way parameterTypes hands over its own. **Before the prototype branch and
+    // not after it**: that branch returns as soon as it has declared the function.
     bool sawDefault = false;
     for (std::size_t i = 0; i < defaults.size(); i++)
         if (defaults[i] != 0) sawDefault = true;
@@ -2299,11 +2003,9 @@ void Parser::topLevel(Program &program) {
     // Point::get() are two functions.
     bool constThis = false;
     if (memberOf != nullptr && consume("const")) constThis = true;
-    // The same C++11 rule the class body applies: a `constexpr` member
-    // function is implicitly const. This is the path a member *defined* inside
-    // its class comes back through when its held body is replayed, so leaving
-    // it out here makes the definition disagree with its own declaration -
-    // "'B' declares no member 'twice' with these parameters".
+    // The same C++11 rule the class body applies: a `constexpr` member function is
+    // implicitly const. This is the path a member defined inside its class comes back
+    // through, so leaving it out makes the definition disagree with its declaration.
     if (memberOf != nullptr && constexprFunction) constThis = true;
 
     // The exception specification comes after the constness, which is the
@@ -2346,20 +2048,14 @@ void Parser::topLevel(Program &program) {
                              d.type->describe() + "'");
         if (member->defined)
             src_.fail(d.pos, "'" + key + "' is defined twice");
-        // **This used to write `member->pos` into the *first* overload's
-        // entry**, which is a no-op when the member being defined is that
-        // one and a corruption of somebody else's recorded position when it
-        // is not: `int S::f(double)` defined out of line moved `f(int)`'s
-        // declaration position onto itself. Nothing reads a user overload's
-        // `pos` today, which is why it never showed - and the line was doing
-        // nothing that was wanted in either case. The assignment on the next
-        // line is the whole of what this branch has to record.
+        // **This used to write `member->pos` into the *first* overload's entry**, which
+        // corrupts another overload's recorded position when the member being defined
+        // is not that one. Nothing reads a user overload's `pos`, so it never showed.
         const_cast<Signature *>(member)->defined = true;
 
-        // `this` takes the first slot, and its type carries the constness the
-        // member was declared with - so a const member function cannot write
-        // through it, by the ordinary rule that a const object's members are
-        // const.
+        // `this` takes the first slot, and its type carries the constness the member
+        // was declared with - so a const member function cannot write through it, by
+        // the ordinary rule that a const object's members are const.
         const Type *pointee = constThis ? types_.withConst(memberOf) : memberOf;
         const Type *thisType = types_.pointerTo(pointee);
         inParams_ = true;
@@ -2369,27 +2065,14 @@ void Parser::topLevel(Program &program) {
     } else {
         declareFunction(d.name, d.type, params, variadic, true, d.pos,
                         sc == StorageStatic);
-        // Which function's body is about to be read, so that an access check
-        // inside it can ask whether a class befriended *this* function. A
-        // member's is left empty on purpose: the qualified form that would
-        // make a member somebody's friend is refused where it is written.
+        // Which function's body is about to be read, so that an access check inside it
+        // can ask whether a class befriended *this* function. A member's is left empty:
+        // the qualified form that would befriend a member is refused where written.
         currentFunction_ = lookupSignature(d.name, params, variadic, d.pos).symbol;
     }
-    // Set for a member's body too, unlike the friend question above, because
-    // a local class inside a member function is spelled by wrapping *that*
-    // function's name - `_ZZN5Outer1mEvEN1A3getEv`, measured. It cannot make a
-    // member look like somebody's friend by accident: a friend list only ever
-    // holds the symbols of free functions, the qualified form that would name
-    // a member being refused where it is written.
-    // **Taken by value, and that is the whole of a bug that predates local
-    // classes.** `member` points into `functions_`, which is a vector: any
-    // declaration made while this function's body is read can grow it and
-    // move it, and the pointer is then reading freed memory. Nothing did
-    // that until a class could be defined inside a function - its member
-    // functions are declared during the body - and `Outer::m` came out
-    // carrying whatever string happened to be at that address, `m` in one
-    // build and `a` in the next. Only the symbol is wanted afterwards, so
-    // only the symbol is kept.
+    // Set for a member's body too, unlike the friend question above, because a local
+    // class inside a member function is spelled by wrapping that function's name.
+    // **Taken by value**: `member` points into a vector any declaration can move.
     std::string definedSymbol;
     if (member != nullptr) {
         definedSymbol = member->symbol;
@@ -2400,17 +2083,9 @@ void Parser::topLevel(Program &program) {
     // Closures are numbered within the function that writes them, which is
     // what clang does - `$_0` upward in each, not once across the file.
     lambdaCount_ = 0;
-    // The mem-initializer list, [class.base.init]. Parsed here because `this`
-    // and the parameters are in scope and the body has not begun - which is
-    // exactly where the ':' sits in the grammar.
-    //
-    // What each entry may name: a non-static member, or a DIRECT base. The
-    // members become assignments through `this`; a base's arguments are kept
-    // for the chaining loop below, which is what actually calls its
-    // constructor. **Emission follows declaration order, not list order** -
-    // [class.base.init]/11 initialises in declaration order whatever the list
-    // says, and an emitter that followed the list would make the program mean
-    // something the standard says it does not.
+    // The mem-initializer list, [class.base.init], parsed here because `this` and the
+    // parameters are in scope and the body has not begun. **Emission follows
+    // declaration order, not list order** - /11, whatever the list says.
     std::vector<StmtPtr> memberInits;
     // Which members this constructor's own list covers. Kept out here because
     // the initialisers the class wrote are applied to the rest, below, and the
@@ -2419,10 +2094,9 @@ void Parser::topLevel(Program &program) {
     std::map<std::string, std::vector<ExprPtr> > baseArgs;
     std::map<std::string, std::vector<ExprPtr> > memberExprs;
     std::map<std::string, std::size_t> where;
-    // The members written `: m()`, and for one with a constructor the index of
-    // the one to run; functions_.size() says there is none. Out here with the
-    // other two, and not in the block that fills it: the declaration-order
-    // walk below reads all three, and it sits outside that block.
+    // The members written `: m()`, and for one with a constructor the index of the one
+    // to run; functions_.size() says there is none. Out here with the other two: the
+    // declaration-order walk below reads all three from outside that block.
     std::map<std::string, std::size_t> valueInit;
     const bool isCtor = memberOf != nullptr && d.name == localOf(d.qualifier);
     if (memberOf != nullptr && peek().is(":")) {
@@ -2452,15 +2126,9 @@ void Parser::topLevel(Program &program) {
                 if (m->type->isConst())
                     src_.fail(epos, "a const member in an initialiser list is "
                                     "not supported yet");
-                // **`: m()` value-initialises the member** - [class.base.init]
-                // hands the empty pair to [dcl.init]/8. A scalar zeroes; a
-                // class with no constructor zeroes leaf by leaf; a class whose
-                // default constructor nobody wrote zeroes *and then* runs it;
-                // a class with a user-provided one runs that and nothing else.
-                // The zeroing and the call are both statements on the member
-                // itself, emitted in the declaration-order loop below - not
-                // an assignment of a temporary's bytes, which would not be
-                // running a constructor on the member.
+                // **`: m()` value-initialises the member** - [class.base.init] hands
+                // the empty pair to [dcl.init]/8: a scalar zeroes, a class with no
+                // constructor zeroes leaf by leaf, a user-provided one runs alone.
                 if (args.empty()) {
                     if (m->type->isReference())
                         src_.fail(epos, "'" + entry + "()' would leave a "
@@ -2495,14 +2163,9 @@ void Parser::topLevel(Program &program) {
                     }
                     valueInit[entry] = ctorIndex;
                 }
-                // **How many values are too many is not a question this loop
-                // can answer any more.** It was one here - a member took a
-                // single value or the list was wrong - and a class-typed
-                // member now takes as many as one of its constructors does,
-                // which is known further down where the member's own type is
-                // in hand. The check moved there with the construction, so
-                // `: m(1, 2)` reaches its constructor instead of being
-                // refused by an arity nobody had asked the member about.
+                // **How many values are too many is not a question this loop can
+                // answer any more.** A class-typed member takes as many as one of its
+                // constructors does, so the check moved down with the construction.
                 memberExprs[entry] = std::move(args);
                 namedInInit.insert(entry);
                 where[entry] = epos;
@@ -2519,24 +2182,9 @@ void Parser::topLevel(Program &program) {
 
     }
 
-    // **Every member, in declaration order, by the first of three rules that
-    // applies to it** - [class.base.init]/8 and /9, and /11 for the order:
-    //
-    //   named in the list      built from what the list gave it: a class
-    //                          with constructors is *constructed* with those
-    //                          arguments, a reference is bound, anything
-    //                          else is assigned one value;
-    //   has its own initialiser   `int x = 1;` on the member, read afresh
-    //                          here - so `S(int a) : x(a) {}` on a class
-    //                          with `int x = 1; int y = 2;` sets x from a
-    //                          and y from 2;
-    //   a class with constructors   default-constructed. This is the rule
-    //                          that was missing: a written constructor left
-    //                          such a member unbuilt and the compiler's
-    //                          destructor then destroyed it.
-    //
-    // A union's members are not built; which one is alive is the program's
-    // business, and its constructor says so with the list or not at all.
+    // **Every member, in declaration order, by the first of three rules that applies to
+    // it** - [class.base.init]/8, /9 and /11: named in the list, its own initialiser, or
+    // a class with constructors default-constructed. A union's members are not built.
     if (memberOf != nullptr && isCtor) {
         const std::vector<Member> &all = memberOf->members();
         for (std::size_t i = 0; i < all.size(); i++) {
@@ -2555,18 +2203,9 @@ void Parser::topLevel(Program &program) {
             }
             std::size_t epos = where[m->name];
 
-            // **An empty pair belongs to value-initialisation, and only to
-            // it.** `: m()` and `: m(a)` look like one syntax and are two
-            // rules: [dcl.init]/8 for the first, construction for the second.
-            // The difference is not decoration - value-initialisation *zeroes*
-            // a member with no constructor and one whose default constructor
-            // nobody wrote, which construction has nothing to say about, and
-            // for `: k()` on an `int` there is no constructor to reach at all.
-            // So the walk asks who owns the list before it asks what the
-            // member is: a name in `valueInit` is one the list left empty, and
-            // its statements are built further down. Handing an empty vector
-            // to constructMember instead is what left `: p()` on a plain
-            // struct with "takes one value here, given 0".
+            // **An empty pair belongs to value-initialisation, and only to it.** `: m()`
+            // is [dcl.init]/8 where `: m(a)` is construction, and for `: k()` on an int
+            // there is no constructor to reach. So the walk asks who owns the list.
             const bool valueInitialised = valueInit.count(m->name) != 0;
 
             if (!m->type->isReference() && !valueInitialised) {
@@ -2592,11 +2231,9 @@ void Parser::topLevel(Program &program) {
             ExprPtr field(new MemberAccess(std::move(obj), m->name, m->offset,
                                            m->width, m->bitOffset));
 
-            // **A reference member is bound, not assigned**, and this is the
-            // one place it can be: the mem-initialiser list. What the slot
-            // holds is an address, so the member is typed as the pointer it
-            // really is and `bindReference` supplies the address - the same
-            // road a reference local's initialiser takes.
+            // **A reference member is bound, not assigned**, and this is the one place
+            // it can be. What the slot holds is an address, so the member is typed as
+            // the pointer it really is and `bindReference` supplies that address.
             if (m->type->isReference()) {
                 const Type *held = types_.pointerTo(m->type->referent());
                 field->setType(held);
@@ -2649,10 +2286,9 @@ void Parser::topLevel(Program &program) {
     functionName_ = d.name;
     staticSymbols_.clear();
 
-    // A member function is the second argument: on the Microsoft ABI the
-    // hidden pointer serves every class a member returns, whatever its size.
-    // Static member functions are refused by name, so member and `this`
-    // cannot come apart here.
+    // A member function is the second argument: on the Microsoft ABI the hidden pointer
+    // serves every class a member returns, whatever its size. Static member functions
+    // are refused by name, so member and `this` cannot come apart here.
     int sretSlot = 0;
     if (d.type->isStructOrUnion() && returnsIndirectly(d.type, memberOf != nullptr)) {
         frameSize_ += 8;
@@ -2677,10 +2313,9 @@ void Parser::topLevel(Program &program) {
     resolveGotos();
     variadicBody_ = false;
 
-    // **The by-value parameters Microsoft makes this function destroy.** A
-    // `return` already unwinds everything the function owes, parameters
-    // included, so these are appended for the one path that does not go
-    // through one: falling off the end.
+    // **The by-value parameters Microsoft makes this function destroy.** A `return`
+    // already unwinds everything the function owes, parameters included, so these are
+    // appended for the one path that does not go through one: falling off the end.
     if (aliveParams != 0) {
         std::vector<StmtPtr> withParams;
         withParams.push_back(std::move(body));
@@ -2700,20 +2335,9 @@ void Parser::topLevel(Program &program) {
         body = StmtPtr(new Block(std::move(withInits)));
     }
 
-    // **A polymorphic object's vptr is set by its constructor**, before the
-    // body and after the base's constructor - which is what makes the object
-    // this class's during its own body even though the base already set the
-    // pointer to its own table.
-    //
-    // **And by its destructor, for the same reason running the other way.**
-    // [class.cdtor]/4: a virtual call from a destructor reaches the final
-    // overrider *in that destructor's class*, so as each level is torn down
-    // the object stops being what the level below it built. Constructors
-    // stored the pointer and destructors never did, so during `~A` the object
-    // still claimed to be a `B` and a virtual call from there ran B's
-    // override against a subobject B had already finished destroying. The
-    // store goes in front of the body and the base's destructor is appended
-    // after it, which is the order the standard fixes.
+    // **A polymorphic object's vptr is set by its constructor**, before the body and
+    // after the base's - and by its destructor, for the same reason running the other
+    // way: [class.cdtor]/4 makes a virtual call reach that level's own overrider.
     if (memberOf != nullptr && memberOf->polymorphic() &&
         (d.name == localOf(d.qualifier) ||
          d.name == "~" + localOf(d.qualifier))) {
@@ -2722,26 +2346,17 @@ void Parser::topLevel(Program &program) {
         body = StmtPtr(new Block(std::move(withVptr)));
     }
 
-    // **A constructor runs the base's first and a destructor runs it last**,
-    // which is the order the standard fixes and the order clang emits: the
-    // base subobject has to exist before the derived body can touch it, and it
-    // has to outlive the derived body for the same reason.
-    //
-    // The base's C2 and D2 are what is called - the base-object forms - and
-    // this is what those two names have been emitted for since constructors
-    // landed. On Windows there is one name for each and it is called directly.
+    // **A constructor runs the base's first and a destructor runs it last**, which is
+    // the order the standard fixes and clang emits. The base's C2 and D2 are what is
+    // called, and on Windows there is one name for each, called directly.
     for (std::size_t bn = 0;
          memberOf != nullptr && bn < memberOf->bases().size() &&
          (d.name == localOf(d.qualifier) ||
           d.name == "~" + localOf(d.qualifier)); bn++) {
         const bool building = d.name == localOf(d.qualifier);
-        // Bases are built in the order they were written and destroyed in the
-        // reverse - measured: A up, B up, C up, then C down, B down, A down.
-        //
-        // **Both walk the list backwards**, because a constructor's call is
-        // prepended to the body and a destructor's is appended. Prepending A
-        // last is what leaves it first; appending A last is what leaves it
-        // last. Walking forwards for the constructor put B before A.
+        // Bases are built in the order they were written and destroyed in the reverse.
+        // **Both walk the list backwards**, because a constructor's call is prepended
+        // to the body and a destructor's is appended; forwards put B before A.
         const std::size_t which = memberOf->bases().size() - 1 - bn;
         const Type *base = memberOf->bases()[which].type;
         const int baseAt = memberOf->bases()[which].offset;
@@ -2783,12 +2398,9 @@ void Parser::topLevel(Program &program) {
                 src_.fail(d.pos, "'" + base->tag() + "' has no constructor "
                                  "taking nothing - name one in the initialiser "
                                  "list, ': " + base->tag() + "(...)'");
-            // **The defaults the entry left out are read here, as every
-            // other call reads them.** This call is built by hand below,
-            // one argument per parameter of `chosen`, and it used to walk
-            // `chosen.params` against a `chosenArgs` that held only what
-            // was written - `: Base(1)` against `Base(int, int = 6)` read
-            // one past the end of the vector, and the compiler died.
+            // **The defaults the entry left out are read here, as every other call
+            // reads them.** This call is built by hand, one argument per parameter of
+            // `chosen`, and it used to read one past the end of the vector and die.
             if (building) applyDefaults(chosen, chosenArgs, d.pos);
 
             std::string symbol = chosen.symbol;
@@ -2845,11 +2457,9 @@ void Parser::topLevel(Program &program) {
     if (definedSymbol.empty())
         definedSymbol = lookupSignature(d.name, params, variadic, d.pos).symbol;
 
-    // Recorded before `body` is moved into the Function - the expression the
-    // pointer names is heap-allocated and goes on living there, which is what
-    // makes it safe to keep. Only a definition has one; a `constexpr`
-    // declaration with no body is a promise nothing can be folded through
-    // yet, and calling it in a constant expression says so where it is called.
+    // Recorded before `body` is moved into the Function - the expression the pointer
+    // names is heap-allocated and goes on living there, which makes it safe to keep.
+    // Only a definition has one; a declaration with no body folds through nothing.
     if (constexprFunction && body != nullptr) {
         const Expr *value = singleReturnValue(*body);
         if (value == nullptr)

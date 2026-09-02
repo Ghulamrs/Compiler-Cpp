@@ -1,8 +1,6 @@
-// The parser: templates.
-//
-// Template parameters and the scope they are bound in, argument deduction,
-// partial ordering and specialisation, and the token replay that turns a
-// pattern into an instantiation. Rung 5.
+// The parser: templates. Template parameters and the scope they are bound in,
+// argument deduction, partial ordering and specialisation, and the token replay
+// that turns a pattern into an instantiation. Rung 5.
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
@@ -12,14 +10,8 @@
 #include <cstring>
 
 // ------------------------------------------------------------------ templates
-//
-// **Rung 5.1: the table exists and nothing is instantiated.** That is the
-// whole of it, and it is first because everything else stands on it:
-// `f<int>(x)` and `a<b>(c)` are the same tokens, and the only thing that tells
-// them apart is whether `f` names a template. So the name has to be in a table
-// before any `<` is read, and a `<` opens an argument list *only* for a name
-// that is in it - never on shape alone, which is the one mistake here that
-// silently mis-parses code that used to work.
+// **Rung 5.1: the table exists and nothing is instantiated.** `f<int>(x)` and
+// `a<b>(c)` are the same tokens; only a name in the table opens an argument list.
 
 // A `>` may be the front half of a `>>`. See the note on angleSplit_.
 bool Parser::atClosingAngle() const {
@@ -106,18 +98,9 @@ void Parser::templateParameters(std::vector<TemplateParam> &params) {
     takeClosingAngle();
 }
 
-// The name the template is being given, and nothing else about it.
-//
-// A class template's name is the identifier the `struct` or `class` keyword
-// introduces, and it is read straight off: parsing the body instead would
-// register a class that has no business existing until an argument list is
-// given for it.
-//
-// **A function template's name sits behind a return type and a declarator
-// that mention the parameters**, so `T` has to denote *something* before
-// `T twice(T x)` can be read at all. It denotes `int` here - a stand-in that
-// cannot escape, because the type this builds is thrown away and the body is
-// skipped unparsed. 5.2 replaces it with the argument the template is given.
+// The name the template is being given, and nothing else about it. A class
+// template's is read straight off the keyword; **a function template's sits behind
+// a return type that mentions the parameters**, so `T` denotes a stand-in first.
 std::string Parser::templatedName(const std::vector<TemplateParam> &params,
                                   bool *isClass, std::string *qualifier) {
     qualifier->clear();
@@ -130,9 +113,8 @@ std::string Parser::templatedName(const std::vector<TemplateParam> &params,
     *isClass = false;
 
     // **Read as a pattern, with the parameters standing for themselves.** The
-    // stand-in used to be `int`, which was enough to find a name - but it
-    // would instantiate `Box<int>` here, at a declaration that may be the
-    // out-of-line definition of a member and asks for no class at all.
+    // stand-in used to be `int`, which was enough to find a name - but it would
+    // instantiate `Box<int>` at a declaration that asks for no class at all.
     TemplateDecl scratch;
     scratch.params = params;
     scratch.afterParams = at_;
@@ -149,11 +131,9 @@ std::string Parser::templatedName(const std::vector<TemplateParam> &params,
     return name;
 }
 
-// **The parameters are bound to the argument list, and the tables are put
-// back exactly as they were.** A type parameter becomes a type name and a
-// non-type one an enumerator, which is what makes `T x` and `int a[N]` read
-// with no second lookup path: the two things a template parameter can be are
-// the two things this parser already knows how to look up.
+// **The parameters are bound to the argument list, and the tables are put back
+// exactly as they were.** A type parameter becomes a type name and a non-type one
+// an enumerator, which is what makes `T x` and `int a[N]` read with no new path.
 void Parser::bindTemplateParameters(const std::vector<TemplateParam> &params,
                                     const std::vector<const Type *> &binding,
                                     const std::vector<long long> &values,
@@ -232,10 +212,9 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
                                             std::string *qualifier,
                                             const std::vector<std::vector<const Type *> > *packs) {
     const std::size_t resume = at_;
-    // **Put back even if this throws.** Forming a signature is what a trial
-    // runs, and a failed one must leave the parameter names unbound for the
-    // next candidate. The guard is the only thing standing between a
-    // substitution failure and a table that still says T means int.
+    // **Put back even if this throws.** Forming a signature is what a trial runs,
+    // and a failed one must leave the parameter names unbound for the next
+    // candidate - all that stands between a failure and a table still saying int.
     struct Unbind {
         Parser *p;
         std::vector<Shadow> undo;
@@ -257,14 +236,9 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
     const Type *base = specifiers(&sc, &quals);
     Declared d = declarator(base);
 
-    // **The declarator records where the parameter list is and does not read
-    // it**, which is how a definition gets to read the parameters once, with
-    // their names. Here there is no definition to read them for, so they are
-    // read for their types the way a prototype's are.
-    //
-    // The declarator's type is the *return* type at this point - the same
-    // shape topLevel reads, where the function type is built once the
-    // parameters have been.
+    // **The declarator records where the parameter list is and does not read it**,
+    // which is how a definition gets to read the parameters once with their names.
+    // Here there is none, so they are read for their types as a prototype's are.
     if (d.paramsAt != 0 || peek().is("(")) {
         if (d.paramsAt != 0) at_ = d.paramsAt;
         std::vector<const Type *> params;
@@ -323,13 +297,8 @@ bool Parser::templateDeclaration() {
     decl.pos = peek().pos;
 
     // **A variable template is C++14, and it is told from the two C++11
-    // declarations by a token scan.** What follows `template <...>` here is a
-    // class, a function, or an out-of-line member; the first two reach a '('
-    // or a class key before any '=', and the third writes a '::' before its
-    // own. So an '=' at depth zero with neither ahead of it is
-    // `template <class T> T zero = ...`, which this compiler does not have and
-    // which would otherwise be reported as a function template that nobody
-    // defined.
+    // declarations by a token scan**: a class or function reaches '(' or a class
+    // key before any '=', and an out-of-line member writes '::' before its own.
     if (!peek().is("struct") && !peek().is("class") && !peek().is("union")) {
         int depth = 0;
         for (std::size_t i = at_; i < tokens_.size(); i++) {
@@ -348,21 +317,18 @@ bool Parser::templateDeclaration() {
         }
     }
 
-    // Its own step, and refused by name until then: the declarator reads a
-    // class *name* before the `::`, and reading a template-id there is what
-    // an out-of-line constructor needs. A member function is different - it
-    // has a return type, so the qualifier is read by the declarator's
-    // ordinary qualified path.
+    // Its own step, and refused by name until then: the declarator reads a class
+    // *name* before the `::`, and reading a template-id there is what an
+    // out-of-line constructor needs. A member function has a return type instead.
     std::string special;
     if (atOutOfLineSpecial(&special))
         src_.fail(decl.pos, "a " + special + " of a class template written "
                             "outside the class is not supported yet - write "
                             "it inside the class");
 
-    // **`template <class T> struct Box<T *>` - a partial specialization.** It
-    // is told from the primary by the `<` after the name: a class template
-    // being *declared* has nothing there, and one already declared is being
-    // specialized rather than redeclared.
+    // **`template <class T> struct Box<T *>` - a partial specialization.** It is
+    // told from the primary by the `<` after the name: a class template being
+    // *declared* has nothing there, and one already declared is being specialized.
     if ((peek().is("struct") || peek().is("class") || peek().is("union")) &&
         peekAt(1).kind == TokenKind::Ident && peekAt(2).is("<")) {
         auto primary = templates_.find(peekAt(1).text);
@@ -375,11 +341,9 @@ bool Parser::templateDeclaration() {
         ps.pos = decl.pos;
         at_ += 2;
         partialArguments(&ps, primary->second.params);
-        // **`:` as well as `{`.** A specialization may have a base clause, and
-        // a recursive variadic one always does - `struct A<T, R...> : A<R...>`
-        // is the whole shape. bodyAt points at whichever comes first, because
-        // the replay goes through structOrUnionSpecifier, which reads the
-        // base clause and the body in that order anyway.
+        // **`:` as well as `{`.** A specialization may have a base clause and a
+        // recursive variadic one always does - `struct A<T, R...> : A<R...>`. The
+        // replay goes through structOrUnionSpecifier, which reads both in order.
         if (!peek().is("{") && !peek().is(":"))
             src_.fail(peek().pos, "a partial specialization is a definition, "
                                   "and this one has no body");
@@ -413,10 +377,9 @@ bool Parser::templateDeclaration() {
     at_ = decl.afterParams;
     const bool defined = skipTemplatedDefinition();
 
-    // **A member of a class template defined outside it belongs to the
-    // class**, not to a template of its own. The declarator already reads a
-    // qualified name for a nested class; all that is new is that the
-    // qualifier is a template-id, and the class it names is the pattern.
+    // **A member of a class template defined outside it belongs to the class**, not
+    // to a template of its own. The declarator already reads a qualified name; what
+    // is new is that the qualifier is a template-id, naming the pattern.
     if (!qualifier.empty()) {
         const Type *of = findTypedef(qualifier);
         if (of == nullptr || !of->isSpecialization())
@@ -451,28 +414,18 @@ bool Parser::templateDeclaration() {
         decl.outOfLine = it->second.outOfLine;
         it->second = decl;
     } else if (decl.defined) {
-        // **One template per name, and the second is refused rather than
-        // dropped.** This table holds one entry per name, so a second
-        // definition used to replace nothing and simply disappear - a
-        // silently missing overload. Overloading function templates is its
-        // own step; until then the reader is told where it stopped.
+        // **One template per name, and the second is refused rather than dropped.**
+        // This table holds one entry per name, so a second definition used to
+        // replace nothing and simply disappear - a silently missing overload.
         src_.fail(decl.pos, "'" + decl.name + "' is already a template, and "
                             "two templates of one name are not supported yet");
     }
     return true;
 }
 
-// `template <> struct Box<int> { ... };` - rung 5.6.
-//
-// A class written out for one argument list instead of made from the
-// template. Nothing about the class path changes: the tag is `Box<int>` here
-// exactly as it would be if the template had produced it, so every use finds
-// this one through the same lookup, the manglers spell it the same way, and
-// a member is keyed the same. What differs is only where the body came from.
-//
-// **The argument list is read against the primary's parameters**, which is
-// what decides whether an argument is a type or a value - the same rule as
-// every other use, and the reason the primary has to be declared first.
+// `template <> struct Box<int> { ... };` - rung 5.6. A class written out for one
+// argument list: the tag is `Box<int>` as the template would have made it, so every
+// lookup and mangling is the same. **The list is read against the primary's.**
 bool Parser::explicitSpecialization() {
     const std::size_t pos = peek().pos;
     expect("<");
@@ -505,9 +458,8 @@ bool Parser::explicitSpecialization() {
 
     const std::string tag = specializationKey(name, args);
     // **Too late is an error, not a redefinition.** [temp.expl.spec]: a
-    // specialization has to be declared before the first use that would
-    // instantiate the template, and if one already did then two different
-    // classes have been given one name.
+    // specialization has to be declared before the first use that would instantiate
+    // the template, or two different classes have been given one name.
     if (findTypedef(tag) != nullptr)
         src_.fail(pos, "'" + tag + "' has already been used further up, so "
                        "specializing it here is too late - the specialization "
@@ -556,10 +508,9 @@ bool Parser::atOutOfLineSpecial(std::string *what) {
     return yes;
 }
 
-// The argument list, read only far enough to step over it - and stepping over
-// it is what proves the `>>` split, since `Box<Box<int>>` cannot be got past
-// any other way. A nested list is recognised by its name being a template,
-// the same rule that opened this one.
+// The argument list, read only far enough to step over it - and stepping over it is
+// what proves the `>>` split, since `Box<Box<int>>` cannot be got past any other
+// way. A nested list is recognised by its name being a template.
 void Parser::skipTemplateArguments() {
     expect("<");
     for (;;) {
@@ -589,10 +540,9 @@ void Parser::skipTemplateArguments() {
     }
 }
 
-// `<int, 3>` at a use, read against the parameter list it is for. A type
-// parameter takes a type-id and a non-type one a constant expression, so
-// which is which is decided by the template and never by the shape of what is
-// written - the same rule that decided the `<` itself.
+// `<int, 3>` at a use, read against the parameter list it is for. A type parameter
+// takes a type-id and a non-type one a constant expression, so which is which is
+// decided by the template and never by the shape of what is written.
 void Parser::templateArguments(const TemplateDecl &decl,
                                std::vector<const Type *> *binding,
                                std::vector<long long> *values,
@@ -617,29 +567,23 @@ void Parser::templateArguments(const TemplateDecl &decl,
         if (p.isPack) {
             a.isPack = true;
             a.isType = true;
-            // **`first` and not `a.pack.empty()`.** An expansion may
-            // contribute nothing - `A<R...>` where R is empty is how a
-            // recursion ends - and then the pack is still empty at the second
-            // argument, so emptiness cannot say whether a comma is due.
+            // **`first` and not `a.pack.empty()`.** An expansion may contribute
+            // nothing - `A<R...>` where R is empty is how a recursion ends - so
+            // emptiness cannot say whether a comma is due.
             bool first = true;
             while (!atClosingAngle()) {
                 if (!first) expect(",");
                 first = false;
-                // **`R...` - one pack expanded into another's argument list.**
-                // This is what makes a recursive variadic class possible:
-                // `struct A<T, R...> : A<R...>` passes on everything but the
-                // head, and each step shortens the list by one until the
-                // empty specialization stops it. What is written is a name
-                // and three dots; what it means is every member of that pack
-                // spliced in where it stands.
+                // **`R...` - one pack expanded into another's argument list**,
+                // which is what makes a recursive variadic class possible: each
+                // step passes on all but the head until the empty case stops it.
                 if (peek().kind == TokenKind::Ident && peekAt(1).is("...")) {
                     auto pk = packs_.find(peek().text);
                     if (pk != packs_.end()) {
                         const std::vector<const Type *> &members =
                             pk->second.types;
                         // In a pattern the pack stands for itself and there is
-                        // nothing to splice - the members are the parameter,
-                        // not types. Reading one here would put a
+                        // nothing to splice; reading one here would put a
                         // Kind::TemplateParam into a real argument list.
                         if (members.size() == 1 &&
                             members[0]->kind() == Kind::TemplateParam)
@@ -726,14 +670,9 @@ std::string Parser::specializationKey(const std::string &name,
     return key + ">";
 }
 
-// The specialization these arguments ask for, made if it is new.
-//
-// **The two ABIs are handed two different things and that is not cosmetic.**
-// Itanium is given the template's *pattern* - the signature with
-// Kind::TemplateParam still in it - because its name spells `T_` where a type
-// came from a parameter, and the substituted signature cannot say that.
-// Microsoft is given the substituted signature, which is what it writes. So
-// the declaration is read twice, once each way.
+// The specialization these arguments ask for, made if it is new. **The two ABIs are
+// handed two different things**: Itanium the pattern, since its name spells `T_`,
+// and Microsoft the substituted signature. So the declaration is read twice.
 const Parser::Signature &
 Parser::instantiate(const TemplateDecl &decl,
                     const std::vector<const Type *> &binding,
@@ -785,11 +724,9 @@ Parser::instantiate(const TemplateDecl &decl,
     sp.pos = pos;
     specializations_.push_back(sp);
 
-    // **Under two keys, on purpose.** "twice<int>" is what the replayed
-    // definition declares and what a repeat of the same arguments finds;
-    // "twice" is what overload resolution has to see, because a
-    // specialization competes with the ordinary functions of that name and
-    // [over.match.best] only gets to break the tie if both are candidates.
+    // **Under two keys, on purpose.** "twice<int>" is what the replayed definition
+    // declares and what a repeat of the same arguments finds; "twice" is what
+    // overload resolution must see, a specialization competing with the ordinary.
     const std::size_t at = functions_.size();
     functionIndex_[key].push_back(at);
     functionIndex_[decl.name].push_back(at);
@@ -800,15 +737,9 @@ Parser::instantiate(const TemplateDecl &decl,
     return functions_.back();
 }
 
-// **A body cannot be written where the call is**, because the call is in the
-// middle of another function. So every specialization is recorded and the
-// definitions are replayed afterwards - and to a fixed point, since a body
-// may ask for one of its own. The same shape the implicit special members
-// already have.
-// Whether anything under this key has been chosen by a call. A member
-// function of a class template is instantiated only where one has been -
-// clang and cl both - so this is the gate on every body a specialization
-// holds, inside the class or outside it.
+// **A body cannot be written where the call is**, so every specialization is
+// recorded and the definitions replayed afterwards, to a fixed point. And whether
+// anything under this key was chosen by a call, which gates every body it holds.
 bool Parser::memberIsUsed(const std::string &key) const {
     const std::vector<std::size_t> *set = overloadsOf(key);
     for (std::size_t k = 0; set != nullptr && k < set->size(); k++)
@@ -821,17 +752,9 @@ void Parser::instantiatePending() {
         again = false;
         for (std::size_t i = 0; i < specializations_.size(); i++) {
             if (specializations_[i].emitted) continue;
-            // **Made where it was asked for, defined only where it was
-            // chosen.** Deduction has to instantiate a candidate before it
-            // can rank one, and an ordinary function may then win the tie -
-            // in which case clang emits no specialization and neither does
-            // this. The same rule the implicit special members follow.
-            // **A member function of a class template is instantiated only
-            // where something calls it.** clang and cl both do that, so
-            // emitting the rest would put symbols in the object that neither
-            // oracle has. Taken a body at a time, and a body that is skipped
-            // this time round may be wanted after another one is replayed -
-            // which is what the outer loop is for.
+            // **Made where it was asked for, defined only where it was chosen** -
+            // deduction instantiates a candidate before it can rank one, and an
+            // ordinary function may win. A body skipped now may be wanted later.
             std::vector<PendingBody> now;
             std::vector<std::size_t> outsideNow;
             if (specializations_[i].isClass) {
@@ -842,10 +765,9 @@ void Parser::instantiatePending() {
                 }
                 specializations_[i].bodies = later;
 
-                // **Looked up fresh, because the list can still be growing.**
-                // An out-of-line definition may be written further down the
-                // file than the use that asked for the class, so what the
-                // template has now is not what it had then.
+                // **Looked up fresh, because the list can still be growing.** An
+                // out-of-line definition may be written further down the file than
+                // the use that asked for the class.
                 const TemplateDecl &d = templates_[specializations_[i].name];
                 std::vector<bool> &done = specializations_[i].outsideDone;
                 done.resize(d.outOfLine.size(), false);
@@ -925,12 +847,9 @@ const Type *Parser::substituteDeduced(const Type *t, const Type *with) {
     return t;
 }
 
-// **The initialiser is read twice: once to learn its type, once to build it.**
-// The tokens are put back in between, so the ordinary declaration path that
-// follows sees exactly what it would have seen with the type written out.
-// Reading it once and handing the expression on would mean threading it
-// through every branch of that path - the class-with-constructors one
-// included - to save a parse that costs nothing.
+// **The initialiser is read twice: once to learn its type, once to build it.** The
+// tokens are put back in between, so the ordinary declaration path sees exactly
+// what it would have seen with the type written out.
 const Type *Parser::deduceAuto(const Type *declared, const std::string &name,
                                std::size_t pos) {
     if (!peek().is("="))
@@ -963,10 +882,9 @@ const Type *Parser::deduceAutoFrom(const Type *declared, const Type *from,
     return substituteDeduced(declared, binding[0]);
 }
 
-// **What a parameter sees of an argument.** [temp.deduct.call]: an array
-// becomes a pointer to its first element, a function a pointer to itself, and
-// the top-level qualifier goes - which is also just what passing something
-// does, so this is not a rule deduction invented.
+// **What a parameter sees of an argument.** [temp.deduct.call]: an array becomes a
+// pointer to its first element, a function a pointer to itself, and the top-level
+// qualifier goes - which is also just what passing something does.
 const Type *Parser::decayedType(const Type *a) const {
     if (a->isReference()) a = a->referent();
     if (a->isArray()) return types_.pointerTo(a->pointee());
@@ -974,11 +892,9 @@ const Type *Parser::decayedType(const Type *a) const {
     return a->unqualified();
 }
 
-// One parameter of the pattern against one argument's type.
-//
-// The pattern still has Kind::TemplateParam in it, so "does this position
-// deduce anything" is a question about the type and not about a table: a
-// parameter reached here binds, and a type that is not one has to match.
+// One parameter of the pattern against one argument's type. The pattern still has
+// Kind::TemplateParam in it, so "does this position deduce anything" is a question
+// about the type and not about a table: one reached here binds.
 bool Parser::deduceOne(const Type *pattern, const Type *arg,
                        std::vector<const Type *> *binding,
                        std::string *why) const {
@@ -1039,10 +955,9 @@ bool Parser::deduceOne(const Type *pattern, const Type *arg,
     if (pattern->isArray() && arg->isArray())
         return deduceOne(pattern->pointee(), arg->pointee(), binding, why);
 
-    // Nothing to deduce here. A parameter written out in full does not have to
-    // match exactly - an ordinary conversion may still get the argument
-    // there - so this is not where a mismatch is reported. Overload
-    // resolution ranks the specialization afterwards and refuses it then.
+    // Nothing to deduce here. A parameter written out in full does not have to match
+    // exactly - an ordinary conversion may still get the argument there - so this is
+    // not where a mismatch is reported; overload resolution ranks it after.
     return true;
 }
 
@@ -1070,10 +985,9 @@ bool Parser::deduceTemplateArguments(const TemplateDecl &decl,
     std::string ignored;
     const Type *fn = readTemplateDeclaration(decl, pattern, none, &ignored);
 
-    // **A trailing pack takes every argument the written parameters leave.**
-    // It is the last parameter by construction, so "the rest" needs no
-    // searching - and it may be none, which is why this is a `<` and not a
-    // `!=` on the count.
+    // **A trailing pack takes every argument the written parameters leave.** It is
+    // the last parameter by construction, so "the rest" needs no searching - and it
+    // may be none, which is why this is a `<` and not a `!=` on the count.
     const bool hasPack = !decl.params.empty() && decl.params.back().isPack;
     const std::size_t fixed = hasPack ? fn->params().size() - 1
                                       : fn->params().size();
@@ -1109,11 +1023,9 @@ bool Parser::deduceTemplateArguments(const TemplateDecl &decl,
     return true;
 }
 
-// Whether parameter `i` appears anywhere in a pattern. A parameter a
-// specialization never mentions could not be worked out from any argument
-// list, so the specialization could never be chosen - which is worth refusing
-// where it is written rather than leaving as a specialization that silently
-// never applies.
+// Whether parameter `i` appears anywhere in a pattern. One a specialization never
+// mentions could not be worked out from any argument list, so it could never be
+// chosen - worth refusing where it is written rather than leaving it silent.
 static bool mentionsParam(const Type *t, std::size_t i) {
     if (t == nullptr) return false;
     if (t->unqualified() != t) return mentionsParam(t->unqualified(), i);
@@ -1150,11 +1062,9 @@ Parser::Trial::~Trial() {
 bool Parser::matchPattern(const Type *pattern, const Type *arg,
                           std::vector<const Type *> *binding,
                           std::string *why) const {
-    // **The qualifier is asked about before anything else, and both sides
-    // must agree.** `Box<const T>` matches `Box<const int>` with T as int; it
-    // does not match `Box<int>`. `Box<T>` matches both, binding T to the
-    // qualified type where there is one - which is why this comes first and
-    // the parameter case second.
+    // **The qualifier is asked about before anything else, and both sides must
+    // agree.** `Box<const T>` matches `Box<const int>` and not `Box<int>`; `Box<T>`
+    // matches both, binding T to the qualified type where there is one.
     if (pattern->unqualified() != pattern) {
         if (arg->unqualified() == arg) {
             *why = "'" + arg->describe() + "' is not const";
@@ -1215,13 +1125,9 @@ bool Parser::matchPattern(const Type *pattern, const Type *arg,
 void Parser::partialArguments(TemplateDecl::Partial *ps,
                               const std::vector<TemplateParam> &primary) {
     const std::size_t count = primary.size();
-    // **A variadic primary is not written a fixed number of arguments.**
-    // `template <class... Ts> struct L;` has one parameter and
-    // `struct L<T, R...>` gives it two, because the pack stands for a list
-    // rather than for one type. So the closing angle says where the pattern
-    // stops, not the parameter count - which is why the count was the wrong
-    // thing to check and gave "more arguments than the template has
-    // parameters" for every recursive variadic class.
+    // **A variadic primary is not written a fixed number of arguments**: a pack
+    // stands for a list, so the closing angle says where the pattern stops and not
+    // the parameter count - which gave "more arguments than parameters" before.
     const bool variadic = !primary.empty() && primary.back().isPack;
     expect("<");
     const bool wasInArgs = inTemplateArgs_;
@@ -1305,10 +1211,9 @@ void Parser::partialArguments(TemplateDecl::Partial *ps,
     patternOnly_ = wasPattern;
 }
 
-// [temp.class.order], asked the standard's own way: A is at least as
-// specialized as B when B's pattern matches A's. A's parameters stand as
-// opaque types while that happens, which is exactly what they already are -
-// Kind::TemplateParam is not a type anything can be.
+// [temp.class.order], asked the standard's own way: A is at least as specialized as
+// B when B's pattern matches A's. A's parameters stand as opaque types while that
+// happens, which is exactly what Kind::TemplateParam already is.
 bool Parser::atLeastAsSpecialized(const TemplateDecl::Partial &a,
                                   const TemplateDecl::Partial &b) const {
     std::vector<const Type *> binding(b.params.size());
@@ -1346,9 +1251,7 @@ std::size_t Parser::choosePartial(const TemplateDecl &decl,
 
     // **The arguments arrive as one pack when the primary is variadic.**
     // `L<int, char>` against `template <class... Ts>` is a single TemplateArg
-    // holding both, and a pattern like `L<T, R...>` is written against the
-    // *members*. So the list is flattened once here and every pattern is
-    // matched against that.
+    // holding both, so the list is flattened here and every pattern matched on it.
     std::vector<TemplateArg> flat;
     for (std::size_t i = 0; i < args.size(); i++) {
         if (!args[i].isPack) { flat.push_back(args[i]); continue; }
@@ -1408,12 +1311,9 @@ std::size_t Parser::choosePartial(const TemplateDecl &decl,
 
     if (fits.empty()) return static_cast<std::size_t>(-1);
 
-    // **One has to beat every other, and "not beaten" is not the same as
-    // "beats".** `P<A, int>` and `P<int, B>` given `P<int, int>` are the case:
-    // neither matches the other, so neither is more specialized, and the
-    // program is ambiguous. Asking only whether the winner was beaten lets
-    // that through and picks whichever came first, which is the silent kind
-    // of wrong this compiler refuses.
+    // **One has to beat every other, and "not beaten" is not the same as "beats".**
+    // `P<A, int>` and `P<int, B>` given `P<int, int>`: neither matches the other, so
+    // the program is ambiguous rather than settled by whichever came first.
     std::size_t best = 0;
     for (std::size_t k = 1; k < fits.size(); k++)
         if (moreSpecialized(decl.partials[fits[k]], decl.partials[fits[best]]))
@@ -1431,13 +1331,9 @@ std::size_t Parser::choosePartial(const TemplateDecl &decl,
     return fits[best];
 }
 
-// `Box<int, 3>` where a type was expected - rung 5.4.
-//
-// The class is made by replaying `struct Box { ... };` with the arguments
-// bound, exactly as a function specialization replays its definition, and the
-// only thing the class path had to be told is what tag to take. Everything
-// else falls out of nested classes: tag() was already an arbitrary qualified
-// string, and both manglers already walked a scope.
+// `Box<int, 3>` where a type was expected - rung 5.4. The class is made by replaying
+// `struct Box { ... };` with the arguments bound, and all the class path had to be
+// told is what tag to take: nested classes had made tag() an arbitrary string.
 const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) {
     std::vector<const Type *> binding;
     std::vector<long long> values;
@@ -1463,11 +1359,9 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
 
     if (const Type *had = findTypedef(tag)) return had;
 
-    // **A partial specialization is chosen before anything is replayed**, and
-    // what it changes is which tokens get replayed and with which parameters
-    // bound. The tag does not change: `Box<int *>` is that whether the body
-    // came from the template or from a pattern that matched it, which is what
-    // keeps the mangling and every lookup the same.
+    // **A partial specialization is chosen before anything is replayed**, and what
+    // it changes is which tokens get replayed and with which parameters bound. The
+    // tag does not change, which keeps the mangling and every lookup the same.
     std::vector<const Type *> useBinding = binding;
     std::vector<long long> useValues = values;
     std::vector<TemplateParam> useParams = decl.params;
@@ -1477,21 +1371,18 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     const bool partial = which != static_cast<std::size_t>(-1);
     if (partial) useParams = decl.partials[which].params;
 
-    // **Asked after the partial is chosen, not before.** A variadic template
-    // is very often declared and never defined - `template <class... Ts>
-    // struct Tuple;` - because every definition it has is a specialization.
-    // There is a body to replay whenever one of them matched; only when none
-    // did is there nothing here at all.
+    // **Asked after the partial is chosen, not before.** A variadic template is
+    // very often declared and never defined, every definition it has being a
+    // specialization: there is a body to replay whenever one of them matched.
     if (!partial && !decl.defined)
         src_.fail(pos, "'" + decl.name + "' is declared but never defined, so "
                        "there is nothing to instantiate");
 
     const std::size_t resume = at_;
     std::vector<Shadow> undo;
-    // **A chosen partial binds its own pack, not the primary's.** `L<T, R...>`
-    // matched against `L<int, char, long>` leaves R holding {char, long}, and
-    // that is what the replayed body has to see - the primary's Ts is not in
-    // scope at all, its parameters having been replaced by the pattern's.
+    // **A chosen partial binds its own pack, not the primary's.** `L<T, R...>` on
+    // `L<int, char, long>` leaves R holding {char, long}, which is what the replayed
+    // body has to see - the primary's Ts is not in scope at all.
     bindTemplateParameters(useParams, useBinding, useValues,
                            partial ? usePacks : packs, &undo);
 
@@ -1527,12 +1418,9 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     sp.params = useParams;
     sp.binding = useBinding;
     sp.values = useValues;
-    // **A partial's pack has to be recorded too.** The held member bodies are
-    // replayed later, from this record, with the parameters bound again - and
-    // a body that says `Tuple<Rest...>` needs Rest to hold what it held when
-    // the declaration was read. Left empty, every level of a recursive class
-    // replayed with an empty pack, so `Tuple<char, long>::tail` was declared
-    // to return `Tuple<long> &` and its body said `Tuple<> &`.
+    // **A partial's pack has to be recorded too.** Held bodies are replayed later
+    // from this record, and one saying `Tuple<Rest...>` needs Rest as it was. Left
+    // empty, `Tuple<char,long>::tail` returned `Tuple<long> &` and said `Tuple<> &`.
     sp.packs = partial ? usePacks : packs;
     sp.start = decl.afterParams;
     sp.pos = pos;
@@ -1551,11 +1439,9 @@ ExprPtr Parser::templateCall(Program *program) {
     if (decl.isClass) refuseTemplateId();
     at_++;
 
-    // **No argument list, so they come from the call.** The arguments have to
-    // be parsed before anything can be deduced from them, which is the other
-    // way round from the written case - and it is also the order overload
-    // resolution wants, since the specialization competes with every ordinary
-    // function of the same name.
+    // **No argument list, so they come from the call.** The arguments are parsed
+    // before anything can be deduced from them, the other way round from the
+    // written case - and the order overload resolution wants.
     if (!peek().is("<")) {
         if (!peek().is("("))
             src_.fail(pos, "'" + name + "' is a function template, and naming "
@@ -1569,10 +1455,9 @@ ExprPtr Parser::templateCall(Program *program) {
         std::string why;
         if (!deduceTemplateArguments(decl, callArgs, &deduced, &deducedPacks,
                                      &why)) {
-            // Not an error while an ordinary function of this name might
-            // still take the call - it is one fewer candidate. With no such
-            // function it is the whole answer, and saying why beats "not
-            // declared".
+            // Not an error while an ordinary function of this name might still take
+            // the call - it is one fewer candidate. With no such function it is the
+            // whole answer, and saying why beats "not declared".
             if (overloadsOf(name) == nullptr)
                 src_.fail(pos, "'" + name + "' is a function template and " + why);
         } else {
@@ -1589,15 +1474,9 @@ ExprPtr Parser::templateCall(Program *program) {
                 }
                 args.push_back(a);
             }
-            // **[temp.deduct]/8, which is what SFINAE is.** The arguments
-            // deduce, but substituting them into the signature may make
-            // something ill-formed - `enable_if<false, int>::type` names no
-            // type - and that removes the specialization from consideration
-            // rather than ending the compile. It is the only failure in this
-            // compiler that recovers, and it recovers exactly this far: a
-            // failure inside a *body* is still an error, because a body is
-            // not part of the signature and the standard does not put it in
-            // the immediate context either.
+            // **[temp.deduct]/8, which is what SFINAE is.** Substituting deduced
+            // arguments may make something ill-formed, and that removes the
+            // specialization rather than ending the compile. A body is not in it.
             try {
                 Trial trial(this);
                 instantiate(decl, deduced, values, args, pos, deducedPacks);
@@ -1651,12 +1530,9 @@ void Parser::refuseTemplateId() {
     const std::size_t pos = peek().pos;
     at_++;
     if (peek().is("<")) skipTemplateArguments();
-    // **`A<int>::n` is not an instantiation this cannot do.** The type is
-    // made perfectly well in a declaration - `A<int> a;` works - and what is
-    // missing is reading a template-id as the qualifier of a name. Saying
-    // "instantiating one is not supported" there is false, and it sends the
-    // reader off to look for something that is already built. The typedef it
-    // names is the whole workaround.
+    // **`A<int>::n` is not an instantiation this cannot do.** The type is made
+    // perfectly well in a declaration; what is missing is reading a template-id as
+    // the qualifier of a name. The typedef it names is the whole workaround.
     if (peek().is("::"))
         src_.fail(pos, "'" + name + "<...>::' - naming a member through a "
                        "class template's argument list is not supported yet; "

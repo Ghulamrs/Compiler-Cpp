@@ -1,16 +1,6 @@
-// The parser: the pieces the rest of it is built on.
-//
-// Reading tokens, looking a name up as a type or an enumerator, deciding from
-// the tokens ahead what kind of thing is being declared, and replaying the
-// member bodies a class held back. Below those, scopes and the local and
-// global symbol tables every other unit declares into.
-//
-// The parser is one class over nine files - Parser.cpp and the eight
-// ParserXxx.cpp beside it. It was one file of nine and a half thousand lines
-// until then, which built as a single translation unit and so had to be read
-// and rebuilt as one too. The split is by subject and nothing moved between
-// subjects; what little has to be seen across the seams is in ParserInternal.h,
-// and the three definitions it declares are here.
+// The parser: the pieces the rest of it is built on. Reading tokens, looking a
+// name up as a type or an enumerator, deciding what is being declared, replaying
+// the bodies a class held back, and below those the scopes and symbol tables.
 
 #include "Parser.h"
 #include "ParserInternal.h"
@@ -22,10 +12,9 @@
 
 int alignTo(int n, int a) { return (n + a - 1) / a * a; }
 
-// Recognised by the lexer, with no rule in this parser yet. Naming the
-// keyword is the whole point: without this the word reaches expression
-// parsing as an unknown identifier and the error lands on whatever follows
-// it, which is never where the reader is looking.
+// Recognised by the lexer, with no rule in this parser yet. Naming the keyword is
+// the whole point: without this the word reaches expression parsing as an unknown
+// identifier and the error lands on whatever follows it.
 const char *notYetSupported(const std::string &word) {
     static const char *const pending[] = {
         "alignas", "alignof", "and", "and_eq", "asm",
@@ -52,30 +41,24 @@ bool isNullConstant(const Expr &e) {
     return n != nullptr && n->type()->isInteger() && n->value() == 0;
 }
 
-// Does this expression name an object at all - what [basic.lval] calls a
-// glvalue? Both an lvalue and an xvalue do, and the difference between them
-// is not asked here: reference binding wants an address and either will give
-// one, so this is the question it asks.
+// Does this expression name an object at all - what [basic.lval] calls a glvalue?
+// An lvalue and an xvalue both do and the difference is not asked here: reference
+// binding wants an address, and either will give one.
 bool isGlvalue(const Expr &e) {
     if (dynamic_cast<const Var *>(&e)) return true;
     if (dynamic_cast<const MemberAccess *>(&e)) return true;
     if (const Unary *u = dynamic_cast<const Unary *>(&e)) return u->op() == '*';
-    // **A comma has the value category of its right operand** - [expr.comma],
-    // and it is C++'s rule rather than C's, where the result is always a
-    // value. It matters here because `b.count` for a static member is built
-    // as one: the object is evaluated and thrown away and what the expression
-    // names is the shared object, which can be assigned to and have its
-    // address taken like any other.
+    // **A comma has the value category of its right operand** - [expr.comma], and
+    // it is C++'s rule rather than C's. It matters because `b.count` for a static
+    // member is built as one: the object is dropped, the shared object is named.
     if (const Comma *c = dynamic_cast<const Comma *>(&e))
         return isGlvalue(c->right());
     return false;
 }
 
-// An object that something else may still be looking at. The same question as
-// above minus the objects handed over by `static_cast<T &&>`, and that
-// subtraction is the whole of what an rvalue reference is for: `T &&` refuses
-// an lvalue and takes an xvalue, so that a move can empty out what it is
-// given without anyone noticing.
+// An object something else may still be looking at: the question above minus what
+// `static_cast<T &&>` hands over, and that subtraction is what an rvalue reference
+// is for - it refuses an lvalue, so a move can empty what it is given.
 bool isLvalue(const Expr &e) {
     return !e.isXvalue() && isGlvalue(e);
 }
@@ -99,10 +82,9 @@ void Parser::expect(const char *s) {
 
 std::string Parser::expectIdent(const char *what) {
     if (peek().kind != TokenKind::Ident) {
-        // A keyword standing where a name was wanted is a feature this parser
-        // has not grown rather than a slip of the finger, and "expected a
-        // name" points at the word without saying what is wrong with it.
-        // `int operator+(int);` is the case this was written for.
+        // A keyword standing where a name was wanted is a feature this parser has
+        // not grown rather than a slip of the finger, and "expected a name" points
+        // at the word without saying what is wrong. `int operator+(int);` is why.
         if (const char *pending = notYetSupported(peek().text))
             src_.fail(peek().pos, std::string("'") + pending +
                                   "' is not supported yet");
@@ -161,11 +143,8 @@ bool Parser::hasTypeNamed(const std::string &key) const {
 }
 
 // **Unqualified lookup inside a namespace, and it is a search and not a rule.**
-// The enclosing namespaces are tried from the innermost outwards, then the ones
-// a `using namespace` has opened, then the name as written - which is
-// [basic.lookup.unqual] closely enough for a compiler with no argument-
-// dependent lookup. The first that names anything wins, and the answer is a key
-// every table here is already able to hold.
+// The enclosing namespaces innermost outwards, then what `using namespace` has
+// opened, then the name as written - [basic.lookup.unqual] closely enough.
 std::string Parser::qualifyForLookup(const std::string &name,
                                      bool (Parser::*exists)(const std::string &) const) const {
     if (name.find("::") != std::string::npos) return name;
@@ -182,10 +161,9 @@ std::string Parser::qualifyForLookup(const std::string &name,
 }
 
 const Type *Parser::findTypedef(const std::string &name) const {
-    // **A class local to this function is found first, and that is what makes
-    // it shadow a global of the same name** - [basic.scope.local], and the
-    // reason the local scope is a table of its own rather than an entry in
-    // the one every other type name lives in.
+    // **A class local to this function is found first, and that is what makes it
+    // shadow a global of the same name** - [basic.scope.local], and the reason the
+    // local scope is a table of its own rather than an entry in the global one.
     auto local = localTypes_.find(name);
     if (local != localTypes_.end()) return local->second;
 
@@ -204,19 +182,15 @@ const Type *Parser::findTypedef(const std::string &name) const {
 
     // **Not found by its own name, so look in the classes this is inside.**
     // Innermost first: a class body being parsed, then the class whose member
-    // function's body this is. A nested class is only visible from inside
-    // without its qualification, which is what these two answer.
+    // function's body this is - a nested class is unqualified only from inside.
     for (std::size_t i = classStack_.size(); i-- > 0; )
         if (const Type *t = lookupInClass(classStack_[i], name)) return t;
     if (currentClass_ != nullptr)
         if (const Type *t = lookupInClass(currentClass_, name)) return t;
 
-    // **A held body is replayed at file scope, and its return type is read
-    // before anything says which class it belongs to.** `Holder *self()`
-    // inside `Holder` is the case: currentClass_ is set from the declarator's
-    // qualifier, which has not been read yet. inlineOwner_ is the one thing
-    // that knows, so it is asked here - and this is why the injected class
-    // name works in a member's return type as well as in its parameters.
+    // **A held body is replayed at file scope, and its return type is read before
+    // anything says which class it belongs to.** `Holder *self()` is the case, and
+    // inlineOwner_ is the one thing that knows, so it is asked here.
     if (!inlineOwner_.empty()) {
         auto it = typedefIndex_.find(inlineOwner_);
         if (it != typedefIndex_.end())
@@ -226,14 +200,9 @@ const Type *Parser::findTypedef(const std::string &name) const {
     return nullptr;
 }
 
-// A class or enum name is a type name in C++, with no typedef written. The
-// standard puts it that the name is inserted into the scope the definition
-// appears in; here that is the one table this parser has for the purpose.
-//
-// What is not implemented is the C compatibility rule that lets an object of
-// the same name hide the class name - "struct stat stat;" is legal C++ and is
-// refused here. It costs a second lookup table to fix and no program in the
-// corpus wants it.
+// A class or enum name is a type name in C++ with no typedef written - inserted
+// into the scope the definition appears in, which here is the one table this
+// parser has. Not implemented: an object of that name hiding the class name.
 void Parser::declareTypeName(const std::string &name, const Type *type) {
     if (findTypedef(name) != nullptr) return;
     typedefIndex_[name] = typedefs_.size();
@@ -289,10 +258,9 @@ bool Parser::atTypeName() const {
     if (tmpl != templates_.end() && tmpl->second.isClass && peekAt(1).is("<"))
         return true;
     if (findTypedef(peek().text) != nullptr) return true;
-    // `N::S` names a type as much as `Outer::Inner` does, and neither answers
-    // to the leading name on its own. One of the two leading names is a
-    // namespace and the other a class, and past that first token the walk is
-    // the same one.
+    // `N::S` names a type as much as `Outer::Inner` does, and neither answers to
+    // its leading name alone. One of those is a namespace and the other a class;
+    // past that first token the walk is the same walk.
     return qualifiedTypeEnd() != 0;
 }
 
@@ -313,11 +281,9 @@ std::size_t Parser::qualifiedTypeEnd() const {
 }
 
 bool Parser::atDeclarationStart() const {
-    // **`Counter::total = 1;` is a statement, not a declaration**, even though
-    // it starts with a name that names a type. A declaration whose type is
-    // written `C::something` needs a nested class, which is refused by name,
-    // so an identifier naming a class and followed by '::' is always the
-    // start of an expression here - a static member being read or written.
+    // **`Counter::total = 1;` is a statement, not a declaration**, though it opens
+    // with a name that names a type: a declaration spelled `C::something` needs a
+    // nested class, so a class name before '::' always begins an expression here.
     if (peek().kind == TokenKind::Ident && peekAt(1).is("::")) {
         const Type *named = findTypedef(peek().text);
         // A namespace comes here for the same reason a class does: `N::v = 1;`
@@ -325,24 +291,17 @@ bool Parser::atDeclarationStart() const {
         // below tells them apart.
         if ((named != nullptr && named->isStructOrUnion()) ||
             namespaces_.find(peek().text) != namespaces_.end()) {
-            // ...**unless the qualified name is itself a type**, which makes
-            // it a declaration after all: `Outer::Inner x;` declares an x
-            // where `Counter::total = 1;` assigns to a static member. Whether
-            // the whole name reaches a type is the difference.
-            // The name is a declaration only where it *stops* at a type.
-            // `Outer::Inner x;` declares an x; `Outer::Inner::shared = 1;`
-            // goes on past the type to a member, and is a statement.
+            // ...**unless the qualified name is itself a type**: it declares only
+            // where the name *stops* at one. `Outer::Inner x;` declares an x;
+            // `Outer::Inner::shared = 1;` goes on past the type and assigns.
             const std::size_t typeEnd = qualifiedTypeEnd();
             return typeEnd != 0 && !peekAt(typeEnd).is("::");
         }
     }
 
-    // `constexpr` beside the storage classes, and it has to be here rather
-    // than in atTypeName: it is a decl-specifier that names no type, so a
-    // statement starting with it is a declaration and nothing else. Left out,
-    // `constexpr int n = 4;` inside a function goes to expression parsing and
-    // the reader is told an expression was expected, pointing at a keyword
-    // that begins a perfectly good declaration.
+    // `constexpr` beside the storage classes, and here rather than in atTypeName:
+    // it is a decl-specifier that names no type, so a statement starting with it
+    // is a declaration and nothing else - or an expression is asked for instead.
     return atTypeName() || peek().is("static") || peek().is("extern")
         || peek().is("register") || peek().is("auto") || peek().is("typedef")
         || peek().is("constexpr");
@@ -369,28 +328,14 @@ void Parser::skipBracedBlock() {
 }
 
 // Each held body re-read as though it had been written outside the class. The
-// tokens are the ones already there - return type, name, parameters, body - so
-// the whole ordinary definition path runs over them, and `inlineOwner_` is
-// what supplies the `Class::` the source does not have.
+// tokens are the ones already there, so the ordinary definition path runs over
+// them, and `inlineOwner_` supplies the `Class::` the source does not have.
 void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     if (mine.empty()) return;
     const std::size_t resume = at_;
-    // **A replay is a nested parse of a different function**, and this is in
-    // the middle of whatever asked for the class - which may be a declaration
-    // inside a function body. `topLevel` sets up the function it is reading
-    // and clears what it finds, so anything belonging to the *enclosing*
-    // function has to be put back afterwards. That is how a local class with
-    // a member function works at all: the member's body is replayed here,
-    // between the class being closed and the next statement, and without this
-    // the class's own name would be gone by the time `L l;` is read.
-    // Everything `topLevel` sets up per function and clears on the way in.
-    // A local class's member body is replayed *between* the class being
-    // closed and the next statement of the function that wrote it, so
-    // without this the enclosing function loses its parameters and its
-    // locals: `h(int k) { struct M { ... }; M m; m.z = k; }` was told `k` was
-    // not declared, because reading M::get had emptied the table k lived in.
-    // The frame size goes back too, or the enclosing function's later locals
-    // are laid out on top of each other.
+    // **A replay is a nested parse of a different function**, in the middle of
+    // whatever asked for the class. Everything `topLevel` sets up per function goes
+    // back afterwards - the enclosing locals, parameters and frame size included.
     const std::string outerFunction = currentFunction_;
     const std::string outerFunctionName = currentFunctionName_;
     const std::map<std::string, const Type *> outerLocalTypes = localTypes_;
@@ -404,12 +349,9 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     const int outerFrameSize = frameSize_;
     const int outerThisOffset = thisOffset_;
     const Type *outerClass = currentClass_;
-    // **The return type belongs to the function being read, and the replay
-    // reads a different one.** Local classes hid this: a member's body set it
-    // to whatever that member returned, and the enclosing function's next
-    // `return` happened to want the same type. A lambda made it visible -
-    // `voidly` returns void, and the function that wrote it was then told its
-    // own `return` was wrong.
+    // **The return type belongs to the function being read, and the replay reads a
+    // different one.** Local classes hid it, a member happening to return the same
+    // type; a lambda returning void made it visible.
     const Type *outerReturn = returnType_;
     const int outerLambdaCount = lambdaCount_;   // lambdaRetSeq_ never resets
     const std::string outerName = functionName_;
@@ -545,10 +487,9 @@ ExprPtr Parser::defaultPromote(ExprPtr e) {
     return e;
 }
 
-// The name the linker is given. 'main' keeps its own, by the rule that makes
-// it findable at all; anything inside extern "C" keeps its own because that
-// is what the linkage specification asked for; everything else is mangled in
-// the ABI of the target being compiled for.
+// The name the linker is given: `main` keeps its own by the rule that makes it
+// findable at all, anything inside extern "C" because that is what the linkage
+// specification asked for, and everything else is mangled in the target's ABI.
 std::string Parser::functionSymbol(const std::string &name, const Type *returns,
                                    const std::vector<const Type *> &params,
                                    bool variadic, bool internal, std::size_t pos) {
@@ -564,7 +505,6 @@ std::string Parser::functionSymbol(const std::string &name, const Type *returns,
     return out;
 }
 
-// Building an object: the constructor is chosen from the arguments the way any
-// overload is, and then called with the object's address in front of them. The
-// object exists before the call - it is a frame slot like any other local - and
-// what the constructor does is give its members values.
+// Building an object: the constructor is chosen from the arguments as any overload
+// is, then called with the object's address in front of them. The object exists
+// before the call - a frame slot like any local - and the constructor fills it.

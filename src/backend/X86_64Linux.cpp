@@ -61,17 +61,9 @@ std::vector<bool> classifyEightbytes(const Type *t, const Target &target) {
     std::vector<bool> reached(lanes, false);
     classifyInto(t, 0, sse, reached, target);
 
-    // **A class with no data members takes no register at all.** The SysV
-    // ABI calls an eightbyte that nothing reaches NO_CLASS, and clang bears
-    // that out: `take2(E{}, 7)` puts the 7 in %edi, so the empty class
-    // consumed nothing. Answering an empty lane list is what says so - every
-    // loop that walks these lanes then moves nothing and takes no slot.
-    //
-    // Before this the lanes started out SSE and only a non-floating member
-    // cleared one, so an empty class kept all of them: it went in xmm0
-    // through a `movss`, four bytes read out of a one-byte object, which
-    // segfaulted on the Linux box. arm64 and Windows classify differently and
-    // were unaffected - the house bug class exactly.
+    // **A class with no data members takes no register at all.** SysV calls an
+    // eightbyte nothing reaches NO_CLASS and clang bears it out; an empty lane
+    // list says so. Before this it went in xmm0 and segfaulted on Linux alone.
     bool any = false;
     for (std::size_t i = 0; i < lanes; i++) if (reached[i]) any = true;
     if (!any) return std::vector<bool>();
@@ -206,15 +198,9 @@ void X86_64Linux::copyTailMem(long long from, long long to, int left) {
     }
 }
 
-// **Built with no scratch at all, one byte at a time from the top down.**
-// The obvious way round - load the low four and OR the rest in above them -
-// needs a second register, because a 32-bit write zeroes the upper half of
-// its destination on this machine and an 8-byte OR would read past the
-// object. Going downwards needs none: shift the accumulator up a byte and OR
-// the next one into its low eight bits, where an 8-bit write leaves the rest
-// alone. The first attempt at this borrowed %rcx and then kept reading the
-// base out of it - which is how the Linux box, and only the Linux box,
-// segfaulted on a three-byte struct.
+// **Built with no scratch at all, one byte at a time from the top down.** The
+// obvious way round needs a second register, a 32-bit write zeroing the upper
+// half of its destination; going downwards an 8-bit write leaves the rest alone.
 void X86_64Linux::loadTailToReg(const char *reg64, long long off,
                                 const char *base, int left) {
     a_->ins("movzbl", mem(off + left - 1, base), reg(narrower(reg64, 4)));
@@ -707,20 +693,9 @@ void X86_64Linux::genConversion(const Type *from, const Type *to) {
 
     const char *op = genKind(from) == Kind::Double ? "cvttsd2si" : "cvttss2si";
 
-    // **`cvttsd2si` is a *signed* conversion, and there is no unsigned one.**
-    // For anything narrower than 64 bits that costs nothing - convert to a
-    // signed 64 and truncate, which is what `canonicalise` does below - but a
-    // `double` at or above 2^63 has no signed answer, and the instruction
-    // returns the integer indefinite value: 0x8000000000000000. So
-    // `(unsigned long long)12000000000000000000.0` came out
-    // 9223372036854775808 on both x86 targets, where arm64 has `fcvtzu` and
-    // was right all along. The house bug class, one target correct and two
-    // not.
-    //
-    // Subtract 2^63 first where the value is at or above it, convert what is
-    // left, and put the bit back. This is the mirror of the halving trick the
-    // other direction already has a few lines up, and it branches rather than
-    // using `cmov` because the Microsoft speller knows `jae` and not `cmovb`.
+    // **`cvttsd2si` is a *signed* conversion, and there is no unsigned one.** A
+    // `double` at or above 2^63 returns the integer indefinite value, so subtract
+    // 2^63 first, convert what is left and put the bit back. arm64 has `fcvtzu`.
     if (to->size(target_) == 8 && !to->isSigned(target_)) {
         const bool dbl = genKind(from) == Kind::Double;
         const int id = nextLabel();
@@ -935,11 +910,9 @@ void X86_64Linux::visit(const Call &n) {
 
     std::vector<bool> padBelow;
     bool byRef = abi_.aggregatesByReference;
-    // The Microsoft size test serves free functions only: a class returned by
-    // value from a member function travels through the hidden pointer whatever
-    // its size, so `hasThis` decides before `msInRegister` is asked. The
-    // parser made the same choice when it gave the callee its sret slot, and
-    // the two must not come apart.
+    // The Microsoft size test serves free functions only: a class returned from a
+    // member function travels through the hidden pointer whatever its size, so
+    // `hasThis` decides first. The parser chose the same giving the sret slot.
     bool sret = n.type()->isStructOrUnion() &&
                (n.type()->nonTrivialCopy() || n.type()->hasDestructor() ||
                 containsX87(n.type(), target_) ||
@@ -947,25 +920,17 @@ void X86_64Linux::visit(const Call &n) {
                           !msInRegister(n.type()->size(target_)))
                        : n.type()->size(target_) > abi_.structReturnLimit));
     // **Where the hidden return pointer sits, and the one ABI that moves it.**
-    // Itanium puts it in front of everything. The Microsoft ABI does too - for
-    // a free function. For a *member* function cl passes `this` first and the
-    // return pointer second, measured with clang for this ABI:
-    // `movq 56(%rsp), %rcx; leaq 32(%rsp), %rdx; call ?get@W@@QEAA?AUBig@@H@Z`,
-    // and the callee reads its `k` through %rcx and writes its result through
-    // %rdx. cxx1 reserved slot 0 for the pointer ahead of every parameter
-    // including `this`, so it passed the two the other way round - on both
-    // sides of the call, which is why nothing inside cxx1 noticed and why any
-    // link against cl-compiled code was silently wrong.
+    // Itanium puts it in front of everything and Microsoft does too - except for
+    // a member function, which passes `this` first. Measured with clang.
     const bool msThisFirst = sret && abi_.positional && n.hasThis();
     int ints = (sret && !msThisFirst) ? 1 : 0;
     int sses = (sret && abi_.positional && !msThisFirst) ? 1 : 0;
     int stackSlots = 0;
     std::size_t argIndex = 0;
     for (const ExprPtr &arg : n.args()) {
-        // The pointer takes the slot after `this`, so everything from the
-        // second argument on starts one further along. Counted at the head of
-        // the turn that needs it rather than after the one before, because
-        // this loop leaves by more than one path.
+        // The pointer takes the slot after `this`, so everything from the second
+        // argument on starts one further along. Counted at the head of the turn
+        // that needs it, because this loop leaves by more than one path.
         if (msThisFirst && argIndex == 1) { ints++; sses++; }
         argIndex++;
         const Type *t = arg->type();
@@ -1049,12 +1014,9 @@ void X86_64Linux::visit(const Call &n) {
                 push();
                 continue;
             }
-            // **A partial lane is pushed as a zeroed word and then filled.**
-            // %rcx holds the source and the loop still needs it, so there is
-            // no second register to build the value in - and the value must
-            // not be built by reading eight bytes, which would read past the
-            // object. Writing the live bytes straight into the slot needs
-            // neither.
+            // **A partial lane is pushed as a zeroed word and then filled.** %rcx
+            // holds the source and the loop still needs it, and reading eight
+            // bytes would read past the object; the live bytes need neither.
             a_->ins("push", immText("0"));
             depth_++;
             int done = 0;
@@ -1117,11 +1079,9 @@ void X86_64Linux::visit(const Call &n) {
                 a_->ins("mov", mem(off, "%rax"), reg(abi_.intRegs[slot[i][k]]));
             } else {
 
-                // The sixth place a partial lane is moved, and the one an
-                // audit of the other five missed: an aggregate small enough
-                // to travel in registers, loaded a lane at a time. %rax is
-                // the object's address and %r11 the scratch, so the
-                // accumulator is built in %r11 and handed over whole.
+                // The sixth place a partial lane is moved, and the one an audit
+                // of the other five missed: an aggregate small enough to travel
+                // in registers, %rax its address and %r11 the accumulator.
                 loadTailToReg("%r11", off, "%rax", left);
                 a_->ins("mov", reg("%r11"), reg(abi_.intRegs[slot[i][k]]));
             }
@@ -1359,10 +1319,9 @@ void X86_64Linux::landingPad(int pointerSlot, int selectorSlot) {
     a_->ins("movl", reg("%edx"), local(selectorSlot));
 }
 
-// The same table the arm64 backend writes, in this assembler's spelling. The
-// layout and every encoding byte are documented there; what differs is the
-// section, the label prefix, and that a type_info pointer goes through a stub
-// this file has to define rather than through @GOT.
+// The same table the arm64 backend writes, in this assembler's spelling; the
+// layout and every encoding byte are documented there. What differs is the
+// section, the label prefix, and a type_info reached through a stub, not @GOT.
 void X86_64Linux::emitLsda(const std::string &symbol) {
     const std::string ex = ".Lexception." + symbol;
     const std::string ttbase = ".Lttbase." + symbol;
@@ -1432,13 +1391,9 @@ void X86_64Linux::emitLsda(const std::string &symbol) {
     o += ttbase + ":\n";
     o += "  .p2align 2\n";
 
-    // **The two objects an ELF table refers to indirectly.** The type table
-    // holds pc-relative offsets to *pointers*, not to the type_info objects
-    // themselves, because a direct reference to one living in another shared
-    // object would need a text relocation. The personality routine is named
-    // through a weak hidden comdat for the same reason. Both are what clang
-    // emits and neither is optional. Written beside the first table that
-    // wants them, so the file needs no second pass.
+    // **The two objects an ELF table refers to indirectly.** The type table holds
+    // offsets to *pointers*, since a direct reference to one in another shared
+    // object needs a text relocation; the personality is a weak hidden comdat.
     for (std::size_t i = 0; i < lsdaTypes_.size(); i++) {
         if (lsdaTypes_[i].empty()) continue;
         bool had = false;
@@ -1647,17 +1602,9 @@ void X86_64Linux::emit(const Function &fn) {
     else if (fn.returns()->isFloating())    a_->ins("pxor", reg("%xmm0"), reg("%xmm0"));
     else                                    a_->ins("mov", immText("0"), reg("%rax"));
     a_->defLabel(returnLabel_);
-    // **rsp is restored *from rbp*, never by adding to itself.** Resuming
-    // after a catch is the case that decides it: the runtime unwinds the
-    // frame and jumps back into the middle of the function, and rsp is
-    // whatever it left there rather than what the body had. Adding the frame
-    // size to it then lands somewhere arbitrary - measured, and what it
-    // landed on was the unwind-help slot, so `ret` took -2 as a return
-    // address and the program jumped to 0xFFFFFFFFFFFFFFFE.
-    //
-    // Where the locals are above the base this is `lea rsp, [rbp+frameSize]`,
-    // and it is written as an offset of zero because this target's renderer
-    // adds the frame size to every rbp displacement.
+    // **rsp is restored *from rbp*, never by adding to itself.** Resuming after a
+    // catch it holds whatever the runtime left, and adding the frame size landed
+    // on the unwind-help slot, so `ret` took -2. The renderer adds the size.
     if (localsAboveFrameBase()) {
         a_->ins("lea", mem(0, "%rbp"), reg("%rsp"));
     } else {

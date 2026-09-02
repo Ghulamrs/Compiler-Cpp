@@ -1,9 +1,6 @@
-// The parser: initialisers.
-//
-// Braced initialisers flattened onto an object's bytes, the run-time stores
-// that a local needs and the static image that a global gets instead, and the
-// constant folding - integer, floating and address - that deciding between
-// the two depends on.
+// The parser: initialisers. Braced initialisers flattened onto an object's
+// bytes, the run-time stores a local needs against the static image a global
+// gets, and the integer, floating and address folding that chooses between them.
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
@@ -281,26 +278,9 @@ static long double inType(const Type *t, const Target &target, long double v) {
     return v;
 }
 
-// **Every value below is carried as a `double`, exactly, or the fold says
-// so.** The host's `long double` is 64 bits of significand on the Linux box
-// and 53 on the Mac, so any arithmetic done in it gives a constant that
-// depends on which machine built the compiler - `0.5L` plus `2^53` came out
-// `.quad ...200` from the Linux build and `...000` from the Mac build, both
-// accepted, both silent. The fold therefore computes in `double` on every
-// host and reports, through the two flags, the moments that answer could
-// differ from the one the target's own x87 would reach:
-//
-//   `past53`     an integer wider than a double's 53 bits was converted -
-//                exact on an 80-bit target, rounded here.
-//   `x87Rounded` an operation *typed* `long double` on an x87 target had a
-//                result that does not fit a double exactly - the target
-//                would keep more of it. Measured by error-free transforms:
-//                TwoSum's error term for + and -, an `fma` residue for * and
-//                /; a subnormal result is called rounded too, because the
-//                error term itself underflows there and proves nothing.
-//
-// Operations typed `float` or `double` round because the *language* says
-// they do, on the target as here, so they set nothing.
+// **Every value below is carried as a `double`, exactly, or the fold says so.**
+// A host `long double` is 64 bits of significand on the Linux box and 53 on the
+// Mac, so the fold works in double and flags `past53` and `x87Rounded`.
 static bool foldDouble(const Expr &e, const Target &target, long double *out,
                        bool *past53, bool *x87Rounded) {
     if (const Num *n = dynamic_cast<const Num *>(&e)) {
@@ -374,13 +354,9 @@ static bool foldDouble(const Expr &e, const Target &target, long double *out,
             default: return false;
             }
         }
-        // The x87 lane. The operands are exact doubles by construction, so
-        // the one question is whether this operation's exact result still
-        // fits one; if it does, the target's 80-bit answer is the same
-        // number and the fold is honest on every host. Unless an integer
-        // past 53 bits fed in: then the operands themselves are short of
-        // what the target holds, the error-free transforms below measure
-        // the wrong operation, and the only honest answer is the flag.
+        // The x87 lane. The operands are exact doubles by construction, so the
+        // one question is whether this result still fits one - unless an integer
+        // past 53 bits fed in, where the only honest answer is the flag.
         if (*past53) *x87Rounded = true;
         const double dl = static_cast<double>(l);
         const double dr = static_cast<double>(r);
@@ -433,10 +409,9 @@ static bool holdsEvery(const Type *from, const Type *to, const Target &target) {
     return ts > fs;
 }
 
-// Whether an integer survives a trip through the floating type F - the
-// question the same paragraph asks of an integer constant going to `float`
-// or `double`. The bounds guard the way back: a value at or beyond 2^63
-// (2^64 unsigned) has no integer to come back to, and asking is undefined.
+// Whether an integer survives a trip through the floating type F - the question
+// the same paragraph asks of a constant going to `float` or `double`. The bounds
+// guard the way back: at or beyond 2^63 there is no integer to come back to.
 template <typename F>
 static bool roundTrips(long long v, bool isUnsigned) {
     if (isUnsigned) {
@@ -458,31 +433,8 @@ static int floatingRank(const Type *t) {
 }
 
 // **[dcl.init.list]/7: a braced initialiser does not narrow.** `char c = {300}`
-// gave 44 here without a word - the 300 with its top bits cut off, which is
-// the conversion a plain `char c = 300` is allowed to make and braces are
-// not. The paragraph lists four conversions and calls each narrowing except
-// where the source is a constant expression whose value survives:
-//
-//   floating to integer       always narrowing, constant or not
-//   long double to double,    narrowing unless a constant within the target's
-//   double to float           range - it may lose precision, not magnitude
-//   integer to floating       narrowing unless a constant that converts and
-//                             converts back to itself
-//   integer to a narrower     narrowing unless a constant that fits, where
-//   integer                   "narrower" means some value of the source has
-//                             no place in the target - so `int` from `char`
-//                             is fine and `unsigned` from `int` is not
-//
-// Measured against clang with -std=c++11 -pedantic-errors over forty shapes,
-// which is what turned each "unless" into the tests below. The constant
-// evaluator is fold() for an integer and foldDouble() for a floating value -
-// the same two every other constant context uses - so `const int k = 300;
-// char c = {k}` is refused exactly as the literal is, and a non-const `int`
-// is refused as a non-constant even when it happens to hold 65.
-//
-// The target's `long double` on x87 holds any 64-bit integer, and that is
-// answered by rule rather than by converting on the host: the host's long
-// double may be a double, and C-03 was that mistake made once already.
+// gave 44 here without a word. The four conversions, and each "unless a constant
+// whose value survives", were measured against clang over forty shapes.
 void Parser::checkNarrowing(const Type *to, const Expr &value, std::size_t pos,
                             const std::string &what) {
     const Type *from = value.type();
@@ -550,21 +502,14 @@ void Parser::checkNarrowing(const Type *to, const Expr &value, std::size_t pos,
         return;
     }
 
-    // Floating to floating: only a step down in rank can narrow, and a
-    // constant that is still within range after the step has not. `long
-    // double` to `double` counts as the step even where the target gives the
-    // two one representation, because the rule is about the types.
+    // Floating to floating: only a step down in rank can narrow, and a constant
+    // still within range after the step has not. `long double` to `double` is
+    // the step even where the target gives the two one representation.
     if (floatingRank(to) >= floatingRank(from)) return;
     long double d = 0;
-    // **The two flags are read and dropped, and that is the merge's answer
-    // rather than a claim.** foldDouble grew them for the floating-lane work,
-    // which asks whether the *build host* can represent what the target would
-    // keep; this rule asks whether the target type can hold the value. They
-    // are different questions and this one wants neither flag. Whether
-    // [dcl.init.list]/7's "converts back to the original value" needs
-    // `past53` for a long double stepping down to a double is a real
-    // question, unanswerable on a Mac where the two are one type - see the
-    // handover.
+    // **The two flags are read and dropped, and that is the merge's answer.**
+    // foldDouble's flags ask what the build host can represent; this rule asks
+    // what the target type can hold. Different questions - see the handover.
     bool past53 = false, x87Rounded = false;
     if (!foldDouble(value, target_, &d, &past53, &x87Rounded))
         src_.fail(pos, cannotHoldEvery);
@@ -659,14 +604,9 @@ void Parser::flattenInit(const Type *type, Init &in, int base,
                               ? "an array at file scope needs a braced initialiser"
                               : "a struct or union at file scope needs a braced "
                                 "initialiser");
-        // **The same C++11 rule the local path names, and this is where a
-        // program could reach past it.** [dcl.init.aggr]/1 makes a class with
-        // a member initialiser something other than an aggregate, so the
-        // braces below are not aggregate initialisation at all. A local goes
-        // through the constructor path and is told so; a file-scope object is
-        // laid out by this function, which knows nothing about constructors -
-        // so until this check, `S s = {5, 6};` on such a class compiled here
-        // and gave C++14's answer.
+        // **The same C++11 rule the local path names, and a program could reach
+        // past it here.** [dcl.init.aggr]/1 makes a class with a member
+        // initialiser no aggregate, so these braces are not aggregate init.
         if (type->isStructOrUnion() && !type->tag().empty() &&
             hasMemberInitialiser(type->tag()))
             src_.fail(in.pos, "'" + type->describe() + "' writes an "
@@ -705,16 +645,9 @@ void Parser::flattenScalar(const Type *type, Init &in, int base,
         if (!foldDouble(*value, target_, &d, &past53, &x87Rounded))
             src_.fail(in.pos, "expected a constant initialiser, and this is not "
                               "a constant");
-        // **The same refusal the literal gets, for the same reason.** A
-        // `long double` literal that is not exactly a double is already
-        // refused where the target's `long double` is wider - but the gate
-        // sat on the literal alone, and one folded `+` walked past it: two
-        // exact operands whose sum needs a 54th bit was computed in the
-        // host's `long double`, 64 bits on one build machine and 53 on
-        // another, and the emitted constant differed by which machine built
-        // the compiler. This compiler carries a folded constant as a
-        // `double`; where the target's x87 would carry more of this value
-        // than that, it is refused rather than approximated.
+        // **The same refusal the literal gets, for the same reason.** The gate
+        // sat on the literal alone and one folded `+` walked past it, so the
+        // emitted constant differed by which machine had built the compiler.
         if (x87Rounded || (past53 && type->isX87(target_)))
             src_.fail(in.pos, "this 'long double' constant expression needs "
                               "more precision than a double holds, and a "

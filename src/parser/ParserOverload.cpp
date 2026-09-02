@@ -1,8 +1,6 @@
-// The parser: conversions and overload resolution.
-//
-// The implicit conversion sequences of [conv], ranked as [over.ics] ranks
-// them, and the tournament between candidates that ranking decides. Also the
-// assignability check, which asks the same questions for a different reason.
+// The parser: conversions and overload resolution. The implicit conversion
+// sequences of [conv] ranked as [over.ics] ranks them, the tournament that
+// ranking decides, and the assignability check that asks the same questions.
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
@@ -55,11 +53,9 @@ static int publicBaseOffset(const Type *derived, const Type *base);
 ExprPtr Parser::convert(ExprPtr e, const Type *to) const {
     if (e->type() == to) return e;
 
-    // **Derived * to Base * moves the value when the base is not the first
-    // one.** A is at 0 and needs nothing; B is at 4 and the pointer has to be
-    // walked forward by four. The null check is not caution - [conv.ptr] says
-    // a null pointer converts to a null pointer, and `(char *)0 + 4` is not
-    // null.
+    // **Derived * to Base * moves the value where the base is not the first one**
+    // - B at 4 walks the pointer forward by four. The null check is the rule and
+    // not caution: a null pointer converts to one, and `(char *)0 + 4` is not null.
     if (to->isPointer() && e->type()->isPointer() &&
         to->pointee()->isStructOrUnion() && e->type()->pointee()->isStructOrUnion()) {
         const int off = publicBaseOffset(e->type()->pointee(), to->pointee());
@@ -97,11 +93,9 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to) const {
         }
     }
 
-    // A conversion to bool is not a narrowing. [conv.bool] says every non-zero
-    // value becomes true, so (bool)256 is true where (char)256 is 0 - the two
-    // cannot share a code path. It is lowered here to a comparison against
-    // zero, an operation all three backends already have, rather than taught
-    // to each of them as a new kind of cast.
+    // A conversion to bool is not a narrowing: [conv.bool] makes every non-zero
+    // value true, so (bool)256 is true where (char)256 is 0. Lowered here to a
+    // comparison against zero rather than taught to three backends as a cast.
     if (to->isBool() && !e->type()->isBool() && e->type()->isScalar()) {
         const Type *from = e->type();
         ExprPtr zero;
@@ -142,23 +136,9 @@ static bool isStringLiteral(const Expr &e) {
     return false;
 }
 
-// [conv.qual]. A pointer may gain const on its way in and may never lose it,
-// and const gained below the first level only counts if every level above it
-// is const too - which is why 'char **' does not become 'const char **' but
-// does become 'const char * const *'. Without that last rule a program could
-// store a pointer-to-const into the writable pointer at the bottom and write
-// through it, with nothing along the way having said no.
-// Is `base` a base class of `derived`, publicly, at any depth? The conversion
-// this permits costs nothing at run time - a base subobject sits at offset 0 -
-// but it has to be allowed by the type system before a Derived * can be handed
-// to anything taking a Base *.
-//
-// Only through public inheritance: a private base is an implementation detail
-// and [conv.ptr] does not convert to it from outside.
-// How far into a `derived` object its `base` subobject sits, or -1 when base
-// is not a public base of it at all. **Walks every base, not just the first**,
-// which is what multiple inheritance needs: A is at 0 and B is at 4, and a
-// pointer to the second is the object's address plus that four.
+// [conv.qual]: a pointer may gain const and never lose it, and const below the
+// first level counts only where every level above it is const too. Then whether
+// `base` is a public base of `derived`, and at what offset - every base, not one.
 static int publicBaseOffset(const Type *derived, const Type *base) {
     if (derived == nullptr || base == nullptr) return -1;
     const Type *d = derived->unqualified();
@@ -193,12 +173,8 @@ static bool qualificationConvertible(const Type *from, const Type *to) {
 }
 
 // ------------------------------------------------------------------ overloading
-//
-// What follows is [over.match] reduced to what rung 2 needs, and the reduction
-// is deliberate: an implicit conversion sequence is ranked, the best viable
-// function is the one no other beats, and anything this cannot rank is not
-// viable rather than guessed at. A wrong overload compiles and runs and gives
-// the wrong answer, which is the one outcome worth refusing loudly.
+// [over.match] reduced to what rung 2 needs: a conversion sequence is ranked, the
+// best viable function is the one no other beats, the unrankable is not viable.
 
 const Type *Parser::decayedType(const Type *t) {
     if (t->isArray()) return types_.pointerTo(t->pointee());
@@ -224,23 +200,17 @@ static bool isPromotion(const Type *from, const Type *to) {
 Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     const Type *given = arg.type();
 
-    // A reference parameter binds or it does not; there is no conversion to
-    // rank. The referent types have to be the same one, and a non-const
-    // reference cannot bind a const object - that is not a worse match, it is
-    // not a match. Anything more (a const reference taking a temporary from a
-    // converted value) is a rung of its own and is left non-viable rather than
-    // half-ranked.
+    // A reference parameter binds or it does not; there is no conversion to rank.
+    // The referents must be one type and a non-const reference cannot bind a const
+    // object - not a worse match, no match. More is a rung of its own.
     if (param->isReference()) {
         const Type *want = param->pointee();
         if (want->unqualified() != given->unqualified()) return Rank::None;
         if (!want->isConst() && given->isConst()) return Rank::None;
 
         // **Which reference will take this argument is a question about the
-        // argument, not about a conversion.** An rvalue reference is not
-        // viable for an object that has an address; and where both are
-        // viable, for a value that has none, it is the better match - which
-        // is what makes `f(T &&)` win over `f(const T &)` for a temporary
-        // and is the whole of how a move is chosen.
+        // argument, not about a conversion.** An rvalue reference is not viable
+        // for an object that has an address, and the better match where both are.
         if (param->isRValueReference() && isLvalue(arg)) return Rank::None;
         if (param->isRValueReference()) return Rank::Identity;
         if (!isLvalue(arg)) return Rank::Qualification;
@@ -283,17 +253,9 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     if (to->isPointer() && from->isInteger())
         return isNullConstant(arg) ? Rank::Conversion : Rank::None;
 
-    // **`nullptr` converts to any pointer and to any pointer to member**, and
-    // both are pointer conversions - one rank, so `f(void *)` and `f(char *)`
-    // are ambiguous for it, which is what clang reports.
-    //
-    // **And it does *not* convert to bool here.** [conv.bool] gives
-    // std::nullptr_t a conversion to bool for *direct*-initialization only,
-    // and an argument is copy-initialized - so `f(bool)` is not viable at all
-    // rather than viable and worse. Measured: with `f(bool)` alone clang says
-    // there is no matching function, and against `f(char *)` it picks the
-    // pointer with no ambiguity to report. Ranking bool beside the pointer
-    // conversion would have invented that ambiguity.
+    // **`nullptr` converts to any pointer and to any pointer to member**, both
+    // pointer conversions - so `f(void *)` and `f(char *)` are ambiguous for it, as
+    // clang reports. **And not to bool here**: that conversion is direct-init only.
     if (from->isNullPtr() && (to->isPointer() || to->isMemberPointer()))
         return Rank::Conversion;
 
@@ -316,18 +278,9 @@ std::string Parser::describeSignature(const Signature &f) {
     return out + ")";
 }
 
-// The best viable function, or a refusal naming every candidate. "Best" is
-// [over.match.best] exactly: F beats G when it is no worse on every argument
-// and better on at least one. Two functions that each win an argument beat
-// each other, which is what an ambiguity IS - it is not a tie to be broken by
-// declaration order, and breaking it that way would compile a program whose
-// meaning depends on the order of its own prototypes.
-// One candidate beats another when no conversion is worse and at least one is
-// better. **And, all conversions being equal, when it is not a
-// specialization** - [over.match.best]. That last line is not a tiebreak of
-// convenience: deduction makes twice<int> match `twice(1)` exactly, and so
-// does an ordinary `int twice(int)`, so without it every such call is
-// ambiguous.
+// The best viable function, or a refusal naming every candidate: F beats G when it
+// is no worse on every argument and better on one, and two that each win an
+// argument are the ambiguity. All conversions equal, a specialization loses.
 bool Parser::betterCandidate(const std::vector<Rank> &a,
                              const std::vector<Rank> &b,
                              const Signature &fa, const Signature &fb) const {
@@ -342,34 +295,9 @@ bool Parser::betterCandidate(const std::vector<Rank> &a,
     return !fa.fromTemplate && fb.fromTemplate;
 }
 
-// [over.match.oper]: one candidate set, both halves in it.
-//
-// A member operator and a non-member one are ranked *against each other*, and
-// the shape that makes that possible is that both end up with the same number
-// of ranks. For `a @ b` a member takes `a` as its implicit object parameter
-// and `b` as its one written parameter; a non-member takes both as written
-// parameters. Two operands either way, so the two rank vectors are directly
-// comparable and `betterCandidate` needs to know nothing about which half a
-// candidate came from.
-//
-// **This answers which half won and not which function**, and that is
-// deliberate: the caller then goes down the member path or the free path it
-// already had, each of which resolves within its own set and reaches the same
-// candidate - a member that beat every non-member also beat every other
-// member. What is bought here is the comparison *between* the halves, which is
-// the part that was missing and the part clang refuses programs over.
-// **[basic.lookup.argdep], as much of it as an operand's own namespace needs.**
-// `a + b` where both are `N::V` has to find `N::operator+`, and no other rule
-// brings it into scope: the call site is outside N and wrote no qualification,
-// which is the whole point of writing the operator beside the class. So the
-// namespaces of the operand types are searched as well as the ones the call
-// site is written in.
-//
-// **What this deliberately is not**: the standard's associated set also
-// carries base classes, template arguments and enclosing classes, and it makes
-// the found functions candidates rather than a fallback list. This takes the
-// operand's own namespace and nothing else, which covers the case the rule
-// exists for. `docs/CONFORMANCE.md` records the difference.
+// [over.match.oper]: one candidate set with both halves in it - a member's implicit
+// object parameter is what makes the two rank vectors comparable. This answers
+// which half won, not which function. Then [basic.lookup.argdep], operands only.
 std::vector<std::string> Parser::lookupKeys(const std::string &name,
                                             const Type *left,
                                             const Type *right) const {
@@ -402,10 +330,9 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
                                                const Expr &left,
                                                const Expr *right,
                                                std::size_t pos) {
-    // A unary operator is the same question with one operand: a member takes
-    // the operand as its implicit object and writes no parameter, a
-    // non-member writes one. One rank each way, so the comparison is the same
-    // comparison.
+    // A unary operator is the same question with one operand: a member takes it as
+    // its implicit object and writes no parameter, a non-member writes one. One
+    // rank each way, so the comparison is the same comparison.
     const std::size_t written = right != nullptr ? 1u : 0u;
     std::vector<std::vector<Rank> > ranks;
     std::vector<std::size_t> which;      // index into functions_
@@ -421,10 +348,9 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
                 for (std::size_t k = 0; k < set->size(); k++) {
                     const Signature &f = functions_[(*set)[k]];
                     if (f.params.size() != written) continue;
-                    // The object parameter binds like any other reference: an
-                    // exact match where the constness agrees, a qualification
-                    // conversion where a const member takes a non-const
-                    // object, and no match at all the other way round.
+                    // The object parameter binds like any other reference: exact
+                    // where the constness agrees, a qualification conversion for a
+                    // const member on a non-const object, no match the other way.
                     if (lt->isConst() && !f.constThis) continue;
                     std::vector<Rank> r;
                     r.push_back(lt->isConst() == f.constThis ? Rank::Identity
@@ -498,14 +424,8 @@ std::size_t Parser::leastArguments(const Signature &f) const {
 }
 
 // **Each default is read again, here, at the call that left it out** -
-// [dcl.fct.default]/9 evaluates it afresh every time, so this is the rule and
-// not a shortcut around keeping one tree.
-//
-// The caller's locals are put aside while it is read. A default argument at
-// namespace scope cannot name a local or another parameter - it may name
-// globals, enumerators and static members - so hiding them is what the
-// declaration's scope actually is from here, and it stops a local of the same
-// name in the *calling* function from quietly capturing the default.
+// [dcl.fct.default]/9 evaluates it afresh every time. The caller's locals are put
+// aside, the declaration's scope being what it is read in and not the call's.
 void Parser::applyDefaults(Signature f, std::vector<ExprPtr> &args,
                            std::size_t pos) {
     if (args.size() >= f.params.size()) return;
@@ -518,14 +438,9 @@ void Parser::applyDefaults(Signature f, std::vector<ExprPtr> &args,
     hidden.swap(locals_);
     std::vector<std::size_t> starts;
     starts.swap(scopeStarts_);
-    // **The enclosing function is hidden for the same reason the locals
-    // are.** [dcl.fct.default]/5 reads a default argument in the scope of the
-    // *declaration*, and these tokens are being replayed at a call that may
-    // be anywhere. Anything the expression declares belongs where the default
-    // was written, not where it was used - which for a lambda is its closure
-    // type: clang names one written at namespace scope `_ZNK3$_0clEi`, and
-    // without this cxx1 wrapped it in whichever function happened to call,
-    // `_ZZ4mainENK3$_0clEi`.
+    // **The enclosing function is hidden for the same reason the locals are.**
+    // [dcl.fct.default]/5 reads a default in the scope of the declaration, so what
+    // the expression declares belongs there - a lambda's closure type included.
     const std::string outerFunction = currentFunction_;
     const std::string outerFunctionName = currentFunctionName_;
     currentFunction_.clear();
@@ -565,11 +480,9 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
     }
     const std::vector<std::size_t> *set = overloadsOf(name);
     if (set == nullptr) {
-        // **`C(...)` where C is a class** is a temporary, not a call to a
-        // function nobody declared, and saying "no prototype" sends the
-        // reader looking for a declaration that was never meant to exist.
-        // Worth intercepting by name now that passing a class by value copies
-        // it, which is exactly when somebody writes this.
+        // **`C(...)` where C is a class** is a temporary and not a call to a
+        // function nobody declared; "no prototype" sends the reader after a
+        // declaration never meant to exist. Live now a class is copied by value.
         if (const Type *cls = findTypedef(name))
             if (cls->isStructOrUnion())
                 src_.fail(pos, "'" + name + "(...)' makes a temporary of type '" +
@@ -594,11 +507,8 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
                           args.size() < leastArguments(f))) continue;
 
         // **The implicit object parameter goes first**, and ranking it is what
-        // separates `get()` from `get() const`. Binding it is a reference
-        // binding like any other: an exact match where the constness agrees, a
-        // qualification conversion where a const member is called on a
-        // non-const object - which is why the non-const one wins there - and
-        // no match at all the other way round.
+        // separates `get()` from `get() const`: exact where the constness agrees,
+        // a qualification conversion where a const member takes a non-const object.
         std::vector<Rank> r;
         if (object != nullptr) {
             if (object->isConst() && !f.constThis) { droppedForConst = true; continue; }
@@ -670,9 +580,8 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
     if (ft == to) return;
 
     // Copying ignores the const at the top: [dcl.init]/2 strips it from the
-    // destination, and a const source is read rather than moved. Without this
-    // 'const S b = a;' would be refused for a struct, where the arithmetic
-    // rule below already lets 'const int b = a;' through.
+    // destination and a const source is read rather than moved. Without this
+    // `const S b = a;` was refused where `const int b = a;` was not.
     if (ft->unqualified() == to->unqualified()) return;
 
     if (ft->isArithmetic() && to->isArithmetic()) return;
@@ -711,10 +620,9 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
         if (isNullConstant(from)) return;
         refuse(" - only the constant 0 becomes a pointer on its own");
     }
-    // `nullptr` converts to any pointer and to any pointer to member. Nothing
-    // is emitted for it: the value already is a pointer-sized zero, and what
-    // the type was carrying was the *front end's* knowledge that this zero is
-    // not the number 0.
+    // `nullptr` converts to any pointer and to any pointer to member, and nothing
+    // is emitted: the value is already a pointer-sized zero, and what the type
+    // carried was the front end's knowledge that this zero is not the number 0.
     if (ft->isNullPtr() && (to->isPointer() || to->isMemberPointer())) return;
     if (to->isNullPtr()) {
         if (isNullConstant(from)) return;

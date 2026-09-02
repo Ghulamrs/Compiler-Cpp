@@ -1,8 +1,6 @@
-// The parser: what a class needs written for it.
-//
-// Constructors and destructors, vtables and thunks, the implicit special
-// members and the code that defines them when something calls one, and the
-// static data members that live outside the object. Rungs 3 and 4.
+// The parser: what a class needs written for it. Constructors and destructors,
+// vtables and thunks, the implicit special members and the code that defines them
+// when something calls one, and the static data members. Rungs 3 and 4.
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
@@ -17,13 +15,9 @@ StmtPtr Parser::constructLocal(const Declared &d, int offset,
     const Signature &ctor = resolveOverload(key, args, d.pos);
     applyDefaults(ctor, args, d.pos);
 
-    // **[dcl.init]/16: copy-initialization may not pick an `explicit`
-    // constructor.** `S s(3);` and `S s = 3;` call the same function and
-    // differ only in whether that function is allowed to be chosen without
-    // being asked for by name. This is the whole of what `explicit` does, and
-    // it is checked after resolution rather than by hiding the constructor
-    // from the candidate set - so the reader is told which constructor was
-    // found and why it was not usable, rather than that nothing matched.
+    // **[dcl.init]/16: copy-initialization may not pick an `explicit` constructor.**
+    // `S s(3);` and `S s = 3;` call the same function, and this is the whole of what
+    // `explicit` does. Checked after resolution, so the reader is told which one.
     if (copyInit && ctor.isExplicit)
         src_.fail(d.pos, "'" + d.type->describe() + "' has a constructor "
                          "taking these arguments and it is 'explicit', so it "
@@ -83,9 +77,8 @@ void Parser::declareDestructor(const std::string &cls, std::size_t pos,
     if (!params.empty() || variadic)
         src_.fail(pos, "a destructor takes no parameters");
     // A destructor is `noexcept` in C++11 whether or not it says so
-    // ([except.spec]/14), so what is written here only has to be accepted -
-    // and `~S() noexcept(false)` opts back out, which is why it is read rather
-    // than assumed.
+    // ([except.spec]/14), so what is written here only has to be accepted - and
+    // `~S() noexcept(false)` opts back out, which is why it is read at all.
     pendingNoexcept_ = exceptionSpecification();
 
     if (overloadsOf(destructorKey(cls)) != nullptr)
@@ -101,12 +94,9 @@ void Parser::registerDestructor(const std::string &cls, std::size_t pos,
     const std::vector<const Type *> params;
     const std::string key = destructorKey(cls);
 
-    // **A base with a virtual destructor makes this one virtual**, keyword or
-    // not - [class.dtor], and the same rule declareMember follows for an
-    // ordinary override. The base's slots are already down in this class's
-    // table, so the question is answered by looking for the "~" entry, and it
-    // has to be answered here rather than after the name is built: the code
-    // letter below reads it.
+    // **A base with a virtual destructor makes this one virtual**, keyword or not -
+    // [class.dtor]. The base's slots are already in this class's table, so it is
+    // answered by looking for the "~" entry, and before the name is built.
     std::vector<VSlot> &slots = vtables_[cls];
     std::size_t slot = slots.size();
     for (std::size_t i = 0; i < slots.size(); i++)
@@ -130,13 +120,8 @@ void Parser::registerDestructor(const std::string &cls, std::size_t pos,
     functions_.back().implicit = implicit;
 
     // **A virtual destructor claims slots where it is declared**, and how many
-    // depends on the ABI: Itanium wants two, the complete-object destructor
-    // and the deleting one, adjacent and in that order; Microsoft wants one,
-    // holding only the deleting form. Measured from clang for both.
-    //
-    // A derived class overrides the base's entries in place, the way any
-    // virtual does - matching on the name "~", not on the class's own name,
-    // since ~Base and ~Derived are different spellings of the same slot.
+    // depends on the ABI: Itanium two and adjacent, Microsoft one holding only the
+    // deleting form. A derived class overrides in place, matching on "~".
     if (!isVirtual) return;
     const bool ms = target_.microsoftNames();
     const std::string deleting = deletingDestructorSymbol(cls);
@@ -153,16 +138,9 @@ void Parser::registerDestructor(const std::string &cls, std::size_t pos,
     if (!ms) slots.push_back(VSlot{ "~$deleting", deleting, none, false });
 }
 
-// **Setting the vptr, for whoever is building the object.** Pulled out of the
-// constructor path when implicit constructors arrived: an implicitly declared
-// default or copy constructor stores exactly the same pointers a written one
-// does, and a second copy of this would be a second place to get the header
-// offset wrong.
-//
-// What is stored is the table's address plus the header: Itanium writes
-// offset-to-top and typeinfo first, so the vptr points at table + 16 -
-// measured from clang's own `addq $16` - and Microsoft has no header, so the
-// address is the table's own.
+// **Setting the vptr, for whoever is building the object**, pulled out of the
+// constructor path when implicit constructors arrived. What is stored is the table's
+// address plus the header: Itanium's is two pointers, and Microsoft has none.
 std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
                                         const Type *memberOf, int thisSlot) {
     const bool ms = target_.microsoftNames();
@@ -170,11 +148,9 @@ std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
     const Type *entry = types_.pointerTo(types_.get(Kind::Void));
     const Type *entries = types_.pointerTo(entry);
 
-    // **The table's ADDRESS, not its contents.** A global Var is an
-    // lvalue and reading one loads from it - which stored the table's
-    // first word in the vptr and crashed on the first call. Giving it the
-    // array type and decaying it is what yields the address, the same road
-    // any array name takes.
+    // **The table's ADDRESS, not its contents.** A global Var is an lvalue and
+    // reading one loads from it, which stored the table's first word in the vptr and
+    // crashed on the first call. Giving it the array type and decaying it is it.
     std::size_t entryCount = vtables_[cls].size() + (ms ? 0 : 2);
     {
         const std::vector<Type::BaseSpec> &all = memberOf->bases();
@@ -186,11 +162,9 @@ std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
     base->setType(types_.arrayOf(entry, static_cast<long long>(entryCount)));
     ExprPtr value = decay(std::move(base));
     if (!ms) {
-        // **In bytes, because this Add is not the parser's pointer
-        // arithmetic.** Building the node by hand and typing it by hand
-        // skips the scaling `p + n` normally gets, so adding 2 added two
-        // bytes and the vptr pointed two bytes into the table's first
-        // word. The header is two pointers wide; that is what to add.
+        // **In bytes, because this Add is not the parser's pointer arithmetic.**
+        // Building the node by hand skips the scaling `p + n` normally gets, so
+        // adding 2 added two bytes. The header is two pointers wide.
         const long long header = 2LL * entry->size(target_);
         ExprPtr skip(new Num(header));
         skip->setType(types_.intType());
@@ -212,10 +186,9 @@ std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
     std::vector<StmtPtr> withVptr;
     withVptr.push_back(StmtPtr(new ExprStmt(std::move(store))));
 
-    // **A class with a polymorphic second base has a second vptr**, inside
-    // that base's subobject, pointing at the secondary table laid down
-    // behind the primary one. The first vptr is the object's own; this is
-    // the one a B * will read.
+    // **A class with a polymorphic second base has a second vptr**, inside that
+    // base's subobject, pointing at the secondary table laid down behind the primary
+    // one. The first vptr is the object's own; this is the one a B * will read.
     const std::vector<Type::BaseSpec> &bs = memberOf->bases();
     for (std::size_t bi = 1; bi < bs.size(); bi++) {
         if (!bs[bi].type->polymorphic()) continue;
@@ -250,16 +223,9 @@ std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
     return withVptr;
 }
 
-// **A function with no source behind it.** The deleting destructor is the one
-// thing in the vtable that no program writes: it runs the destructor and then
-// gives the memory back, and it exists because `delete p` through a base
-// pointer has to reach both through one slot.
-//
-// Itanium's D0 takes `this` and returns nothing. Microsoft's ??_G takes `this`
-// and a flag, returns `this`, and frees only when the low bit is set - which
-// is how a non-heap object reaches the same slot safely. Both are built here
-// as ordinary AST and emitted like any other function, so no backend knows
-// this one was invented.
+// **A function with no source behind it.** The deleting destructor runs the
+// destructor and then gives the memory back, because `delete p` through a base
+// pointer reaches both through one slot. Itanium's D0 and Microsoft's ??_G differ.
 void Parser::synthesizeDeleting(const std::string &cls, const Type *type,
                                 Access access, std::size_t pos) {
     const bool ms = target_.microsoftNames();
@@ -353,26 +319,9 @@ ExprPtr Parser::destructorCall(ExprPtr address, const Signature &dtor,
                         std::move(args));
 }
 
-// **RAII is this function.** Everything constructed since `from` is destroyed,
-// last first, which is the order the standard fixes and the only order that
-// can be right when one object's destructor may read another that was built
-// before it.
-// **One region per stretch, and the stretches do not overlap.** Objects a, b
-// and c built in that order give three ranges - after a, after b, after c -
-// and each pad destroys exactly what exists by then. That is what lets a
-// call-site table hold them: sorted and disjoint, where nesting them would
-// not be.
-//
-// The statements that *do* the constructing are outside every region on
-// purpose: an exception from a constructor leaves that object unbuilt, and
-// the region before it destroys what came earlier.
-// The Microsoft shape of the same thing. One region per object built, as on
-// Itanium - but each region's cleanup destroys only what *it* added, because
-// the runtime walks the chain: the state for region k names region k-1 as
-// where to go next, and that one destroys its own object in turn. Destroying
-// everything alive in each, which is what the Itanium pad does because it
-// resumes rather than chaining, would destroy the earlier objects once per
-// region.
+// **RAII is this function**: everything constructed since `from` is destroyed, last
+// first. **One region per stretch, and the stretches do not overlap** - which is what
+// lets a call-site table hold them, and what the Microsoft chain walks backwards.
 std::vector<StmtPtr> Parser::wrapMsCleanups(
     std::vector<StmtPtr> body,
     const std::vector<std::pair<std::size_t, std::size_t> > &built,
@@ -438,17 +387,14 @@ std::vector<StmtPtr> Parser::wrapCleanups(
     return out;
 }
 
-// **What an exception has to do on its way out of a scope.** The objects are
-// the same ones a `return` unwinds - `alive_` holds them and nothing new had
-// to track them - and the only difference is where the code runs from: a
-// landing pad rather than the return path, ending in _Unwind_Resume rather
-// than in a return.
+// **What an exception has to do on its way out of a scope.** The objects are the ones
+// a `return` unwinds - `alive_` holds them and nothing new had to track them - and
+// the difference is where the code runs from: a pad, ending in _Unwind_Resume.
 StmtPtr Parser::cleanupPad(std::size_t from, std::size_t to, int pointerSlot,
                            std::size_t pos) {
-    // **Bounded rather than truncated.** Resizing `alive_` down and back up
-    // would default-construct what it had thrown away, and the second pad
-    // would then destroy an object with no class - silently one destructor
-    // short.
+    // **Bounded rather than truncated.** Resizing `alive_` down and back up would
+    // default-construct what it had thrown away, and the second pad would then
+    // destroy an object with no class - silently one destructor short.
     std::vector<StmtPtr> steps;
     emitDestructors(steps, from, pos, -1, to);
 
@@ -499,24 +445,9 @@ void Parser::destroyObject(std::vector<StmtPtr> &into, const Alive &a,
                                                        *dtor, pos))));
 }
 
-// The vtable: one pointer per virtual function, in the order the base first
-// declared them, an override replacing an entry rather than adding one.
-//
-// It is emitted as an ordinary global whose initialiser pieces are symbol
-// addresses, which is machinery that already existed - no backend was told
-// about vtables at all.
-//
-// **The two ABIs differ in the header and so in what the vptr holds.** Itanium
-// writes offset-to-top and a typeinfo pointer before the functions, and the
-// vptr points past them - table + 16, measured from the addq in clang's own
-// constructor. The typeinfo slot is a plain 0 here: this compiler has no RTTI
-// and refuses `typeid` by name, and clang under -fno-rtti writes 0 too.
-// Microsoft has no header, so the vptr is the table's own address.
-// The thunk a secondary table points at. `B *p` calling an overridden `g`
-// passes `this` as the B subobject - the object's address plus B's offset -
-// and C::g expects the object's address, so something has to walk it back.
-// clang emits a tail jump; this is an ordinary call and return, which costs a
-// frame and behaves identically, and needs nothing new from any backend.
+// The vtable: one pointer per virtual function, in the order the base declared them,
+// an override replacing an entry. **The two ABIs differ in the header** - Itanium 16
+// bytes with a zero typeinfo, Microsoft none - and a thunk walks `this` back.
 std::string Parser::synthesizeThunk(const std::string &cls, const Type *type,
                                     const VSlot &slot, int offset,
                                     std::size_t pos) {
@@ -607,20 +538,14 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
     for (std::size_t i = 0; i < current_->globals.size(); i++)
         if (current_->globals[i].symbol == symbol) return;   // one per class
 
-    // **The table holding a function's address is a use of it.** The `used`
-    // flag came only from calls, so a class whose virtual destructor is
-    // implicit - `struct D : B { };` where B's is virtual - got a table
-    // pointing at `~D` and no `~D` anywhere, and the program did not link.
-    // Marked here, which is during the class's own completion and so well
-    // before `defineImplicitFunctions` walks the list.
+    // **The table holding a function's address is a use of it.** The `used` flag came
+    // only from calls, so a class with an implicit virtual destructor got a table
+    // pointing at a `~D` nothing emitted. Marked during the class's own completion.
     for (std::size_t i = 0; i < slots.size(); i++)
         markSymbolUsed(slots[i].symbol);
-    // **And the destructor itself, which the Microsoft table does not name.**
-    // Itanium has two slots - the complete-object destructor and the deleting
-    // one - so marking the slots covers both; MSVC has a single slot holding
-    // the deleting destructor, whose body calls an ordinary destructor that
-    // nothing else points at. Marking only the slots left `??1E` unemitted on
-    // that ABI and nowhere else, which is the same fault one symbol over.
+    // **And the destructor itself, which the Microsoft table does not name.** Itanium
+    // has two slots, so marking the slots covers both; MSVC has one holding the
+    // deleting destructor, whose body calls an ordinary one nothing else names.
     if (const Signature *dtor = destructorOf(cls)) markSymbolUsed(dtor->symbol);
 
     std::vector<GlobalPiece> pieces;
@@ -636,28 +561,18 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
         at += 8;
     }
 
-    // **A secondary table for every polymorphic base after the first**, laid
-    // down behind the primary one in the same symbol - measured: _ZTV1C holds
-    // both, and the second begins with an offset-to-top of -16 saying how far
-    // back the complete object is.
-    //
-    // Each entry is the base's own function unless this class overrides it, in
-    // which case it is a thunk: a call through a B * arrives with `this`
-    // pointing at the B subobject, and the override expects the whole object.
+    // **A secondary table for every polymorphic base after the first**, laid down
+    // behind the primary one in the same symbol - _ZTV1C holds both, the second
+    // beginning with an offset-to-top of -16. An override there is a thunk.
     const std::vector<Type::BaseSpec> &bases = cls->bases();
     for (std::size_t bi = 1; bi < bases.size(); bi++) {
         const Type *b = bases[bi].type;
         if (!b->polymorphic()) continue;
         const int off = bases[bi].offset;
 
-        // **The Microsoft ABI arranges this differently, and it is not the
-        // same thing under other names.** Measured with clang: it emits two
-        // separate vftable symbols - ??_7C@@6BA@@@ for the A view and
-        // ??_7C@@6BB@@@ for the B one - rather than one table in two sections,
-        // and the second points straight at ?g@C@@UEAAHXZ with no thunk in
-        // sight, where Itanium needs _ZThn16_N1C1gEv. Whether cl agrees with
-        // clang there has not been measured, and guessing at an ABI is the one
-        // thing this project does not do.
+        // **The Microsoft ABI arranges this differently, and it is not the same thing
+        // under other names.** Measured with clang: two vftable symbols rather than
+        // one table in two parts, and no thunk. Whether cl agrees is unmeasured.
         if (ms)
             src_.fail(pos, "'" + tag + "' has virtual functions in a base that "
                            "is not the first, and the Microsoft ABI lays that "
@@ -695,11 +610,9 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
                                         true, false, true });
 }
 
-// A constructor, read at the point its '(' was seen. It is a member function
-// whose name is the class and whose return type is nothing at all - so it is
-// keyed under "Point::Point" and every piece of overload machinery applies to
-// it unchanged, which is what makes Point() and Point(int,int) two entries
-// that a construction chooses between.
+// A constructor, read at the point its '(' was seen: a member function whose name is
+// the class and whose return type is nothing at all, keyed under "Point::Point" so
+// every piece of overload machinery applies to it unchanged.
 void Parser::declareConstructor(const std::string &cls, std::size_t pos,
                                 Access access, bool isExplicit) {
     std::vector<const Type *> params;
@@ -754,12 +667,9 @@ static const Type *memberClass(const Type *t) {
     return (t != nullptr && t->isStructOrUnion()) ? t->unqualified() : nullptr;
 }
 
-// One element of an array member, by address: the member's own address,
-// decayed, plus the index times the element's size.
-//
-// **In bytes, and deliberately.** A Binary built here is not the parser's
-// pointer arithmetic and gets none of its scaling - the same trap the vptr
-// store hit, where `+ 2` added two bytes rather than two entries.
+// One element of an array member, by address: the member's own address, decayed, plus
+// the index times the element's size. **In bytes, and deliberately** - a Binary built
+// here is not the parser's pointer arithmetic and gets none of its scaling.
 static ExprPtr indexBytes(TypeTable &types, ExprPtr decayed, const Type *elem,
                           int indexSlot, const Target &target) {
     const Type *idx = types.intType();
@@ -775,20 +685,9 @@ static ExprPtr indexBytes(TypeTable &types, ExprPtr decayed, const Type *elem,
     return at;
 }
 
-// `S a[4];` where S has constructors - the default constructor once per
-// element, in a loop.
-//
-// **This was the one construction that silently did not happen.** The branch
-// that builds a class local asks `isStructOrUnion()`, and an array of S is an
-// array, so `S a[4]` fell straight through to an ordinary uninitialised local:
-// it compiled, it linked, it ran, and every element held whatever was on the
-// stack. A member array was fine, because the implicit constructor that builds
-// one goes through the memberwise path, and `new T[n]` was refused by name -
-// only the local declaration had nothing.
-//
-// Every array level is unwrapped at once, so `S a[2][3]` is six elements of S
-// rather than two of `S[3]`: the loop steps by the element's own size, and the
-// intermediate shape has nothing to say about that.
+// `S a[4];` where S has constructors - the default constructor once per element, in
+// a loop. **This was the one construction that silently did not happen**: an array is
+// not a struct, so it fell through to an uninitialised local. Every level at once.
 StmtPtr Parser::constructLocalArray(const Declared &d, int offset,
                                     int indexSlot) {
     const Type *elem = d.type;
@@ -805,17 +704,13 @@ StmtPtr Parser::constructLocalArray(const Declared &d, int offset,
         !isFriendOf(plain))
         src_.fail(d.pos, "'" + plain->describe() + "' has no public default "
                          "constructor, and an array of it needs one");
-    // **Marked used, or an implicit one is declared and never emitted.** Every
-    // other path to a constructor goes through `resolveOverload`, which marks
-    // it; this one looks the default up directly and has to say so itself. A
-    // class whose only reason for having a constructor is a member initialiser
-    // is where it showed - `S a[2];` called `S::S()` and nothing defined it.
+    // **Marked used, or an implicit one is declared and never emitted.** Every other
+    // path to a constructor goes through `resolveOverload`, which marks it; this one
+    // looks the default up directly. `S a[2];` called `S::S()` and nothing defined it.
     functions_[static_cast<std::size_t>(ctor - &functions_[0])].used = true;
-    // **Copied before the defaults are read**: reading one can parse an
-    // expression that grows `functions_`, under the pointer just taken into
-    // it. The defaults sit inside the one statement the loop repeats, so they
-    // are evaluated once per element, which is what [dcl.fct.default]/9 asks
-    // of every call.
+    // **Copied before the defaults are read**: reading one can parse an expression
+    // that grows `functions_` under the pointer just taken into it. The defaults sit
+    // inside the statement the loop repeats, so they are evaluated once per element.
     const Signature chosen = *ctor;
     std::vector<ExprPtr> defaults;
     applyDefaults(chosen, defaults, d.pos);
@@ -841,20 +736,9 @@ StmtPtr Parser::constructLocalArray(const Declared &d, int offset,
     return eachElement(indexSlot, count, std::move(one));
 }
 
-// **A default constructor is one that can be called with no arguments, not
-// one whose parameter list is empty** - [class.ctor]/5 says so in as many
-// words, and `S(int a = 1)` is the ordinary way to write one. This used to
-// search for an empty parameter list, so a class whose only constructor took
-// defaults was told it had "no constructor taking nothing" by every site that
-// builds a call by hand: a base a derived constructor did not name, a member
-// the implicit constructor builds, an array of the class. Whoever calls this
-// still has to *supply* the defaults, through `applyDefaults`, because the
-// call it goes on to build carries one argument per parameter.
-//
-// Two constructors that both take nothing - `S()` beside `S(int = 0)` - are
-// ambiguous, and clang refuses the default-construction; this answers nullptr
-// there, and the caller's "no constructor taking nothing" is then the wrong
-// wording for the right refusal.
+// **A default constructor is one that can be called with no arguments, not one whose
+// parameter list is empty** - [class.ctor]/5, so `S(int a = 1)` is one. Whoever calls
+// this still supplies the defaults; two that both take nothing answer nullptr.
 const Parser::Signature *Parser::defaultConstructorOf(const Type *cls) const {
     if (cls == nullptr || !cls->isStructOrUnion() || cls->tag().empty())
         return nullptr;
@@ -878,11 +762,9 @@ const Parser::Signature *Parser::copyConstructorOf(const Type *cls) const {
     for (std::size_t k = 0; k < set->size(); k++) {
         const Signature &f = functions_[(*set)[k]];
         if (f.params.size() != 1 || !f.params[0]->isReference()) continue;
-        // **`S(S &&)` is not a copy constructor**, and until rung 7 there was
-        // no way to write one so isReference() alone was enough. Answering
-        // one here would make the result depend on which of the two was
-        // declared first, and would hand an lvalue to a constructor whose
-        // whole contract is that it will not be given one.
+        // **`S(S &&)` is not a copy constructor**, and until rung 7 there was no way
+        // to write one, so isReference() alone was enough. Answering one here would
+        // hand an lvalue to a constructor whose whole contract is that it gets none.
         if (f.params[0]->isRValueReference()) continue;
         if (f.params[0]->referent()->unqualified() != cls->unqualified()) continue;
         return &f;
@@ -924,33 +806,19 @@ std::string Parser::baseConstructorSymbol(const Signature &ctor, const Type *bas
     return ctor.symbol;
 }
 
-// **A trivial special member is not a function**, and that is measured rather
-// than reasoned: cl emits no symbol at all for the default constructor,
-// copy constructor or copy assignment of a class with no virtual function and
-// no member that needs building, and clang emits none either, on both Itanium
-// targets. A class like that leaves its storage alone and `X x;` is a frame
-// slot and no call - which is exactly what this compiler already did for a C
-// struct, and why the old path is left to handle it untouched.
-//
-// So an implicit member is declared only where it has work to do. What makes
-// work: a virtual function, whose vptr somebody has to store, or a base or
-// member that has a constructor of its own to run.
-//
-// A class that writes any constructor gets no implicit default one - that is
-// [class.ctor], and it is also what makes `Point p;` still an error for a
-// class whose only constructor takes arguments.
+// **A trivial special member is not a function**, and that is measured rather than
+// reasoned: cl and clang emit no symbol for one with no work to do. So an implicit
+// member is declared only where it has some - a vptr, or a base or member to build.
 void Parser::declareImplicitSpecials(const std::string &tag, const Type *type,
                                      std::size_t pos) {
     if (tag.empty() || type->kind() == Kind::Union) return;
-    // Asked before the copy constructor is declared, because declaring one
-    // would answer it yes. A class that writes any constructor gets no
-    // implicit default one; a class that writes any constructor still gets an
-    // implicit copy constructor.
+    // Asked before the copy constructor is declared, because declaring one would
+    // answer it yes. A class that writes any constructor gets no implicit default
+    // one, and still gets an implicit copy constructor.
     const bool wroteConstructor = overloadsOf(constructorKey(tag)) != nullptr;
-    // **Read now, for the same reason and at the same moment.** After the
-    // three calls below, every one of these answers yes for a class that
-    // wrote nothing at all, and [class.copy]/9 is a question about what the
-    // *user* declared.
+    // **Read now, for the same reason and at the same moment.** After the three calls
+    // below, every one of these answers yes for a class that wrote nothing at all,
+    // and [class.copy]/9 is a question about what the *user* declared.
     const bool wroteCopyOrDtor = copyConstructorOf(type) != nullptr ||
                                  moveConstructorOf(type) != nullptr ||
                                  overloadsOf(destructorKey(tag)) != nullptr;
@@ -962,10 +830,9 @@ void Parser::declareImplicitSpecials(const std::string &tag, const Type *type,
     declareImplicitMoveCtor(tag, type, pos, wroteCopyOrDtor);
     if (wroteConstructor) return;
 
-    // **An initialiser on a member is work**, and this is where a class with
-    // nothing but `int x = 5;` gets a default constructor at all: without one
-    // there is no function to put the store in, and `S s;` would leave x
-    // holding whatever was on the stack.
+    // **An initialiser on a member is work**, and this is where a class with nothing
+    // but `int x = 5;` gets a default constructor at all: without one there is no
+    // function to put the store in, and `S s;` would leave x holding the stack.
     bool work = type->polymorphic();
     for (std::size_t i = 0; i < type->members().size() && !work; i++)
         if (memberInit_.find(tag + "::" + type->members()[i].name) !=
@@ -1003,16 +870,9 @@ void Parser::declareImplicitSpecials(const std::string &tag, const Type *type,
     functions_.back().implicit = true;
 }
 
-// **The destructor the class did not write.** It becomes a function exactly
-// when a base or a member has one of its own to run - measured with cl, which
-// emits `??1Has@@QEAA@XZ` for a class holding members with destructors and no
-// destructor symbol at all for a class of plain members.
-//
-// **A virtual function does not make it non-trivial**, which is the one that
-// would have been guessed wrong: cl emits nothing for a class with a virtual
-// `f()` and no destructor anywhere. What makes it *virtual* is a base whose
-// destructor is virtual, and then it takes over that slot and gets a deleting
-// form beside it like any other virtual destructor.
+// **The destructor the class did not write**, which becomes a function exactly when a
+// base or a member has one of its own to run - measured with cl. **A virtual function
+// does not make it non-trivial**; a base whose destructor is virtual makes it virtual.
 void Parser::declareImplicitDestructor(const std::string &tag, const Type *type,
                                        std::size_t pos) {
     if (overloadsOf(destructorKey(tag)) != nullptr) return;
@@ -1033,11 +893,9 @@ void Parser::declareImplicitDestructor(const std::string &tag, const Type *type,
     registerDestructor(tag, pos, Access::Public, isVirtual, true);
 }
 
-// Its body: the members this class added, in the reverse of the order they
-// were declared, and then the bases in the reverse of the order they were
-// written. A base's own destructor deals with the members it brought, which is
-// why they are skipped here - they are in this class's member list too,
-// because data members are copied down.
+// Its body: the members this class added, in the reverse of the order they were
+// declared, then the bases in the reverse of theirs. A base's own destructor deals
+// with the members it brought, which is why they are skipped here.
 void Parser::synthesizeDestructor(std::size_t which) {
     const std::string cls = functions_[which].owner;
     const std::size_t pos = functions_[which].pos;
@@ -1180,34 +1038,20 @@ void Parser::synthesizeDestructor(std::size_t which) {
     if (isVirtual) synthesizeDeleting(cls, type, Access::Public, pos);
 }
 
-// The copy assignment operator the class did not write - which is every class,
-// since `operator` is refused by name until operator overloading arrives, so
-// nothing can write one yet. The trivial line is drawn in the same place and
-// was measured the same way: cl emits ??4Poly@@QEAAAEAU0@AEBU0@@Z for a
-// polymorphic class, and nothing at all for a class of plain members, where
-// `a = b` is the struct assignment this compiler has always emitted.
-//
-// A polymorphic class is non-trivial here even though the body does not touch
-// the vptr. That is [class.copy] and it is what cl does; the vptr is not
-// copied because assignment writes into an object that is already of this
-// class.
+// The copy assignment operator the class did not write. The trivial line is drawn
+// where the others are and measured the same way with cl. A polymorphic class is
+// non-trivial even though the body leaves the vptr alone: it writes into its own.
 void Parser::declareImplicitCopyAssign(const std::string &tag, const Type *type,
                                        std::size_t pos) {
     if (overloadsOf(assignmentKey(tag)) != nullptr) return;
-    // [class.copy]/23: a user-declared move constructor **deletes** the
-    // implicit copy assignment, the same sentence that deletes the implicit
-    // copy constructor two rules earlier. Called before the implicit move is
-    // declared, so what moveConstructorOf finds here is what the user wrote.
+    // [class.copy]/23: a user-declared move constructor **deletes** the implicit copy
+    // assignment, the same sentence that deletes the implicit copy constructor two
+    // rules earlier. Called before the implicit move, so this sees what the user wrote.
     if (moveConstructorOf(type) != nullptr) return;
 
-    // **A const member has no assignment to give**, so the operator the
-    // compiler would write is deleted rather than non-trivial and none is
-    // declared - which is what makes `a = b` say there is no such function
-    // rather than quietly writing through a const. Asked over every member
-    // before anything else, because the search below stops at the first
-    // member that gives the operator work to do and a const one after it
-    // would never be reached. A reference member is refused where it is
-    // declared and cannot get this far.
+    // **A const member has no assignment to give**, so the operator the compiler would
+    // write is deleted rather than non-trivial and none is declared. Asked over every
+    // member first: the search below stops at the first that gives it work.
     const std::vector<Member> &ms = type->members();
     for (std::size_t i = 0; i < ms.size(); i++)
         if (ms[i].type->isConst()) return;
@@ -1240,33 +1084,9 @@ void Parser::declareImplicitCopyAssign(const std::string &tag, const Type *type,
     functions_.back().implicit = true;
 }
 
-// The copy constructor the class did not write. The trivial/non-trivial line
-// is the same one and measured the same way - cl emits `??0Poly@@QEAA@AEBU0@@Z`
-// for a polymorphic class and nothing at all for a class of plain members -
-// but what it is drawn on is different. A class writing *any* constructor
-// still gets an implicit copy constructor; only writing a copy constructor
-// takes it away.
-//
-// What makes one non-trivial: a virtual function, because the new object's
-// vptr is its own and not a copy of the source's, or a base or member whose
-// own copy constructor has to run.
-// [class.copy]/9: a class gets an implicit move constructor only if it has
-// declared none of a copy constructor, a move constructor, a copy assignment,
-// a move assignment or a destructor. The reasoning behind that list is that
-// each of them is evidence the class manages something by hand, and a
-// memberwise move of a class that manages something by hand is how a
-// double free happens.
-//
-// **Two of the five cannot arise here and one is passed in.** A copy or move
-// assignment operator cannot be written at all - `operator` is refused - so
-// those two are vacuous, and the other three are read in
-// declareImplicitSpecials before any implicit member has been declared, which
-// is the only moment at which "user-declared" can still be told from
-// "declared by us a line ago".
-//
-// `work` is the same question the copy asks: a move that is a memberwise byte
-// copy is what the ABI already does for a trivially copyable class, and
-// declaring one would put a symbol in the object file that clang does not.
+// The copy constructor the class did not write, on the same measured line: a class
+// writing any constructor still gets one and only writing a copy takes it away. The
+// implicit *move* needs all five of [class.copy]/9's absences, two of them vacuous.
 void Parser::declareImplicitMoveCtor(const std::string &tag, const Type *type,
                                      std::size_t pos, bool userDeclared) {
     if (userDeclared) return;
@@ -1309,10 +1129,9 @@ void Parser::declareImplicitMoveCtor(const std::string &tag, const Type *type,
 void Parser::declareImplicitCopyCtor(const std::string &tag, const Type *type,
                                      std::size_t pos) {
     if (copyConstructorOf(type) != nullptr) return;
-    // [class.copy]/7: a user-declared move constructor **deletes** the
-    // implicit copy constructor. Not declaring one is how that is said here,
-    // and the effect is the same - a copy is refused, and the candidate list
-    // in the message shows the move constructor that took its place.
+    // [class.copy]/7: a user-declared move constructor **deletes** the implicit copy
+    // constructor. Not declaring one is how that is said here, and the effect is the
+    // same - a copy is refused, and the message shows the move that took its place.
     if (moveConstructorOf(type) != nullptr) return;
 
     bool work = type->polymorphic();
@@ -1343,11 +1162,9 @@ void Parser::declareImplicitCopyCtor(const std::string &tag, const Type *type,
     functions_.back().implicit = true;
 }
 
-// The body of a default constructor nobody wrote: the bases built in the order
-// they were written, then the vptrs, then the members that have constructors
-// of their own. Scalars are left alone, which is what [dcl.init] means by
-// default-initialisation and what makes an uninitialised `int` member still
-// uninitialised here.
+// The body of a default constructor nobody wrote: the bases in the order they were
+// written, then the vptrs, then the members with constructors of their own. Scalars
+// are left alone, which is what [dcl.init] means by default-initialisation.
 void Parser::synthesizeDefaultCtor(std::size_t which) {
     const std::string cls = functions_[which].owner;
     const std::size_t pos = functions_[which].pos;
@@ -1416,14 +1233,9 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
             body.push_back(std::move(vp[i]));
     }
 
-    // The members, in declaration order, each by the one rule that applies
-    // to it: the initialiser the class wrote on it, or else its own default
-    // constructor. **One walk, not two.** This used to apply every written
-    // initialiser and then default-construct every class-typed member after
-    // them, so `M m = M(2);` was stored and then built over. A member with
-    // an initialiser is not default-initialised - [class.base.init]/8 says
-    // "otherwise" - and the written constructor in topLevel walks the same
-    // way, with the mem-initialiser list as a third rule in front.
+    // The members, in declaration order, each by the one rule that applies to it: the
+    // initialiser the class wrote on it, or else its own default constructor. **One
+    // walk, not two** - `M m = M(2);` used to be stored and then built over.
     const std::vector<Member> &ms = type->members();
     for (std::size_t i = 0; i < ms.size(); i++) {
         StmtPtr one = memberInitialiser(cls, type, ms[i], thisSlot, pos);
@@ -1492,19 +1304,9 @@ StmtPtr Parser::eachElement(int indexSlot, long long count, StmtPtr one) {
 }
 
 
-// The body of a copy constructor nobody wrote: the bases that have one of
-// their own, then the vptrs, then every member that no base already copied.
-//
-// **The vptr is set and not copied**, which is the whole difference between
-// this and the copy assignment beside it: a copy constructor is making a new
-// object, and the new object is of *this* class whatever the source was.
-// Measured, in cl's own listing: it stores `OFFSET FLAT:??_7Poly@@6B@` and
-// then moves the members across.
-//
-// Members are copied one at a time rather than the whole object at once. A
-// base subobject occupies its data size and not its sizeof, so a derived
-// class may have put a member of its own in this class's tail padding - and a
-// copy of `sizeof` bytes through the C2 form would take that member with it.
+// The body of a copy constructor nobody wrote: the bases with one of their own, then
+// the vptrs, then every member no base copied. **The vptr is set and not copied** -
+// measured in cl's listing. Members go one at a time, for the tail-padding rule.
 void Parser::synthesizeCopy(std::size_t which, bool assigning) {
     const std::string cls = functions_[which].owner;
     const std::size_t pos = functions_[which].pos;
@@ -1541,11 +1343,9 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
     const std::vector<Type::BaseSpec> &bs = type->bases();
     for (std::size_t i = 0; i < bs.size(); i++) {
         const Type *base = bs[i].type;
-        // **A member or base without a move constructor is copied, not
-        // refused.** [class.copy]/15: the implicit move performs a *move* of
-        // each subobject, and moving something that has only a copy is what
-        // its copy constructor does - `T &&` binds to `const T &` perfectly
-        // well. So the fallback is the language's, not a shortcut.
+        // **A member or base without a move constructor is copied, not refused.**
+        // [class.copy]/15: the implicit move moves each subobject, and moving
+        // something that has only a copy is what its copy constructor does.
         const Signature *cc = nullptr;
         if (assigning) cc = copyAssignOf(base);
         else {
@@ -1591,12 +1391,9 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
                                        bs[i].offset + base->dataSize()));
     }
 
-    // **A copy constructor sets the vptr; a copy assignment leaves it alone.**
-    // That is the whole difference between the two bodies, and it is measured:
-    // cl's ??0Poly stores OFFSET FLAT:??_7Poly@@6B@ before moving the members
-    // and its ??4Poly moves the members and nothing else. The reason is that
-    // assignment writes into an object that already exists and is already of
-    // this class, where a constructor is making one.
+    // **A copy constructor sets the vptr; a copy assignment leaves it alone.** That is
+    // the whole difference between the two bodies, measured in cl's own listing:
+    // assignment writes into an object that already exists and is already this class.
     if (!assigning && type->polymorphic()) {
         std::vector<StmtPtr> vp = storeVptrs(cls, type, thisSlot);
         for (std::size_t i = 0; i < vp.size(); i++)
@@ -1671,10 +1468,9 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
             src->setType(elem);
         }
 
-        // After the array unwrap, so that it lands on the element that is
-        // actually handed over. `static_cast<T &&>(other.m)` for every member
-        // is what [class.copy]/15 says the body is, and this is that cast -
-        // harmless on a scalar, where the move is an assignment either way.
+        // After the array unwrap, so that it lands on the element actually handed
+        // over. `static_cast<T &&>(other.m)` for every member is what [class.copy]/15
+        // says the body is - harmless on a scalar, where the move is an assignment.
         if (moving) src->setXvalue();
 
         StmtPtr one;
@@ -1700,10 +1496,9 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
                                      : std::move(one));
     }
 
-    // **`a = b` is an expression and has to have a value**, and the value is
-    // the object assigned to. The declared return type is `X &`, and a
-    // reference is a pointer everywhere below the parser - so what the
-    // function actually returns is `this`.
+    // **`a = b` is an expression and has to have a value**, and the value is the object
+    // assigned to. The declared return type is `X &`, and a reference is a pointer
+    // everywhere below the parser, so what the function actually returns is `this`.
     const Type *returns = types_.get(Kind::Void);
     if (assigning) {
         returns = types_.pointerTo(type);
@@ -1757,10 +1552,9 @@ std::string Parser::staticMemberSymbol(const std::string &cls,
                                        const std::string &name, const Type *t,
                                        Access access, std::size_t pos) {
     if (!target_.microsoftNames()) return itaniumStaticMemberName(cls, findTypedef(cls), name);
-    // Microsoft writes the access as a digit where a member function writes a
-    // letter, so a static member that changes from private to public changes
-    // its symbol on Windows and keeps it on Linux - the same asymmetry member
-    // functions already have, measured the same way.
+    // Microsoft writes the access as a digit where a member function writes a letter,
+    // so a static member that changes from private to public changes its symbol on
+    // Windows and keeps it on Linux - the same asymmetry, measured the same way.
     const char code = access == Access::Public    ? '2'
                     : access == Access::Protected ? '1'
                                                   : '0';
@@ -1771,10 +1565,9 @@ std::string Parser::staticMemberSymbol(const std::string &cls,
     return out;
 }
 
-// `static int total;` inside a class. It declares one object shared by every
-// object of the class and takes no room in any of them, so nothing here
-// touches the layout - what it needs is a name the linker can hold and a
-// definition outside the class to go with it.
+// `static int total;` inside a class: one object shared by every object of the class,
+// taking no room in any of them, so nothing here touches the layout. What it needs is
+// a name the linker can hold and a definition outside the class to go with it.
 void Parser::declareStaticMember(const std::string &cls, Type *owner,
                                  const Declared &d, Access access) {
     if (cls.empty())
@@ -1792,11 +1585,9 @@ void Parser::declareStaticMember(const std::string &cls, Type *owner,
     s.type = d.type;
     s.access = access;
 
-    // **`static const int k = 5;` written in the class needs no definition**,
-    // and that is measured rather than assumed: cl emits no symbol for one and
-    // folds the value in wherever it is read. Anything else with an
-    // initialiser here is refused, because the definition outside the class is
-    // where the storage comes from and the value belongs with it.
+    // **`static const int k = 5;` written in the class needs no definition**, measured
+    // rather than assumed: cl emits no symbol for one and folds the value in wherever
+    // it is read. Anything else with an initialiser here is refused.
     if (consume("=")) {
         if (!d.type->isConst() || !d.type->isInteger())
             src_.fail(d.pos, "'" + cls + "::" + d.name + "' is initialised "
@@ -1815,10 +1606,9 @@ void Parser::declareStaticMember(const std::string &cls, Type *owner,
     owner->addStaticMember(s);
 }
 
-// `int Counter::total = 0;` at file scope - the definition the declaration
-// inside the class asked for. It is an ordinary global that the class gave its
-// name to, so all this adds to the global path is finding which member it is
-// and taking the symbol from it.
+// `int Counter::total = 0;` at file scope - the definition the declaration inside the
+// class asked for. An ordinary global the class gave its name to, so all this adds is
+// finding which member it is and taking the symbol from it.
 void Parser::defineStaticMember(Declared &d, Program &program) {
     const Type *owner = findTypedef(d.qualifier);
     if (owner == nullptr || !owner->isStructOrUnion())
@@ -1837,11 +1627,9 @@ void Parser::defineStaticMember(Declared &d, Program &program) {
             src_.fail(d.pos, "'" + d.qualifier + "::" + d.name + "' is defined "
                              "twice");
 
-    // **A static member of class type has to be constructed before main**,
-    // which is the mechanism a static local with a constructor needs and is
-    // not here yet. Refused where the storage is made, which is the line that
-    // has to change, rather than where it is read. A class with no
-    // constructor is an aggregate and initialises like any other global.
+    // **A static member of class type has to be constructed before main**, which is the
+    // mechanism a static local with a constructor needs and is not here yet. Refused
+    // where the storage is made. A class with no constructor is an aggregate.
     if (const Type *cls = memberClass(s->type))
         if (!cls->tag().empty() &&
             overloadsOf(constructorKey(cls->tag())) != nullptr)
@@ -1884,10 +1672,9 @@ ExprPtr Parser::staticMemberRef(const Type *owner, const Type::StaticMember &s,
     return n;
 }
 
-// A member function declaration, keyed under "Class::name" in the one table
-// every function lives in. Nothing about overload resolution had to be told
-// that members exist: two members of one class with different parameters are
-// two entries under that key, exactly as two free functions would be.
+// A member function declaration, keyed under "Class::name" in the one table every
+// function lives in. Nothing about overload resolution had to be told that members
+// exist: two members with different parameters are two entries under that key.
 void Parser::declareMember(const std::string &cls, const Declared &d,
                            bool constThis, Access access, bool inUnion,
                            bool isVirtual) {
@@ -1913,20 +1700,9 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
     if (inUnion && isVirtual)
         src_.fail(d.pos, "a union cannot have a virtual function");
 
-    // **A slot is taken once and then kept.** An override replaces the entry
-    // the base put there rather than adding one, which is what makes a
-    // Base * and a Derived * agree about where to look. Matching is by name,
-    // parameters and constness - the signature, minus the return type, which
-    // is what [class.virtual] calls overriding.
-    //
-    // **Finding that slot is itself what makes this function virtual.**
-    // [class.virtual]: a function that overrides one is virtual whether or
-    // not the keyword is written again, and the derived class's slots have
-    // already come down from the base by the time any member is declared. So
-    // the search runs before the name is built rather than after - the
-    // Microsoft ABI spells a virtual member U and a plain one Q, and a
-    // silently-non-virtual override would have been given the wrong name as
-    // well as the wrong dispatch.
+    // **A slot is taken once and then kept**: an override replaces the entry the base
+    // put there, matching on the signature minus the return type. **And finding that
+    // slot is what makes this virtual**, keyword or not - so the search runs first.
     std::vector<VSlot> &slots = vtables_[cls];
     std::size_t slot = slots.size();
     for (std::size_t i = 0; i < slots.size(); i++) {
@@ -1936,20 +1712,9 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
         break;
     }
 
-    // **The slots that came down are the *first* base's**, and a class may
-    // override a virtual of any of them. `vtables_[cls]` is seeded from base
-    // zero alone, so a function overriding a second base's virtual was found
-    // nowhere, was declared non-virtual, and dispatched statically - a call
-    // through a `B *` reached B's function and not this one. The keyword hid
-    // it: writing `virtual` set the flag by hand and everything downstream
-    // worked, which is why every case in the suite passes and why the two
-    // spellings of one declaration meant different things.
-    //
-    // [class.virtual]/2 does not care which base it came from, so neither
-    // does this. What follows is unchanged from the keyword-written path: a
-    // new slot in this class's own list, which the secondary table then finds
-    // when it asks whether this class overrode anything of theirs, and points
-    // at through a thunk.
+    // **The slots that came down are the *first* base's**, and a class may override a
+    // virtual of any of them: one overriding a second base's was found nowhere,
+    // declared non-virtual and dispatched statically. The keyword hid it..
     if (!isVirtual)
         if (const Type *self = findTypedef(cls)) {
             const std::vector<Type::BaseSpec> &bs = self->bases();
@@ -1988,12 +1753,9 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
 std::string Parser::memberSymbol(const std::string &cls, const std::string &name,
                                  const Type *fn, Access access, bool constThis,
                                  std::size_t pos, bool isVirtual) {
-    // Q public, I protected, A private - the Microsoft ABI puts access in the
-    // name and Itanium does not, both measured against clang.
-    //
-    // **A virtual member is U on Microsoft whatever its access**, measured:
-    // ?who@Base@@UEAAHXZ where the non-virtual ?plain@Base@@QEAAHXZ. Itanium
-    // spells a virtual function exactly like any other.
+    // Q public, I protected, A private - the Microsoft ABI puts the access in the name
+    // and Itanium does not, both measured. **And a virtual member is U on Microsoft
+    // whatever its access**: ?who@Base@@UEAAHXZ against ?plain@Base@@QEAAHXZ.
     const char code = isVirtual        ? 'U'
                     : access == Access::Public    ? 'Q'
                     : access == Access::Protected ? 'I'
@@ -2039,29 +1801,16 @@ std::string Parser::dataSymbol(const std::string &name, const Type *type,
     return out;
 }
 
-// **The parameter list is what identifies a function now, not the name.** In C
-// a second declaration of a name was always the same function and any
-// difference was an error; in C++ a difference in the parameters declares a
-// *second* function, and only an identical parameter list is a redeclaration.
-// So the same-parameters search comes first and everything the C version
-// checked is what happens when it finds one.
-//
-// The return type is deliberately not part of that search: two functions
-// differing only in return type are the same function declared twice and
-// disagreeing, which is the error the old code already worded well.
+// **The parameter list is what identifies a function now, not the name.** A difference
+// in the parameters declares a *second* function and only an identical list is a
+// redeclaration. The return type is deliberately not part of that search.
 void Parser::declareFunction(const std::string &name, const Type *returns,
                              const std::vector<const Type *> &params,
                              bool variadic, bool defining, std::size_t pos,
                              bool internal) {
-    // While a specialization is being replayed the function it declares is
-    // the specialization, keyed and mangled as "twice<int>". Its entry was
-    // made when the call asked for it, so this finds that one and marks it
-    // defined rather than computing a second symbol.
-    // **The namespace goes on here, once.** Every table below is keyed by the
-    // qualified name, so a namespace costs a prefix at the declaration and a
-    // search at the use, and no table had to change. `main` and anything with
-    // C linkage keep the name they were written with - a namespace does not
-    // reach either.
+    // While a specialization is being replayed the function it declares is that
+    // specialization, keyed as "twice<int>" from when the call asked for it. **And the
+    // namespace goes on here, once**, every table below being keyed by the whole name.
     const std::string plain = instantiationName(name);
     const std::string qualified =
         (cLinkage_ > 0 || plain == "main" || namespaceStack_.empty())
@@ -2088,12 +1837,9 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
                            f.returns->describe() + "' and this says '" +
                            returns->describe() + "' - two functions cannot "
                            "differ in the return type alone");
-        // **A declaration and its definition must agree about `noexcept`.**
-        // Measured both ways: clang refuses a definition that drops it and one
-        // that adds it. The specification is not part of the type in C++11, so
-        // this is the only thing that holds the two together - without it the
-        // two would silently be one function with whichever promise was seen
-        // last.
+        // **A declaration and its definition must agree about `noexcept`.** Measured
+        // both ways: clang refuses a definition that drops it and one that adds it.
+        // The specification is not part of the type, so this is what holds them together.
         if (f.isNoexcept != pendingNoexcept_)
             src_.fail(pos, "'" + key + "' was declared " +
                            (f.isNoexcept ? "'noexcept'" : "without 'noexcept'") +
@@ -2107,17 +1853,9 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
         }
         pendingNoexcept_ = false;
 
-        // **[dcl.fct.default]/4: a later declaration adds defaults, it does
-        // not discard them.** This path cleared the `noexcept` it had just
-        // checked and left the defaults sitting in the member, so `g`'s were
-        // dropped where they belonged and re-read as the *next* function's -
-        // which then accepted a call with an argument missing and evaluated
-        // g's token stream to fill it in. `h()` returned 50.
-        //
-        // Merged rather than replaced, because the whole point of the rule is
-        // that the declarations are read together: what one gave and the
-        // other did not is added, what both gave is refused, and the union
-        // has to be a suffix even where neither half was on its own.
+        // **[dcl.fct.default]/4: a later declaration adds defaults, it does not discard
+        // them.** This path cleared them, so `g`'s were re-read as the next function's
+        // and `h()` returned 50. Merged rather than replaced, the union a suffix.
         if (!pendingDefaults_.empty()) {
             std::vector<std::size_t> &have = defaultArgs_[f.symbol];
             if (have.size() < pendingDefaults_.size())
@@ -2171,20 +1909,18 @@ Parser::overloadsOf(const std::string &name) const {
     return &it->second;
 }
 
-// The sole function of that name, or nothing when the name is overloaded.
-// Every caller of this wants one function without having any arguments to
-// choose by, so "there are several" is not an answer it can use - each one
-// says so in its own words instead.
+// The sole function of that name, or nothing when the name is overloaded. Every caller
+// wants one function without having any arguments to choose by, so "there are several"
+// is not an answer it can use - each one says so in its own words instead.
 const Parser::Signature *Parser::findFunction(const std::string &name) const {
     const std::vector<std::size_t> *set = overloadsOf(name);
     if (set == nullptr || set->size() != 1) return nullptr;
     return &functions_[(*set)[0]];
 }
 
-// The one function of this name with these parameters - which is the only
-// question a definition can ask, since a definition IS a parameter list. Going
-// through lookupFunction instead is what broke the moment a name could hold
-// two functions: it answers "which one" and a definition already knows.
+// The one function of this name with these parameters - the only question a definition
+// can ask, since a definition IS a parameter list. Going through lookupFunction broke
+// the moment a name could hold two: it answers "which one", and a definition knows.
 const Parser::Signature &
 Parser::lookupSignature(const std::string &name,
                         const std::vector<const Type *> &params,
@@ -2221,13 +1957,9 @@ void Parser::blockFunctionDeclaration(const Declared &d) {
     declareFunction(d.name, d.type, params, variadic, false, d.pos);
 }
 
-// **`Ts... rest` - one thing written, several parameters made.**
-//
-// In a pattern the pack stands for itself and this is one parameter of type
-// `Ts...`, which is what Itanium spells `DpT0_` and says at every size. In a
-// real instantiation it is as many parameters as the pack has members, named
-// `rest$0`, `rest$1` - and those names are what `rest...` expands to at a
-// call, which is the whole mechanism.
+// **`Ts... rest` - one thing written, several parameters made.** In a pattern the pack
+// stands for itself, which Itanium spells `DpT0_`; in an instantiation it is as many
+// parameters as members, named `rest$0` and `rest$1`, which `rest...` expands to.
 bool Parser::packParameter(std::vector<const Type *> *types,
                            std::vector<std::string> *names) {
     if (peek().kind != TokenKind::Ident || !peekAt(1).is("...")) return false;
@@ -2264,10 +1996,9 @@ bool Parser::packParameter(std::vector<const Type *> *types,
     return true;
 }
 
-// To the ',' or ')' that ends a default argument, counting brackets so that a
-// call or a subscript written inside one keeps its own commas. `<` is not
-// counted: a template-id with two arguments in a default would end it early,
-// which is refused where the default is read rather than mis-parsed here.
+// To the ',' or ')' that ends a default argument, counting brackets so that a call or
+// a subscript written inside one keeps its own commas. `<` is not counted: such a
+// default is refused where it is read rather than mis-parsed here.
 void Parser::skipDefaultArgument() {
     int depth = 0;
     for (;;) {
@@ -2300,17 +2031,9 @@ void Parser::skipMemberInitialiser() {
     }
 }
 
-// **[class.base.init]/9: a member the constructor did not name is initialised
-// by the initialiser the class gave it.** So this is asked once per
-// constructor, with the set that constructor's mem-initialiser list already
-// covers, and it answers the assignments for the rest.
-//
-// The expression is read again here, at each constructor that needs it - which
-// is what the standard asks for, an initialiser being evaluated once per
-// construction and not once per class. The enclosing locals are put aside
-// while it is read, the same as a default argument: a member's initialiser may
-// name a global or an enumerator and cannot name a local of whatever function
-// happens to be compiling.
+// **[class.base.init]/9: a member the constructor did not name is initialised by the
+// initialiser the class gave it.** Read again at each constructor that needs it, an
+// initialiser being evaluated once per construction; the locals are put aside.
 bool Parser::hasMemberInitialiser(const std::string &tag) const {
     const std::string prefix = tag + "::";
     std::map<std::string, std::size_t>::const_iterator it =
@@ -2364,22 +2087,9 @@ StmtPtr Parser::memberInitialiser(const std::string &tag, const Type *type,
     return StmtPtr(new ExprStmt(std::move(store)));
 }
 
-// **A class-typed member is built, not left.** [class.base.init]/8: a member
-// the mem-initialiser list does not name is default-initialised, and for a
-// class type that means its default constructor runs. The implicit default
-// constructor did this from the day it was written; a constructor the
-// programmer wrote did not - `struct S { M m; S() {} };` left `m` holding
-// whatever was on the stack, printed 1 where clang printed 3, and then ran
-// `~M` on it from the destructor the compiler wrote. A silent wrong answer,
-// with a destructor for an object nothing had built. Both constructors go
-// through here now, and the list's own `: m(args)` does too, so a member
-// named with arguments is constructed with them rather than assigned from
-// them.
-//
-// An array member is built one element at a time, in order - a loop rather
-// than N calls, because N is a property of the type - and the defaults its
-// constructor reads sit inside the repeated statement, so each element reads
-// them afresh, as [dcl.fct.default]/9 asks of every call.
+// **A class-typed member is built, not left.** [class.base.init]/8: one the list does
+// not name is default-initialised, and a written constructor used to leave it holding
+// the stack. An array member is built by a loop, N being a property of the type.
 StmtPtr Parser::constructMember(const std::string &cls, const Type *type,
                                 const Member &m, int thisSlot,
                                 std::vector<ExprPtr> &args, std::size_t pos,
@@ -2512,11 +2222,9 @@ void Parser::parameterTypes(std::vector<const Type *> &params, bool &variadic) {
     requireDefaultsAreASuffix(pendingDefaults_, closed);
 }
 
-// [dcl.fct.default]/4: once a parameter has a default, every one after it must
-// have one too - a call fills them in from the right, so a parameter with no
-// default behind one that has it could never be reached. Said where the list
-// is read; left to the call site the reader would be told only that no
-// function of that name takes these arguments.
+// [dcl.fct.default]/4: once a parameter has a default, every one after it must have
+// one too - a call fills them in from the right, so a parameter without one behind a
+// parameter with one could never be reached. Said where the list is read.
 void Parser::requireDefaultsAreASuffix(const std::vector<std::size_t> &defaults,
                                        std::size_t pos) {
     bool seen = false;

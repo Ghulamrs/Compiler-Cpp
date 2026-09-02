@@ -48,20 +48,8 @@ void GnuSpelling::functionBegin(const std::string &name, bool exported) {
 }
 
 // **Unwind data, and it is the same three directives in every function.** A
-// cxx1 frame has one shape - rbp pushed and then made the frame pointer - so
-// the CFA is rbp + 16 for the whole body and the saved rbp sits just below
-// it. Without this the frame is opaque to the unwinder: a debugger's
-// backtrace stopped at the first cxx1 function, and an exception cannot pass
-// through one at all.
-//
-// Emitted where the frame is established rather than beside every
-// instruction, which is what clang does too: the unwinder looks the CFI up by
-// return address, and a return address can only be inside a call - there are
-// none in a prologue.
-//
-// The MASM spelling has said all of this in Microsoft's own way since the
-// Windows backend was written, with PROC FRAME and .PUSHREG, so Windows
-// frames were already unwindable and only the two Itanium targets were not.
+// cxx1 frame has one shape, so the CFA is rbp + 16 throughout; without it a
+// backtrace stops here and no exception passes. MASM has always said this.
 void GnuSpelling::prologue(int frameSize, const std::string &lsda) {
     o_ += "  .cfi_startproc\n";
     if (!lsda.empty()) {

@@ -1,8 +1,6 @@
-// The parser: making and destroying objects in an expression.
-//
-// `new` and `delete` and the allocator calls behind them, `throw` and the
-// Microsoft form of it, and the temporaries a class-typed expression needs -
-// including the zeroing that value-initialisation is.
+// The parser: making and destroying objects in an expression. `new` and `delete`
+// and the allocator calls behind them, `throw` and the Microsoft form of it, and
+// the temporaries a class-typed expression needs, the value-init zeroing included.
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
@@ -12,21 +10,9 @@
 #include <cstring>
 
 
-// `P(1)` - a temporary of class type.
-//
-// **The object goes in a slot of this frame and the expression answers with
-// its name**, the constructor call sequenced in front by a comma:
-// `(P::P(&tmp, 1), tmp)`. That is the same shape `materialiseCopy` already
-// builds for a by-value class parameter, which is where the pattern comes
-// from - what was missing was a way to ask for one by writing the type.
-//
-// **It was reachable three ways and refused in all of them**, and the refusal
-// named a different thing each time: `P(1)` in an expression, `return P(1);`,
-// and `static_cast<T &&>` of a prvalue. One gap, three symptoms.
-//
-// The temporary is destroyed at the end of the full expression, which is what
-// `pendingTemps_` is for - [class.temporary]/4 - so a class with a destructor
-// gets one call there and not at the end of the function.
+// `P(1)` - a temporary of class type. **The object goes in a slot of this frame
+// and the expression answers with its name**, the constructor sequenced in front;
+// it dies at the end of the full expression, which is what `pendingTemps_` is for.
 ExprPtr Parser::pathAccess(ExprPtr root, const std::vector<InitStep> &path) {
     ExprPtr e = std::move(root);
     for (const InitStep &s : path) {
@@ -49,13 +35,9 @@ ExprPtr Parser::pathAccess(ExprPtr root, const std::vector<InitStep> &path) {
     return e;
 }
 
-// **Zero every scalar leaf of `type` reachable from `root`**, one store per
-// leaf in declaration order, appended to `out`. The root is whatever names
-// the object - a frame slot, `*p` for a pointer held in one, a member of
-// `*this` - and is copied for each leaf with clonePure, which is why it has
-// to be a pure expression. It used to be a slot number, and that is the
-// whole reason the first heap fix zeroed a frame temporary and copied it
-// over: the object it wanted to zero had no slot.
+// **Zero every scalar leaf of `type` reachable from `root`**, one store per leaf
+// in declaration order. The root is whatever names the object and is copied for
+// each leaf with clonePure, so it has to be pure; it used to be a slot number.
 void Parser::zeroLeaves(const Expr &root, const Type *type,
                         std::vector<InitStep> &path,
                         std::vector<ExprPtr> &out) {
@@ -136,13 +118,9 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
         // mark the constructor branch sets, for the same reason.
         obj->setXvalue();
         if (args.empty()) {
-            // **[dcl.init]/8: `P()` value-initialises, and for a class with
-            // no user-provided constructor that means zero-initialising it.**
-            // The slot was handed back as it stood, so `f(P())` read whatever
-            // the frame held - reproducibly, and differently per call site.
-            // "An object with nothing to set" was the wrong reading: there is
-            // no constructor to run, and that is exactly why the zeroing is
-            // the compiler's job.
+            // **[dcl.init]/8: `P()` value-initialises, and for a class with no
+            // user-provided constructor that means zeroing it.** The slot was
+            // handed back as it stood, so `f(P())` read whatever the frame held.
             ExprPtr chain = zeroChain(*obj, plain);
             if (chain == nullptr) return obj;
             // Comma'd with the object's *address* and dereferenced, which is
@@ -174,12 +152,9 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
         return made;
     }
 
-    // **Read before the argument list is touched.** [dcl.init]/8's other
-    // half: `P()` for a class whose default constructor nobody wrote is
-    // zero-initialised *and then* that constructor runs - the vptr, the
-    // members with initialisers and the members with constructors of their
-    // own are what it sets, and every other scalar is the zeroing's. A
-    // user-provided constructor gets no zeroing, which is the same paragraph.
+    // **Read before the argument list is touched.** [dcl.init]/8's other half: a
+    // class whose default constructor nobody wrote is zeroed *and then* built,
+    // where a user-provided one gets no zeroing. The same paragraph says both.
     const bool valueInit = args.empty();
     const Signature &ctor = resolveOverload(key, args, pos);
     applyDefaults(ctor, args, pos);
@@ -220,13 +195,9 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
         }
     }
 
-    // **A dereference of a pointer, not the object beside a comma.** The
-    // obvious shape is `(ctor(&tmp, ...), tmp)`, and `isGlvalue` says a comma
-    // has its right operand's value category - so the parser would let anyone
-    // take its address, and no backend can: taking the address of a comma is
-    // not something the three code generators know. `*(ctor(&tmp, ...), &tmp)`
-    // says the same thing with a shape they all already handle, because the
-    // address of `*p` is `p` and every one of them knows that.
+    // **A dereference of a pointer, not the object beside a comma.** `isGlvalue`
+    // gives a comma its right operand's value category, so the parser would let
+    // anyone take its address and no backend can. `*(ctor(&tmp), &tmp)` they know.
     ExprPtr again(Var::local("$tmp", slot));
     again->setType(plain);
     ExprPtr at(new Unary('&', std::move(again)));
@@ -235,38 +206,16 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
     both->setType(ptr);
     ExprPtr made(new Unary('*', std::move(both)));
     made->setType(plain);
-    // **What `T(...)` makes is about to expire, and the marker is how the
-    // rest of the compiler is told.** The lowering above is a dereference,
-    // which reads as an ordinary lvalue - so a temporary passed by value
-    // reached for the copy constructor, and an explicit copy beside a plain
-    // move refused a call clang accepts. The xvalue mark is the one bit of
-    // value category this AST carries, and a materialised temporary has
-    // every property it stands for: an address, and no further readers.
+    // **What `T(...)` makes is about to expire, and the marker is how the rest of
+    // the compiler is told.** The lowering reads as an ordinary lvalue, so without
+    // it a temporary passed by value reached for the copy constructor.
     made->setXvalue();
     return made;
 }
 
 // ---------------------------------------------------------------- new and delete
-//
-// **The four operator functions are called by name, and the names were
-// measured rather than read** - `clang++ -target ... -S -O0` over a file that
-// news and deletes, on all three targets. -O0 matters: at -O1 clang elides the
-// allocation entirely, which it is allowed to do, and the assembly comes back
-// with nothing to read.
-//
-//     operator new(size_t)     _Znwm    ??2@YAPEAX_K@Z
-//     operator new[](size_t)   _Znam    ??_U@YAPEAX_K@Z
-//     operator delete(void *)  _ZdlPv   ??3@YAXPEAX@Z
-//     operator delete[](void *) _ZdaPv  ??_V@YAXPEAX@Z
-//
-// Darwin writes the Itanium name with a leading underscore, and the backend
-// already does that to every symbol, so what is emitted here is the plain one.
-//
-// **These are calls to the platform's own operators, not to an allocator this
-// compiler ships**, which is what makes `new` here interoperate with a `delete`
-// in a translation unit built by clang. It also means allocation failure does
-// what the platform does - the real operator new throws - and this compiler has
-// no exceptions until rung 6. docs/CONFORMANCE.md records that.
+// **The four operator functions are called by name, and the names were measured**
+// at -O0 on all three targets. The platform's own: a cxx1 `new` meets clang's.
 ExprPtr Parser::runtimeCall(const char *symbol, const Type *returns,
                             std::vector<ExprPtr> args) {
     std::vector<int> argSlots(args.size(), 0);
@@ -279,15 +228,9 @@ ExprPtr Parser::runtimeCall(const char *symbol, const Type *returns,
     return n;
 }
 
-// **The Microsoft ABI throws from the stack, not from the heap.**
-//
-//     T tmp = x;
-//     _CxxThrowException(&tmp, &_TI1<letter>);
-//
-// where Itanium asks the runtime for memory first. The exception object is an
-// ordinary local here, and what carries its identity is the ThrowInfo chain -
-// four objects the *backend* emits, listed on the Program so that only the
-// backend which needs them sees them.
+// **The Microsoft ABI throws from the stack, not from the heap**: `T tmp = x;` and
+// then `_CxxThrowException(&tmp, &_TI1<letter>)`, where Itanium asks the runtime
+// for memory. Identity is the ThrowInfo chain, four objects the backend emits.
 StmtPtr Parser::microsoftThrow(ExprPtr value, std::size_t pos) {
     const Type *thrown = value->type()->unqualified();
     MicrosoftThrow names;
@@ -330,21 +273,9 @@ StmtPtr Parser::microsoftThrow(ExprPtr value, std::size_t pos) {
     return StmtPtr(new ExprStmt(std::move(whole)));
 }
 
-// **`throw x;` is three calls and a store, and no new machinery.**
-//
-//     void *e = __cxa_allocate_exception(sizeof x);
-//     *(T *)e = x;
-//     __cxa_throw(e, &_ZTI<T>, 0);
-//
-// The Itanium ABI puts the object in memory the runtime owns, hands it over
-// with the type that identifies it, and never returns. Written as one comma
-// expression so that it is a statement wherever an expression is one.
-//
-// **The type_info pointer is the whole of the work.** cxx1 has no RTTI: the
-// vtable's typeinfo slot is a plain zero and `typeid` is refused. For a
-// *fundamental* type the object is already in the standard library and naming
-// it is enough, which is why this rung starts there and refuses everything
-// else by name.
+// **`throw x;` is three calls and a store, and no new machinery**:
+// __cxa_allocate_exception, the store, __cxa_throw with the type that identifies
+// it. That type_info pointer is the work - fundamental types, the rest refused.
 StmtPtr Parser::throwStatement(ExprPtr value, std::size_t pos) {
     const Type *thrown = value->type()->unqualified();
     if (target_.microsoftNames()) return microsoftThrow(std::move(value), pos);
@@ -468,10 +399,9 @@ ExprPtr Parser::newExpression(std::size_t pos) {
         src_.fail(pos, "'new' cannot make a reference - a reference is a name "
                        "for something that already exists");
 
-    // The initialiser, and only the forms that need no constructor. Anything
-    // else is rung 3 and is refused by name rather than half-built.
-    // A class with constructors is built by calling one, here as much as on the
-    // stack - the only difference is where the object is.
+    // The initialiser, and only the forms that need no constructor; anything else
+    // is refused by name rather than half-built. A class with constructors is
+    // built by calling one, here as much as on the stack.
     const bool constructed = made->isStructOrUnion() && !made->tag().empty() &&
                              overloadsOf(constructorKey(made->tag())) != nullptr;
     std::vector<ExprPtr> ctorArgs;
@@ -483,8 +413,7 @@ ExprPtr Parser::newExpression(std::size_t pos) {
         if (array) {
             // **`new T[n]()` value-initialises every element** - [expr.new]/17
             // allows exactly the empty pair there and nothing inside it, so
-            // `new int[n](5)` is refused the way clang refuses it. What the
-            // empty pair means is n zeroed elements, below.
+            // `new int[n](5)` is refused the way clang refuses it.
             if (!consume(")"))
                 src_.fail(peek().pos, "'new T[n](x)' cannot initialise an "
                                       "array - only the empty '()' is allowed "
@@ -539,11 +468,9 @@ ExprPtr Parser::newExpression(std::size_t pos) {
 
     if (!hasInit && !constructed) return typed;
 
-    // `new int(5)` is two things - an allocation and a store - and an
-    // expression yields one value, so the pointer is kept in a temporary and
-    // the comma operator sequences them. The same shape bindReference already
-    // uses for a temporary, and for the same reason. A constructed object is
-    // the same shape with a call where the store is.
+    // `new int(5)` is an allocation and a store where an expression yields one
+    // value, so the pointer is kept in a temporary and the comma sequences them,
+    // as bindReference does. A constructed object puts a call where the store is.
     int slot = allocateFrameSlot(pointer);
     std::string temp = ".new" + std::to_string(newTemps_++);
 
@@ -553,13 +480,9 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     keep->setType(pointer);
 
     if (array) {
-        // **n elements zeroed by the platform's `memset`**, the same way the
-        // storage came from the platform's `operator new[]`: n is a run-time
-        // value, and this expression language has no loop, so the one shape
-        // that can zero a run-time count is a call. It is also exactly what
-        // clang emits for the same line. Scalars, and classes with no
-        // constructor to run, are all that reach here - a class with one is
-        // refused above, since its elements would each need the call.
+        // **n elements zeroed by the platform's `memset`**, as the storage came
+        // from its `operator new[]`: n is a run-time value and this expression
+        // language has no loop. It is also what clang emits for the same line.
         const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
         std::vector<ExprPtr> args;
         ExprPtr at(Var::local(temp, slot));
@@ -592,22 +515,13 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     if (constructed) {
         const Signature &ctor = resolveOverload(constructorKey(made->tag()),
                                                 ctorArgs, pos);
-        // `new V()` - and not `new V` - for a class whose default constructor
-        // nobody wrote: zeroed first, then built, the rule classTemporary
-        // follows for `V()`. Read before the call is assembled, as there.
-        //
-        // **Before applyDefaults, and the order is the point.** A default
-        // argument is appended to ctorArgs below, so asking whether the list
-        // is empty afterwards asks a different question than the one this
-        // rule wants. An implicit default constructor takes no parameters, so
-        // the two cannot collide today - but they would the moment an
-        // implicit member grew one, and reading first costs nothing.
+        // `new V()` and not `new V`, for a class whose default constructor nobody
+        // wrote: zeroed first, then built. **Read before applyDefaults**, which
+        // appends to ctorArgs and would make "is the list empty" another question.
         const bool zeroFirst = hasInit && ctorArgs.empty() && ctor.implicit;
-        // **The defaults, as every other constructor call reads them.** This
-        // call is built by hand, one argument per parameter, and `new M` of
-        // an `M(int a = 5)` was refused as "takes 2 argument(s), given 1"
-        // after resolution had already accepted it - the same door the base
-        // mem-initialiser came through, one expression over.
+        // **The defaults, as every other constructor call reads them.** This call
+        // is built by hand, one argument per parameter, and `new M` of an
+        // `M(int a = 5)` was refused after resolution had already accepted it.
         applyDefaults(ctor, ctorArgs, pos);
         std::vector<ExprPtr> all;
         ExprPtr self(Var::local(temp, slot));
@@ -651,12 +565,9 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     ExprPtr where(new Unary('*', std::move(base)));
     where->setType(made);
 
-    // **`new P()` for a class with no constructor is value-initialisation
-    // too**, and [dcl.init]/8 makes that a zeroing - the rule classTemporary
-    // follows for `P()` on the stack and did not follow here: the scalar
-    // branch below converted its literal 0 *to the class type*, which lowered
-    // to a copy whose source address was the zero itself, and `new P()` read
-    // address 0 and died. The stores go straight through the pointer.
+    // **`new P()` for a class with no constructor is value-initialisation too**,
+    // which [dcl.init]/8 makes a zeroing. The scalar branch converted its 0 to the
+    // class type, so `new P()` read address 0; the stores go through the pointer.
     if (!init && made->isStructOrUnion()) {
         ExprPtr result0(Var::local(temp, slot));
         result0->setType(pointer);
@@ -717,10 +628,9 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
     // object. A class with no destructor skips straight to the free.
     const Signature *dtor = destructorOf(t->pointee());
 
-    // **A virtual destructor is reached through the vtable**, because the
-    // static type is not necessarily the one that has to be destroyed. The
-    // slot holds the deleting form, which destroys AND frees - so this path
-    // makes one indirect call and does not call operator delete itself.
+    // **A virtual destructor is reached through the vtable**, the static type not
+    // being the one that has to be destroyed. The slot holds the deleting form,
+    // which frees as well, so this path calls once and never operator delete.
     if (dtor != nullptr && dtor->isVirtual) {
         if (array)
             src_.fail(pos, "'delete[]' of a polymorphic type is not supported "
@@ -833,15 +743,8 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
 }
 
 // **[expr.delete]/2: deleting a null pointer has no effect**, and running the
-// destructor on one is how this compiler crashed on `delete p;` where p was
-// null - ordinary code, since a pointer that may be null is the reason `delete`
-// is guarded at all. `operator delete` takes null itself and always did; what
-// had to be guarded is the destructor call in front of it, and the virtual
-// path's whole call, which frees as well as destroys.
-//
-// Written as `p != 0 ? (call, 1) : 0` rather than a conditional with void
-// arms: the value is thrown away either way, and an int on both sides is a
-// shape every backend already emits.
+// destructor on one is how `delete p;` crashed. Written `p != 0 ? (call, 1) : 0`
+// rather than with void arms, an int each side being a shape every backend emits.
 ExprPtr Parser::guardAgainstNull(const std::string &temp, int slot,
                                  const Type *ptr, ExprPtr body) {
     ExprPtr probe(Var::local(temp, slot));

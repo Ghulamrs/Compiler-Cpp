@@ -76,12 +76,9 @@ static bool hostIsWindows() {
 }
 
 #ifdef _WIN32
-// vswhere's answer, fetched through a temporary file rather than a pipe.
-//
-// _popen would be the obvious way and does not work here. cc1 is itself run
-// through a pipe by the editor, and a nested _popen fails when the parent's
-// stdio are not consoles - so this found Visual Studio from a command prompt
-// and never from inside RStudio, which is the one place it was needed.
+// vswhere's answer, fetched through a temporary file rather than a pipe. cc1 is
+// itself run through a pipe by the editor and a nested _popen fails where the
+// parent's stdio are not consoles, so this found Visual Studio everywhere else.
 static std::string askVswhere() {
     char temp[MAX_PATH];
     char folder[MAX_PATH];
@@ -134,16 +131,9 @@ static std::string findVcvars() {
 }
 #endif
 
-// ml64 and link live in Visual Studio and are on PATH only inside a Developer
-// Command Prompt. An editor launched from Explorer is not one, so every build
-// it asked cc1 for failed at the assembler with a message telling a person to
-// open a different shell - which the editor cannot do for them.
-//
-// So when the tools are not already reachable, the command is run inside a
-// shell that has sourced vcvars64.bat. That sets LIB as well as PATH, which
-// matters: finding ml64 alone still leaves the linker unable to see
-// libcmt.lib. Empty when there is nothing to add, and the command runs as it
-// always did.
+// ml64 and link are on PATH only inside a Developer Command Prompt, which an
+// editor launched from Explorer is not - so where they are unreachable the
+// command runs in a shell that sourced vcvars64.bat, which sets LIB as well.
 static std::string developerShell() {
 #ifdef _WIN32
     const char *inside = std::getenv("VCToolsInstallDir");
@@ -159,22 +149,9 @@ static std::string developerShell() {
 
 static std::string lastToolCommand;
 
-// Runs one tool, inside a developer environment when the machine needs one.
-//
-// Through a batch file rather than by prefixing the command. cmd's rule for
-// stripping the outer quotes of a /c string is not something to build on when
-// the string already holds several quoted paths and an '&&' - every spelling
-// tried produced "The filename, directory name, or volume label syntax is
-// incorrect" from somewhere inside it. A file has no quoting question: the
-// call is on its own line and the command is on the next, exactly as written.
-// cmd /c strips the first and last quote of a command that has both, so a
-// command whose program is quoted and whose last argument is quoted arrives
-// mangled - '"ml64.exe" ... "x.s"' becomes 'ml64.exe" ... "x.s'. One more
-// pair around the whole thing is what cmd eats instead. This is only visible
-// where the tools are already on PATH and no vcvars shell is added, which is
-// how it hid: standalone the wrapper replaced the command and covered it,
-// and the editor - which imports the MSVC environment into itself before
-// running anything - was the one caller that took this path.
+// Runs one tool, inside a developer environment where the machine needs one.
+// Through a batch file and not a /c string: cmd strips the outer quotes of a
+// command that has them, and a file with the command on its own line has none.
 static std::string forCmd(const std::string &command) {
 #ifdef _WIN32
     return "\"" + command + "\"";
@@ -223,14 +200,8 @@ static void noteWindowsToolchain() {
 }
 
 // **`c++` and not `cc`, because operator new lives in the C++ runtime.** The
-// four allocation operators a new-expression calls are in libc++ or libstdc++,
-// and the C driver does not link either - so `new int` compiled, assembled and
-// then failed at the link with four undefined symbols that the linker helpfully
-// demangled back into 'operator new(unsigned long)'. Which driver is used is
-// the whole of the difference; `c++` assembles a .s exactly as `cc` does.
-//
-// Rung 6 will want this too: the unwinder and the personality routine come from
-// the same place.
+// four allocation operators are in libc++ or libstdc++ and the C driver links
+// neither; `c++` assembles a .s exactly as `cc` does, and rung 6 wants it too.
 const char *Driver::hostCompiler() {
     const char *env = std::getenv("CXX1_CC");
     return (env != nullptr && env[0] != '\0') ? env : "c++";

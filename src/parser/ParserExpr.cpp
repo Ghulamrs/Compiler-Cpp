@@ -1,9 +1,6 @@
-// The parser: expressions, up to the operator ladder.
-//
-// Pointer arithmetic and the usual conversions, the named casts, the primary
-// expression and the names it looks up, `decltype`, references and how they
-// bind, and the postfix and unary levels. Calls, lambdas, and everything that
-// makes or destroys an object live in the three files beside this one.
+// The parser: expressions, up to the operator ladder. Pointer arithmetic and the
+// usual conversions, the named casts, the primary expression and the names it
+// looks up, `decltype`, reference binding, and the postfix and unary levels.
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
@@ -70,26 +67,9 @@ const char *binOpSpelling(BinOp op) {
     return "";
 }
 
-// [over.match.oper]: where an operand has class type, `a @ b` is a *call* and
-// not the built-in operation.
-//
-// **Answers null when neither operand is a class**, which is every use in a C
-// program and most uses in a C++ one - so the built-in paths below reach their
-// work having asked one question about a type, and nothing about operators.
-//
-// **A member operator is looked for on the left operand only.** The left one
-// is what [over.match.oper] hands the implicit object parameter, so `3 + v`
-// can never reach `V::operator+` however the class is written - that one is
-// what a non-member operator is for, and is why the non-member form exists at
-// all.
-//
-// **The two halves are ranked together**, which `resolveOperator` does: a
-// member's implicit object parameter and a non-member's first parameter are
-// both "the left operand", so the rank vectors are the same length and
-// comparable. Asking "is there a member" first and only then looking at the
-// non-members - which is what this did at first - takes the member whenever
-// one exists, which accepts an ambiguity clang refuses and refuses a call a
-// non-member could have taken.
+// [over.match.oper]: where an operand has class type, `a @ b` is a *call* and not
+// the built-in operation. Null when neither operand is a class. **A member is
+// looked for on the left operand only, and the two halves are ranked together.**
 ExprPtr Parser::overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
                                  std::size_t pos) {
     const Type *lt = lhs->type();
@@ -101,11 +81,9 @@ ExprPtr Parser::overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
     const char *spelling = binOpSpelling(op);
     const std::string name = std::string("operator") + spelling;
 
-    // The member and non-member candidates are ranked *together*, which is
-    // what [over.match.oper] asks for and what asking the two questions in
-    // order got wrong: a class whose member and a free function are equally
-    // good is an ambiguity, and taking the member because it was looked for
-    // first accepted a program clang refuses.
+    // The member and non-member candidates are ranked *together*, which is what
+    // [over.match.oper] asks for and what asking the two questions in order got
+    // wrong: taking the member first accepts an ambiguity clang refuses.
     switch (resolveOperator(name, *lhs, rhs.get(), pos)) {
     case OperatorChoice::Member: {
         std::vector<ExprPtr> args;
@@ -132,16 +110,9 @@ ExprPtr Parser::overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
     return nullptr;
 }
 
-// `-v`, `!v`, `~v`, `*v`, `&v`, and the two increments. The same merged
-// candidate set as a binary operator, with one operand.
-//
-// **Null means "carry on with the built-in", not "there is a problem".** A
-// class with no `operator&` still has an address, and `&obj` has always been
-// the ordinary address-of; the same is true of `*p` where p is a pointer to a
-// class. So this answers null both when the operand is not a class at all and
-// when it is one that declares no such operator, and each built-in path below
-// then reaches its own type check unchanged - which is also where a class that
-// cannot be negated gets told so.
+// `-v`, `!v`, `~v`, `*v`, `&v` and the two increments - the same merged candidate
+// set as a binary operator, with one operand. **Null means "carry on with the
+// built-in", not "there is a problem"**: a class with no `operator&` has an address.
 ExprPtr Parser::overloadedUnary(const char *spelling, ExprPtr &operand,
                                 std::size_t pos) {
     if (!operand->type()->unqualified()->isStructOrUnion()) return nullptr;
@@ -212,12 +183,9 @@ ExprPtr Parser::comparison(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos) 
     lhs = decay(std::move(lhs));
     rhs = decay(std::move(rhs));
     ExprPtr n;
-    // **`nullptr` may be compared for equality and for nothing else.**
-    // [expr.rel] wants two pointers, and std::nullptr_t is not one - so
-    // `p < nullptr` is a diagnostic in clang, and two `nullptr`s ordered
-    // against each other are as well. Equality is [expr.eq], which takes a
-    // null pointer constant on either side, and two nullptrs are always equal
-    // because there is only one value of the type.
+    // **`nullptr` may be compared for equality and for nothing else.** [expr.rel]
+    // wants two pointers and std::nullptr_t is not one, so `p < nullptr` is a
+    // diagnostic; two nullptrs are always equal, the type having one value.
     const bool null = lhs->type()->isNullPtr() || rhs->type()->isNullPtr();
     if (null && op != BinOp::Eq && op != BinOp::Ne)
         src_.fail(pos, "'std::nullptr_t' has one value, so there is nothing to "
@@ -230,33 +198,16 @@ ExprPtr Parser::comparison(BinOp op, ExprPtr lhs, ExprPtr rhs, std::size_t pos) 
         n = ExprPtr(new Binary(op, convert(std::move(lhs), common),
                                    convert(std::move(rhs), common)));
     }
-    // **[expr.rel]/1 and [expr.eq]/1: the result is `bool`.** It had been
-    // `int`, which is C's answer, and the difference is visible three ways:
-    // `sizeof(a == b)` is 1 and not 4, overloading on `bool` against `int`
-    // picks the right one, and `auto b = (x == y)` gives something that can
-    // only hold true or false. A bool promotes to int wherever one is wanted,
-    // so nothing that used the old answer as a number has to change.
+    // **[expr.rel]/1 and [expr.eq]/1: the result is `bool`.** It had been `int`,
+    // which is C's answer, and the difference shows in `sizeof(a == b)`, in
+    // overloading bool against int, and in `auto`. A bool promotes to int anyway.
     n->setType(types_.get(Kind::Bool));
     return n;
 }
 
-// `static_cast<T>(e)`. Parsed here rather than beside the C-style cast because
-// [expr.post] makes it a postfix-expression: `static_cast<B &>(d).f()` is
-// written, and reading it here is what lets postfix() apply the `.f()` to it.
-//
-// **The reference case is the one this was written for.** `static_cast<T &&>`
-// is what `std::move` is - the standard library's move is a cast and nothing
-// else - and without it an lvalue can never be offered to an rvalue reference,
-// which would leave every move constructor in a program unreachable. What it
-// produces is the operand itself, marked: the object is unchanged and its
-// address is unchanged, and all that is said is that whoever takes it may take
-// it apart.
-//
-// Every other target type is handed to convert(), which is the same road the
-// C-style cast takes. That is a *subset* of static_cast - a base-to-derived
-// downcast and a cast between unrelated enums are also static_cast's and are
-// refused here - and the subset is honest rather than silent: convert() says
-// what it will not do.
+// `static_cast<T>(e)`, parsed here because [expr.post] makes it a postfix-expression
+// - `static_cast<B &>(d).f()`. **The reference case is what it was written for**:
+// `static_cast<T &&>` is what std::move is. Every other type goes to convert().
 ExprPtr Parser::staticCast(std::size_t pos) {
     expect("<");
     StorageClass sc;
@@ -302,13 +253,9 @@ ExprPtr Parser::staticCast(std::size_t pos) {
 }
 
 
-// **Two types that differ only in cv-qualifiers, at every level.**
-// [expr.const.cast] calls them "similar": strip the pointers in lockstep,
-// ignore the qualifiers at each step, and the two must arrive at the same
-// type. Only `const` is a qualifier this compiler has - `volatile` is parsed
-// and dropped - so that is the only one either cast can move. `const int *const *` and `int **` are similar; `const int *` and
-// `char *` are not, which is what stops const_cast being a free
-// reinterpretation.
+// **Two types that differ only in cv-qualifiers, at every level** - what
+// [expr.const.cast] calls "similar": strip the pointers in lockstep and the two must
+// arrive at the same type. Only `const` is a qualifier this compiler has.
 static bool differOnlyInQualifiers(const Type *a, const Type *b) {
     for (;;) {
         a = a->unqualified();
@@ -320,10 +267,9 @@ static bool differOnlyInQualifiers(const Type *a, const Type *b) {
     }
 }
 
-// `const_cast<T>(e)` - the only cast that may take const off, and the only
-// thing it may do. It generates nothing: the value is unchanged and what moves
-// is the type, which is the whole reason C++ made it a cast of its own rather
-// than letting the C one do it silently.
+// `const_cast<T>(e)` - the only cast that may take const off, and the only thing it
+// may do. It generates nothing: the value is unchanged and what moves is the type,
+// which is why C++ made it a cast of its own rather than letting the C one do it.
 ExprPtr Parser::constCast(std::size_t pos) {
     expect("<");
     StorageClass sc;
@@ -372,15 +318,9 @@ ExprPtr Parser::constCast(std::size_t pos) {
     return c;
 }
 
-// `reinterpret_cast<T>(e)` - the cast that says "read these bits as something
-// else". It generates nothing either on any target here, because every
-// conversion it allows is between things of the same size; what it does is
-// name the places where that is allowed, and refuse the rest.
-//
-// **It may not take const off**, which is the line between it and const_cast
-// and the reason both exist: `reinterpret_cast<int *>(p)` on a `const int *`
-// is refused by clang and here, and the two casts have to be written together
-// to do it.
+// `reinterpret_cast<T>(e)` - "read these bits as something else", generating nothing
+// on any target here, every conversion it allows being between things of one size.
+// **It may not take const off**, which is the line between it and const_cast.
 ExprPtr Parser::reinterpretCast(std::size_t pos) {
     expect("<");
     StorageClass sc;
@@ -462,8 +402,7 @@ ExprPtr Parser::reinterpretCast(std::size_t pos) {
 
 // The type one keyword names, for [expr.type.conv], which takes exactly one
 // simple-type-specifier: `unsigned(x)` is a cast and `unsigned long(x)` is
-// ill-formed - clang: "expected '(' for function-style cast". Nothing is
-// consumed; nullptr says the token is not one of these.
+// ill-formed. Nothing is consumed; nullptr says the token is not one of these.
 const Type *Parser::simpleTypeKeyword() const {
     static const struct { const char *word; Kind kind; } t[] = {
         { "void", Kind::Void },     { "bool", Kind::Bool },
@@ -532,12 +471,9 @@ ExprPtr Parser::primary(Program *program) {
         return reinterpretCast(pos);
     }
 
-    // **`dynamic_cast` needs run-time type information, and there is none.**
-    // The cast asks what an object *actually* is, which is a question only a
-    // type_info object beside its vtable can answer - and this compiler emits
-    // no type_info for a class, on any of the three targets. It is a rung of
-    // its own, not a missing branch here. `static_cast<Base *>` covers the
-    // direction that needs no such thing.
+    // **`dynamic_cast` needs run-time type information, and there is none.** The
+    // cast asks what an object actually is, which only a type_info beside its
+    // vtable answers, and none is emitted. A rung of its own, not a branch.
     if (peek().is("dynamic_cast"))
         src_.fail(peek().pos, "'dynamic_cast' asks what an object really is at "
                               "run time, which needs a type_info beside its "
@@ -545,12 +481,9 @@ ExprPtr Parser::primary(Program *program) {
                               "class yet. Casting *to* a base needs no such "
                               "thing and 'static_cast' does it");
 
-    // **`nullptr` is a zero that knows it is not an integer.** At the machine
-    // it is a pointer-sized 0 and nothing else, so the backends hear nothing
-    // about it; what the type buys is in the front end, where a null pointer
-    // constant stops being spelled the same as the number 0. That is what
-    // makes `f(int)` lose to `f(char *)` here, and what makes `int n =
-    // nullptr;` a diagnostic rather than a zero.
+    // **`nullptr` is a zero that knows it is not an integer.** At the machine it is
+    // a pointer-sized 0 and the backends hear nothing about it; what the type buys
+    // is `f(int)` losing to `f(char *)`, and `int n = nullptr;` being refused.
     if (peek().is("nullptr")) {
         at_++;
         ExprPtr n(new Num(static_cast<long long>(0)));
@@ -586,13 +519,9 @@ ExprPtr Parser::primary(Program *program) {
         return v;
     }
 
-    // **`operator+(a, b)` written out.** [over.oper]/1: an operator function
-    // is an ordinary function and may be called by its name like any other -
-    // and `a.operator+(b)` is how you reach a member operator that an
-    // expression would have chosen differently. Reading the name here is the
-    // one place it happens outside a declarator, and without it the keyword
-    // fell through to the table of things this parser has no rule for and
-    // said `'operator' is not supported yet` about a feature it has.
+    // **`operator+(a, b)` written out.** [over.oper]/1: an operator function may be
+    // called by its name like any other, and `a.operator+(b)` reaches a member the
+    // expression would have chosen differently. The one place outside a declarator.
     if (peek().is("[")) return lambdaExpression();
 
     if (peek().is("operator")) {
@@ -615,10 +544,9 @@ ExprPtr Parser::primary(Program *program) {
                                   "' is not supported yet");
     }
 
-    // A template named in an expression. A function template with its
-    // arguments written is instantiated; everything else is refused by name,
-    // and with the argument list stepped over first so that the reader is
-    // told about the template rather than about the `<`.
+    // A template named in an expression. A function template with its arguments
+    // written is instantiated; everything else is refused by name, with the argument
+    // list stepped over first so the reader hears about the template, not the `<`.
     if (peek().kind == TokenKind::Ident && isTemplateName(peek().text))
         return templateCall(program);
 
@@ -723,23 +651,9 @@ ExprPtr Parser::primary(Program *program) {
 
     if (peek().kind == TokenKind::Num && peek().isFloat) {
         const Token &t = peek();
-        // **A `long double` this compiler cannot spell the same way on every
-        // machine is refused.** The compiler carries a floating constant as
-        // a `double` - the lexer reads it with `strtod` precisely so that
-        // every build machine reads the same number - but the target's
-        // `long double` can be wider than that: `long double x = 0.1L;` for
-        // x86_64-linux names an 80-bit constant, 0xCCCCCCCCCCCCCCCD, that no
-        // double holds. When it was read with the host's `strtold` instead,
-        // each build machine approximated it differently and three-box
-        // verification could not see it: each box agrees with itself.
-        //
-        // So the question asked is one the digits answer, not the host: a
-        // literal that *is* exactly a double is read exactly by every host
-        // and emitted identically by all three; one that is not is refused
-        // where the target's `long double` is wider than a double, which
-        // today is x86_64-linux alone. Approximating it differently per build
-        // machine is the one thing not on offer. Lifting this means a decimal
-        // to binary conversion in software, which is its own step.
+        // **A `long double` this compiler cannot spell the same way on every machine
+        // is refused.** A constant is carried as a double, and the digits answer
+        // whether it is exactly one; approximating per build host is not on offer.
         if (t.suffixL && !t.exactInDouble &&
             target_.sizeOf(Kind::LongDouble) > target_.sizeOf(Kind::Double))
             src_.fail(t.pos, "this 'long double' literal needs more precision "
@@ -792,13 +706,9 @@ ExprPtr Parser::primary(Program *program) {
         // gives it int. So sizeof('a') is 1 here, and a program that stores
         // one in a char is not narrowing anything.
         else if (t.isChar)               ty = types_.get(Kind::Char);
-        // **[lex.icon] table 6, and the two ladders it holds.** A decimal
-        // literal with no suffix climbs int, long, long long and never
-        // reaches an unsigned type; a hexadecimal or octal one has an
-        // unsigned rung above each signed one. One ladder served both here,
-        // and it was neither: `0x80000000` came out `long` where it is
-        // `unsigned int`, so `sizeof` answered 8 for 4 and
-        // `0xFFFFFFFF == -1` was false where C++ makes it true.
+        // **[lex.icon] table 6, and the two ladders it holds.** A decimal literal
+        // climbs int, long, long long and never reaches unsigned; a hex or octal
+        // one has an unsigned rung above each. One ladder served both, wrongly.
         else if (fits(Kind::Int))        ty = types_.intType();
         else if (!t.decimal && fits(Kind::UInt))
                                          ty = types_.get(Kind::UInt);
@@ -813,22 +723,9 @@ ExprPtr Parser::primary(Program *program) {
         return n;
     }
 
-    // **`Counter::total` - a static member named through its class.** Asked
-    // before the identifier is read as a name of its own, and only taken when
-    // the class really does have such a member, so `Point::get()` and anything
-    // else spelled with a '::' falls through untouched.
-    // **`N::f(...)` and `N::v` - a name qualified by a namespace.** Told from
-    // a class's qualified name by asking which namespaces have been opened:
-    // the two are written identically and mean different lookups. The chain is
-    // eaten while it keeps naming one, so `N::M::g` works, and what is left is
-    // a key every table here already holds.
-    // **`N::S(4)` - a temporary of a class named through its scope.** The
-    // **`int()` and `int(x)` - a fundamental type written as a function.**
-    // [expr.type.conv]: with one value it is the cast `(int)x`, and with none
-    // it is value-initialisation, which for these types is a zero. Neither
-    // was parsed at all - "expected an expression" - though `P()` for a class
-    // has been since rung 2, so `int i = int();` was refused beside a `P p =
-    // P();` that ran. One keyword only: `unsigned long(x)` is ill-formed.
+    // The qualified shapes an expression can open with, each told from the next by
+    // what the chain reaches: `Counter::total` a static member, `N::f` a namespace,
+    // `N::S(4)` a temporary, and `int()` or `int(x)` a fundamental type as one.
     if (const Type *to = simpleTypeKeyword()) {
         const std::size_t tpos = peek().pos;
         const std::string word = peek().text;
@@ -862,20 +759,18 @@ ExprPtr Parser::primary(Program *program) {
         }
     }
 
-    // **`::f()` - a name asked for at global scope explicitly.** Refused by
-    // name rather than left to "expected an expression", which points at a
-    // '::' and says nothing about why. It matters only where a nearer name
-    // hides the global one, and nothing here hides one yet.
+    // **`::f()` - a name asked for at global scope explicitly.** Refused by name
+    // rather than left to "expected an expression", which points at a '::' and says
+    // nothing. It matters only where a nearer name hides the global one.
     if (peek().is("::"))
         src_.fail(peek().pos, "a name qualified with '::' alone - the global "
                               "scope - is not supported yet; write the name "
                               "without it, which finds the same thing while "
                               "nothing shadows it");
 
-    // ...and `N::S::n` is not this: the chain reaches a *class*, and what
-    // follows the class is a member, which the branch below already knows how
-    // to find. Asked before the namespace is eaten, since eating it loses the
-    // start of the name.
+    // ...and `N::S::n` is not this: the chain reaches a *class*, and what follows a
+    // class is a member, which the branch below already knows how to find. Asked
+    // before the namespace is eaten, since eating it loses the start of the name.
     if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
         namespaces_.find(peek().text) != namespaces_.end() &&
         qualifiedTypeEnd() == 0) {
@@ -942,21 +837,16 @@ ExprPtr Parser::primary(Program *program) {
         const Local *l = findLocal(name);
         const GlobalSym *g = l != nullptr ? nullptr : findGlobal(name);
         const Type *held = l != nullptr ? l->type : (g != nullptr ? g->type : nullptr);
-        // A name that holds something callable rather than naming a
-        // function: a function pointer, and now an object of class type,
-        // whose `(` is [over.call] and belongs to postfix() either way. Both
-        // have to be kept out of the free-function branches below, which
-        // would look the name up in the function table and report it
-        // undeclared - which is exactly what `v(1)` did before a class could
-        // have a call operator.
+        // A name that holds something callable rather than naming a function: a
+        // function pointer, or an object whose `(` is [over.call]. Both are kept out
+        // of the free-function branches, which would report the name undeclared.
         bool callsThroughObject =
             held != nullptr && (held->isFunctionPointer() ||
                                 held->unqualified()->isStructOrUnion());
 
-        // **An unqualified static member, inside a member function.** It needs
-        // no object, which is what lets it be answered here rather than
-        // through `this` the way an ordinary member is. A local or a global of
-        // the same name is nearer and was already found above.
+        // **An unqualified static member, inside a member function.** It needs no
+        // object, which is what lets it be answered here rather than through `this`.
+        // A local or a global of the same name is nearer and was found above.
         if (l == nullptr && g == nullptr && currentClass_ != nullptr &&
             !peekAt(1).is("(")) {
             if (const Type::StaticMember *s =
@@ -967,10 +857,9 @@ ExprPtr Parser::primary(Program *program) {
             }
         }
 
-        // An unqualified call inside a member function looks for a member of
-        // this class first - [class.mfct.non-static] makes `secret()` mean
-        // `this->secret()`. It has to be asked before the free-function branch
-        // below, which would otherwise report a member as undeclared.
+        // An unqualified call inside a member function looks for a member of this
+        // class first - [class.mfct.non-static] makes `secret()` mean
+        // `this->secret()` - before the free-function branch calls it undeclared.
         bool inherited = false;
         for (const Type *c = currentClass_; c != nullptr; c = c->base())
             if (overloadsOf(c->tag() + "::" + name) != nullptr) { inherited = true; break; }
@@ -986,10 +875,9 @@ ExprPtr Parser::primary(Program *program) {
             }
         }
 
-        // `P(1)` where P names a class: a temporary, not a call to a
-        // function nobody declared. Asked before the call branch below, which
-        // would look the name up in the function table and report it
-        // undeclared - which is what it did until now.
+        // `P(1)` where P names a class: a temporary, not a call to a function nobody
+        // declared. Asked before the call branch below, which would look the name up
+        // in the function table and report it undeclared.
         if (peekAt(1).is("(") && !callsThroughObject && l == nullptr &&
             g == nullptr) {
             const Type *named = findTypedef(name);
@@ -1005,10 +893,9 @@ ExprPtr Parser::primary(Program *program) {
             }
         }
 
-        // A *member function* of that class, called by its bare name.
-        // The branch further up asks `currentClass_`, which inside the
-        // call operator is the closure, so it finds nothing and the name
-        // is reported undeclared.
+        // A *member function* of that class, called by its bare name. The branch
+        // further up asks `currentClass_`, which inside the call operator is the
+        // closure, so it finds nothing and the name is reported undeclared.
         if (peekAt(1).is("(") && l == nullptr && g == nullptr) {
             if (ExprPtr outer = capturedThisPointer()) {
                 const Type *of = outer->type()->pointee();
@@ -1073,11 +960,9 @@ ExprPtr Parser::primary(Program *program) {
                 return useReference(std::move(acc));
             }
 
-            // **A member of the class the lambda was written in**, reached
-            // through the captured pointer. Inside the call operator
-            // `currentClass_` is the *closure*, so the search above looked in
-            // the wrong class entirely - and the name would have been reported
-            // undeclared with nothing to say about the lambda.
+            // **A member of the class the lambda was written in**, reached through
+            // the captured pointer. Inside the call operator `currentClass_` is the
+            // closure, so the search above looked in the wrong class entirely.
             if (ExprPtr outer = capturedThisPointer()) {
                 const Type *of = outer->type()->pointee();
                 if (const Member *om = of->findMember(name)) {
@@ -1093,10 +978,9 @@ ExprPtr Parser::primary(Program *program) {
             }
         }
 
-        // Taking the address of an overloaded name needs a target type to
-        // choose by - [over.over] - and there is none here. Refused by name
-        // rather than by silently taking the first, which would compile and
-        // call the wrong function.
+        // Taking the address of an overloaded name needs a target type to choose by
+        // - [over.over] - and there is none here. Refused by name rather than by
+        // silently taking the first, which would compile and call the wrong one.
         if (const std::vector<std::size_t> *set = overloadsOf(name)) {
             if (set->size() > 1)
                 src_.fail(pos, "'" + name + "' names " +
@@ -1107,12 +991,9 @@ ExprPtr Parser::primary(Program *program) {
         }
         if (const Signature *sig = findFunction(name)) {
             Var *v = Var::global(name);
-            // **The linkage name, not the written one.** A call already went
-            // through the signature for this; a function named as a *value*
-            // did not, so `int (*p)(int) = g;` emitted `g` where the function
-            // is `_Z1gi` and the program failed at the link. Correct while
-            // this compiler was C and wrong from the moment rung 2 mangled
-            // anything - `extern "C"` kept working, which is why it lasted.
+            // **The linkage name, not the written one.** A call already went through
+            // the signature for this; a function named as a *value* did not, so
+            // `int (*p)(int) = g;` emitted `g` where the function is `_Z1gi`.
             v->setSymbol(sig->symbol);
             ExprPtr target(v);
             const Type *fn = types_.functionType(sig->returns, sig->params,
@@ -1128,10 +1009,9 @@ ExprPtr Parser::primary(Program *program) {
     src_.fail(peek().pos, "expected an expression");
 }
 
-// `x`, `p.q`, `p->q->r` and nothing else - the shape [dcl.type.simple] calls
-// an id-expression or a class member access, which answers with a declared
-// type rather than an expression's. A single pair of parentheses around it
-// changes the answer, which is why this reads tokens rather than the tree.
+// `x`, `p.q`, `p->q->r` and nothing else - what [dcl.type.simple] calls an
+// id-expression or a class member access, which answers with a declared type. One
+// pair of parentheses changes the answer, so this reads tokens and not the tree.
 bool Parser::atNamePath() const {
     if (peek().kind != TokenKind::Ident) return false;
     std::size_t k = 1;
@@ -1147,20 +1027,18 @@ const Type *Parser::decltypeSpecifier() {
     const std::size_t pos = peek().pos;
     at_++;
     expect("(");
-    // **`decltype(auto)` is C++14 and `decltype(e)` is C++11**, and the two
-    // are told apart by one token. Named here because the C++11 form is
-    // built: without this the `auto` is read as the start of an expression
-    // and the error says one was expected, which is true and useless.
+    // **`decltype(auto)` is C++14 and `decltype(e)` is C++11**, and the two are told
+    // apart by one token. Named here because the C++11 form is built: without it the
+    // `auto` reads as the start of an expression and the error is useless.
     if (peek().is("auto"))
         src_.fail(peek().pos, "'decltype(auto)' is C++14, and this compiler is "
                               "C++11 - 'decltype' of an expression works, and "
                               "'auto' on its own deduces from an initialiser");
     const bool namePath = atNamePath();
 
-    // **A name on its own is looked up, not evaluated.** A reference variable
-    // is the case that needs it: every mention of one is lowered to a
-    // dereference, so the expression `r` has type T where `r` was declared
-    // `T &` - and `decltype(r)` has to answer what the declaration said.
+    // **A name on its own is looked up, not evaluated.** A reference variable is the
+    // case that needs it: every mention is lowered to a dereference, so `r` has type
+    // T, and `decltype(r)` has to answer what the declaration said.
     if (namePath && peekAt(1).is(")")) {
         const std::string name = peek().text;
         const Type *declared = nullptr;
@@ -1186,12 +1064,9 @@ const Type *Parser::decltypeSpecifier() {
     return isLvalue(*e) ? types_.referenceTo(t) : t;
 }
 
-// A reference is used by going through the address in its slot, and every
-// use does it. What the program named is what the slot points at, so the
-// parser hands back a dereference: from here on, assignment, address-of and
-// member access all see an ordinary lvalue and none of them needs to know a
-// reference was ever involved. This is the trade from '(bool)x' becoming
-// 'x != 0' - a new thing in the language, lowered to one the backends have.
+// A reference is used by going through the address in its slot, and every use does
+// it. The parser hands back a dereference, so assignment, address-of and member
+// access see an ordinary lvalue - the trade `(bool)x` becoming `x != 0` is.
 ExprPtr Parser::useReference(ExprPtr e) {
     if (!e->type()->isReference()) return e;
     const Type *referent = e->type()->referent();
@@ -1209,10 +1084,9 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
     const Type *referent = ref->referent();
     const Type *it = init->type();
 
-    // Binding takes an address, so the two things that have none cannot be
-    // bound to directly. A const reference still may: it copies them into a
-    // temporary below, which is what the standard says happens. Same rule as
-    // unary '&', reached by a road that does not go through it.
+    // Binding takes an address, so the two things that have none cannot be bound to
+    // directly. A const reference still may: it copies them into a temporary below,
+    // which is what the standard says happens.
     const char *noAddressBecause = nullptr;
     std::string noAddressName;
     if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(init.get()))
@@ -1227,25 +1101,17 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
         }
 
     // **An rvalue reference takes exactly what an lvalue one will not.**
-    // [dcl.init.ref]: `T &&` binds to a value with nowhere to live and
-    // refuses an object that has somewhere - which is the whole of what it
-    // says about a caller, and the reason a move can take an object apart
-    // without anyone noticing.
+    // [dcl.init.ref]: `T &&` binds to a value with nowhere to live and refuses an
+    // object that has somewhere - which is how a move takes an object apart.
     if (ref->isRValueReference() && isLvalue(*init))
         src_.fail(pos, what + " is '" + ref->describe() + "' and this is an "
                        "object with an address of its own - an rvalue "
                        "reference binds only to a value that has none, so "
                        "that taking it apart harms nobody");
 
-    // The direct binding: an addressable glvalue of exactly the type named,
-    // which the reference then *is*. Everything else either makes a temporary
-    // below or is refused.
-    //
-    // **isGlvalue and not isLvalue**, so that an xvalue binds here rather than
-    // falling through to the temporary. An rvalue reference has just been let
-    // past the refusal above precisely so that it can bind to the object
-    // itself; copying it into a temporary first would defeat the entire
-    // point, and silently - a move constructor would run, on a copy.
+    // The direct binding: an addressable glvalue of exactly the type named, which the
+    // reference then *is*. **isGlvalue and not isLvalue**, so an xvalue binds here
+    // rather than being copied into a temporary - which runs a move on a copy.
     if (isGlvalue(*init) && noAddressBecause == nullptr &&
         it->unqualified() == referent->unqualified()) {
         if (it->isConst() && !referent->isConst())
@@ -1257,22 +1123,18 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
         return addr;
     }
 
-    // Anything else needs a temporary to bind to, and only a const reference
-    // may have one - [dcl.init.ref]/5. A write through the other kind would
-    // land in a copy nobody can read back, so the two cases are refused
-    // separately: a type that does not match, and a value with no address.
-    // A temporary is what an rvalue reference is *for*, so unlike a plain
-    // `T &` it is allowed one without being const.
+    // Anything else needs a temporary to bind to, and only a const reference may
+    // have one - [dcl.init.ref]/5. The refusals are separate: a type that does not
+    // match, and a value with no address. An rvalue reference is allowed one.
     if (!referent->isConst() && !ref->isRValueReference()) {
         if (noAddressBecause != nullptr)
             src_.fail(pos, "'" + noAddressName + "' is " + noAddressBecause +
                            ", and has no address for a reference to hold - a "
                            "'const " + referent->unqualified()->describe() +
                            " &' would take a copy of it instead");
-        // In C++ a '?:' whose arms are lvalues of one type is itself an
-        // lvalue, so this is a reference binding the standard allows and
-        // this compiler cannot make yet. Say that, rather than the generic
-        // complaint about a value with no address.
+        // In C++ a '?:' whose arms are lvalues of one type is itself an lvalue, so
+        // this is a reference binding the standard allows and this compiler cannot
+        // make yet. Say that, rather than complain of a value with no address.
         if (dynamic_cast<const Conditional *>(init.get()) != nullptr)
             src_.fail(pos, "a '?:' is an lvalue in C++ when both arms are, and "
                            "this compiler does not build one yet - bind the "
@@ -1336,16 +1198,9 @@ ExprPtr Parser::postfix() {
     for (;;) {
         std::size_t pos = peek().pos;
 
-        // `f(1, 2)` where f is an object. **[over.call]: the call operator
-        // has to be a non-static member function** - there is no non-member
-        // form of it, unlike every other overloadable operator - so the whole
-        // candidate set is the class's own and memberCall's ordinary
-        // resolution is the resolution. It reads its arguments off the token
-        // stream, which is right here for once, so it is used unsplit.
-        //
-        // This is the operator a closure has, so it is what 7.6 was waiting
-        // for; what is still missing for lambdas is a local class to put one
-        // in.
+        // `f(1, 2)` where f is an object. **[over.call]: the call operator has to be
+        // a non-static member function** - there is no non-member form of it - so the
+        // candidate set is the class's own and memberCall's resolution is it.
         if (peek().is("(") && n->type()->unqualified()->isStructOrUnion()) {
             const Type *self = n->type();
             at_++;
@@ -1357,10 +1212,9 @@ ExprPtr Parser::postfix() {
             at_++;
             const Type *fn = n->type()->pointee();
             std::string called = n->type()->describe();
-            // **A member function pointer's object, picked up here.** `o.*p`
-            // left the address behind because no expression holds a pair; this
-            // is the one place it is wanted, and it goes in front of the
-            // written arguments as the `this` the callee expects.
+            // **A member function pointer's object, picked up here.** `o.*p` left the
+            // address behind because no expression holds a pair; this is the one
+            // place it is wanted, in front of the arguments as the callee's `this`.
             if (boundThis_ != nullptr && boundFn_ == fn) {
                 ExprPtr self = std::move(boundThis_);
                 boundFn_ = nullptr;
@@ -1374,10 +1228,9 @@ ExprPtr Parser::postfix() {
                 full.push_back(types_.pointerTo(types_.get(Kind::Void)));
                 for (std::size_t i = 0; i < fn->params().size(); i++)
                     full.push_back(fn->params()[i]);
-                // A call through a member function pointer is a member call,
-                // and the Microsoft ABI's answers - `this` first, and the
-                // hidden return pointer for a class of any size - follow the
-                // call, not the spelling.
+                // A call through a member function pointer is a member call, and the
+                // Microsoft ABI's answers - `this` first, a hidden return pointer for
+                // a class of any size - follow the call and not the spelling.
                 n = completeCall(called, std::string(), std::move(n),
                                  fn->returns(), full, fn->isVariadicFn(), pos,
                                  std::move(args), true);
@@ -1418,11 +1271,9 @@ ExprPtr Parser::postfix() {
             // [expr.ref] says so - which is what the comma is for.
             if (const Type::StaticMember *s = obj->findStaticMember(name)) {
                 ExprPtr one = staticMemberRef(obj, *s, obj->tag(), pos);
-                // [expr.ref] evaluates the object expression even though what
-                // the whole thing names is the one shared object. Where that
-                // expression is pure there is nothing to evaluate, and
-                // dropping it leaves an ordinary lvalue rather than a comma -
-                // which is what `b.count = 1` and `&b.count` need.
+                // [expr.ref] evaluates the object expression even though what the
+                // whole thing names is the one shared object. Where it is pure
+                // there is nothing to evaluate, and dropping it leaves an lvalue.
                 if (clonePure(*n) == nullptr) {
                     const Type *st = one->type();
                     ExprPtr both(new Comma(std::move(n), std::move(one)));
@@ -1437,14 +1288,9 @@ ExprPtr Parser::postfix() {
             checkAccessible(obj, *m, pos);
             ExprPtr acc(new MemberAccess(std::move(n), name, m->offset,
                                          m->width, m->bitOffset));
-            // A member reached through a const object is itself const:
-            // [expr.ref] gives the member the object's cv-qualification, and
-            // without this 's.x = 2' on a const s would be a way round it.
-            // **A const object does not make its reference member's referent
-            // const.** [dcl.ref]: what the const reaches is the reference
-            // itself, which could not be rebound anyway - `h.r` on a const h
-            // is still `int &`. Applying the object's const here made a const
-            // member function unable to return its own reference member.
+            // A member reached through a const object is itself const - [expr.ref]
+            // gives it the object's qualification. **But not a reference member's
+            // referent**: [dcl.ref] stops the const at the reference itself.
             acc->setType(obj->isConst() && !m->type->isReference()
                              ? types_.withConst(m->type) : m->type);
             // A reference member holds an address, so reading one is a
@@ -1475,11 +1321,9 @@ ExprPtr Parser::postfix() {
             // [expr.ref] says so - which is what the comma is for.
             if (const Type::StaticMember *s = obj->findStaticMember(name)) {
                 ExprPtr one = staticMemberRef(obj, *s, obj->tag(), pos);
-                // [expr.ref] evaluates the object expression even though what
-                // the whole thing names is the one shared object. Where that
-                // expression is pure there is nothing to evaluate, and
-                // dropping it leaves an ordinary lvalue rather than a comma -
-                // which is what `b.count = 1` and `&b.count` need.
+                // [expr.ref] evaluates the object expression even though what the
+                // whole thing names is the one shared object. Where it is pure
+                // there is nothing to evaluate, and dropping it leaves an lvalue.
                 if (clonePure(*n) == nullptr) {
                     const Type *st = one->type();
                     ExprPtr both(new Comma(std::move(n), std::move(one)));
@@ -1494,14 +1338,9 @@ ExprPtr Parser::postfix() {
             checkAccessible(obj, *m, pos);
             ExprPtr acc(new MemberAccess(std::move(n), name, m->offset,
                                          m->width, m->bitOffset));
-            // A member reached through a const object is itself const:
-            // [expr.ref] gives the member the object's cv-qualification, and
-            // without this 's.x = 2' on a const s would be a way round it.
-            // **A const object does not make its reference member's referent
-            // const.** [dcl.ref]: what the const reaches is the reference
-            // itself, which could not be rebound anyway - `h.r` on a const h
-            // is still `int &`. Applying the object's const here made a const
-            // member function unable to return its own reference member.
+            // A member reached through a const object is itself const - [expr.ref]
+            // gives it the object's qualification. **But not a reference member's
+            // referent**: [dcl.ref] stops the const at the reference itself.
             acc->setType(obj->isConst() && !m->type->isReference()
                              ? types_.withConst(m->type) : m->type);
             // A reference member holds an address, so reading one is a
@@ -1519,12 +1358,9 @@ ExprPtr Parser::postfix() {
 ExprPtr Parser::unary() {
     std::size_t pos = peek().pos;
 
-    // Unary `+` is a no-op on a built-in operand and is not one on a class,
-    // where [over.match.oper] makes it a call to `operator+` with no
-    // argument. There is no path to that one yet - it is refused where it is
-    // declared - so what has to be refused here is the *use*, which was
-    // otherwise passed through untouched and made `+v` the only operator that
-    // silently accepted a class.
+    // Unary `+` is a no-op on a built-in operand and is not one on a class, where
+    // [over.match.oper] makes it a call to `operator+` with no argument. There is no
+    // path to that yet, so the *use* is refused rather than passed through.
     if (consume("+")) {
         ExprPtr v = castExpr();
         if (ExprPtr call = overloadedUnary("+", v, pos)) return call;
@@ -1572,11 +1408,9 @@ ExprPtr Parser::unary() {
         return n;
     }
     if (consume("&")) {
-        // **`&S::x` - a pointer to a member, which is an offset and not an
-        // address.** Read here because nothing else would: the qualified-name
-        // path in `primary` answers for a *static* member, which is an
-        // ordinary object with an ordinary address, and a non-static one has
-        // no address of its own to take at all.
+        // **`&S::x` - a pointer to a member, which is an offset and not an address.**
+        // Read here because nothing else would: `primary`'s qualified-name path
+        // answers for a *static* member, and a non-static one has no address.
         if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
             peekAt(2).kind == TokenKind::Ident) {
             if (const Type *cls = findTypedef(peek().text))
@@ -1598,12 +1432,9 @@ ExprPtr Parser::unary() {
                                            " functions, and which one this is "
                                            "cannot be told from the use alone");
                         const Signature &f = functions_[(*set)[0]];
-                        // **A virtual one is refused by name.** Itanium keeps
-                        // its vtable index in the low bit of the first word
-                        // and branches on that at every call; Microsoft calls
-                        // a thunk the compiler emits. Neither is written, and
-                        // a non-virtual pointer that quietly called the wrong
-                        // override would be worse than saying so.
+                        // **A virtual one is refused by name.** Itanium keeps the
+                        // vtable index in the low bit and branches on it at every
+                        // call; Microsoft calls a thunk. Neither is written.
                         if (f.isVirtual)
                             src_.fail(pos, "'" + key + "' is virtual, and a "
                                            "pointer to a virtual member "
@@ -1619,13 +1450,9 @@ ExprPtr Parser::unary() {
         // Only when the class declared one. A class that did not still has an
         // address, and `&obj` is the address-of it has always been.
         if (ExprPtr call = overloadedUnary("&", v, pos)) return call;
-        // **`&f` and `f` are the same thing for a function.** [conv.func] has
-        // already turned the designator into a pointer by the time it gets
-        // here, so taking its address again built a pointer to a pointer with
-        // no object under it - `int (*)(int) *`, which nothing can be
-        // assigned to. Only the decayed designator is meant: `&p` where p is
-        // a *variable* holding a function pointer is an ordinary address-of
-        // and still is, which is why this asks for the shape and not the type.
+        // **`&f` and `f` are the same thing for a function.** [conv.func] has already
+        // turned the designator into a pointer, so taking its address again built a
+        // pointer to a pointer. `&p` for a variable is an ordinary address-of.
         if (const Unary *decayed = dynamic_cast<const Unary *>(v.get()))
             if (decayed->op() == '&' && v->type()->isPointer() &&
                 v->type()->pointee()->isFunction())
@@ -1697,13 +1524,9 @@ ExprPtr Parser::unary() {
         return n2;
     }
 
-    // **`noexcept(e)` - a question about `e`, answered without running it.**
-    // The operand is parsed for its meaning and then thrown away, the way
-    // `sizeof`'s is: what is kept is whether anything in it could throw, which
-    // `mayThrow_` counted while it was being read. Counting during the parse
-    // rather than walking the tree afterwards is what keeps this to one
-    // number - every call already passes through `resolveOverload` or
-    // `completeCall`, and every `throw` through one place.
+    // **`noexcept(e)` - a question about `e`, answered without running it.** The
+    // operand is parsed for its meaning and thrown away as `sizeof`'s is; what is
+    // kept is whether anything in it could throw, counted by `mayThrow_`.
     if (peek().is("noexcept") && peekAt(1).is("(")) {
         at_ += 2;
         const int outer = mayThrow_;
@@ -1736,13 +1559,9 @@ ExprPtr Parser::unary() {
                                    "', which is a bit-field");
             measured = operand->type();
         }
-        // **A signature that depends on its parameters through an
-        // *expression* cannot be given a name.** Itanium spells a
-        // specialization's return type from the pattern, and a pattern
-        // holding `sizeof(T) == 4` is spelled as the expression itself -
-        // `N9enable_ifIXeqstT_Li4EEiE4typeE`, measured with clang. Nothing
-        // here can write that, so it is refused where it is written rather
-        // than left to reach a type that has no size.
+        // **A signature that depends on its parameters through an *expression*
+        // cannot be given a name.** Itanium spells such a pattern as the expression
+        // itself - measured with clang - and nothing here can write that.
         if (patternOnly_ && (measured->kind() == Kind::TemplateParam ||
                              measured->kind() == Kind::DependentMember))
             src_.fail(pos, "'sizeof' of a template parameter in a signature is "

@@ -25,10 +25,9 @@ public:
     std::string unwindData_;
     int unwindCodes_ = 0;
     std::string fnName_;
-    // The frame this function allocated. Kept because the Microsoft exception
-    // tables measure every offset from the stack pointer *after* the prologue,
-    // and cxx1 addresses locals from rbp *before* it - so the two are a frame
-    // apart and the tables need the number to bridge them.
+    // The frame this function allocated. The Microsoft exception tables measure
+    // every offset from the stack pointer after the prologue and cxx1 addresses
+    // locals from rbp before it, so this number bridges the two.
     int frameSize_ = 0;
     // Whether this function has a handler: it decides the flags in the unwind
     // header and whether __CxxFrameHandler3 and a FuncInfo follow the codes.
@@ -38,10 +37,9 @@ public:
     // funclets' .pdata goes here: see funcletPdata_ in MasmCodeGen.
     std::string trailer_;
     std::string mangledName() { return mangle(fnName_); }
-    // A label written by the Walker, spelled the way this file spells
-    // one. Raw emission has to go through the same door as defLabel,
-    // or a table names `.L.main.caught.0` where the code defines
-    // `$_L_main_caught_0` and the assembler sees two different things.
+    // A label written by the Walker, spelled the way this file spells one. Raw
+    // emission goes through the same door as defLabel, or a table names
+    // `.L.main.caught.0` where the code defines `$_L_main_caught_0`.
     std::string labelName(const std::string &l) { return mangle(l); }
     void functionEnd(const std::string &name) override;
 
@@ -98,16 +96,13 @@ private:
     void emitExceptionTables(const Function &fn) override;
     void emitCleanupTables(const Function &fn);
 
-    // A funclet is written by walking the handler into the ordinary output
-    // and then lifting the text back out: everything a handler body emits is
-    // appended in order, so the slice from where it started to where it ended
-    // *is* the funclet, and moving it costs no second code path.
+    // A funclet is written by walking the handler into the ordinary output and
+    // lifting the text back out: what the body appended, in order, *is* the
+    // funclet, so moving it costs no second code path.
     std::string funclets_;
-    // The funclets' .pdata goes to MasmSpelling::trailer_, written after
-    // every function: a .pdata contribution has to be sorted by the address
-    // it describes, every funclet lives in .text$x which the linker lays
-    // after .text, and emitting each funclet's entry beside its parent
-    // interleaves the two orders - LNK1223, invalid .pdata contributions.
+    // The funclets' .pdata goes to MasmSpelling::trailer_, after every function:
+    // .pdata has to be sorted by the address it describes and every funclet
+    // lives in .text$x, so emitting beside the parent gives LNK1223.
     std::size_t funcletMark_ = 0;
     int funcletIndex_ = 0;
     std::string funcletSymbol_;

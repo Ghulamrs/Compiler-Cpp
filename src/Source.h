@@ -35,13 +35,9 @@ public:
 
     [[noreturn]] void fail(std::size_t pos, const std::string &message) const;
 
-    // **A trial: a stretch of parsing whose failure is an answer, not the
-    // end.** [temp.deduct]/8 - if substituting a template's arguments into
-    // its signature makes something ill-formed, the specialization is removed
-    // from consideration and no diagnostic is issued. That is the one place
-    // in this compiler where a failure must not stop it, and it is deliberately
-    // the only one: everywhere else an error is reported where it is
-    // intercepted and nothing recovers.
+// **A trial: a stretch of parsing whose failure is an answer.** [temp.deduct]/8
+// drops the specialization and issues no diagnostic. The one place here where a
+// failure must not stop the compiler; everywhere else an error stops it.
     void beginTrial() const { trials_++; }
     void endTrial() const { trials_--; }
 

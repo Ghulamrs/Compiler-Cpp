@@ -1,8 +1,6 @@
-// The parser: the operator ladder.
-//
-// One function per precedence level, from the cast expression up to the comma,
-// in the order [expr] gives them, plus the compound assignments and the
-// increments that are written in terms of them.
+// The parser: the operator ladder. One function per precedence level, from the
+// cast expression up to the comma in the order [expr] gives them, plus the
+// compound assignments and the increments written in terms of them.
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
@@ -29,19 +27,9 @@ ExprPtr Parser::castExpr() {
     return unary();
 }
 
-// **What a member pointer holds is an offset**, so `a.*p` is the object's
-// address plus it, read as the member's type - `*(T *)((char *)&a + p)`. The
-// cast to `char *` is what stops the pointer arithmetic scaling by the member's
-// size, which is the one way this can be got wrong and give a wrong answer
-// rather than an error.
-//
-// No backend was told any of this: the whole operator is an add and two casts
-// they already knew.
 // `&S::f` - the pair the ABI keeps, built into a slot of this frame: the
-// function's address, and on Itanium a `this` adjustment beside it which is
-// zero for every case this compiler accepts. The shape is the one
-// classTemporary uses, a dereference of a comma, because the address of a comma
-// is not something the backends take and the address of `*p` is `p`.
+// function's address, and on Itanium a `this` adjustment which is zero for every
+// case here. Shaped as classTemporary's is, a dereference of a comma.
 ExprPtr Parser::boundMemberPointer(const Type *cls, const Signature &f,
                                    std::size_t pos) {
     const Type *fn = types_.functionType(f.returns, f.params, f.variadic);
@@ -287,15 +275,9 @@ ExprPtr Parser::clonePure(const Expr &e) {
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
         Var *raw = v->isLocal() ? Var::local(v->name(), v->offset())
                                 : Var::global(v->name());
-        // **The copy carries the linker's name too.** A global's `name()` is
-        // what the programmer wrote and its `symbol()` is what the object
-        // file says - `n` against `?n@@3HA` on the Windows target - and this
-        // clone kept only the first. Every operand cloned here is one that is
-        // read and then written back, `++n` and `n += 1`, so the *write* went
-        // to the mangled name and the read's address was taken of a symbol
-        // nothing defines: `EXTERN n:PROC` in the assembly, and a link error
-        // on the one target that mangles a variable. The Itanium targets
-        // could not show it, because a global's symbol there is its name.
+        // **The copy carries the linker's name too.** A global's `name()` is what
+        // the programmer wrote and `symbol()` what the object file says; the clone
+        // kept only the first, so `++n` linked against a symbol nothing defines.
         raw->setSymbol(v->symbol());
         raw->setReadOnly(v->readOnly());
         raw->setNoAddress(v->noAddress());
@@ -379,14 +361,9 @@ ExprPtr Parser::compound(BinOp op, ExprPtr target, ExprPtr value, std::size_t po
     requireAssignable(*target, pos, "the left of a compound assignment");
     const Type *to = target->type();
 
-    // **`a += b` is not `a = a + b` when a is a class**, and this is where
-    // that has to be said. A compound assignment is built here by reading the
-    // target back, combining, and storing - which is the right rewrite for a
-    // built-in operand and the wrong one for a class, where [over.match.oper]
-    // wants `operator+=` and nothing else. Without this the rewrite finds the
-    // class's `operator+`, the assignment goes through, and the program is
-    // accepted where clang refuses it - which is what it did for as long as it
-    // took to write a case for it.
+    // **`a += b` is not `a = a + b` when a is a class.** Reading the target back,
+    // combining and storing is the right rewrite for a built-in operand and the
+    // wrong one for a class, where [over.match.oper] wants `operator+=` alone.
     if (to->unqualified()->isStructOrUnion())
         src_.fail(pos, std::string("'operator") + binOpSpelling(op) +
                        "=' is not supported yet - and a compound assignment on "
@@ -443,12 +420,9 @@ ExprPtr Parser::compound(BinOp op, ExprPtr target, ExprPtr value, std::size_t po
 }
 
 ExprPtr Parser::incDec(ExprPtr target, bool increment, bool prefix, std::size_t pos) {
-    // **The dummy `int` is how the standard tells the two apart**, and it is
-    // a real parameter rather than a marker: [over.inc] gives the postfix form
-    // an extra int and passes 0 in it, which is why `operator++(int)` is
-    // written with a parameter nobody names and why the argument is built here
-    // rather than being a flag on the call. With it, postfix is the ordinary
-    // two-operand resolution and prefix is the one-operand one.
+    // **The dummy `int` is how the standard tells the two apart**, and it is a
+    // real parameter: [over.inc] gives the postfix form an extra int and passes 0
+    // in it, so postfix is the ordinary two-operand resolution and prefix the one.
     if (target->type()->unqualified()->isStructOrUnion()) {
         const char *spelling = increment ? "++" : "--";
         const std::string name = std::string("operator") + spelling;
@@ -578,9 +552,8 @@ ExprPtr Parser::assign() {
     checkAssignable(*value, to, pos, "the left of '='");
 
     // **A class with a copy assignment of its own is assigned by calling it**,
-    // not by moving its bytes. Where the copy is trivial there is no such
-    // function and nothing was declared, and this is the struct assignment it
-    // has always been.
+    // not by moving its bytes. Where the copy is trivial no such function was
+    // declared, and this is the struct assignment it has always been.
     if (const Signature *op = copyAssignOf(to->unqualified())) {
         functions_[static_cast<std::size_t>(op - &functions_[0])].used = true;
         const Type *selfPtr = types_.pointerTo(to->unqualified());
@@ -603,14 +576,9 @@ ExprPtr Parser::assign() {
         return result;
     }
 
-    // **A class that declares a move constructor has no bytewise assignment
-    // to fall back on.** [class.copy]/23 *deletes* the implicit copy
-    // assignment of such a class, and nothing here declared one - which looks
-    // the same as a trivially copyable class to the branch above and means
-    // the opposite. The deletion is unconditional: it is the operator that is
-    // gone, so an rvalue source is refused the same as an lvalue. An
-    // *implicit* move constructor deletes nothing, which is what the
-    // `implicit` flag is asked for.
+    // **A class that declares a move constructor has no bytewise assignment to
+    // fall back on**: [class.copy]/23 deletes the implicit copy assignment, and
+    // the deletion is unconditional. An implicit move constructor deletes nothing.
     if (to->unqualified()->isStructOrUnion()) {
         const Signature *mv = moveConstructorOf(to->unqualified());
         if (mv != nullptr && !mv->implicit)

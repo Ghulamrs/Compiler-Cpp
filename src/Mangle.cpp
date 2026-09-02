@@ -23,10 +23,9 @@ static std::vector<std::string> scopeComponents(const std::string &name) {
 
 namespace {
 
-// A type is const-qualified in its own right when it is not the same object
-// as its unqualified self. Type::isConst() cannot be used for this: it also
-// answers true for an array of const elements, where the qualifier is on the
-// element and the array itself is unqualified.
+// A type is const-qualified in its own right when it is not the same object as its
+// unqualified self. Type::isConst() cannot be used: it answers true as well for an
+// array of const elements, where the qualifier is on the element.
 bool qualifiedItself(const Type *t) { return t->unqualified() != t; }
 
 const char *itaniumBuiltin(Kind k) {
@@ -103,25 +102,9 @@ protected:
 
 class Itanium : public Mangler {
 public:
-    // <nested-name> ::= N [<CV-qualifiers>] <prefix> <unqualified-name> E
-    // The K is the const on `this` and it comes before the class, not after
-    // it: _ZNK5Point4cgetEv, measured.
-    // The class named in the prefix is the first substitution candidate: a
-    // parameter mentioning it again is S_, not the name spelled twice.
-    // **The prefix of a nested-name: every enclosing class, outermost first,
-    // and each one a substitution candidate of its own.** That is what makes a
-    // parameter of type Outer::Inner read `NS_5InnerE` inside a member of
-    // Outer - Outer is candidate zero there, so its name is not spelled twice.
-    // Measured: clang writes _ZN5Outer3useENS_5InnerE.
-    // **The namespaces in a qualified tag, each a substitution candidate of
-    // its own.** A namespace is not a Type here, so it cannot go in the table
-    // by pointer the way a class does - it goes in by the name it is reached
-    // under, which is the cumulative "N::M" and not just "M", so that two
-    // namespaces of the same leaf name in different parents stay apart.
-    // Measured: `g(N::M::T, N::S)` inside N::M is `_ZN1N1M1gENS0_1TENS_1SE`,
-    // where S_ is N and S0_ is N::M - both candidates, and neither the class.
-    // The class's own name is *not* written here; the caller writes it, since
-    // what it is called differs between a plain class and a specialization.
+    // <nested-name> ::= N [<CV>] <prefix> <unqualified-name> E, with the K for a
+    // const `this` before the class - _ZNK5Point4cgetEv. Every enclosing class and
+    // namespace is a substitution candidate of its own; the caller writes the name.
     void namespacesOf(const std::string &qualified) {
         const std::vector<std::string> parts = scopeComponents(qualified);
         std::vector<std::string> reach;               // N, then N::M, ...
@@ -148,10 +131,9 @@ public:
         }
     }
 
-    // The enclosing function as it goes inside `Z...E`: the mangled name
-    // with its `_Z` taken off, or - for main and anything extern "C", which
-    // have no mangled name to take apart - the plain name as a length and
-    // letters. Measured: _ZZ4mainEN1B3getEv.
+    // The enclosing function as it goes inside `Z...E`: the mangled name with its
+    // `_Z` taken off, or - for main and anything extern "C" - the plain name as a
+    // length and letters. Measured: _ZZ4mainEN1B3getEv.
     static std::string functionComponent(const std::string &owner) {
         if (owner.compare(0, 2, "_Z") == 0) return owner.substr(2);
         return std::to_string(owner.size()) + owner;
@@ -169,11 +151,9 @@ public:
         }
         if (substituted(cls)) return;
         if (cls->enclosing() != nullptr) prefix(cls->enclosing(), std::string());
-        // A class in a namespace has no enclosing Type; its namespaces are in
-        // its tag, and they are written - and made candidates - here. A local
-        // class's tag has a "::" in it too and is *not* this: `f::L` is one
-        // name, not a scope, which is why the flag is asked rather than the
-        // spelling.
+        // A class in a namespace has no enclosing Type; its namespaces are in its
+        // tag, and are written and made candidates here. A local class's tag has a
+        // "::" too and is not this: `f::L` is one name, so the flag is asked.
         else if (cls->inNamespace()) namespacesOf(cls->tag());
         if (cls->isSpecialization()) {
             templateId(cls);
@@ -185,10 +165,9 @@ public:
         subs_.push_back(Sub{ cls, std::string() });
     }
 
-    // An operator's code stands exactly where an ordinary name writes its
-    // length and its letters - `_ZNK1VplERKS_` against `_ZNK1V3addERKS_` -
-    // and everything on either side of it is unchanged. `unary` picks between
-    // the two codes Itanium gives a token that has both forms.
+    // An operator's code stands exactly where an ordinary name writes its length
+    // and its letters - `_ZNK1VplERKS_` against `_ZNK1V3addERKS_` - and everything
+    // either side of it is unchanged. `unary` picks between the two codes.
     void writtenName(const std::string &name, bool unary) {
         const std::string spelling = operatorSpelling(name);
         if (const OperatorCode *op = findOperator(spelling)) {
@@ -216,10 +195,9 @@ public:
         if (fn->isVariadicFn()) out += "z";
     }
 
-    // _ZN4PolyaSERKS_ - the class, then `aS` where a member function writes
-    // the length and letters of its name, then E and the parameters. There is
-    // no return type in an Itanium function name, and the class is candidate
-    // zero in the substitution table, which is what makes the parameter S_.
+    // _ZN4PolyaSERKS_ - the class, then `aS` where a member function writes the
+    // length and letters of its name, then E and the parameters. There is no return
+    // type in an Itanium function name, and the class is candidate zero.
     void copyAssign(const std::string &cls, const Type *clsType, const Type *fn) {
         out = "_ZN";
         prefix(clsType, cls);
@@ -229,11 +207,9 @@ public:
         for (const Type *p : params) type(p);
     }
 
-    // _ZN5PointC1Eii - the class, then C1 or C2, then E, then the parameters.
-    // **A constructor has both names**: C1 builds a complete object and C2 a
-    // base subobject, and clang emits the two of them. Nothing calls C2 until
-    // a derived class does, but the object file is not the same object file
-    // without it - so both are emitted, C2 as a label in front of C1's body.
+    // _ZN5PointC1Eii - the class, then C1 or C2, then E, then the parameters. **A
+    // constructor has both names**: C1 builds a complete object and C2 a base
+    // subobject, and clang emits both - so C2 is a label in front of C1's body.
     void constructor(const std::string &cls, const Type *clsType,
                      const Type *fn, bool complete) {
         out = "_ZN";
@@ -293,25 +269,18 @@ public:
         if (fn->isVariadicFn()) out += "z";
     }
 
-    // A function template specialization, mangled from the template's own
-    // signature and the arguments it was given - never from the substituted
-    // one, which cannot say where a type came from.
-    //
-    // **A specialization encodes its return type and an ordinary function
-    // does not**, which is the rule most likely to be guessed wrong: without
-    // it two specializations differing only in return type would share a
-    // symbol, and there is nothing else in the name to tell them apart.
+    // A function template specialization, mangled from the template's own signature
+    // and its arguments, never the substituted one. **A specialization encodes its
+    // return type and an ordinary function does not**, or two would share a symbol.
     void templateFunction(const std::string &name, const Type *pattern,
                           const std::vector<TemplateArg> &args, bool internal) {
         out = internal ? "_ZL" : "_Z";
         out += std::to_string(name.size());
         out += name;
 
-        // **The template name is substitution candidate zero.** Measured:
-        // `void f4(T, T)` with T=int is _Z2f4IiEvT_S0_, and the second T_ is
-        // S0_ - index one. Something occupies index zero before the arguments
-        // are written, and the only thing written by then is the name. The
-        // entry is the name itself, which is what the ABI makes a candidate.
+        // **The template name is substitution candidate zero.** Measured: `void
+        // f4(T, T)` with T=int is _Z2f4IiEvT_S0_, and the second T_ is S0_, index
+        // one - the only thing written before the arguments is the name.
         Sub self;
         self.name = name;
         subs_.push_back(self);
@@ -347,10 +316,9 @@ public:
     }
 
 private:
-    // **A candidate is a type or a template's name.** The name is a candidate
-    // of its own - measured: `void two(Holder<int>, Holder<double>)` is
-    // _Z3two6HolderIiES_IdE, where the S_ is the word "Holder" and not any
-    // type. So the table holds one or the other and never both.
+    // **A candidate is a type or a template's name.** Measured: `void two(Holder<int>,
+    // Holder<double>)` is _Z3two6HolderIiES_IdE, where the S_ is the word "Holder"
+    // and not any type. So the table holds one or the other and never both.
     struct Sub {
         const Type *type = nullptr;
         std::string name;
@@ -387,10 +355,9 @@ private:
         return false;
     }
 
-    // `3BoxIiLi3EE` - the template's name, then the arguments between I and
-    // E. Two candidates come out of it and in this order: the name, then the
-    // whole thing. Measured on _Z6nested6HolderIS_IiEE, where the inner
-    // Holder is the S_ that the outer one's name left behind.
+    // `3BoxIiLi3EE` - the template's name, then the arguments between I and E. Two
+    // candidates come out of it and in this order: the name, then the whole thing.
+    // Measured on _Z6nested6HolderIS_IiEE.
     void templateId(const Type *t) {
         if (!substitutedName(t->templateName())) {
             out += std::to_string(t->templateName().size());
@@ -409,10 +376,9 @@ private:
         if (!ok) return;
         if (substituted(t)) return;
 
-        // **The qualifier comes first, and asking about it first is what
-        // makes `const T &` come out RKT_ rather than RT_.** A qualified copy
-        // of a template parameter still answers TemplateParam for its kind,
-        // so a branch on the kind placed above this one silently drops the K.
+        // **The qualifier comes first, and asking about it first is what makes
+        // `const T &` come out RKT_ rather than RT_.** A qualified copy of a
+        // template parameter still answers TemplateParam, so a kind branch drops K.
         if (qualifiedItself(t)) {
             out += 'K';
             type(t->unqualified());
@@ -430,10 +396,9 @@ private:
             return;
         }
 
-        // `N <owner> <len><name> E` - measured: `Value<T>::type` in a return
-        // type is `N5ValueIT_E4typeE` and `T::type` is `NT_4typeE`. It is a
-        // nested-name like any other, and the only new thing is what stands
-        // in the prefix.
+        // `N <owner> <len><name> E` - measured: `Value<T>::type` in a return type is
+        // `N5ValueIT_E4typeE` and `T::type` is `NT_4typeE`. A nested-name like any
+        // other, and the only new thing is what stands in the prefix.
         if (t->kind() == Kind::DependentMember) {
             out += 'N';
             type(t->pointee());
@@ -457,15 +422,13 @@ private:
         if (const char *b = itaniumBuiltin(t->kind())) { out += b; return; }
 
         if (t->isPointer())        { out += 'P'; type(t->pointee()); }
-        // **`M` and then the class and the member's type** - measured,
-        // `int S::*` is `M1Si` and `double S::*` is `M1Sd`. The class goes in
-        // as a type and not as a nested-name, so it takes part in the
-        // substitution table like any other.
+        // **`M` and then the class and the member's type** - measured, `int S::*` is
+        // `M1Si` and `double S::*` is `M1Sd`. The class goes in as a type and not as
+        // a nested-name, so it takes part in the substitution table like any other.
         else if (t->isMemberPointer() || t->isMemberFunctionPointer()) {
-            // The same `M` for both: measured, `int S::*` is `M1Si` and
-            // `int (S::*)()` is `M1SFivE`. A member function pointer wears the
-            // shape of a struct so the backends can copy it, so it is asked
-            // about separately - the kind says Struct and only the flag knows.
+            // The same `M` for both: `int S::*` is `M1Si` and `int (S::*)()` is
+            // `M1SFivE`. A member function pointer wears the shape of a struct so
+            // the backends can copy it, so it is asked about separately.
             out += 'M';
             type(t->unqualified()->enclosing());
             type(t->unqualified()->pointee());
@@ -503,13 +466,9 @@ private:
                 subs_.push_back(Sub{ t, std::string() });
                 return;                       // pushed here, not below
             }
-            // **A local class is a <local-name>, not a name with a scope in
-            // it.** `Z <function> E <name>`, measured against clang:
-            // `f(L)` where L is written inside main is _Z1fIZ4mainE1LEiT_.
-            // Spelling the tag whole put a `::` in the symbol, which the
-            // assembler refuses - so this was a hard failure at the assembler
-            // rather than a name two compilers disagreed about, and the emit
-            // suite could not see it because it stops before assembling.
+            // **A local class is a <local-name>, not a name with a scope in it**:
+            // `Z <function> E <name>`, measured - _Z1fIZ4mainE1LEiT_. Spelling the
+            // tag whole put a `::` in the symbol, which the assembler refuses.
             if (!t->localOwner().empty()) {
                 out += 'Z';
                 out += functionComponent(t->localOwner());
@@ -536,22 +495,9 @@ private:
 
 class Microsoft : public Mangler {
 public:
-    // ?name@Class@@ then four letters: the access, __ptr64, the constness of
-    // this, and the calling convention. ?get@Point@@QEAAHXZ is public and
-    // non-const; ?cget@Point@@QEBAHXZ is public and const; ?priv@C@@AEAAHXZ
-    // is private. All measured.
-    // **Every enclosing class, innermost first, and then the '@' that closes
-    // the list.** `?get@Inner@Outer@@QEAAHXZ` - measured with cl. Each
-    // component goes through pushName, so a scope mentioned again later is a
-    // back-reference digit: `?use@Outer@@QEAAHUInner@1@@Z` for a parameter of
-    // type Outer::Inner, where the 1 is Outer.
-    // `localOwner` is the enclosing function's linkage name when the class is
-    // defined inside one, and empty otherwise. It goes in as one more scope
-    // component - the innermost-first list is class, then function - written
-    // `?1?` and then that whole name. Measured: ?get@L@?1??f@@YAHXZ@QEAAHXZ.
-    //
-    // **It is not pushed as a back-reference**, and neither is anything
-    // inside it: the embedded name carries its own table.
+    // ?name@Class@@ and then four letters - the access, __ptr64, the constness of
+    // `this`, the calling convention - with every enclosing class innermost first,
+    // closed by '@'. A local class's owner goes in as `?1?` and the whole name.
     void scopeOf(const Type *cls, const std::string &fallback,
                  const std::string &localOwner = std::string()) {
         // Innermost first. A namespace is not a Type, so once the chain of
@@ -580,15 +526,9 @@ public:
         out += '@';               // closes the scope list
     }
 
-    // What one scope component is *called*. For an ordinary class that is its
-    // own name; for a specialization it is the whole template-id, built here
-    // and then pushed as one name - measured, `?copyFrom@?$Holder@H@@QEAAX...`
-    // where the parameter's back-reference 1 stands for `?$Holder@H`.
-    //
-    // **Built with the tables put aside**, the same rule a function
-    // template's id follows: in `?withClass@@YAXU?$Holder@US@@@@US@@@Z` the S
-    // written inside the argument list is invisible outside it, so the second
-    // parameter spells S again rather than referring back.
+    // What one scope component is *called*: for an ordinary class its own name, for
+    // a specialization the whole template-id, pushed as one name. **Built with the
+    // tables put aside**, so an S inside an argument list is invisible outside it.
     std::string componentOf(const Type *c) {
         if (!c->isSpecialization()) return c->localName();
 
@@ -613,13 +553,8 @@ public:
     }
 
     // **An operator replaces the whole `?name@` and is not pushed as a
-    // back-reference**, which is the one thing here that cannot be guessed
-    // and was measured: in `??HV@@QEBA?AU0@D@Z` the class is back-reference
-    // *0*, where a named member function would have left it 1. The same rule
-    // the ??4 of operator= already followed, now written once.
-    //
-    // Arity plays no part: `??D` is multiplication and dereference both, and
-    // the parameter list is what tells them apart. Only Itanium needs to know.
+    // back-reference**: in `??HV@@QEBA?AU0@D@Z` the class is back-reference *0*,
+    // where a named member would have left it 1. Arity plays no part here.
     bool operatorPrefix(const std::string &name) {
         const OperatorCode *op = findOperator(operatorSpelling(name));
         if (op == nullptr) return false;
@@ -698,11 +633,9 @@ public:
     void function(const std::string &name, const Type *fn) {
         const std::vector<std::string> parts = scopeComponents(name);
         if (parts.size() > 1) {
-            // `?g@M@N@@YAHXZ` - the name, then the scopes innermost first,
-            // then the '@' that closes the list. The same shape a member
-            // function has, a namespace being a scope like any other.
-            // An operator written in a namespace keeps its code: measured,
-            // `N::operator+` is `??HN@@YA...` and not `?operator+@N@@YA...`.
+            // `?g@M@N@@YAHXZ` - the name, then the scopes innermost first, then the
+            // '@' that closes the list, a namespace being a scope like any other.
+            // An operator written in one keeps its code: `??HN@@YA...`.
             if (!operatorPrefix(parts.back())) {
                 out = "?";
                 pushName(parts.back());
@@ -723,11 +656,9 @@ public:
         out += fn->isVariadicFn() ? "ZZ" : "@Z";
     }
 
-    // ??$twice@H@@YAHH@Z - `??$` where an ordinary function has `?`, then the
-    // template-id as one scope component, then the empty enclosing scope
-    // list, and from there an ordinary free function. The signature written
-    // is the *substituted* one: H for the return type where Itanium writes
-    // T_. Measured with cl.
+    // ??$twice@H@@YAHH@Z - `??$` where an ordinary function has `?`, the template-id
+    // as one scope component, the empty enclosing scope list, and from there an
+    // ordinary free function. The signature written is the *substituted* one.
     void templateFunction(const std::string &name, const Type *fn,
                           const std::vector<TemplateArg> &args) {
         out = "??$";
@@ -741,11 +672,9 @@ public:
         out += fn->isVariadicFn() ? "ZZ" : "@Z";
     }
 
-    // **A template-id carries back-reference tables of its own.** Measured
-    // with cl: `T same(T)` at T=S is ??$same@US@@@@YA?AUS@@U0@, and the
-    // parameter's name back-reference 0 is the S the *return type* pushed -
-    // the S inside the argument list is invisible to the signature. So both
-    // tables are put aside, used fresh, and put back.
+    // **A template-id carries back-reference tables of its own.** Measured with cl:
+    // `T same(T)` at T=S is ??$same@US@@@@YA?AUS@@U0@, where the parameter's 0 is
+    // the S the *return type* pushed. So both tables are put aside and put back.
     void templateId(const std::string &name,
                     const std::vector<TemplateArg> &args) {
         std::vector<std::string> outerNames;
@@ -775,13 +704,9 @@ public:
             return;
         }
         if (a.isType) {
-            // **A top-level const on a type argument is spelled `$$CB`**,
-            // and only where the thing under it is not a pointer: `const int`
-            // is `$$CBH`, while `const int *` is `PEBH` and `int *const` is
-            // `QEAH` - the P becoming a Q, which type() already writes.
-            // Without any of this the const was simply dropped, and
-            // `W<const int>` shared one symbol with `W<int>`: two different
-            // classes, one name, and the wrong body called.
+            // **A top-level const on a type argument is spelled `$$CB`**, and only
+            // where the thing under it is not a pointer. Without it the const was
+            // dropped and `W<const int>` shared one symbol with `W<int>`.
             if (a.type->unqualified() != a.type && !a.type->isPointer()) {
                 out += "$$CB";
                 type(a.type->unqualified());
@@ -822,19 +747,9 @@ public:
         dataType(t);
     }
 
-    // **A data symbol's type is not spelled the way a parameter's is**, and
-    // the three differences were all measured with cl:
-    //
-    //   int arr[3]        ?arr@@3PAHA        not Y02H - an array decays here
-    //   int m2[2][3]      ?m2@@3PAY02HA      to a pointer to its element
-    //   S *self           ?self@@3PEAUS@@EA  the qualifier carries E as well
-    //   const char *ccp   ?ccp@@3PEBDEB      and repeats the POINTEE's const
-    //
-    // The last is the surprising one: `ccp` is a mutable pointer to const
-    // char, and the qualifier after the type says B all the same. It is the
-    // pointee being const that is written there, not the variable - a const
-    // variable at namespace scope has internal linkage and no symbol to
-    // disagree about.
+    // **A data symbol's type is not spelled the way a parameter's is**, and the
+    // three differences were measured with cl: an array decays (`?arr@@3PAHA`), the
+    // qualifier carries E, and it repeats the POINTEE's const (`?ccp@@3PEBDEB`).
     void dataType(const Type *t) {
         const Type *u = t->unqualified();
         if (u->isArray()) {
@@ -856,17 +771,9 @@ private:
     std::vector<std::string> names_;
     std::vector<const Type *> args_;
 
-    // Names repeat by index, and the function's own name is the first one in
-    // the table - so the second mention of a class is '1' where the first was
-    // spelled out.
-    // One component and the '@' that ends it. A free function has exactly one
-    // and then an empty scope list; a member has two, its own and its class.
-    // **A backreference digit replaces the whole component, its '@'
-    // included.** clang writes AEBV1@@Z for a parameter repeating the class -
-    // V, the digit, then only the scope-list terminator - where digit-plus-'@'
-    // would give V1@@. Measured on the first case whose names actually repeat;
-    // every earlier one mentioned each name once, which is why the extra '@'
-    // never showed.
+    // Names repeat by index, the function's own name being the first in the table,
+    // and **a back-reference digit replaces the whole component, its '@' included**
+    // - clang writes AEBV1@@Z where digit-plus-'@' would give V1@@. Measured.
     void pushName(const std::string &n) {
         for (std::size_t i = 0; i < names_.size(); i++)
             if (names_[i] == n) { out += static_cast<char>('0' + i); return; }
@@ -880,11 +787,9 @@ private:
         out += '@';               // and the empty scope list
     }
 
-    // A name whose scopes are written into it - `N::S`, a class in a
-    // namespace, which has no `enclosing()` to walk because a namespace is not
-    // a Type. Innermost first, the same order scopeOf() walks in, and each
-    // component is a back-reference candidate of its own.
-    // Measured: `use(N::S)` is `?use@@YAHUS@N@@@Z`.
+    // A name whose scopes are written into it - `N::S`, which has no `enclosing()`
+    // to walk, a namespace not being a Type. Innermost first, as scopeOf() walks,
+    // each component a candidate: `use(N::S)` is `?use@@YAHUS@N@@@Z`.
     void qualifiedName(const std::string &n) {
         const std::vector<std::string> parts = scopeComponents(n);
         for (std::size_t i = parts.size(); i-- > 0; ) pushName(parts[i]);
@@ -934,10 +839,9 @@ private:
             out += p->isVariadicFn() ? "ZZ" : "@Z";
             return;
         }
-        // The qualifier asked about here is the pointee's own. An array of
-        // const elements is not itself const - its elements carry that, and
-        // they are marked where the elements are written - so isConst(),
-        // which answers for the elements too, is the wrong question.
+        // The qualifier asked about here is the pointee's own. An array of const
+        // elements is not itself const - the elements carry that, and are marked
+        // where they are written - so isConst() is the wrong question.
         out += qualifiedItself(p) ? "EB" : "EA";
         type(p);
     }
@@ -947,10 +851,9 @@ private:
 
         if (t->isPointer())        { out += qualifiedItself(t) ? 'Q' : 'P';
                                      pointee(t->pointee()); return; }
-        // **`PEQ` and then the class's scope and the member's type** -
-        // measured, `int S::*` is `PEQS@@H` where an ordinary `int *` is
-        // `PEAH`. The Q sits where a pointer's A does and the class comes
-        // between it and the type.
+        // **`PEQ` and then the class's scope and the member's type** - measured,
+        // `int S::*` is `PEQS@@H` where an ordinary `int *` is `PEAH`. The Q sits
+        // where a pointer's A does, the class between it and the type.
         if (t->isMemberPointer()) {
             const Type *plain = t->unqualified();
             out += "PEQ";
@@ -958,10 +861,9 @@ private:
             type(plain->pointee());
             return;
         }
-        // **`P8` and then the class, where a data member pointer writes
-        // `PEQ`** - measured, `int (S::*)()` is `P8S@@EAAHXZ`. The `EAA` is
-        // the same near/__cdecl/non-const `this` a member function's own name
-        // carries, and the signature follows exactly as one.
+        // **`P8` and then the class, where a data member pointer writes `PEQ`** -
+        // measured, `int (S::*)()` is `P8S@@EAAHXZ`. The `EAA` is the same
+        // near/__cdecl/non-const `this` a member function's own name carries.
         if (t->isMemberFunctionPointer()) {
             const Type *plain = t->unqualified();
             const Type *fn = plain->pointee();
@@ -1001,19 +903,15 @@ private:
         if (t->isStructOrUnion()) {
             const std::string *tag = tagOf(t);
             if (tag == nullptr) return;
-            // **T union, U struct, V class** - the Microsoft ABI spells the
-            // three differently, and until vtables there was nothing declared
-            // with `class` whose type reached a name, so U covered both.
-            // clang writes ?f@@YAHPEAVShape@@@Z where cxx1 wrote ...PEAUShape...
-            // Itanium spells all three by tag and does not care.
+            // **T union, U struct, V class** - the Microsoft ABI spells the three
+            // differently, and until vtables nothing declared with `class` reached
+            // a name, so U covered both. Itanium spells all three by tag.
             out += t->kind() == Kind::Union ? 'T'
                  : t->declaredClass()       ? 'V'
                                             : 'U';
-            // A class written inside a function carries that function round
-            // it here too, and `scopeOf` already knows the shape - it is what
-            // a *member* of such a class has been using. Measured against
-            // clang for this ABI: `??$f@UL@?1??main@@9@@@YAHUL@?1??main@@9@@Z`,
-            // where the `?1??main@@9` is the enclosing main.
+            // A class written inside a function carries that function round it here
+            // too, and `scopeOf` already knows the shape. Measured against clang:
+            // `??$f@UL@?1??main@@9@@@YAHUL@?1??main@@9@@Z`.
             if (!t->localOwner().empty()) {
                 scopeOf(t, std::string(), t->localOwner());
                 return;
@@ -1093,10 +991,9 @@ bool microsoftThrowNames(const Type *t, int size, MicrosoftThrow *out,
                    "have to be emitted here, and that is its own step";
         return false;
     }
-    // The type's own letter runs through all four names, which is what makes
-    // them agree without anything having to be passed between them. Measured
-    // with cl: int is ??_R0H@8, _CT??_R0H@84, _CTA1H, _TI1H, and double is
-    // the same with N and a size of 8.
+    // The type's own letter runs through all four names, which is what makes them
+    // agree without anything having to be passed between them. Measured with cl:
+    // int is ??_R0H@8, _CT??_R0H@84, _CTA1H, _TI1H, and double the same with N.
     const std::string code = letter;
     out->size = size;
     out->decorated = "." + code;
@@ -1140,9 +1037,8 @@ bool itaniumMemberName(const std::string &cls, const Type *clsType,
 }
 
 // Itanium wraps the ordinary name rather than building a different one:
-// <local-name> ::= Z <function encoding> E <entity>. So the member is spelled
-// exactly as it would be outside a function, and both it and the enclosing
-// function's name give up their _Z to sit inside the wrapper.
+// <local-name> ::= Z <function encoding> E <entity>. The member is spelled as it
+// would be outside a function, both giving up their _Z to sit in the wrapper.
 bool itaniumLocalMemberName(const std::string &owner, const std::string &cls,
                             const Type *clsType, const std::string &name,
                             const Type *fn, bool constThis,

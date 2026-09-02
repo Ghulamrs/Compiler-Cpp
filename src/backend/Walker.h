@@ -59,17 +59,13 @@ protected:
     virtual std::size_t emittedSize() = 0;
 
     // **What a backend has to be told about a landing pad, and no more.** The
-    // runtime arrives at the pad with the exception pointer and the selector
-    // in two registers the ABI picks; this stores them into two frame slots,
-    // after which they are ordinary locals and the parser's own statements do
-    // the rest.
+    // runtime arrives with the exception pointer and the selector in two
+    // registers; this stores them into slots, after which they are locals.
     virtual void landingPad(int pointerSlot, int selectorSlot) = 0;
 
-    // One row of the call-site table: any call between `begin` and `end` that
-    // throws goes to `pad`, which catches these types in this order. Collected
-    // rather than emitted, because the table is written after the body - and
-    // collected here rather than in a backend, because the rows are the same
-    // whatever the target spells them like.
+    // One row of the call-site table: a call between `begin` and `end` that
+    // throws goes to `pad`, catching these types in this order. Collected and
+    // not emitted, since the table follows the body and the rows are shared.
     struct CallSite {
         std::string begin;
         std::string end;
@@ -89,21 +85,14 @@ protected:
     const std::vector<CallSite> &callSites() const { return callSites_; }
     void clearCallSites() { callSites_.clear(); }
 
-    // **Does this target call handlers, or jump to them?** Itanium unwinds to
-    // a landing pad *inside* the frame and lets the frame's own code choose;
-    // the Microsoft runtime chooses from tables and calls the handler as a
-    // separate function. That is one question, asked once, and everything
-    // else about a `try` is the same shape on both.
+    // **Does this target call handlers, or jump to them?** Itanium unwinds to a
+    // pad inside the frame; the Microsoft runtime calls the handler as a
+    // separate function. One question; the rest of a `try` is the same shape.
     virtual bool usesFunclets() const { return false; }
 
-    // Open a handler funclet and answer the symbol it was given; close it,
-    // naming the address in the parent to continue at, which a funclet
-    // returns in rax. Between the two, the handler's body is walked exactly
-    // as it would be inline - every local is [rbp-N] and the funclet sets rbp
-    // from the parent frame pointer it is handed, so nothing else has to know.
-    // Write -2 into the runtime's scratch word. The personality routine reads
-    // it through the FuncInfo's dispUnwindHelp to know how far this frame had
-    // got, and -2 is the value that means "not inside anything yet".
+    // Write -2 into the runtime's scratch word. The personality routine reads it
+    // through the FuncInfo's dispUnwindHelp to know how far this frame had got,
+    // and -2 is the value that means "not inside anything yet".
     virtual void storeUnwindHelp(int slot) { (void)slot; }
 
     // A cleanup funclet is opened the same way and closed differently: it
@@ -111,6 +100,9 @@ protected:
     // unwinding once the destructors have run.
     virtual void endCleanupFunclet() {}
 
+    // Open a handler funclet and answer its symbol; close it naming the address
+    // in the parent to continue at, which a funclet returns in rax. Between the
+    // two the body is walked as if inline, the funclet setting rbp from the parent.
     virtual std::string beginFunclet() { return std::string(); }
     virtual void endFunclet(const std::string &resume) { (void)resume; }
 

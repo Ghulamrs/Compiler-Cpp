@@ -4676,6 +4676,24 @@ such function in an implicit `try`, which would inherit the two try/catch
 limits already recorded here and start refusing programs that work today. Lift
 those first.
 
+## Comments in src/ are at most three lines
+
+**No comment group in `src/` runs longer than three lines** - a group being a
+run of `//` lines with nothing between them - and that is a standing rule
+rather than a tidy-up somebody did once. It was applied across the tree on
+2026-09-02: 640 groups, 4,575 of the 5,642 comment lines there, rewritten to
+keep the finding and the measurement and drop the reasoning around them.
+
+**What was dropped is not lost, and this file is where it went.** The long
+form - why an ABI answer is what it is, what a bug looked like before it was
+mended, which oracle was asked - belongs here, in `docs/CONFORMANCE.md`, or in
+a case's own header comment, where a reader looks for it deliberately. What
+stays beside the code is the sentence a reader needs *at that line*.
+
+So when a new fault is mended: write the three lines beside the fix, and put
+the story in the section of this file that owns the subject. A comment that
+wants a fourth line is a sign the story belongs here instead.
+
 ## Build
 
 ```

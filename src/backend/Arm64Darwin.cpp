@@ -124,10 +124,9 @@ void Arm64Darwin::narrowInt(const Type *to) {
 
 Arm64Darwin::AggPlan Arm64Darwin::planFor(const Type *t) const {
     AggPlan p;
-    // A class whose copy is a constructor call is never in registers: the
-    // caller owns the storage and passes its address. Asked before the
-    // homogeneous-float question, which would otherwise put a class of two
-    // floats in registers however it has to be copied.
+    // A class whose copy is a constructor call is never in registers: the caller
+    // owns the storage and passes its address. Asked before the homogeneous-float
+    // question, which would otherwise put a class of two floats in registers.
     if (t->nonTrivialCopy() || t->hasDestructor()) {
         p.byRef = true;
         p.words = 1;
@@ -137,26 +136,9 @@ Arm64Darwin::AggPlan Arm64Darwin::planFor(const Type *t) const {
     int n = homogeneousFloatCount(t, &elem);
     if (n > 0) { p.hfa = n; p.elem = elem; return p; }
 
-    // **An empty class is ignored in the parameter list on this platform**,
-    // and `sizeof` being 1 is not the question. Measured with clang:
-    // `take(Empty, int x, int y)` puts x in w0, and `take(Wrap, int x, int y)`
-    // - where Wrap's only member is an empty class - puts x in w1. cxx1 gave
-    // the empty one a register and shifted everything after it along, which
-    // was consistent with itself and wrong against anything clang compiled.
-    //
-    // **Asked as "no members and no vptr", not as `dataSize() == 0`.** The
-    // first attempt used dataSize, which the parser sets on classes it lays
-    // out and nothing sets on the types the compiler synthesises - so a
-    // pointer to a member function, which is a struct of one or two words
-    // built in TypeTable, answered 0 and was passed in no register at all.
-    // The member list is what actually says whether a class carries
-    // anything, whoever built it.
-    //
-    // Zero words falls through the loops that place and spill arguments
-    // without special-casing: no register is taken, and nothing is stored.
-    // The SysV backend already had this rule for returns, and its comment
-    // says arm64 "classif[ies] differently and w[as] unaffected" - it was
-    // affected, on the parameter side.
+    // **An empty class is ignored in the parameter list on this platform**, and
+    // `sizeof` being 1 is not the question - measured with clang. Asked as "no
+    // members and no vptr": dataSize is 0 on the types the compiler synthesises.
     if (t->isStructOrUnion() && t->members().empty() && !t->polymorphic()) {
         p.words = 0;
         return p;
@@ -169,16 +151,9 @@ Arm64Darwin::AggPlan Arm64Darwin::planFor(const Type *t) const {
     return p;
 }
 
-// **The tail is composed, not approximated.** A lane holding 3, 5, 6 or 7
-// live bytes used to be written with the single largest store that fit - two
-// bytes for a three-byte tail, four for a six - and the rest of the struct was
-// left as whatever the destination already held. `struct { char c[3]; }` passed
-// by value arrived with its last byte missing, which is silent and is data.
-//
-// The value register is dead after its own store at both call sites - each
-// lane's register is used once, and the result registers are overwritten
-// straight after - so the remainder is shifted down in place rather than into
-// a scratch, `base` being the address and not free to borrow.
+// **The tail is composed, not approximated.** A lane of 3, 5, 6 or 7 live bytes
+// took the largest store that fit and left the rest as the destination held it.
+// The value register is dead after its own store, so the remainder shifts in place.
 void Arm64Darwin::storeWord(const char *xreg, const char *base, int k, int size) {
     const int off = k * 8;
     const int left = size - off;
@@ -364,10 +339,8 @@ int Arm64Darwin::aggStackSlot(const Type *t, const AggPlan &p, int &at) const {
 }
 
 // **The runtime arrives here with two values in registers**, and this is the
-// whole of what the backend does about it: x0 holds the exception object and
-// x1 the selector the personality routine chose, and both go into frame slots
-// the parser already knows the numbers of. From the next instruction they are
-// ordinary locals.
+// whole of what the backend does about it: x0 the exception object and x1 the
+// selector, into frame slots the parser knows. From then on they are locals.
 void Arm64Darwin::landingPad(int pointerSlot, int selectorSlot) {
     out_ << "  mov x9, #" << pointerSlot << "\n";
     out_ << "  sub x9, x29, x9\n";
@@ -377,20 +350,9 @@ void Arm64Darwin::landingPad(int pointerSlot, int selectorSlot) {
     out_ << "  str w1, [x9]\n";
 }
 
-// **The language-specific data area, laid out exactly as clang lays it out.**
-// Every number here was read off clang's own output rather than a
-// description, because the personality routine reads the header and then
-// trusts it: a wrong encoding byte is not a diagnostic, it is a program that
-// stops somewhere else.
-//
-//   255  LPStart omitted, so a landing pad is an offset from the function
-//   155  the type table is indirect, pc-relative, signed 4 bytes
-//     1  the call-site table is uleb128
-//
-// The call-site table is *sorted and gapless in effect*: a range that is not
-// mentioned has no landing pad, which is what the ranges outside a try want.
-// The type table is written backwards - index 1 is the entry just before
-// Lttbase - which is why the loop below runs in reverse.
+// **The language-specific data area, laid out exactly as clang lays it out** -
+// every number read off clang's output, since the personality routine trusts the
+// header. 255 LPStart omitted, 155 indirect pc-relative types, 1 uleb call sites.
 void Arm64Darwin::emitLsda(const std::string &symbol) {
     const std::string ex = "Lexception." + symbol;
     const std::string ttbase = "Lttbase." + symbol;
@@ -402,13 +364,9 @@ void Arm64Darwin::emitLsda(const std::string &symbol) {
 
     out_ << "  .section __TEXT,__gcc_except_tab\n";
     out_ << "  .p2align 2\n";
-    // **A label that is not an `L` temporary, and it is load-bearing.**
-    // Mach-O's `.subsections_via_symbols` lets the linker move and drop the
-    // pieces of a section, and it cuts them at symbols - a temporary label is
-    // not one. With only `L` labels here every function's table was a single
-    // atom, so the first table in a file worked and the second did not: the
-    // exception simply was not caught, with no diagnostic anywhere. clang
-    // writes `GCC_except_table0` for the same reason.
+    // **A label that is not an `L` temporary, and it is load-bearing.** Mach-O's
+    // `.subsections_via_symbols` cuts sections at symbols, so with only `L` labels
+    // the second table in a file was never reached. clang writes a symbol too.
     out_ << "GCC_except_table." << symbol << ":\n";
     out_ << ex << ":\n";
     out_ << "  .byte 255\n";
@@ -419,19 +377,9 @@ void Arm64Darwin::emitLsda(const std::string &symbol) {
     out_ << "  .uleb128 " << cstEnd << "-" << cstBegin << "\n";
     out_ << cstBegin << ":\n";
 
-    // **Every call in the function has to be in this table, not only the
-    // ones inside a try.** The runtime looks an address up here and takes a
-    // miss as a program that should stop: libc++abi calls terminate when the
-    // return address is past the end of the table. So the ranges between the
-    // try blocks are written out too, with no landing pad and no action -
-    // which is what "an exception passes straight through here" means.
-    //
-    // **The call site's action field is a byte offset into the action table
-    // plus one, not an index.** With one handler the two are the same number
-    // and the difference is invisible; with three, the second try's field has
-    // to skip six bytes rather than three entries. Each record here is two
-    // bytes - the type index and the offset to the next record - so the step
-    // is twice the handler count.
+    // **Every call in the function has to be in this table, not only the ones
+    // inside a try**: a miss makes libc++abi call terminate. **And the action
+    // field is a byte offset plus one** - two bytes a record, so twice the count.
     int action = 1;
     std::string at = fnBegin;
     for (std::size_t i = 0; i < callSites().size(); i++) {
@@ -1114,22 +1062,13 @@ void Arm64Darwin::emitFunction(const Function &fn) {
     clearCallSites();
 
     markLine(fn.pos());
-    // **Unwind data, and it is the same three lines in every function here.**
-    // A cxx1 frame has one shape - the pair saved at the top and x29 pointing
-    // at it - so the CFA is x29 + 16 for the whole body and the two saved
-    // registers sit just below it. Without this the frame is opaque: nothing
-    // can unwind through it, which is why a debugger's backtrace stopped at
-    // the first cxx1 function and why an exception could not pass one.
-    //
-    // Emitted after the frame is established rather than beside each
-    // instruction, which is what clang does too: the unwinder looks the CFI
-    // up by return address, and a return address can only be inside a call -
-    // there are none in a prologue.
+    // **Unwind data, and it is the same three lines in every function here.** A
+    // cxx1 frame has one shape, so the CFA is x29 + 16 throughout; emitted once
+    // the frame is established, since a return address is never in a prologue.
     out_ << "  .cfi_startproc\n";
-    // **A function with a landing pad names its personality and its table
-    // here**, before anything else: the unwinder finds both through the CFI,
-    // and the table itself is written after the body, once the labels it
-    // talks about exist.
+    // **A function with a landing pad names its personality and its table here**,
+    // before anything else: the unwinder finds both through the CFI, and the
+    // table itself is written after the body, once its labels exist.
     if (fn.hasLandingPads()) {
         out_ << "  .cfi_personality 155, ___gxx_personality_v0\n";
         out_ << "  .cfi_lsda 16, Lexception." << fn.symbol() << "\n";

@@ -80,18 +80,9 @@ public:
     const Type *type() const { return type_; }
     void setType(const Type *t) { type_ = t; }
 
-    // **Set only by `static_cast<T &&>`, and it is a value category rather
-    // than a type.** [basic.lval] splits expressions that name an object into
-    // two: an lvalue, which something else may still be using, and an xvalue,
-    // which is that same object offered up to be taken apart. The two are
-    // built identically here - the mark is the whole difference - because the
-    // difference is entirely in what may be *done* with the object, and
-    // nothing about how its address is computed.
-    //
-    // No visitor sees this and no backend reads it. It is answered during
-    // parsing, by overload resolution choosing a move over a copy and by
-    // reference binding taking an address instead of a copy, and by then it
-    // has done its work.
+    // **Set only by `static_cast<T &&>`, and a value category rather than a
+    // type**: [basic.lval] separates an lvalue from an xvalue by what may be done
+    // with the object, not by how its address is computed. No backend reads it.
     bool isXvalue() const { return xvalue_; }
     void setXvalue() { xvalue_ = true; }
 private:
@@ -248,13 +239,9 @@ public:
         return i < argSlots_.size() ? argSlots_[i] : 0;
     }
 
-    // **Whether the first argument is a `this` pointer**, which the Microsoft
-    // ABI needs to know and the Itanium one does not: cl puts `this` in the
-    // first integer register and the hidden return pointer in the second,
-    // where a free function returning the same struct puts the return pointer
-    // first. The parser lowers a member call to an ordinary one with the
-    // object's address in front, so by the time a backend sees it the two are
-    // the same shape - this is the one bit that tells them apart.
+    // **Whether the first argument is a `this` pointer**, which the Microsoft ABI
+    // needs and the Itanium one does not: cl puts `this` first and the hidden
+    // return pointer second. A lowered member call needs this to be told apart.
     bool hasThis() const { return hasThis_; }
     void setHasThis(bool t) { hasThis_ = t; }
     void accept(Visitor &v) const override { v.visit(*this); }
@@ -501,33 +488,9 @@ struct Param {
     int offset;
 };
 
-// `try { ... } catch (T e) { ... }` - rung 6.3.
-//
-// **Almost all of it is ordinary statements**, and that is deliberate: the
-// comparison of the selector, the calls to __cxa_begin_catch and
-// __cxa_end_catch, the copy into the caught variable and the handler bodies
-// are all built by the parser out of nodes that already existed. What a
-// backend has to know is only this much:
-//
-//   - a label before the body and one after it, so the call-site table can
-//     say which calls this pad covers;
-//   - a label at the pad, where the runtime arrives with the exception
-//     pointer and the selector in two registers, which are stored into the
-//     two frame slots named here and are ordinary locals from then on;
-//   - the type_info symbols this try catches, in order, because index 1 in
-//     the table is the first of them - which is what the parser's comparisons
-//     were written against.
-//
-// An empty symbol is `catch (...)`, which matches everything and is why it
-// has to be last. **An empty *list* is a cleanup**: a region with no handler
-// at all, whose pad destroys what has been built and hands the exception back
-// to the unwinder.
-// **One `catch`, as the Microsoft ABI wants it.** There is no landing pad on
-// that target and no selector to compare: the runtime reads the tables, picks
-// the handler itself and *calls* it as a function of its own. So a handler is
-// kept whole here rather than folded into an if/else chain, and what the
-// tables need beside its body is the type it catches and where in the frame
-// the caught object goes.
+// `try { ... } catch (T e) { ... }` - rung 6.3, and almost all of it is ordinary
+// statements. Itanium wants the labels bounding the body, the pad, and the
+// type_info symbols in order; Microsoft keeps each handler whole, to be called.
 struct MsHandler {
     std::string descriptor;    // ??_R0H@8 and the like; empty for catch (...)
     int objectSlot = 0;        // frame slot for the caught object, 0 if unnamed
@@ -537,10 +500,9 @@ struct MsHandler {
 
 class Try final : public Stmt {
 public:
-    // The body is a *list* rather than a block, because a cleanup region
-    // covers a slice of an enclosing block's statements and must not open a
-    // scope of its own - the objects it destroys belong to the block outside
-    // it.
+    // The body is a *list* and not a block, because a cleanup region covers a
+    // slice of an enclosing block's statements and must not open a scope of its
+    // own - the objects it destroys belong to the block outside it.
     Try(std::vector<StmtPtr> body, StmtPtr pad, int pointerSlot,
         int selectorSlot, std::vector<std::string> types)
         : body_(std::move(body)), pad_(std::move(pad)),
@@ -548,10 +510,9 @@ public:
           types_(std::move(types)) {}
     const std::vector<StmtPtr> &body() const { return body_; }
 
-    // **Null on Windows.** The two ABIs disagree about who chooses the
-    // handler - Itanium hands the frame a selector and lets its own code
-    // decide, Microsoft decides in the runtime and calls a funclet - so one
-    // target fills in the pad and the other the handler list, and never both.
+    // **Null on Windows.** The two ABIs disagree about who chooses the handler -
+    // Itanium hands the frame a selector, Microsoft decides in the runtime and
+    // calls a funclet - so one target fills the pad and the other the list.
     bool hasPad() const { return pad_ != nullptr; }
     const Stmt &pad() const { return *pad_; }
     int pointerSlot() const { return pointerSlot_; }
@@ -562,10 +523,8 @@ public:
     void setHandlers(std::vector<MsHandler> h) { handlers_ = std::move(h); }
 
     // **A cleanup region, where the Microsoft ABI wants a state rather than a
-    // handler.** Nothing is caught here: an exception passing through runs
-    // these destructors and carries on. What this holds is what *this* region
-    // built and no more - the runtime chains to the region before it, so
-    // destroying everything alive would destroy the earlier objects twice.
+    // handler.** Nothing is caught here, and it holds what *this* region built
+    // and no more: the runtime chains to the region before it.
     const Stmt *cleanup() const { return cleanup_.get(); }
     void setCleanup(StmtPtr c) { cleanup_ = std::move(c); }
 
@@ -617,11 +576,9 @@ public:
     bool hasThis() const { return hasThis_; }
     void setHasThis(bool t) { hasThis_ = t; }
 
-    // A second name for the same code, emitted as an extra label in front of
-    // it. Itanium gives a constructor two - C1 for a complete object and C2
-    // for a base subobject - and clang emits both, so an object file that
-    // emitted only one would not be the same object file. Empty for everything
-    // else, the Microsoft ABI included: it has one constructor name.
+    // A second name for the same code, emitted as an extra label in front of it.
+    // Itanium gives a constructor C1 for a complete object and C2 for a base and
+    // clang emits both; empty for everything else, Microsoft included.
     const std::string &alias() const { return alias_; }
     void setAlias(std::string a) { alias_ = std::move(a); }
     const Type *returns() const { return returns_; }
@@ -696,10 +653,8 @@ struct Program {
     std::vector<Function> functions;
     std::vector<Global> globals;
     std::vector<StringLit> strings;
-    // **The types this file throws**, which only the Microsoft backend reads:
-    // that ABI wants a chain of four objects per thrown type emitted into the
-    // object, where Itanium names one that the standard library already
-    // carries. Collected by the parser because it is the only thing that
-    // knows a `throw` happened.
+    // **The types this file throws**, which only the Microsoft backend reads: it
+    // wants a chain of four objects per thrown type in the object file where
+    // Itanium names one the library carries. Collected by the parser.
     std::vector<const Type *> thrown;
 };

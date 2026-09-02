@@ -181,19 +181,9 @@ MasmSpelling::Rendered MasmSpelling::render(const Op &x) {
 
         std::string t = "[" + std::string(x.text.substr(1));
         long long d = x.hasDisp ? x.disp : 0;
-        // **The whole frame moved, so every offset into it moves with it.**
-        // The code generator writes frame operands against rbp as Itanium
-        // establishes it - taken before the allocation, with the locals below
-        // it - and this target takes rbp after the allocation instead, so its
-        // rbp is exactly frameSize lower. Every `[rbp + d]` therefore becomes
-        // `[rbp + d + frameSize]`, and that is true of the positive ones as
-        // well: an incoming stack argument is above the old rbp and is above
-        // the new one by the same amount plus the frame.
-        //
-        // Done here rather than where operands are built because there are
-        // several dozen of those and they compute their displacements in
-        // half a dozen different shapes - one of which is all it takes to
-        // miss, and the miss is a program that reads the wrong stack slot.
+        // **The whole frame moved, so every offset into it moves with it.** This
+        // target takes rbp after the allocation, exactly frameSize lower, so every
+        // `[rbp + d]` becomes `[rbp + d + frameSize]` - the positive ones included.
         if (std::string(x.text.substr(1)) == "rbp") d += frameSize_;
         if (d != 0) {
             if (d < 0) t += std::to_string(d);
@@ -276,17 +266,9 @@ void MasmSpelling::functionBegin(const std::string &name, bool exported) {
     flushPending();
     if (seg_ != Code) { o_ += "\n.CODE\n"; seg_ = Code; }
 
-    // **`PROC`, not `PROC FRAME`, and the unwind data written by hand.**
-    //
-    // PROC FRAME is the easy way to get .pdata and .xdata, and it is a dead
-    // end: a function with an exception handler carries the handler's address
-    // *and its data* inside the same UNWIND_INFO, and no MASM directive
-    // reaches the second of those. cl does not use PROC FRAME either - it
-    // writes $pdata$ and $unwind$ itself, which is what this does now.
-    //
-    // Done for every function rather than only the ones with a handler on
-    // purpose: one path, exercised by the whole suite, rather than a second
-    // one that only the new feature walks.
+    // **`PROC`, not `PROC FRAME`, and the unwind data written by hand.** No MASM
+    // directive reaches the handler *data* inside UNWIND_INFO, and cl writes
+    // $pdata$ and $unwind$ itself. Done for every function, so one path is walked.
     fnName_ = name;
     o_ += mangle(name); o_ += " PROC\n";
     o_ += "$LNbeg$"; o_ += mangle(name); o_ += ":\n";
@@ -298,22 +280,16 @@ void MasmSpelling::raw(const std::string &text) {
 }
 
 void MasmSpelling::prologue(int frameSize, const std::string &lsda) {
-    // The caller passes a non-empty name when the function has handlers. What
-    // it *is* does not matter here - Itanium's exception-table label means
-    // nothing to MASM - only that there is one, which decides the flags in
-    // the unwind header and whether a FuncInfo follows the codes.
+    // The caller passes a non-empty name when the function has handlers. What it
+    // *is* does not matter here - an Itanium table label means nothing to MASM -
+    // only that there is one, which sets the flags and whether a FuncInfo follows.
     hasEh_ = !lsda.empty();
     frameSize_ = frameSize;
     const std::string m = mangle(fnName_);
 
-    // **The frame pointer is taken *after* the allocation on this target**,
-    // which is the whole difference from the Itanium prologue and is not a
-    // preference. The Microsoft runtime hands a handler the "establisher
-    // frame", computed as rbp minus the frame offset in the unwind header,
-    // and every displacement in an FH3 table is an unsigned offset *up* from
-    // it. Taking rbp first, as Itanium does, puts every local below that
-    // point where no table can name it - measured against cl, which writes
-    // `sub rsp,N` and only then establishes its frame pointer.
+    // **The frame pointer is taken *after* the allocation on this target**, which
+    // is the whole difference from the Itanium prologue: every displacement in an
+    // FH3 table is an unsigned offset up from the establisher. Measured against cl.
     o_ += "  push rbp\n";
     o_ += "$LNpush$" + m + ":\n";
     if (frameSize > 0) {
@@ -355,20 +331,14 @@ void MasmSpelling::prologue(int frameSize, const std::string &lsda) {
     unwindCodes_ += 1;
 }
 
-// **Every offset here is a label difference, not a counted byte.** An unwind
-// code records where in the prologue its instruction *ends*, and `sub rsp, 40`
-// is four bytes where `sub rsp, 400` is seven - the assembler chooses, so the
-// assembler is asked. Counting them here would be a second encoder that has
-// to agree with ml64 forever.
+// **Every offset here is a label difference, not a counted byte.** An unwind code
+// records where its instruction *ends*, and `sub rsp, 40` is four bytes where
+// `sub rsp, 400` is seven - the assembler chooses, so the assembler is asked.
 void MasmSpelling::functionEnd(const std::string &name) {
     const std::string m = mangle(name);
-    // **The dot is the whole of it.** A segment called `pdata` is a segment
-    // called pdata; the linker builds the image's exception directory from
-    // `.pdata`, and without the dot the runtime finds no unwind record for
-    // the frame at all - measured, dumpbin showed `pdata` and `xdata` beside
-    // `.text$mn`. cl's listing writes them undotted, which is the third thing
-    // in that listing that is a record of what cl means rather than something
-    // that assembles.
+    // **The dot is the whole of it.** A segment called `pdata` is a segment called
+    // pdata; the linker builds the image's exception directory from `.pdata`, and
+    // without it the runtime finds no unwind record - measured with dumpbin.
     o_ += "$LNend$" + m + ":\n";
     o_ += m + " ENDP\n";
 
@@ -380,15 +350,13 @@ void MasmSpelling::functionEnd(const std::string &name) {
     o_ += "  DD imagerel $unwind$" + m + "\n";
     o_ += ".pdata ENDS\n";
 
-    // UNWIND_INFO: version 1 with no flags, the prologue's size, how many
-    // codes follow, and the frame register - rbp, at offset 0 from where rsp
-    // stood when it was set. The codes are last-first, which is the order an
-    // unwinder undoes them in.
+    // UNWIND_INFO: version 1 with no flags, the prologue's size, how many codes
+    // follow, and the frame register - rbp, at offset 0 from where rsp stood when
+    // it was set. The codes are last-first, the order an unwinder undoes them in.
     o_ += ".xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
-    // Version 1, and the flags in the top five bits. 0x19 is version 1 with
-    // UNW_FLAG_EHANDLER and UNW_FLAG_UHANDLER, which is what cl writes for a
-    // function with a `try` - measured. Without them the runtime unwinds
-    // straight past the frame and never looks at the FuncInfo.
+    // Version 1, and the flags in the top five bits. 0x19 is UNW_FLAG_EHANDLER and
+    // UNW_FLAG_UHANDLER, which is what cl writes for a function with a `try`.
+    // Without them the runtime unwinds past the frame and never reads the FuncInfo.
     o_ += "$unwind$" + m + (hasEh_ ? " DB 019H\n" : " DB 01H\n");
     o_ += "  DB $LNprolog$" + m + "-$LNbeg$" + m + "\n";
     o_ += "  DB " + std::to_string(unwindCodes_) + "\n";
@@ -501,31 +469,14 @@ void MasmSpelling::preamble(std::ostream &sink) {
     sink << "; The instruction selection is the same one the Linux backend makes;\n";
     sink << "; only the spelling is Microsoft's. See src/backend/Masm.cpp.\n\n";
 
-    // **A label inside a PROC is local to it unless this says otherwise.**
-    // MASM scopes them by default, so the unwind data - which lives outside
-    // the procedure and measures into it - could not name the labels the
-    // prologue defines. Every label this compiler writes already carries the
-    // function's own symbol, so there is nothing for the wider scope to
-    // collide with.
-    // **DOTNAME lets a segment be called `.pdata`, and NOSCOPED lets the
-    // unwind data name the labels inside a procedure.** Both are needed for
-    // the same reason: the exception tables live outside the function and
-    // measure into it, and MASM's defaults assume nothing does that.
+    // **DOTNAME lets a segment be called `.pdata`, and NOSCOPED lets the unwind
+    // data name the labels inside a procedure.** Both are needed for one reason:
+    // the tables live outside the function and measure into it.
     sink << "OPTION DOTNAME\n";
     sink << "OPTION NOSCOPED\n";
-    // **MASM exports every PROC unless told otherwise**, and that quietly
-    // undid the one thing this backend was already getting right. The PUBLIC
-    // list below is correct - a `static` function is left out of it, exactly
-    // as the Itanium side leaves the L out of a name - but MASM's default is
-    // OPTION PROC:PUBLIC, so the PROC directive exported it anyway and a
-    // `static` function came out of the object as an External symbol. Two
-    // translation units each with their own `static int total(...)` would
-    // have collided at the link.
-    //
-    // Invisible to `tools/mangled-names`, and that is the lesson: the *name*
-    // was right and agreed with clang. What disagreed was the storage class
-    // beside it, which only a symbol table shows - found by asking cl on the
-    // Windows box, which is what tools/windows/names-vs-cl.cmd now does.
+    // **MASM exports every PROC unless told otherwise**, so a `static` function
+    // left out of the PUBLIC list below came out of the object External anyway.
+    // Invisible to mangled-names: the name was right, the storage class was not.
     sink << "OPTION PROC:PRIVATE\n\n";
 
     for (const std::string &g : unreserved_)
@@ -549,27 +500,9 @@ void MasmSpelling::postamble(std::ostream &sink) {
     sink << "\nEND\n";
 }
 
-// **The chain the Microsoft ABI wants before anything may be thrown**, all of
-// it measured from cl's own listing rather than read off a description:
-//
-//   ??_R0H@8       the RTTI type descriptor - the type_info vftable, a spare
-//                  word, and the decorated name, which for a fundamental type
-//                  is a '.' and the type's own letter
-//   _CT??_R0H@84   one catchable type: properties, the descriptor, where the
-//                  object sits, the virtual-base fields it does not use, its
-//                  size, and the copy function a scalar does not need
-//   _CTA1H         the array of those - a count and one entry
-//   _TI1H          the ThrowInfo itself, whose fourth word is the array
-//
-// Every cross-reference is `imagerel`, which is what makes them relocatable
-// inside the image; `ORG $+4` is the padding cl writes for the vbtable field.
-// The segments are cl's too: the descriptor in data$r, the rest in xdata$x,
-// each COMDAT so that two objects throwing an int fold into one.
-// -2 into the runtime's scratch word, which is what says "this frame has not
-// entered anything yet". cl writes it as the first instruction of a function
-// with a `try`; written here at the head of the guarded range instead, which
-// is the same thing for as long as the range it protects is the only one that
-// reads it.
+// **The chain the Microsoft ABI wants before anything may be thrown** - ??_R0H@8,
+// _CT??_R0H@84, _CTA1H, _TI1H - measured from cl's listing, `imagerel` throughout
+// and in cl's segments. Then -2, the scratch word saying nothing is entered yet.
 void MasmCodeGen::storeUnwindHelp(int slot) {
     masm_.raw("  mov QWORD PTR [rbp+" +
               std::to_string(masm_.frameSize_ - slot) + "], -2\n");
@@ -577,8 +510,7 @@ void MasmCodeGen::storeUnwindHelp(int slot) {
 
 // **A funclet is a slice of the ordinary output, lifted.** Walking the handler
 // appends its code like any other, so remembering where that began and cutting
-// back to it afterwards gives the body exactly - and the code generator needs
-// to know nothing about any of this.
+// back to it gives the body exactly - and the code generator knows none of it.
 std::string MasmCodeGen::beginFunclet() {
     masm_.raw("");                       // nothing pending inside the slice
     funcletMark_ = out_.size();
@@ -587,14 +519,9 @@ std::string MasmCodeGen::beginFunclet() {
     return funcletSymbol_;
 }
 
-// The funclet's own frame, and the two things that make it work: `rdx` is the
-// establisher frame - the parent's rsp after its prologue - so adding the
-// parent's frame size back recovers the rbp every local was written against,
-// and the handler body then compiles as though it were inline. And a funclet
-// *returns* the address to carry on at, in rax, rather than jumping there.
-// A cleanup funclet runs its destructors and returns, and there is nothing to
-// return *to*: the runtime carries on unwinding, so unlike a handler this
-// hands back no continuation address.
+// The funclet's own frame: `rdx` is the establisher frame, so adding the parent's
+// frame size back recovers the rbp every local was written against, and a funclet
+// *returns* where to carry on, in rax. A cleanup has nothing to return to.
 void MasmCodeGen::endCleanupFunclet() {
     closeFunclet(std::string());
     funcletKind_ = "$catch$";
@@ -611,19 +538,9 @@ void MasmCodeGen::closeFunclet(const std::string &tail) {
 
     const std::string sym = funcletSymbol_;
     std::string f;
-    // **`.text$x`, and the dot is the whole of it** - the same trap as
-    // `.pdata` in step 1, and found the same way. A segment called `text` is
-    // a segment called text: the linker gives it a section of its own with
-    // data attributes, and the runtime then calls a handler that sits on a
-    // page it may not execute. It faults *at the first instruction of the
-    // funclet*, which reads as the dispatch having gone wrong when in fact
-    // the dispatch was right and the page was not code.
-    //
-    // cl's listing writes `text$x` undotted, which is the third time that
-    // listing has recorded what cl means rather than something that
-    // assembles - see the note on .pdata.
-    // The 'CODE' class is what makes the linker give it execute
-    // permission and fold it beside .text rather than beside the data.
+    // **`.text$x`, and the dot is the whole of it** - the same trap as `.pdata`. A
+    // segment called `text` gets data attributes, so the handler faults at its own
+    // first instruction; 'CODE' is what gives it execute permission beside .text.
     f += "\n.text$x SEGMENT ALIGN(16) 'CODE'\n";
     f += sym + " PROC\n";
     f += "$LNbeg$" + sym + ":\n";
@@ -632,10 +549,9 @@ void MasmCodeGen::closeFunclet(const std::string &tail) {
     f += "$LNpush$" + sym + ":\n";
     f += "  sub rsp, 32\n";
     f += "$LNprolog$" + sym + ":\n";
-    // **rdx is the establisher frame, and that is now exactly the parent's
-    // rbp** - the two became the same thing when the frame pointer moved to
-    // the bottom of the allocation, so the handler body addresses the
-    // parent's locals with no adjustment at all.
+    // **rdx is the establisher frame, and that is now exactly the parent's rbp** -
+    // the two became one thing when the frame pointer moved to the bottom of the
+    // allocation, so the handler reaches the parent's locals with no adjustment.
     f += "  mov rbp, rdx\n";
     f += body;
     f += tail;
@@ -646,10 +562,9 @@ void MasmCodeGen::closeFunclet(const std::string &tail) {
     f += sym + " ENDP\n";
     f += ".text$x ENDS\n";
 
-    // A funclet carries unwind data of its own, naming the same handler and
-    // *the parent's* FuncInfo - the two share one description of the try.
-    // Its .pdata goes to a pile written after every function, for the sorting
-    // reason recorded beside funcletPdata_.
+    // A funclet carries unwind data of its own, naming the same handler and *the
+    // parent's* FuncInfo - the two share one description of the try. Its .pdata
+    // goes to a pile written after every function, for the sorting reason recorded.
     masm_.trailer_ += "\n.pdata SEGMENT READONLY ALIGN(4) 'DATA'\n";
     masm_.trailer_ += "$pdata$" + sym + " DD imagerel $LNbeg$" + sym + "\n";
     masm_.trailer_ += "  DD imagerel $LNend$" + sym + "\n";
@@ -673,21 +588,9 @@ void MasmCodeGen::closeFunclet(const std::string &tail) {
     funclets_ += f;
 }
 
-// The four FH3 tables, written after the function they describe.
-//
-// **Every offset here is measured from the stack pointer as it stands after
-// the prologue** - the establisher frame - and cxx1 writes locals as [rbp-N]
-// with rbp taken *before* the frame was allocated. The two are one frame
-// apart, so a slot at [rbp-N] is at frameSize-N from the establisher, and
-// that subtraction is the whole of the translation. Measured with cl on a
-// function that establishes rbp: its $T2 at [rbp+16] with rbp = establisher
-// + 32 is dispUnwindHelp 0x30, and 16 + 32 is 48.
-// **A cleanup is a state, not a try block.** Nothing is caught here: an
-// exception passing through this frame runs some destructors and carries on.
-// The runtime is told so with a state per region whose *action* is the funclet
-// that destroys what that region built, and whose `toState` is the region
-// before it - so unwinding walks the chain backwards, one object at a time,
-// which is why each funclet destroys only its own.
+// The four FH3 tables, written after the function they describe. **Every offset is
+// measured from the establisher frame**, so a slot at [rbp-N] is at frameSize-N.
+// **And a cleanup is a state, not a try block**: its action is the funclet.
 void MasmCodeGen::emitCleanupTables(const Function &fn) {
     (void)fn;
     const std::string m = masm_.mangledName();
@@ -742,10 +645,9 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
     const std::string m = masm_.mangledName();
     const int frame = masm_.frameSize_;
 
-    // **Cleanups and handlers never share a function**, which the parser
-    // enforces on every target: a local with a destructor and a `try` in one
-    // function is refused, because each is a range and one would have to
-    // split the other. So this is two shapes rather than one with both.
+    // **Cleanups and handlers never share a function**, which the parser enforces
+    // on every target: a local with a destructor and a `try` in one function is
+    // refused, each being a range that would have to split the other.
     if (msTries()[0].isCleanup) { emitCleanupTables(fn); return; }
 
     const std::size_t tries = msTries().size();
@@ -754,11 +656,9 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
     funclets_.clear();
     funcletIndex_ = 0;
 
-    // **Two states per try**: the body is one and its handlers the next, so
-    // try k owns states 2k and 2k+1 and there are 2*tries of them. They are
-    // numbered rather than nested because the parser refuses a `try` inside
-    // another - a nested one would want tryLow and tryHigh to span its
-    // child's states, which is what those two fields are for.
+    // **Two states per try**: the body is one and its handlers the next, so try k
+    // owns states 2k and 2k+1. Numbered rather than nested because the parser
+    // refuses a `try` inside another, which is what tryLow and tryHigh are for.
     const std::size_t states = 2 * tries;
 
     std::size_t ipRows = 0;
@@ -841,18 +741,13 @@ void MasmCodeGen::emitThrowInfo(const Program &program) {
         std::string why;
         if (!microsoftThrowNames(t, t->size(target_), &n, &why)) continue;
 
-        // **Not PUBLIC, and that is the interesting part.** cl puts each of
-        // these in a COMDAT so that two objects throwing an int fold into
-        // one; MASM has no way to say COMDAT, so a public copy here collides
-        // with cl's at the link - measured, LNK2005 on ??_R0H@8. Keeping them
-        // file-local works because the runtime matches a type descriptor by
-        // its *name string* rather than by its address, which is the same
-        // rule that lets a throw cross a DLL boundary at all.
+        // **Not PUBLIC, and that is the interesting part.** cl puts each in a
+        // COMDAT and MASM cannot say COMDAT, so a public copy collides with cl's -
+        // measured, LNK2005. File-local works: the runtime matches by name string.
         o += ".data$r SEGMENT READONLY ALIGN(8) 'DATA'\n";
-        // **cl's listing writes `FLAT:` here and ml64 rejects it.** That
-        // prefix is 32-bit MASM's way of naming a flat-model address; the
-        // 64-bit assembler has no such keyword, so the listing is a record of
-        // what cl *means* rather than something that assembles as it stands.
+        // **cl's listing writes `FLAT:` here and ml64 rejects it.** That prefix is
+        // 32-bit MASM's way of naming a flat-model address; the 64-bit assembler
+        // has no such keyword, so the listing records what cl means.
         o += n.descriptor + " DQ ??_7type_info@@6B@\n";
         o += "  DQ 0\n";
         o += "  DB '" + n.decorated + "', 00H\n";
@@ -889,10 +784,9 @@ void MasmCodeGen::run(const Program &program) {
         mine.push_back(n.info);
     }
     masm_.predefine(mine);
-    // **Before the code, not after it.** The base run() flushes what it has
-    // built to the sink when it finishes, so anything appended afterwards is
-    // written to a buffer nobody reads. MASM makes two passes, so a `lea` of
-    // a ThrowInfo defined above it resolves either way round.
+    // **Before the code, not after it.** The base run() flushes what it has built
+    // when it finishes, so anything appended afterwards goes to a buffer nobody
+    // reads. MASM makes two passes, so a `lea` of a ThrowInfo above resolves.
     emitThrowInfo(program);
     X86_64Linux::run(program);
 }

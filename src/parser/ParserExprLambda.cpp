@@ -1,9 +1,6 @@
-// The parser: lambdas and the closures they become.
-//
-// A lambda is a class this compiler writes: the capture list becomes members,
-// the body becomes `operator()`, and the object is built where the expression
-// stood. Deducing the return type from the body is here too, since nothing
-// else needs it.
+// The parser: lambdas and the closures they become. A lambda is a class this
+// compiler writes - the captures become members and the body `operator()` - and
+// deducing the return type is here too, since nothing else needs it.
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
@@ -13,53 +10,18 @@
 #include <cstring>
 
 
-// `[](int a) { return a * 2; }` - rung 7.6.
-//
-// **A closure is a class with a call operator**, generated where the lambda is
-// written, and both halves of that now exist: a class can be defined inside a
-// function and `operator()` can be reached. What is left is the generating,
-// and three decisions carry it.
-//
-// **The object lives in the enclosing frame.** A lambda expression is a class
-// *temporary*, and this compiler has none - the same gap that refuses
-// `return P(1);`. So the closure is given a frame slot of its own and the
-// expression answers with a `Var` naming it. Its lifetime is the function
-// rather than the full expression, which is longer than [expr.prim.lambda]
-// asks for and harmless while a closure has nothing to destroy.
-//
-// **The body is replayed as a member function**, through the same held-body
-// path a class written inside a function uses - so nothing in the definition
-// machinery had to learn what a lambda is. That needs tokens shaped like a
-// definition, which the lambda's own are not, so they are synthesised:
-// `<ret> operator ( ) ( <params> ) const { <body> }`, built from the lambda's
-// own parameter and body tokens and appended to the stream. An index into
-// `tokens_` survives the vector growing, which is what makes this safe.
-//
-// **The return type is spelled as a hidden typedef.** Synthesising tokens for
-// an arbitrary type is not possible in general - `int` is one token and
-// `const char *` is three and a class is its tag - so the deduced type is
-// registered under a made-up name and that one identifier is written instead.
+// `[](int a) { return a * 2; }` - rung 7.6. **A closure is a class with a call
+// operator**: the object lives in the enclosing frame, the body is replayed as a
+// member function from synthesised tokens, the return type as a hidden typedef.
 const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
                                        std::size_t paramsTo,
                                        std::size_t bodyFrom,
                                        std::size_t bodyTo,
                                        const std::vector<std::string> &capNames,
                                        const std::vector<const Type *> &capTypes) {
-    // **The first `return` at the body's own level**, and not only a body that
-    // is nothing but one.
-    //
-    // [expr.prim.lambda]/4 as C++11 wrote it says a body of the form
-    // `{ return e; }` has e's type and *anything else is void* - so
-    // `[](){ auto i = ...; return i(); }` would deduce void and then be
-    // ill-formed for returning an int. clang accepts it under -std=c++11 all
-    // the same, applying the relaxation C++14 made, and real C++11 code is
-    // written expecting that. The oracle is followed here rather than the
-    // letter, which is the one place in this compiler that happens - said out
-    // loud because it is a choice and not an oversight.
-    //
-    // **Depth matters, and a nested lambda is why.** In
-    // `{ auto i = [](){ return 1; }; return i(); }` the first `return` token
-    // belongs to the inner lambda; the outer one's is the first at depth 1.
+    // **The first `return` at the body's own level**, not only a body that is
+    // one. C++11's letter deduces void for anything else; clang applies C++14's
+    // relaxation and is followed here. A nested lambda has a `return` of its own.
     std::size_t i = bodyFrom + 1;                       // past the '{'
     int depth = 1;
     while (i < bodyTo && depth > 0) {
@@ -74,16 +36,9 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     if (i < bodyTo && tokens_[i].is(";")) return types_.get(Kind::Void);
 
     const std::size_t resume = at_;
-    // The parameters have to be in scope for the expression to be read, and
-    // nothing else of the enclosing function should be: a lambda body sees its
-    // own parameters and, without a capture, no local of the function around
-    // it. So the locals are put aside exactly as a default argument does it.
-    //
-    // **`this` is the exception, and it is a local like any other.** A body
-    // that names a member of the enclosing class reaches it through `this`,
-    // and hiding it left `[this](){ return n; }` reporting that `n` is a
-    // member with no object to read it from - which is what the machinery
-    // says when `this` has gone missing.
+    // The parameters have to be in scope for the expression and nothing else of
+    // the enclosing function, so the locals are put aside as a default argument
+    // does it. **`this` is the exception**: a member is reached through it.
     const Local *hadThis = findLocal("this");
     Local keptThis;
     const bool haveThis = hadThis != nullptr;
@@ -96,16 +51,9 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     starts.swap(scopeStarts_);
     enterScope();
 
-    // The captures are in scope in the body as well as the parameters - they
-    // are members of the closure by the time it is really parsed, and a member
-    // is what an unqualified name there will find. Declared as locals here
-    // because this reading has no closure to be a member of yet.
-    //
-    // **In a scope of their own, outside the parameters and the body.** A
-    // capture is a member and both of those may shadow one, so putting them
-    // all in one scope made `[=](int a){...}` where the enclosing function
-    // also has an `a` report that `a` was declared twice - and the same for a
-    // body that declares a name it captured.
+    // The captures are in scope in the body as well as the parameters - by the
+    // real parsing they are members - and are declared as locals here for want of
+    // a closure. **In a scope of their own**, since a parameter may shadow one.
     for (std::size_t c = 0; c < capNames.size(); c++) {
         inParams_ = true;
         declare(capNames[c], capTypes[c], bodyFrom);
@@ -146,12 +94,9 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
         }
     }
 
-    // **The statements before the return are read too, not skipped to.** The
-    // expression may name a local the body declared - `{ auto i = ...;
-    // return i(); }` - and jumping straight to the return leaves that name
-    // undeclared. So the body is parsed from its first statement up to the
-    // return, in this throwaway scope, and everything it builds is discarded.
-    // That is the same reading-twice 7.1 does for an `auto` initialiser.
+    // **The statements before the return are read too, not skipped to**: the
+    // expression may name a local the body declared. Read in a throwaway scope and
+    // discarded - the same reading twice 7.1 does for an `auto` initialiser.
     at_ = bodyFrom + 1;                                 // past the '{'
     // The same choice the block loop makes: a declaration or a statement.
     // Calling statement() alone reads `auto i = ...;` as an expression and
@@ -187,12 +132,9 @@ ExprPtr Parser::lambdaExpression() {
 
     at_++;                                    // '['
 
-    // Refused by name, and each for its own reason rather than one blanket
-    // message: a capture is what the reader wrote and what they want back.
-    // **A capture by value is a member of the closure**, copied from the
-    // enclosing function where the lambda is written. Reading one inside the
-    // body needs no new rule at all: `operator()` is a member function, and an
-    // unqualified name there already means `this->name`.
+    // Refused by name, each for its own reason: a capture is what the reader
+    // wrote. **A capture by value is a member of the closure**, so reading one
+    // needs no new rule - in `operator()` a name already means `this->name`.
     std::vector<std::string> capNames;
     std::vector<const Type *> capTypes;
     std::vector<int> capOffsets;
@@ -235,11 +177,9 @@ ExprPtr Parser::lambdaExpression() {
         }
         const std::size_t cpos = peek().pos;
         const std::string cname = expectIdent("a captured name");
-        // **`[n = k]` is an init-capture, which is C++14.** It has to be
-        // named here rather than left to the lookup below: the name it
-        // introduces is the closure's own and need not be a local at all, so
-        // what the reader would otherwise be told is that a name they were
-        // declaring does not exist.
+        // **`[n = k]` is an init-capture, which is C++14.** Named here rather than
+        // left to the lookup below: the name is the closure's own and need not be
+        // a local, so the reader would be told a name they declared is unknown.
         if (peek().is("="))
             src_.fail(peek().pos, "an init-capture - '" + cname + " = ...' in "
                                   "the capture list - is C++14, and this "
@@ -260,12 +200,9 @@ ExprPtr Parser::lambdaExpression() {
                                 "capture");
         }
         capNames.push_back(cname);
-        // **By reference the closure holds a reference member**, which needs
-        // the layout rule reference members have: the slot is a pointer where
-        // `sizeof` the type is the referent's. By value it holds a copy - and
-        // capturing a reference *by value* copies what it refers to, which
-        // needs nothing at all, every mention of a reference here being
-        // already lowered to a dereference.
+        // **By reference the closure holds a reference member**, which takes the
+        // reference layout rule: a pointer slot where `sizeof` is the referent's.
+        // By value it holds a copy, and capturing a reference copies its referent.
         const Type *raw = have != nullptr ? have->type : fromOuter;
         const Type *base = raw->isReference()
                          ? raw->referent()->unqualified() : raw->unqualified();
@@ -286,15 +223,9 @@ ExprPtr Parser::lambdaExpression() {
     if (variadic)
         src_.fail(pos, "a lambda cannot be variadic");
 
-    // **`mutable` is the whole of the difference between a const call operator
-    // and a non-const one**, and that is all it is: [expr.prim.lambda] makes
-    // the closure's `operator()` const unless the lambda says otherwise, so a
-    // by-value capture cannot be written through without it. What changes is
-    // one flag on the declaration and one token in the synthesised body.
-    //
-    // What is written is the closure's *own* copy. The enclosing variable is
-    // untouched, which is the point of capturing by value at all - `[&]` is
-    // how you write through to the original, and that already works.
+    // **`mutable` is the whole of the difference between a const call operator and
+    // a non-const one**: [expr.prim.lambda] makes `operator()` const unless the
+    // lambda says otherwise. What is written is the closure's own copy.
     const bool isMutable = consume("mutable");
 
     const Type *returns = nullptr;
@@ -309,24 +240,9 @@ ExprPtr Parser::lambdaExpression() {
     skipBracedBlock();                        // leaves at_ past the '}'
     const std::size_t bodyTo = at_;
 
-    // [expr.prim.lambda]/4: with no trailing return type, a body that is one
-    // `return expression;` has that expression's type and anything else is
-    // void. The expression is read with the parameters in scope and then put
-    // back, which is what 7.1 does for `auto` and for the same reason.
-    // **`[=]` takes everything the body reads that is a local out here**, and
-    // finding that is a scan of the body's tokens - the "second pass over the
-    // body" an earlier refusal said this parser does not make. It makes one
-    // now, and it is a scan and not a parse: an identifier that names a local
-    // of the enclosing function is captured unless it is being used as a
-    // member name, which is what the test on the token before it is for -
-    // `p.k` and `p->k` and `N::k` name no local.
-    //
-    // **Over-capturing is harmless and under-capturing is not**, which decides
-    // every doubtful case here. A name the body declares itself shadows the
-    // member, because a local is looked up before a member; a lambda parameter
-    // does the same. So a copy nobody reads is the worst this can do, and
-    // `docs/CONFORMANCE.md` records that a closure can therefore be larger
-    // than the standard's minimum.
+    // [expr.prim.lambda]/4 for the return type, read with the parameters in scope.
+    // **`[=]` takes every local the body reads**, found by scanning the body's
+    // tokens - over-capturing is harmless where under-capturing is not.
     if (captureAllByValue || captureAllByRef) {
         for (std::size_t i = bodyFrom + 1; i + 1 < bodyTo; i++) {
             if (tokens_[i].kind != TokenKind::Ident) continue;
@@ -340,10 +256,9 @@ ExprPtr Parser::lambdaExpression() {
             const Local *have = findLocal(n);
             const Type *raw = have != nullptr ? have->type : nullptr;
             if (raw == nullptr) {
-                // **A lambda inside a lambda, taking the outer one's
-                // capture.** By the time the inner one is read that name is a
-                // member of the outer closure, so it is reached through the
-                // outer `this` rather than found among the locals.
+                // **A lambda inside a lambda, taking the outer one's capture.**
+                // By the time the inner is read that name is a member of the
+                // outer closure, so it is reached through the outer `this`.
                 if (ExprPtr reach = outerCaptureAccess(n)) raw = reach->type();
                 if (raw == nullptr) continue;
             }
@@ -359,17 +274,13 @@ ExprPtr Parser::lambdaExpression() {
         returns = deduceLambdaReturn(paramsFrom, paramsTo, bodyFrom, bodyTo,
                                      capNames, capTypes);
 
-    // The closure type. Named `$_0` upward within the enclosing function, which
-    // is what clang calls one - the numbering is not the same as clang's and
-    // does not have to be, a closure type having no name the standard obliges
-    // anybody to match.
+    // The closure type, named `$_0` upward within the enclosing function, which is
+    // what clang calls one. The numbering is not clang's and does not have to be,
+    // a closure type having no name anybody is obliged to match.
     const std::string local = "$_" + std::to_string(lambdaCount_++);
-    // **The tag has to be unique and the function's *name* is not enough.**
-    // Inside a replay `currentFunctionName_` is `operator()`, so every level of
-    // a nested lambda built `operator()::$_0` and the third one was told its
-    // own call operator was declared twice. The owners differ - each closure's
-    // operator() has its own linkage name - so the owner is what decides, and
-    // a counter separates the display tags, exactly as a local class does it.
+    // **The tag has to be unique and the function's *name* is not enough.** In a
+    // replay `currentFunctionName_` is `operator()`, so every nested lambda built
+    // `operator()::$_0`; the owner decides, with a counter for the display tag.
     std::string tag = currentFunctionName_.empty()
                     ? local : currentFunctionName_ + "::" + local;
     if (!currentFunction_.empty()) {
@@ -454,11 +365,9 @@ ExprPtr Parser::lambdaExpression() {
     return buildClosure(record, pos);
 }
 
-// A slot for the closure, and each capture copied into it. Called on every
-// reading of the lambda and not only the first: 7.1 reads an `auto`
-// initialiser twice, and the second reading takes the cached class - so if the
-// copying lived beside the building, the object the declaration actually kept
-// would hold whatever was on the stack.
+// A slot for the closure, and each capture copied into it. Called on every reading
+// of the lambda and not only the first: 7.1 reads an `auto` initialiser twice and
+// the second takes the cached class, so the kept object would hold the stack.
 ExprPtr Parser::buildClosure(const MadeLambda &made, std::size_t pos) {
     const std::string name = ".lam" + std::to_string(refTemps_++);
     const int off = declare(name, made.type, pos);
@@ -548,10 +457,9 @@ ExprPtr Parser::capturedThisPointer() {
     return acc;
 }
 
-// A capture of the lambda around this one, read from inside it. By the time an
-// inner lambda is parsed the outer one's capture is a member of the outer
-// closure, so `findLocal` answers nothing and the capture machinery has to look
-// here instead. Null for every name that is not that, which is most of them.
+// A capture of the lambda around this one, read from inside it: by then the outer
+// capture is a member of the outer closure, so `findLocal` answers nothing and the
+// capture machinery looks here. Null for every other name, which is most of them.
 ExprPtr Parser::outerCaptureAccess(const std::string &name) {
     if (currentClass_ == nullptr) return nullptr;
     const Type *closure = currentClass_->unqualified();

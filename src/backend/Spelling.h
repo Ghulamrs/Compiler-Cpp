@@ -100,10 +100,9 @@ public:
     virtual void defLabel(const std::string &l) = 0;
 
     virtual void functionBegin(const std::string &name, bool exported) = 0;
-    // `lsda` names this function's exception table, or is empty where the
-    // function has no landing pad. The personality routine has to be named
-    // between .cfi_startproc and the first instruction, and this is the
-    // only place that sees both.
+// `lsda` names this function's exception table, or is empty where it has no
+// landing pad. The personality routine must be named between .cfi_startproc
+// and the first instruction, and this is the only place that sees both.
     virtual void prologue(int frameSize, const std::string &lsda) = 0;
     virtual void functionEnd(const std::string &name) = 0;
 

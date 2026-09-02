@@ -4,11 +4,8 @@
 
 namespace {
 
-// Measured, one operator per row. The parameter type beside each is the one
-// the measurement gave it, kept here because it is what makes the row
-// checkable: re-run the measurement, find the name carrying that type, and
-// the code in this row is the one it spelled.
-//
+// Measured, one operator per row. The parameter type beside each is the one the
+// measurement gave it, kept because it is what makes the row checkable.
 //   spelling  itanium  unary   microsoft   measured with
 const OperatorCode table[] = {
     { "+",    "pl",  "ps",    "H"  },   // char   / no parameter

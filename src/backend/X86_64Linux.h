@@ -72,19 +72,13 @@ protected:
     void emitLsda(const std::string &symbol);
 
     // **Where the frame base sits, relative to the locals.** Itanium takes rbp
-    // before allocating, so every local is below it and written [rbp-slot].
-    // The Microsoft ABI wants the frame base at the *bottom* of the fixed
-    // allocation - it is the "establisher frame" the runtime hands a handler,
-    // and every offset in an FH3 table is an unsigned displacement up from
-    // it, so a local below it cannot be described at all. There rbp is taken
-    // after the allocation and a local is [rbp + (frameSize - slot)].
+    // before allocating, so a local is [rbp-slot]; Microsoft wants the base at
+    // the bottom of it, so a local is [rbp + (frameSize - slot)].
     virtual bool localsAboveFrameBase() const { return false; }
 
-    // One local. Every frame-relative operand in this file is written
-    // against rbp as Itanium establishes it - above the allocation - and a
-    // target whose frame base is elsewhere moves *all* of them by one
-    // constant, which is done once where operands are rendered rather than
-    // at each of the several dozen places one is built.
+    // One local. Every frame-relative operand in this file is written against
+    // rbp as Itanium establishes it, so a target whose base is elsewhere moves
+    // all of them by one constant, applied once where operands are rendered.
     Op local(long long slot) const { return mem(-slot, "%rbp"); }
     int frameSize_ = 0;
 
@@ -166,12 +160,9 @@ private:
 
     void unsupported(const char *what);
 
-    // **The last lane of an aggregate is composed, never approximated.** A
-    // lane with 3, 5, 6 or 7 live bytes used to move with the single largest
-    // instruction that fit, and the rest of the object was left as whatever
-    // the destination held. These three write and read exactly `left` bytes,
-    // and never touch a byte past the object - which is why they compose
-    // rather than widening to a single 8-byte move.
+    // **The last lane of an aggregate is composed, never approximated.** These
+    // three write and read exactly `left` bytes and never touch a byte past the
+    // object, where one widened move took whatever the destination held.
     void storeTailFromReg(const char *reg64, long long off, const char *base,
                           int left);          // clobbers reg64
     void copyTailMem(long long from, long long to, int left);   // via %rax

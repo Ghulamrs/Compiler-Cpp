@@ -188,11 +188,9 @@ void Walker::visit(const Comma &n) {
 
 void Walker::visit(const Break &n) { markLine(n); jump(jumps_.back().brk); }
 
-// **The shape is the same on both targets, so it lives here.** A label
-// before the body and one after it bound the range the call-site table talks
-// about; the pad is where the runtime arrives; and the jump over the pad is
-// what makes the ordinary path skip it. Everything inside the pad was built
-// by the parser.
+// **The shape is the same on both targets, so it lives here.** Labels before
+// and after the body bound the range the call-site table talks about, the pad
+// is where the runtime arrives, and the jump over it keeps the ordinary path out.
 void Walker::visit(const Try &n) {
     markLine(n);
     if (usesFunclets()) { msTryStatement(n); return; }
@@ -215,12 +213,9 @@ void Walker::visit(const Try &n) {
     callSite(begin, end, pad, n.types());
 }
 
-// **The Microsoft shape, and what is missing from it is the point.** There is
-// no pad, no selector and no jump over a handler, because no handler is here:
-// the body is walked where it stands, each handler becomes a function of its
-// own, and the runtime is told in a table which to call. What this frame
-// contributes is three labels - where the guarded range starts and ends, and
-// where a handler that has run should return to.
+// **The Microsoft shape, and what is missing from it is the point.** No pad, no
+// selector, no jump over a handler: each handler becomes a function of its own
+// and a table says which to call. This frame contributes three labels.
 void Walker::msTryStatement(const Try &n) {
     const int id = nextLabel();
     MsTryRegion r;
@@ -245,10 +240,9 @@ void Walker::msTryStatement(const Try &n) {
         return;
     }
 
-    // The funclets come after the range they belong to has been closed, so
-    // that nothing they emit lands between `begin` and `end` - those two
-    // labels bound the addresses the runtime matches a thrown object against,
-    // and a handler's own code must not be inside them.
+    // The funclets come after the range they belong to is closed, so nothing
+    // they emit lands between `begin` and `end` - those bound the addresses the
+    // runtime matches a thrown object against, and a handler must not be inside.
     for (std::size_t i = 0; i < n.handlers().size(); i++) {
         const MsHandler &h = n.handlers()[i];
         MsHandlerRow row;
