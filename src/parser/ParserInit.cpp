@@ -9,7 +9,9 @@
 #include "../Mangle.h"
 #include "../Source.h"
 
+#include <cfloat>
 #include <climits>
+#include <cmath>
 #include <cstring>
 
 Parser::Init Parser::parseInitialiser() {
@@ -201,6 +203,7 @@ void Parser::emitFill(const std::string &name, std::vector<InitStep> &path,
     }
 
     c.at++;
+    checkNarrowing(type, *item.value, item.pos, "'" + name + "'");
     initStore(name, path, decay(std::move(item.value)), item.pos, out);
 }
 
@@ -255,6 +258,9 @@ void Parser::emitInit(const std::string &name, std::vector<InitStep> &path,
         if (in.items.size() != 1)
             src_.fail(in.pos, "'" + name + "' is not an aggregate and takes one "
                               "value");
+        if (!in.items[0].isList)
+            checkNarrowing(type, *in.items[0].value, in.items[0].pos,
+                           "'" + name + "'");
         emitInit(name, path, type, in.items[0], out);
         return;
     }
@@ -345,6 +351,153 @@ static bool foldDouble(const Expr &e, const Target &target, long double *out) {
     return false;
 }
 
+// Whether every value of `from` is a value of `to` - the question
+// [dcl.init.list]/7 asks about an integer source that is not a constant.
+static bool holdsEvery(const Type *from, const Type *to, const Target &target) {
+    if (from->isBool()) return true;
+    if (to->isBool()) return false;
+    const bool fromUnsigned = !from->isSigned(target);
+    const bool toUnsigned = !to->isSigned(target);
+    const int fs = from->size(target), ts = to->size(target);
+    if (fromUnsigned == toUnsigned) return ts >= fs;
+    if (toUnsigned) return false;
+    return ts > fs;
+}
+
+// Whether an integer survives a trip through the floating type F - the
+// question the same paragraph asks of an integer constant going to `float`
+// or `double`. The bounds guard the way back: a value at or beyond 2^63
+// (2^64 unsigned) has no integer to come back to, and asking is undefined.
+template <typename F>
+static bool roundTrips(long long v, bool isUnsigned) {
+    if (isUnsigned) {
+        const unsigned long long u = static_cast<unsigned long long>(v);
+        const F f = static_cast<F>(u);
+        if (f >= static_cast<F>(18446744073709551616.0L)) return false;
+        return static_cast<unsigned long long>(f) == u;
+    }
+    const F f = static_cast<F>(v);
+    if (f >= static_cast<F>(9223372036854775808.0L) ||
+        f < -static_cast<F>(9223372036854775808.0L)) return false;
+    return static_cast<long long>(f) == v;
+}
+
+static int floatingRank(const Type *t) {
+    if (t->kind() == Kind::Float) return 0;
+    if (t->kind() == Kind::Double) return 1;
+    return 2;
+}
+
+// **[dcl.init.list]/7: a braced initialiser does not narrow.** `char c = {300}`
+// gave 44 here without a word - the 300 with its top bits cut off, which is
+// the conversion a plain `char c = 300` is allowed to make and braces are
+// not. The paragraph lists four conversions and calls each narrowing except
+// where the source is a constant expression whose value survives:
+//
+//   floating to integer       always narrowing, constant or not
+//   long double to double,    narrowing unless a constant within the target's
+//   double to float           range - it may lose precision, not magnitude
+//   integer to floating       narrowing unless a constant that converts and
+//                             converts back to itself
+//   integer to a narrower     narrowing unless a constant that fits, where
+//   integer                   "narrower" means some value of the source has
+//                             no place in the target - so `int` from `char`
+//                             is fine and `unsigned` from `int` is not
+//
+// Measured against clang with -std=c++11 -pedantic-errors over forty shapes,
+// which is what turned each "unless" into the tests below. The constant
+// evaluator is fold() for an integer and foldDouble() for a floating value -
+// the same two every other constant context uses - so `const int k = 300;
+// char c = {k}` is refused exactly as the literal is, and a non-const `int`
+// is refused as a non-constant even when it happens to hold 65.
+//
+// The target's `long double` on x87 holds any 64-bit integer, and that is
+// answered by rule rather than by converting on the host: the host's long
+// double may be a double, and C-03 was that mistake made once already.
+void Parser::checkNarrowing(const Type *to, const Expr &value, std::size_t pos,
+                            const std::string &what) {
+    const Type *from = value.type();
+    if (to == nullptr || from == nullptr) return;
+    if (!to->isArithmetic() || !from->isArithmetic()) return;
+
+    const std::string target = "'" + to->describe() + "'" +
+                               (what.empty() ? std::string() : " for " + what);
+    const std::string fromName = "'" + from->describe() + "'";
+    const std::string cannotHoldEvery =
+        "a value of type " + fromName + " cannot be narrowed to " + target +
+        " in a braced initialiser - '" + to->describe() + "' cannot hold "
+        "every " + fromName + ", and braces refuse the conversion unless the "
+        "value is a constant that fits. Convert it with a cast, or take the "
+        "braces off";
+
+    if (from->isFloating() && to->isInteger())
+        src_.fail(pos, "a value of type " + fromName + " cannot be narrowed "
+                       "to " + target + " in a braced initialiser - a floating "
+                       "value never converts to an integer inside braces, even "
+                       "a constant. Convert it with a cast, or take the braces "
+                       "off");
+
+    if (from->isInteger()) {
+        const bool fromUnsigned = !from->isBool() && !from->isSigned(target_);
+        long long v = 0;
+        if (!fold(value, &v, pos)) {
+            if (to->isFloating())
+                src_.fail(pos, "a value of type " + fromName + " cannot be "
+                               "narrowed to " + target + " in a braced "
+                               "initialiser - an integer converts to a "
+                               "floating type inside braces only as a constant "
+                               "that survives the trip. Convert it with a cast, "
+                               "or take the braces off");
+            if (!holdsEvery(from, to, target_)) src_.fail(pos, cannotHoldEvery);
+            return;
+        }
+        const std::string shown = fromUnsigned
+            ? std::to_string(static_cast<unsigned long long>(v))
+            : std::to_string(v);
+        bool fits;
+        if (to->isFloating()) {
+            if (to->kind() == Kind::LongDouble && to->isX87(target_)) fits = true;
+            else if (to->kind() == Kind::Float) fits = roundTrips<float>(v, fromUnsigned);
+            else fits = roundTrips<double>(v, fromUnsigned);
+            if (!fits)
+                src_.fail(pos, shown + " cannot be narrowed to " + target +
+                               " - converting it to '" + to->describe() + "' "
+                               "and back does not give " + shown + " again, "
+                               "and a braced initialiser refuses a conversion "
+                               "that changes the value");
+            return;
+        }
+        if (to->isBool()) fits = (v == 0 || v == 1);
+        else if (to->size(target_) >= 8)
+            // Between two 64-bit types only the sign bit can be lost.
+            fits = v >= 0 || fromUnsigned == !to->isSigned(target_);
+        else fits = !(fromUnsigned && v < 0) && narrowTo(v, to) == v;
+        if (!fits)
+            src_.fail(pos, shown + " cannot be narrowed to " + target + " - it "
+                           "is not a value '" + to->describe() + "' can hold, "
+                           "and a braced initialiser refuses a conversion that "
+                           "changes the value. Write one that fits, or convert "
+                           "it with a cast");
+        return;
+    }
+
+    // Floating to floating: only a step down in rank can narrow, and a
+    // constant that is still within range after the step has not. `long
+    // double` to `double` counts as the step even where the target gives the
+    // two one representation, because the rule is about the types.
+    if (floatingRank(to) >= floatingRank(from)) return;
+    long double d = 0;
+    if (!foldDouble(value, target_, &d)) src_.fail(pos, cannotHoldEvery);
+    const long double limit = to->kind() == Kind::Float
+                            ? static_cast<long double>(FLT_MAX)
+                            : static_cast<long double>(DBL_MAX);
+    if (std::isfinite(d) && std::fabs(d) > limit)
+        src_.fail(pos, "this constant cannot be narrowed to " + target +
+                       " - it is outside the range '" + to->describe() +
+                       "' can hold, and a braced initialiser refuses a "
+                       "conversion that changes the value");
+}
+
 void Parser::flattenFill(const Type *type, InitCursor &c, int base,
                          std::vector<GlobalPiece> &out) {
     if (c.done()) return;
@@ -375,6 +528,7 @@ void Parser::flattenFill(const Type *type, InitCursor &c, int base,
         return;
     }
 
+    checkNarrowing(type, *item.value, item.pos, std::string());
     flattenScalar(type, item, base, out);
     c.at++;
 }
@@ -452,6 +606,9 @@ void Parser::flattenInit(const Type *type, Init &in, int base,
     if (in.isList) {
         if (in.items.size() != 1)
             src_.fail(in.pos, "this is not an aggregate and takes one value");
+        if (!in.items[0].isList)
+            checkNarrowing(type, *in.items[0].value, in.items[0].pos,
+                           std::string());
         flattenInit(type, in.items[0], base, out);
         return;
     }

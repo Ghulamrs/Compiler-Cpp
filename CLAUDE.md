@@ -557,12 +557,38 @@ own. That is not a detail: the expression may read an object that is about to
 be destroyed, and without the temporary the function would return a value taken
 out of an object after its destructor had been told it was finished.
 
-**A jump out of a scope holding a live object is refused**, conservatively -
-`break`, `continue` and `goto` while anything is alive. It refuses some
-programs whose jump would not have crossed the object at all. The precise rule
-needs each jump to know which scopes it leaves, which is a change to how jumps
-are built rather than an addition, and skipping a destructor silently is the
-one outcome worth refusing loudly.
+**A jump out of a scope holding a live object is refused** - `break` and
+`continue` conservatively, while anything at all is alive, which refuses some
+programs whose jump would not have crossed the object; and `goto` precisely,
+since by the end of the function both of its ends are known, and an object
+alive at the goto and not at the label is one the jump would leave. The
+precise rule for the other two needs each jump to know which scopes it
+leaves, which is a change to how jumps are built rather than an addition, and
+skipping a destructor silently is the one outcome worth refusing loudly. For
+a while it was skipped all the same: the `goto` half of the conservative test
+sat on a line the goto branch had already returned from, and `{ S s; goto
+out; }` compiled and never ran `~S`. Found while mending the rule below,
+2026-09-02; `tests/cases/goto-out-of-scope` pins the refusal.
+
+**A jump may not land past an initialisation** - [stmt.dcl]/3, for `goto`
+forward, `goto` backward into a block, and a `switch` to its case labels
+alike. Each label, goto and switch records which initialised automatic
+objects are in scope where it stands - an initialiser, a constructor or a
+destructor makes an object count, and an uninitialised scalar, a POD without
+an initialiser or a static does not - and a jump whose label holds one its
+origin does not is refused at the origin. Before the rule `goto done; S s;
+done:` ran `~S` on an object never built, and `goto done; int x = 5; done:
+return x;` returned whatever the slot held. Twenty-two shapes measured
+against clang with `-x c++ -std=c++11 -pedantic-errors`, all agreeing.
+
+**A braced initialiser does not narrow** - [dcl.init.list]/7, in the four
+forms the paragraph lists, on a local, at file scope, and for each member of
+an aggregate. A constant source is judged by its value through `fold` and
+`foldDouble`, the evaluators every other constant context uses; a
+non-constant one by its type alone. `char c = {300}` gave 44 without a word
+until it did. Fifty shapes measured against clang, all agreeing - the oracle
+needs `-x c++` and `-pedantic-errors`, or it compiles a `.c` as C and keeps
+the rule as a warning respectively.
 
 **`tools/mangled-names` asks clang with `-fno-exceptions` now**, and that
 change is about the comparison rather than the code: a class with a destructor
@@ -1179,6 +1205,15 @@ Four more silent wrong answers are recorded in the report and not in this
 table because they were confirmed by a reviewer and not re-run here: `goto`
 past an initialisation, narrowing in list-initialisation, an ambiguity
 [over.ics.rank] requires that is silently resolved, and `const S s;` for a POD.
+
+**Two of those four are fixed, 2026-09-02**, on the Mac and awaiting the
+other two boxes: the jump past an initialisation
+(`tests/cases/goto-past-initialisation`, with its scalar, backward-into-a-block
+and `switch` neighbours), and narrowing in a braced initialiser
+(`tests/cases/narrowing-in-braces`, with its aggregate-member and file-scope
+neighbours). Mending the first found a third: a `goto` *out* of a block
+holding a live object skipped the destructor, because the refusal written for
+it was unreachable. The other two of the four stay open.
 
 ### C-04: the widest integer there is, and which box decides how wide that is
 
