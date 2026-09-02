@@ -2201,14 +2201,14 @@ void Parser::topLevel(Program &program) {
     // list itself is scoped to the block that reads it.
     std::set<std::string> namedInInit;
     std::map<std::string, std::vector<ExprPtr> > baseArgs;
+    std::map<std::string, std::vector<ExprPtr> > memberExprs;
+    std::map<std::string, std::size_t> where;
     const bool isCtor = memberOf != nullptr && d.name == localOf(d.qualifier);
     if (memberOf != nullptr && peek().is(":")) {
         if (!isCtor)
             src_.fail(peek().pos, "an initialiser list belongs to a "
                                   "constructor, and '" + d.name + "' is not one");
         at_++;
-        std::map<std::string, std::vector<ExprPtr> > memberExprs;
-        std::map<std::string, std::size_t> where;
         for (;;) {
             std::size_t epos = peek().pos;
             std::string entry = expectIdent("a member or base to initialise");
@@ -2231,9 +2231,6 @@ void Parser::topLevel(Program &program) {
                 if (m->type->isConst())
                     src_.fail(epos, "a const member in an initialiser list is "
                                     "not supported yet");
-                if (args.size() != 1)
-                    src_.fail(epos, "'" + entry + "' takes one value here, "
-                                    "given " + std::to_string(args.size()));
                 memberExprs[entry] = std::move(args);
                 namedInInit.insert(entry);
                 where[entry] = epos;
@@ -2248,14 +2245,56 @@ void Parser::topLevel(Program &program) {
             if (!consume(",")) break;
         }
 
-        // Declaration order, walking the class's own member list.
+    }
+
+    // **Every member, in declaration order, by the first of three rules that
+    // applies to it** - [class.base.init]/8 and /9, and /11 for the order:
+    //
+    //   named in the list      built from what the list gave it: a class
+    //                          with constructors is *constructed* with those
+    //                          arguments, a reference is bound, anything
+    //                          else is assigned one value;
+    //   has its own initialiser   `int x = 1;` on the member, read afresh
+    //                          here - so `S(int a) : x(a) {}` on a class
+    //                          with `int x = 1; int y = 2;` sets x from a
+    //                          and y from 2;
+    //   a class with constructors   default-constructed. This is the rule
+    //                          that was missing: a written constructor left
+    //                          such a member unbuilt and the compiler's
+    //                          destructor then destroyed it.
+    //
+    // A union's members are not built; which one is alive is the program's
+    // business, and its constructor says so with the list or not at all.
+    if (memberOf != nullptr && isCtor) {
         const std::vector<Member> &all = memberOf->members();
         for (std::size_t i = 0; i < all.size(); i++) {
-            std::map<std::string, std::vector<ExprPtr> >::iterator found =
-                memberExprs.find(all[i].name);
-            if (found == memberExprs.end()) continue;
             const Member *m = &all[i];
+            std::map<std::string, std::vector<ExprPtr> >::iterator found =
+                memberExprs.find(m->name);
+            if (found == memberExprs.end()) {
+                StmtPtr one = memberInitialiser(d.qualifier, memberOf, *m,
+                                                thisOffset_, d.pos);
+                std::vector<ExprPtr> none;
+                if (one == nullptr && memberOf->kind() != Kind::Union)
+                    one = constructMember(d.qualifier, memberOf, *m,
+                                          thisOffset_, none, d.pos, false);
+                if (one != nullptr) memberInits.push_back(std::move(one));
+                continue;
+            }
             std::size_t epos = where[m->name];
+
+            if (!m->type->isReference()) {
+                StmtPtr built = constructMember(d.qualifier, memberOf, *m,
+                                                thisOffset_, found->second,
+                                                epos, false);
+                if (built != nullptr) {
+                    memberInits.push_back(std::move(built));
+                    continue;
+                }
+            }
+            if (found->second.size() != 1)
+                src_.fail(epos, "'" + m->name + "' takes one value here, "
+                                "given " + std::to_string(found->second.size()));
 
             ExprPtr me(Var::local("this", thisOffset_));
             me->setType(types_.pointerTo(memberOf));
@@ -2288,24 +2327,6 @@ void Parser::topLevel(Program &program) {
             assign->setType(m->type);
             memberInits.push_back(StmtPtr(new ExprStmt(std::move(assign))));
         }
-    }
-
-    // **[class.base.init]/9: a member this constructor did not name is
-    // initialised by the initialiser the class gave it.** So it applies to
-    // every constructor and not only the implicit one, and the list this
-    // constructor wrote takes precedence member by member rather than all or
-    // nothing - `S(int a) : x(a) { }` on a class with `int x = 1; int y = 2;`
-    // sets x from a and y from 2.
-    //
-    // Appended after the list, which is declaration order for the members that
-    // were named; a member the list skipped has nothing before it that could
-    // read it, so the two orders cannot be told apart.
-    if (memberOf != nullptr && isCtor) {
-        std::vector<StmtPtr> rest = memberInitialisers(d.qualifier, memberOf,
-                                                       thisOffset_, namedInInit,
-                                                       d.pos);
-        for (std::size_t i = 0; i < rest.size(); i++)
-            memberInits.push_back(std::move(rest[i]));
     }
 
     returnType_ = d.type;

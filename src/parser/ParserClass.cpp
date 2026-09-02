@@ -1403,85 +1403,21 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
             body.push_back(std::move(vp[i]));
     }
 
-    // The initialisers the class wrote on its own members. This constructor
-    // names none of them, so every one applies.
-    {
-        std::set<std::string> none;
-        std::vector<StmtPtr> mine = memberInitialisers(cls, type, thisSlot,
-                                                       none, pos);
-        for (std::size_t i = 0; i < mine.size(); i++)
-            body.push_back(std::move(mine[i]));
-    }
-
+    // The members, in declaration order, each by the one rule that applies
+    // to it: the initialiser the class wrote on it, or else its own default
+    // constructor. **One walk, not two.** This used to apply every written
+    // initialiser and then default-construct every class-typed member after
+    // them, so `M m = M(2);` was stored and then built over. A member with
+    // an initialiser is not default-initialised - [class.base.init]/8 says
+    // "otherwise" - and the written constructor in topLevel walks the same
+    // way, with the mem-initialiser list as a third rule in front.
     const std::vector<Member> &ms = type->members();
     for (std::size_t i = 0; i < ms.size(); i++) {
-        const Type *mc = memberClass(ms[i].type);
-        if (mc == nullptr || mc->tag().empty()) continue;
-        if (overloadsOf(constructorKey(mc->tag())) == nullptr) continue;
-        const Signature *ctor = defaultConstructorOf(mc);
-        if (ctor == nullptr)
-            src_.fail(pos, "'" + cls + "' has no constructor of its own, and the "
-                           "one the compiler would write cannot build its member '" +
-                           ms[i].name + "': '" + mc->tag() + "' has no "
-                           "constructor taking nothing");
-        if (ctor->access != Access::Public)
-            src_.fail(pos, "'" + cls + "' cannot be built by the constructor the "
-                           "compiler would write: the constructor of '" +
-                           mc->tag() + "' taking nothing is " +
-                           (ctor->access == Access::Private ? "private"
-                                                            : "protected"));
-        functions_[static_cast<std::size_t>(ctor - &functions_[0])].used = true;
-
-        // An array of them is built one element at a time, in order - a loop
-        // rather than N calls, because N is a property of the type.
-        int indexSlot = 0;
-        long long count = 0;
-        if (ms[i].type->isArray()) {
-            count = ms[i].type->length();
-            if (count < 0)
-                src_.fail(pos, "'" + cls + "::" + ms[i].name + "' has no length, "
-                               "so the constructor the compiler would write does "
-                               "not know how many elements to build");
-            indexSlot = allocateFrameSlot(types_.intType());
-        }
-
-        ExprPtr me(Var::local("this", thisSlot));
-        me->setType(self);
-        ExprPtr obj(new Unary('*', std::move(me)));
-        obj->setType(type);
-        ExprPtr acc(new MemberAccess(std::move(obj), ms[i].name, ms[i].offset));
-        acc->setType(ms[i].type);
-
-        ExprPtr addr;
-        if (ms[i].type->isArray()) {
-            addr = indexBytes(types_, decay(std::move(acc)), mc, indexSlot,
-                              target_);
-        } else {
-            addr = ExprPtr(new Unary('&', std::move(acc)));
-            addr->setType(types_.pointerTo(mc));
-        }
-
-        // Copied before the defaults are read - see constructLocalArray. For
-        // an array member the defaults sit inside the repeated statement, so
-        // each element reads them afresh.
-        const Signature chosen = *ctor;
-        std::vector<ExprPtr> defaults;
-        applyDefaults(chosen, defaults, pos);
-
-        std::vector<ExprPtr> args;
-        args.push_back(std::move(addr));
-        std::vector<const Type *> ps;
-        ps.push_back(types_.pointerTo(mc));
-        for (std::size_t k = 0; k < defaults.size(); k++) {
-            args.push_back(std::move(defaults[k]));
-            ps.push_back(chosen.params[k]);
-        }
-        StmtPtr one(new ExprStmt(
-            completeCall(mc->tag(), chosen.symbol, nullptr, types_.get(Kind::Void),
-                         ps, false, pos, std::move(args))));
-        body.push_back(ms[i].type->isArray()
-                       ? eachElement(indexSlot, count, std::move(one))
-                       : std::move(one));
+        StmtPtr one = memberInitialiser(cls, type, ms[i], thisSlot, pos);
+        std::vector<ExprPtr> none;
+        if (one == nullptr && type->kind() != Kind::Union)
+            one = constructMember(cls, type, ms[i], thisSlot, none, pos, true);
+        if (one != nullptr) body.push_back(std::move(one));
     }
 
     current_->functions.push_back(Function(cls + "::" + cls, types_.get(Kind::Void),
@@ -2376,36 +2312,143 @@ std::vector<StmtPtr> Parser::memberInitialisers(const std::string &tag,
                                                 std::size_t pos) {
     std::vector<StmtPtr> out;
     const std::vector<Member> &ms = type->members();
+    for (std::size_t i = 0; i < ms.size(); i++) {
+        if (already.find(ms[i].name) != already.end()) continue;
+        StmtPtr one = memberInitialiser(tag, type, ms[i], thisSlot, pos);
+        if (one != nullptr) out.push_back(std::move(one));
+    }
+    return out;
+}
+
+StmtPtr Parser::memberInitialiser(const std::string &tag, const Type *type,
+                                  const Member &m, int thisSlot,
+                                  std::size_t pos) {
+    std::map<std::string, std::size_t>::const_iterator it =
+        memberInit_.find(tag + "::" + m.name);
+    if (it == memberInit_.end()) return nullptr;
+
+    // Read where it was written, with the constructor's locals put aside:
+    // an initialiser on a member is in the class's scope, not the body's.
     const std::size_t resume = at_;
     std::vector<Local> outer;
-    bool swapped = false;
-
-    for (std::size_t i = 0; i < ms.size(); i++) {
-        std::map<std::string, std::size_t>::const_iterator it =
-            memberInit_.find(tag + "::" + ms[i].name);
-        if (it == memberInit_.end()) continue;
-        if (already.find(ms[i].name) != already.end()) continue;
-
-        if (!swapped) { outer.swap(locals_); swapped = true; }
-        at_ = it->second;
-        ExprPtr value = decay(assign());
-        checkAssignable(*value, ms[i].type, pos, "'" + ms[i].name + "'");
-        value = convert(std::move(value), ms[i].type);
-
-        ExprPtr me(Var::local("this", thisSlot));
-        me->setType(types_.pointerTo(type));
-        ExprPtr obj(new Unary('*', std::move(me)));
-        obj->setType(type);
-        ExprPtr field(new MemberAccess(std::move(obj), ms[i].name, ms[i].offset,
-                                       ms[i].width, ms[i].bitOffset));
-        field->setType(ms[i].type);
-        ExprPtr store(new Assign(std::move(field), std::move(value)));
-        store->setType(ms[i].type);
-        out.push_back(StmtPtr(new ExprStmt(std::move(store))));
-    }
-    if (swapped) locals_.swap(outer);
+    outer.swap(locals_);
+    at_ = it->second;
+    ExprPtr value = decay(assign());
+    checkAssignable(*value, m.type, pos, "'" + m.name + "'");
+    value = convert(std::move(value), m.type);
+    locals_.swap(outer);
     at_ = resume;
-    return out;
+
+    ExprPtr me(Var::local("this", thisSlot));
+    me->setType(types_.pointerTo(type));
+    ExprPtr obj(new Unary('*', std::move(me)));
+    obj->setType(type);
+    ExprPtr field(new MemberAccess(std::move(obj), m.name, m.offset, m.width,
+                                   m.bitOffset));
+    field->setType(m.type);
+    ExprPtr store(new Assign(std::move(field), std::move(value)));
+    store->setType(m.type);
+    return StmtPtr(new ExprStmt(std::move(store)));
+}
+
+// **A class-typed member is built, not left.** [class.base.init]/8: a member
+// the mem-initialiser list does not name is default-initialised, and for a
+// class type that means its default constructor runs. The implicit default
+// constructor did this from the day it was written; a constructor the
+// programmer wrote did not - `struct S { M m; S() {} };` left `m` holding
+// whatever was on the stack, printed 1 where clang printed 3, and then ran
+// `~M` on it from the destructor the compiler wrote. A silent wrong answer,
+// with a destructor for an object nothing had built. Both constructors go
+// through here now, and the list's own `: m(args)` does too, so a member
+// named with arguments is constructed with them rather than assigned from
+// them.
+//
+// An array member is built one element at a time, in order - a loop rather
+// than N calls, because N is a property of the type - and the defaults its
+// constructor reads sit inside the repeated statement, so each element reads
+// them afresh, as [dcl.fct.default]/9 asks of every call.
+StmtPtr Parser::constructMember(const std::string &cls, const Type *type,
+                                const Member &m, int thisSlot,
+                                std::vector<ExprPtr> &args, std::size_t pos,
+                                bool implicit) {
+    const Type *mc = memberClass(m.type);
+    if (mc == nullptr || mc->tag().empty() || m.type->isReference()) return nullptr;
+    const std::string key = constructorKey(mc->tag());
+    if (overloadsOf(key) == nullptr) return nullptr;
+    if (!args.empty() && m.type->isArray())
+        src_.fail(pos, "'" + m.name + "' is an array, and an initialiser list "
+                       "cannot say what to pass to each element of it");
+
+    // Held by value: reading a default argument can grow `functions_`.
+    Signature chosen;
+    if (!args.empty()) {
+        chosen = resolveOverload(key, args, pos);
+    } else {
+        const Signature *ctor = defaultConstructorOf(mc);
+        if (ctor == nullptr)
+            src_.fail(pos, implicit
+                ? "'" + cls + "' has no constructor of its own, and the one "
+                  "the compiler would write cannot build its member '" +
+                  m.name + "': '" + mc->tag() + "' has no constructor taking "
+                  "nothing"
+                : "this constructor of '" + cls + "' does not name '" + m.name +
+                  "' in its initialiser list, and '" + mc->tag() + "' has no "
+                  "constructor taking nothing - add ': " + m.name + "(...)' "
+                  "to the list");
+        chosen = *ctor;
+    }
+    if (chosen.access != Access::Public && currentClass_ != mc && !isFriendOf(mc))
+        src_.fail(pos, implicit
+            ? "'" + cls + "' cannot be built by the constructor the compiler "
+              "would write: the constructor of '" + mc->tag() + "' taking "
+              "nothing is " + (chosen.access == Access::Private ? "private"
+                                                                 : "protected")
+            : "'" + mc->tag() + "' has no public constructor taking these "
+              "arguments for '" + m.name + "' - the one that matches is " +
+              (chosen.access == Access::Private ? "private" : "protected"));
+    for (std::size_t k = 0; k < functions_.size(); k++)
+        if (functions_[k].symbol == chosen.symbol) functions_[k].used = true;
+    applyDefaults(chosen, args, pos);
+
+    int indexSlot = 0;
+    long long count = 0;
+    if (m.type->isArray()) {
+        count = m.type->length();
+        if (count < 0)
+            src_.fail(pos, "'" + cls + "::" + m.name + "' has no length, so a "
+                           "constructor does not know how many elements to "
+                           "build");
+        indexSlot = allocateFrameSlot(types_.intType());
+    }
+
+    ExprPtr me(Var::local("this", thisSlot));
+    me->setType(types_.pointerTo(type));
+    ExprPtr obj(new Unary('*', std::move(me)));
+    obj->setType(type);
+    ExprPtr acc(new MemberAccess(std::move(obj), m.name, m.offset));
+    acc->setType(m.type);
+
+    ExprPtr addr;
+    if (m.type->isArray()) {
+        addr = indexBytes(types_, decay(std::move(acc)), mc, indexSlot, target_);
+    } else {
+        addr = ExprPtr(new Unary('&', std::move(acc)));
+        addr->setType(types_.pointerTo(mc));
+    }
+
+    std::vector<ExprPtr> all;
+    all.push_back(std::move(addr));
+    std::vector<const Type *> ps;
+    ps.push_back(types_.pointerTo(mc));
+    for (std::size_t k = 0; k < args.size(); k++) {
+        all.push_back(std::move(args[k]));
+        ps.push_back(chosen.params[k]);
+    }
+    StmtPtr one(new ExprStmt(
+        completeCall(mc->tag(), chosen.symbol, nullptr, types_.get(Kind::Void),
+                     ps, false, pos, std::move(all))));
+    if (m.type->isArray()) return eachElement(indexSlot, count, std::move(one));
+    return one;
 }
 
 void Parser::parameterTypes(std::vector<const Type *> &params, bool &variadic) {
