@@ -556,7 +556,18 @@ void Parser::checkNarrowing(const Type *to, const Expr &value, std::size_t pos,
     // two one representation, because the rule is about the types.
     if (floatingRank(to) >= floatingRank(from)) return;
     long double d = 0;
-    if (!foldDouble(value, target_, &d)) src_.fail(pos, cannotHoldEvery);
+    // **The two flags are read and dropped, and that is the merge's answer
+    // rather than a claim.** foldDouble grew them for the floating-lane work,
+    // which asks whether the *build host* can represent what the target would
+    // keep; this rule asks whether the target type can hold the value. They
+    // are different questions and this one wants neither flag. Whether
+    // [dcl.init.list]/7's "converts back to the original value" needs
+    // `past53` for a long double stepping down to a double is a real
+    // question, unanswerable on a Mac where the two are one type - see the
+    // handover.
+    bool past53 = false, x87Rounded = false;
+    if (!foldDouble(value, target_, &d, &past53, &x87Rounded))
+        src_.fail(pos, cannotHoldEvery);
     const long double limit = to->kind() == Kind::Float
                             ? static_cast<long double>(FLT_MAX)
                             : static_cast<long double>(DBL_MAX);
