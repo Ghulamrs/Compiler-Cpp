@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../Abi.h"
 #include "../Ast.h"
 #include "../Type.h"
 
@@ -22,30 +23,6 @@ public:
 enum class Segment { Code, Const, ConstRelocated, Data, Bss };
 
 Segment segmentFor(const Global &g);
-
-struct Abi {
-    const char *const *intRegs;
-    int intCount;
-    const char *const *sseRegs;
-    int sseCount;
-
-    bool positional;
-
-    int shadowBytes;
-
-    int structReturnLimit;
-
-    bool aggregatesByReference;
-
-    bool variadicSseCountInAl;
-
-    const char *scratch;
-    const char *scratch32;
-
-    bool homogeneousFloatAggregates;
-
-    bool elfSymbolAttributes;
-};
 
 class Backend {
 public:

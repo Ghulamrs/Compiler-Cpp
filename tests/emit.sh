@@ -64,13 +64,31 @@ echo "emit.sh: $pass passed, $fail failed"
 # nobody can place, so the commit and the date go in beside it and are printed
 # on every run that reads it - a stale golden then says so itself.
 if [ "$record" = 1 ]; then
+    # **Copied file by file, and the duplicates macOS leaves are removed.** A
+    # `cp -R` of this directory under ~/Documents came back with 411 real files
+    # and 411 named `x 2.s` beside them - the phenomenon CLAUDE.md records - and
+    # a golden holding twice what was emitted is a suite lying quietly. Counted
+    # afterwards for the same reason: if the two numbers differ, say so and stop.
     rm -rf "$GOLD"
-    cp -R "$OUT" "$GOLD"
+    mkdir -p "$GOLD"
+    for f in "$OUT"/*.s "$OUT"/*.err; do
+        [ -f "$f" ] || continue
+        cp "$f" "$GOLD/$(basename "$f")"
+    done
+    find "$GOLD" -name '* [0-9].s' -delete
+    find "$GOLD" -name '* [0-9].err' -delete
     { echo "recorded $(date -u '+%Y-%m-%d %H:%M UTC')"
       echo "commit   $(git rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout')"
       echo "tree     $(git status --porcelain 2>/dev/null | wc -l | tr -d ' ') file(s) modified when recorded"
     } > "$GOLD/RECORDED"
-    echo "emit.sh: golden recorded, $(find "$GOLD" -name '*.s' | wc -l | tr -d ' ') files"
+    kept=$(find "$GOLD" -name '*.s' | wc -l | tr -d ' ')
+    made=$(find "$OUT" -name '*.s' | wc -l | tr -d ' ')
+    if [ "$kept" != "$made" ]; then
+        echo "emit.sh: golden holds $kept files where $made were emitted - not recorded" >&2
+        rm -rf "$GOLD"
+        exit 1
+    fi
+    echo "emit.sh: golden recorded, $kept files"
     exit 0
 fi
 

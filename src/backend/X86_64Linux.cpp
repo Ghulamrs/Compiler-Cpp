@@ -77,18 +77,21 @@ static const char *const kArgRegs[] = { "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "
 static const char *const kSseRegs[] = { "%xmm0", "%xmm1", "%xmm2", "%xmm3",
                                         "%xmm4", "%xmm5", "%xmm6", "%xmm7" };
 
-static const Abi kSysVAbi = {
-    kArgRegs, 6,
-    kSseRegs, 8,
-    false,
-    0,
-    16,
-    false,
-    true,
-    "%rdi", "%edi",
-    false,
-    true,
-};
+// System V AMD64. Each field is set by name; what is left out keeps the default
+// in Abi.h, which is the answer this ABI gives - positional false, no shadow
+// space, no by-reference aggregates, no homogeneous float rule.
+static Abi sysV() {
+    Abi a;
+    a.intRegs = kArgRegs;               a.intCount = 6;
+    a.sseRegs = kSseRegs;               a.sseCount = 8;
+    a.structReturnLimit = 16;
+    a.variadicSseCountInAl = true;
+    a.scratch = "%rdi";                 a.scratch32 = "%edi";
+    a.elfSymbolAttributes = true;
+    return a;
+}
+
+static const Abi kSysVAbi = sysV();
 
 const Abi &X86_64LinuxBackend::abi() const { return kSysVAbi; }
 

@@ -34,18 +34,21 @@ static const char *const kArgRegs[] = { "x0", "x1", "x2", "x3",
 static const char *const kSseRegs[] = { "d0", "d1", "d2", "d3",
                                         "d4", "d5", "d6", "d7" };
 
-static const Abi kAapcs64AppleAbi = {
-    kArgRegs, 8,
-    kSseRegs, 8,
-    false,
-    0,
-    16,
-    true,
-    false,
-    "x9", "w9",
-    true,
-    false,
-};
+// AAPCS64 as Apple writes it. `homogeneousFloatAggregates` is the float rule only
+// this target has. **`aggregatesByReference` is read by the parser here and not by
+// this backend**, which plans a return with planFor() - see Abi.h, and the review.
+static Abi aapcs64Apple() {
+    Abi a;
+    a.intRegs = kArgRegs;               a.intCount = 8;
+    a.sseRegs = kSseRegs;               a.sseCount = 8;
+    a.structReturnLimit = 16;
+    a.aggregatesByReference = true;
+    a.scratch = "x9";                   a.scratch32 = "w9";
+    a.homogeneousFloatAggregates = true;
+    return a;
+}
+
+static const Abi kAapcs64AppleAbi = aapcs64Apple();
 
 const Abi &Arm64DarwinBackend::abi() const { return kAapcs64AppleAbi; }
 

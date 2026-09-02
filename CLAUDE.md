@@ -4834,6 +4834,13 @@ not a fact about the tree.
 The assembly is byte-stable across runs - measured, on all three targets - so a
 diff of it means what it looks like it means.
 
+**The golden is copied file by file, and it counts itself afterwards.** A plain
+`cp -R` of `tests/out-emit` under ~/Documents came back with 411 files and 411
+`x 2.s` beside them - the duplicate phenomenon this file records elsewhere - and
+the next run read a golden of 822 and reported 411 removed. It caught its own
+corruption, which is the behaviour to keep; recording now removes the duplicates
+and refuses to record at all if the count does not match what was emitted.
+
 `tests/run.sh` compiles and runs each case in `tests/cases/` on this machine
 and diffs against its `.expected`; a case with a `.error` file instead must
 fail to compile with that text in the message. `tests/emit.sh` compiles every

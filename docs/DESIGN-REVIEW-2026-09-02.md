@@ -76,6 +76,17 @@ Name the Windows frame invariant (`establisherOffset`) once instead of computing
 `frame - slot` in four places. Move the Microsoft `try` machinery out of
 `Walker` into `Masm`, where its seven no-op-default members belong.
 
+**Caught in the act while naming the fields, and left for P3.** On arm64 a
+16-byte trivially-copyable class is returned in x0/x1 by the backend and thought
+indirect by the parser: `returnsIndirectly` sees `aggregatesByReference` and asks
+Microsoft's "exactly 1, 2, 4 or 8" question, while `visit(Call)` asks
+`planFor(t).byRef`. The callee therefore stores an uninitialised x8 into an sret
+slot nobody passes and nobody reads, and returns the value in registers anyway.
+Measured: `str x8, [x9]` at the head of `_Z4makei`, `ldr x1,[x0,#8]; ldr x0,[x0]`
+at its tail, and objects linked both ways with clang print the right answer. So
+it is a dead store and a wasted slot rather than a wrong answer - and it is
+exactly the two-hand-copies shape P3 exists to remove, sitting in the tree today.
+
 **Leave alone**: no IR and no register allocator - the accumulator scheme is what
 makes every ABI fact a local one that clang or cl can be asked about;
 `Spelling` staying x86-only; the tail-composing routines, which differ in their

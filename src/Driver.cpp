@@ -558,10 +558,7 @@ bool Driver::compile(const Job &job) {
     std::vector<Token> tokens = Lexer(src).tokenize();
     auto t2 = Clock::now();
 
-    Parser parser(src, std::move(tokens), types, target,
-                  backend_->abi().structReturnLimit,
-                  backend_->abi().aggregatesByReference,
-                  backend_->abi().homogeneousFloatAggregates);
+    Parser parser(src, std::move(tokens), types, target, backend_->abi());
     Program program = parser.parse();
     auto t3 = Clock::now();
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../Abi.h"
 #include "../Ast.h"
 #include "../Lexer.h"
 #include "../Mangle.h"
@@ -15,14 +16,13 @@ class Source;
 
 class Parser {
 public:
+    // **The whole ABI table, not the three fields of it a return happens to
+    // need.** They arrived as three positional arguments, which is a thing to get
+    // in the wrong order once; the parser and the backends now read one struct.
     Parser(const Source &src, std::vector<Token> tokens,
-           TypeTable &types, const Target &target, int structReturnLimit,
-           bool aggregatesByReference = false,
-           bool homogeneousFloatAggregates = false)
+           TypeTable &types, const Target &target, const Abi &abi)
         : src_(src), tokens_(std::move(tokens)), types_(types), target_(target),
-          structReturnLimit_(structReturnLimit),
-          aggregatesByReference_(aggregatesByReference),
-          homogeneousFloatAggregates_(homogeneousFloatAggregates) {}
+          abi_(abi) {}
 
     Program parse();
 
@@ -509,11 +509,9 @@ private:
     TypeTable &types_;
     const Target &target_;
 
-    int structReturnLimit_;
-
-    bool aggregatesByReference_;
-
-    bool homogeneousFloatAggregates_;
+    // Read here for one question - how a class comes back - and by each backend
+    // for the rest. Abi.h says what every field means and where it was measured.
+    const Abi &abi_;
     // **How a class goes to a function, and the two ABIs part company here.** Itanium
     // passes one by address whenever copying or destroying it is a call, and the caller
     // destroys the copy; Microsoft passes by the size rules and the callee destroys.
@@ -530,18 +528,18 @@ private:
         // the callee builds into it. Both ABIs agree here, measured.
         if (t->nonTrivialCopy() || t->hasDestructor()) return true;
         if (containsX87(t, target_)) return true;
-        if (aggregatesByReference_) {
+        if (abi_.aggregatesByReference) {
             // **The Microsoft size rule is for free functions only.** A class returned
             // by value from a non-static member goes through the hidden pointer whatever
             // its size - measured with clang for this ABI, %rdx against %eax.
             if (memberFn) return true;
             return !(size == 1 || size == 2 || size == 4 || size == 8);
         }
-        if (homogeneousFloatAggregates_) {
+        if (abi_.homogeneousFloatAggregates) {
             Kind elem;
             if (homogeneousFloatCount(t, &elem) > 0) return false;
         }
-        return size > structReturnLimit_;
+        return size > abi_.structReturnLimit;
     }
     bool variadicBody_ = false;
 

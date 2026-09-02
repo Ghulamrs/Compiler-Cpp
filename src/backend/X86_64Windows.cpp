@@ -30,19 +30,22 @@ int WindowsX86_64Target::alignOf(Kind k) const { return sizeOf(k); }
 static const char *const kArgRegs[] = { "%rcx", "%rdx", "%r8", "%r9" };
 static const char *const kSseRegs[] = { "%xmm0", "%xmm1", "%xmm2", "%xmm3" };
 
-static const Abi kMsAbi = {
-    kArgRegs, 4,
-    kSseRegs, 4,
-    true,
-    32,
-    8,
-    true,
-    false,
-    "%r10", "%r10d",
-    false,
-    false,
+// Microsoft x64. The two that are only true here are `positional` - the third
+// argument is the third register whichever class it is - and the 32 bytes of
+// shadow space the caller leaves for the callee to spill into.
+static Abi microsoft() {
+    Abi a;
+    a.intRegs = kArgRegs;               a.intCount = 4;
+    a.sseRegs = kSseRegs;               a.sseCount = 4;
+    a.positional = true;
+    a.shadowBytes = 32;
+    a.structReturnLimit = 8;
+    a.aggregatesByReference = true;
+    a.scratch = "%r10";                 a.scratch32 = "%r10d";
+    return a;
+}
 
-};
+static const Abi kMsAbi = microsoft();
 
 const Abi &X86_64WindowsBackend::abi() const { return kMsAbi; }
 
