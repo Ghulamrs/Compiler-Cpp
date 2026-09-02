@@ -1,11 +1,9 @@
-// A goto out of a block that holds a live object. Legal C++ - clang runs
-// ~Probe on the way out - and refused here by name, because this compiler
-// emits a scope's destructors at its end and a jump that leaves early goes
-// over them. Until this check the jump was accepted and the destructor simply
-// did not run: the conservative test CLAUDE.md described sat on a line the
-// goto branch had already returned from. The honest fix is a jump that
-// destroys what it leaves, which needs jumps to know their scopes; until then
-// a refusal, and not a missing call.
+// A goto out of a block that holds a live object. [stmt.jump]/2: the object
+// is destroyed on the way out, as it would be at the block's end. Until this
+// the jump was accepted and the destructor simply did not run - the
+// conservative refusal CLAUDE.md described sat on a line the goto branch had
+// already returned from - so this case ran "built" and stopped, where clang
+// runs "built destroyed". jump-out-destroys.cpp holds the neighbours.
 extern "C" int printf(const char *, ...);
 
 struct Probe { Probe(); ~Probe(); };
@@ -19,6 +17,7 @@ int f(int n) {
         printf("fell through\n");
     }
 out:
+    printf("out %d\n", n);
     return n;
 }
-int main() { return f(1); }
+int main() { f(1); f(0); return 0; }

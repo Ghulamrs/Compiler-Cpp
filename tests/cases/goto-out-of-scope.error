@@ -1,1 +1,0 @@
-'goto out' would leave the scope holding 'p'

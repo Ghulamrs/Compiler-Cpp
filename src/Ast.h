@@ -361,6 +361,10 @@ class Block final : public Stmt {
 public:
     explicit Block(std::vector<StmtPtr> body) : body_(std::move(body)) {}
     const std::vector<StmtPtr> &body() const { return body_; }
+    // For the one block that is filled in after it is placed: the
+    // destructor calls a goto makes on its way out, known only once its
+    // label has been read.
+    void append(StmtPtr s) { body_.push_back(std::move(s)); }
 
     int scope() const { return scope_; }
     void setScope(int s) { scope_ = s; }

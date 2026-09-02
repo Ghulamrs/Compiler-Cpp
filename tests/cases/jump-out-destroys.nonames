@@ -1,0 +1,1 @@
+x86_64-linux  Holder writes no constructor and no destructor, so both are implicit and inline by nature: clang emits one comdat copy as C2/D2 and no C1 or D1, where cxx1 emits both of Itanium's forms - see docs/CONFORMANCE.md, "An inline member function is a strong symbol". Darwin and Windows agree name for name
