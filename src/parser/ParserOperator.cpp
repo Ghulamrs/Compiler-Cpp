@@ -287,6 +287,16 @@ ExprPtr Parser::clonePure(const Expr &e) {
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
         Var *raw = v->isLocal() ? Var::local(v->name(), v->offset())
                                 : Var::global(v->name());
+        // **The copy carries the linker's name too.** A global's `name()` is
+        // what the programmer wrote and its `symbol()` is what the object
+        // file says - `n` against `?n@@3HA` on the Windows target - and this
+        // clone kept only the first. Every operand cloned here is one that is
+        // read and then written back, `++n` and `n += 1`, so the *write* went
+        // to the mangled name and the read's address was taken of a symbol
+        // nothing defines: `EXTERN n:PROC` in the assembly, and a link error
+        // on the one target that mangles a variable. The Itanium targets
+        // could not show it, because a global's symbol there is its name.
+        raw->setSymbol(v->symbol());
         raw->setReadOnly(v->readOnly());
         raw->setNoAddress(v->noAddress());
         ExprPtr c(raw);

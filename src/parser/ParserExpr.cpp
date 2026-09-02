@@ -671,17 +671,17 @@ ExprPtr Parser::primary(Program *program) {
     if (peek().kind == TokenKind::Num && peek().isFloat) {
         const Token &t = peek();
         // **A `long double` this compiler cannot spell the same way on every
-        // machine is refused.** The literal is parsed with the host's
-        // `strtold`, and the host is not the target: on the Linux box a
-        // `long double` carries 64 bits of significand and on the Mac it
-        // carries 53, so `long double x = 0.1L;` compiled for x86_64-linux
-        // gave a different constant depending on which machine built the
-        // compiler - 0xCCCCCCCCCCCCD000 against the correct
-        // 0xCCCCCCCCCCCCCCCD. Three-box verification cannot see that: each
-        // box agrees with itself.
+        // machine is refused.** The compiler carries a floating constant as
+        // a `double` - the lexer reads it with `strtod` precisely so that
+        // every build machine reads the same number - but the target's
+        // `long double` can be wider than that: `long double x = 0.1L;` for
+        // x86_64-linux names an 80-bit constant, 0xCCCCCCCCCCCCCCCD, that no
+        // double holds. When it was read with the host's `strtold` instead,
+        // each build machine approximated it differently and three-box
+        // verification could not see it: each box agrees with itself.
         //
         // So the question asked is one the digits answer, not the host: a
-        // literal that *is* exactly a double is parsed exactly by every host
+        // literal that *is* exactly a double is read exactly by every host
         // and emitted identically by all three; one that is not is refused
         // where the target's `long double` is wider than a double, which
         // today is x86_64-linux alone. Approximating it differently per build
@@ -690,14 +690,12 @@ ExprPtr Parser::primary(Program *program) {
         if (t.suffixL && !t.exactInDouble &&
             target_.sizeOf(Kind::LongDouble) > target_.sizeOf(Kind::Double))
             src_.fail(t.pos, "this 'long double' literal needs more precision "
-                             "than a double holds, and this compiler reads a "
-                             "floating literal with the host's own "
-                             "'long double' - which is not always the "
-                             "target's. It would be a different constant "
-                             "depending on which machine built the compiler, "
-                             "so it is refused rather than approximated: "
-                             "write it as a 'double', or as a hexadecimal "
-                             "float once those arrive");
+                             "than a double holds, and a double is what this "
+                             "compiler carries a floating constant in, so "
+                             "that every build machine reads the same "
+                             "number. It is refused rather than "
+                             "approximated: write it as a 'double', or as a "
+                             "hexadecimal float once those arrive");
         ExprPtr n(new Num(t.dvalue));
         n->setType(types_.get(t.suffixF ? Kind::Float
                             : t.suffixL ? Kind::LongDouble : Kind::Double));

@@ -803,6 +803,14 @@ StmtPtr Parser::constructLocalArray(const Declared &d, int offset,
     // class whose only reason for having a constructor is a member initialiser
     // is where it showed - `S a[2];` called `S::S()` and nothing defined it.
     functions_[static_cast<std::size_t>(ctor - &functions_[0])].used = true;
+    // **Copied before the defaults are read**: reading one can parse an
+    // expression that grows `functions_`, under the pointer just taken into
+    // it. The defaults sit inside the one statement the loop repeats, so they
+    // are evaluated once per element, which is what [dcl.fct.default]/9 asks
+    // of every call.
+    const Signature chosen = *ctor;
+    std::vector<ExprPtr> defaults;
+    applyDefaults(chosen, defaults, d.pos);
 
     const Type *ptr = types_.pointerTo(plain);
     ExprPtr base(Var::local(d.name, offset));
@@ -814,21 +822,44 @@ StmtPtr Parser::constructLocalArray(const Declared &d, int offset,
     args.push_back(std::move(at));
     std::vector<const Type *> ps;
     ps.push_back(ptr);
+    for (std::size_t i = 0; i < defaults.size(); i++) {
+        args.push_back(std::move(defaults[i]));
+        ps.push_back(chosen.params[i]);
+    }
 
-    StmtPtr one(new ExprStmt(completeCall(plain->tag(), ctor->symbol, nullptr,
+    StmtPtr one(new ExprStmt(completeCall(plain->tag(), chosen.symbol, nullptr,
                                           types_.get(Kind::Void), ps, false,
                                           d.pos, std::move(args))));
     return eachElement(indexSlot, count, std::move(one));
 }
 
+// **A default constructor is one that can be called with no arguments, not
+// one whose parameter list is empty** - [class.ctor]/5 says so in as many
+// words, and `S(int a = 1)` is the ordinary way to write one. This used to
+// search for an empty parameter list, so a class whose only constructor took
+// defaults was told it had "no constructor taking nothing" by every site that
+// builds a call by hand: a base a derived constructor did not name, a member
+// the implicit constructor builds, an array of the class. Whoever calls this
+// still has to *supply* the defaults, through `applyDefaults`, because the
+// call it goes on to build carries one argument per parameter.
+//
+// Two constructors that both take nothing - `S()` beside `S(int = 0)` - are
+// ambiguous, and clang refuses the default-construction; this answers nullptr
+// there, and the caller's "no constructor taking nothing" is then the wrong
+// wording for the right refusal.
 const Parser::Signature *Parser::defaultConstructorOf(const Type *cls) const {
     if (cls == nullptr || !cls->isStructOrUnion() || cls->tag().empty())
         return nullptr;
     const std::vector<std::size_t> *set = overloadsOf(constructorKey(cls->tag()));
     if (set == nullptr) return nullptr;
-    for (std::size_t k = 0; k < set->size(); k++)
-        if (functions_[(*set)[k]].params.empty()) return &functions_[(*set)[k]];
-    return nullptr;
+    const Signature *found = nullptr;
+    for (std::size_t k = 0; k < set->size(); k++) {
+        const Signature &f = functions_[(*set)[k]];
+        if (leastArguments(f) != 0) continue;
+        if (found != nullptr) return nullptr;
+        found = &f;
+    }
+    return found;
 }
 
 const Parser::Signature *Parser::copyConstructorOf(const Type *cls) const {
@@ -1344,7 +1375,11 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
                            (ctor->access == Access::Private ? "private"
                                                             : "protected"));
         functions_[static_cast<std::size_t>(ctor - &functions_[0])].used = true;
-        const std::string sym = baseConstructorSymbol(*ctor, base);
+        // Copied before the defaults are read - see constructLocalArray.
+        const Signature chosen = *ctor;
+        std::vector<ExprPtr> defaults;
+        applyDefaults(chosen, defaults, pos);
+        const std::string sym = baseConstructorSymbol(chosen, base);
 
         const Type *basePtr = types_.pointerTo(base);
         ExprPtr me(Var::local("this", thisSlot));
@@ -1358,6 +1393,10 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
         args.push_back(std::move(me));
         std::vector<const Type *> ps;
         ps.push_back(basePtr);
+        for (std::size_t k = 0; k < defaults.size(); k++) {
+            args.push_back(std::move(defaults[k]));
+            ps.push_back(chosen.params[k]);
+        }
         body.push_back(StmtPtr(new ExprStmt(
             completeCall(base->tag(), sym, nullptr, types_.get(Kind::Void), ps,
                          false, pos, std::move(args)))));
@@ -1427,12 +1466,23 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
             addr->setType(types_.pointerTo(mc));
         }
 
+        // Copied before the defaults are read - see constructLocalArray. For
+        // an array member the defaults sit inside the repeated statement, so
+        // each element reads them afresh.
+        const Signature chosen = *ctor;
+        std::vector<ExprPtr> defaults;
+        applyDefaults(chosen, defaults, pos);
+
         std::vector<ExprPtr> args;
         args.push_back(std::move(addr));
         std::vector<const Type *> ps;
         ps.push_back(types_.pointerTo(mc));
+        for (std::size_t k = 0; k < defaults.size(); k++) {
+            args.push_back(std::move(defaults[k]));
+            ps.push_back(chosen.params[k]);
+        }
         StmtPtr one(new ExprStmt(
-            completeCall(mc->tag(), ctor->symbol, nullptr, types_.get(Kind::Void),
+            completeCall(mc->tag(), chosen.symbol, nullptr, types_.get(Kind::Void),
                          ps, false, pos, std::move(args))));
         body.push_back(ms[i].type->isArray()
                        ? eachElement(indexSlot, count, std::move(one))

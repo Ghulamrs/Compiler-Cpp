@@ -500,6 +500,12 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     if (constructed) {
         const Signature &ctor = resolveOverload(constructorKey(made->tag()),
                                                 ctorArgs, pos);
+        // **The defaults, as every other constructor call reads them.** This
+        // call is built by hand, one argument per parameter, and `new M` of
+        // an `M(int a = 5)` was refused as "takes 2 argument(s), given 1"
+        // after resolution had already accepted it - the same door the base
+        // mem-initialiser came through, one expression over.
+        applyDefaults(ctor, ctorArgs, pos);
         std::vector<ExprPtr> all;
         ExprPtr self(Var::local(temp, slot));
         self->setType(pointer);

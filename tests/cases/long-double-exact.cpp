@@ -1,10 +1,11 @@
-// A `long double` literal is read with the host's own `strtold`, and the host
-// is not the target: on the Linux box a long double carries 64 bits of
+// A `long double` literal was read with the host's own `strtold`, and the
+// host is not the target: on the Linux box a long double carries 64 bits of
 // significand and on the Mac it carries 53. A literal that needs more than a
 // double's 53 bits therefore became a different constant depending on which
 // machine built the compiler - and three-box verification cannot see that,
-// because each box agrees with itself. Those are refused now, for the one
-// target whose long double is wider than a double.
+// because each box agrees with itself. Every floating literal is read with
+// `strtod` now, and one that needs more precision than a double holds is
+// refused for the one target whose long double is wider than a double.
 //
 // These are the ones that are exact in a double, which every host parses
 // identically and all three targets emit the same way. Measured against

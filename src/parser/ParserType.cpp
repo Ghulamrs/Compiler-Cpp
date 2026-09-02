@@ -262,7 +262,24 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // Each base starts where the last one's data ended, aligned to its own
         // requirement. The first therefore sits at 0 and the rest do not.
         long long byteCursor = (bitCursor + 7) / 8;
-        const int at = static_cast<int>(alignTo(byteCursor, b->align(target_)));
+        // **The same refusal the member list gets, one base earlier.** The
+        // sum of the bases is measured here in `long long`, but `at` is an
+        // `int` and everything after it - the inherited offsets, the cursor
+        // the members start from - is derived from that `int`. Two
+        // 2000000000-byte bases were caught by the member-list check below
+        // because the cursor still held the true sum; a third wrapped `at`
+        // to a negative number first, and every later number was computed
+        // from the wreck. So the sum is checked where it is still a sum.
+        const long long basesEnd = (byteCursor + b->align(target_) - 1) /
+                                   b->align(target_) * b->align(target_) +
+                                   b->dataSize();
+        if (basesEnd > 2147483647LL)
+            src_.fail(pos, std::string("this ") + what + " is larger than this "
+                           "compiler can lay out: its bases need " +
+                           std::to_string(basesEnd) + " bytes, past the "
+                           "2147483647 an object here is measured in");
+        const int at = static_cast<int>(alignTo(static_cast<int>(byteCursor),
+                                                b->align(target_)));
 
         const std::vector<Member> &inherited = b->members();
         for (std::size_t i = 0; i < inherited.size(); i++) {
@@ -822,6 +839,23 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // member of it linked to nothing. Found while a class template with two
     // type parameters would not link, which is what an empty one happened to
     // be.
+    // **An object this compiler cannot measure is refused where it is
+    // written, and a member list is a place an object is written.** The array
+    // declarator got this rule first, so each member fits a signed 32-bit
+    // count on its own - but `alignTo` takes `int`, and a class whose members
+    // *sum* past 2^31 was truncated in that call and laid out anyway:
+    // two 2000000000-byte arrays made a `.zerofill` of -294967296, from the
+    // shipped binary, without a word. Done in `long long` with the padding
+    // included, so the check sees the same number the cast below would wreck.
+    // UBSan never finds this one - the truncation is a defined conversion.
+    const long long paddedBytes =
+        ((totalBits + 7) / 8 + widest - 1) / widest *
+        static_cast<long long>(widest);
+    if (paddedBytes > 2147483647LL)
+        src_.fail(pos, std::string("this ") + what + " is larger than this "
+                       "compiler can lay out: its members need " +
+                       std::to_string((totalBits + 7) / 8) + " bytes, past "
+                       "the 2147483647 an object here is measured in");
     int size = static_cast<int>(alignTo((totalBits + 7) / 8, widest));
     int align = widest;
     if (members.empty() && totalBits == 0) { size = 1; align = 1; }

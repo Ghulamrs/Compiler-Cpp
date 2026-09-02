@@ -10,6 +10,7 @@
 #include "../Source.h"
 
 #include <climits>
+#include <cmath>
 #include <cstring>
 
 Parser::Init Parser::parseInitialiser() {
@@ -275,15 +276,44 @@ static long double inType(const Type *t, const Target &target, long double v) {
     return v;
 }
 
-static bool foldDouble(const Expr &e, const Target &target, long double *out) {
+// **Every value below is carried as a `double`, exactly, or the fold says
+// so.** The host's `long double` is 64 bits of significand on the Linux box
+// and 53 on the Mac, so any arithmetic done in it gives a constant that
+// depends on which machine built the compiler - `0.5L` plus `2^53` came out
+// `.quad ...200` from the Linux build and `...000` from the Mac build, both
+// accepted, both silent. The fold therefore computes in `double` on every
+// host and reports, through the two flags, the moments that answer could
+// differ from the one the target's own x87 would reach:
+//
+//   `past53`     an integer wider than a double's 53 bits was converted -
+//                exact on an 80-bit target, rounded here.
+//   `x87Rounded` an operation *typed* `long double` on an x87 target had a
+//                result that does not fit a double exactly - the target
+//                would keep more of it. Measured by error-free transforms:
+//                TwoSum's error term for + and -, an `fma` residue for * and
+//                /; a subnormal result is called rounded too, because the
+//                error term itself underflows there and proves nothing.
+//
+// Operations typed `float` or `double` round because the *language* says
+// they do, on the target as here, so they set nothing.
+static bool foldDouble(const Expr &e, const Target &target, long double *out,
+                       bool *past53, bool *x87Rounded) {
     if (const Num *n = dynamic_cast<const Num *>(&e)) {
-        *out = n->type()->isFloating()
-                   ? inType(n->type(), target, n->dvalue())
-                   : static_cast<long double>(n->value());
+        if (n->type()->isFloating()) {
+            *out = inType(n->type(), target, n->dvalue());
+        } else {
+            unsigned long long a = n->value() < 0
+                ? 0ULL - static_cast<unsigned long long>(n->value())
+                : static_cast<unsigned long long>(n->value());
+            while (a != 0 && (a & 1) == 0) a >>= 1;
+            if (a >= (1ULL << 53)) *past53 = true;
+            *out = static_cast<double>(n->value());
+        }
         return true;
     }
     if (const Cast *c = dynamic_cast<const Cast *>(&e)) {
-        if (!foldDouble(c->value(), target, out)) return false;
+        if (!foldDouble(c->value(), target, out, past53, x87Rounded))
+            return false;
 
         const Type *ct = c->type();
         if (ct->kind() == Kind::Float)       *out = static_cast<float>(*out);
@@ -301,13 +331,18 @@ static bool foldDouble(const Expr &e, const Target &target, long double *out) {
         return true;
     }
     if (const Unary *u = dynamic_cast<const Unary *>(&e)) {
-        if (u->op() == '-' && foldDouble(u->operand(), target, out)) { *out = -*out; return true; }
+        if (u->op() == '-' &&
+            foldDouble(u->operand(), target, out, past53, x87Rounded)) {
+            *out = -*out;
+            return true;
+        }
     }
 
     if (const Binary *b = dynamic_cast<const Binary *>(&e)) {
         long double l, r;
-        if (!foldDouble(b->lhs(), target, &l) ||
-            !foldDouble(b->rhs(), target, &r)) return false;
+        if (!foldDouble(b->lhs(), target, &l, past53, x87Rounded) ||
+            !foldDouble(b->rhs(), target, &r, past53, x87Rounded))
+            return false;
 
         Kind bk = b->type()->kind();
         bool asDouble = bk == Kind::Double ||
@@ -334,13 +369,48 @@ static bool foldDouble(const Expr &e, const Target &target, long double *out) {
             default: return false;
             }
         }
+        // The x87 lane. The operands are exact doubles by construction, so
+        // the one question is whether this operation's exact result still
+        // fits one; if it does, the target's 80-bit answer is the same
+        // number and the fold is honest on every host. Unless an integer
+        // past 53 bits fed in: then the operands themselves are short of
+        // what the target holds, the error-free transforms below measure
+        // the wrong operation, and the only honest answer is the flag.
+        if (*past53) *x87Rounded = true;
+        const double dl = static_cast<double>(l);
+        const double dr = static_cast<double>(r);
+        double sum;
+        bool fits;
         switch (b->op()) {
-        case BinOp::Add: *out = l + r; return true;
-        case BinOp::Sub: *out = l - r; return true;
-        case BinOp::Mul: *out = l * r; return true;
-        case BinOp::Div: if (r == 0) return false; *out = l / r; return true;
+        case BinOp::Add: {
+            sum = dl + dr;
+            const double bb = sum - dl;
+            fits = (dl - (sum - bb)) + (dr - bb) == 0.0;
+            break;
+        }
+        case BinOp::Sub: {
+            sum = dl - dr;
+            const double bb = sum - dl;
+            fits = (dl - (sum - bb)) + (-dr - bb) == 0.0;
+            break;
+        }
+        case BinOp::Mul:
+            sum = dl * dr;
+            fits = std::fma(dl, dr, -sum) == 0.0;
+            break;
+        case BinOp::Div:
+            if (dr == 0) return false;
+            sum = dl / dr;
+            fits = std::fma(sum, dr, -dl) == 0.0;
+            break;
         default: return false;
         }
+        if (sum != 0.0 && sum > -2.2250738585072014e-308 &&
+                          sum <  2.2250738585072014e-308)
+            fits = false;
+        if (!fits) *x87Rounded = true;
+        *out = sum;
+        return true;
     }
     return false;
 }
@@ -464,9 +534,28 @@ void Parser::flattenScalar(const Type *type, Init &in, int base,
 
     if (type->isFloating()) {
         long double d;
-        if (!foldDouble(*value, target_, &d))
+        bool past53 = false, x87Rounded = false;
+        if (!foldDouble(*value, target_, &d, &past53, &x87Rounded))
             src_.fail(in.pos, "expected a constant initialiser, and this is not "
                               "a constant");
+        // **The same refusal the literal gets, for the same reason.** A
+        // `long double` literal that is not exactly a double is already
+        // refused where the target's `long double` is wider - but the gate
+        // sat on the literal alone, and one folded `+` walked past it: two
+        // exact operands whose sum needs a 54th bit was computed in the
+        // host's `long double`, 64 bits on one build machine and 53 on
+        // another, and the emitted constant differed by which machine built
+        // the compiler. This compiler carries a folded constant as a
+        // `double`; where the target's x87 would carry more of this value
+        // than that, it is refused rather than approximated.
+        if (x87Rounded || (past53 && type->isX87(target_)))
+            src_.fail(in.pos, "this 'long double' constant expression needs "
+                              "more precision than a double holds, and a "
+                              "double is what this compiler folds constants "
+                              "in - the target would keep more of it than "
+                              "the build machine can promise. It is refused "
+                              "rather than approximated; compute it at run "
+                              "time, or write the value as a 'double'");
         long long bits = 0;
         if (type->isX87(target_)) {
 
