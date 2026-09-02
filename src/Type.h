@@ -144,10 +144,9 @@ public:
     bool isBool() const { return kind_ == Kind::Bool; }
     bool isStructOrUnion() const { return kind_ == Kind::Struct || kind_ == Kind::Union; }
     bool isComplete() const {
-        if (unqual_ != nullptr) return unqual_->isComplete();
         if (isVoid()) return false;
         if (isArray() && length_ < 0) return false;
-        if (isStructOrUnion()) return complete_;
+        if (isStructOrUnion()) return cls().complete_;
         return true;
     }
 
@@ -161,81 +160,78 @@ public:
 
     std::string describe() const;
 
-    const std::string &tag() const { return unqual_ ? unqual_->tag() : tag_; }
+    // **Every question about what a class *is* is asked of the unqualified type**,
+    // and this is the only place that says so. A `const X` interned while X was
+    // still open carries empty fields of its own for ever, so a reader that took
+    // its own `members_` saw a class with no members - measured, and the shape of
+    // the findMember bug. Reading `cls().x_` is now the only spelling there is.
+    const Type &cls() const { return unqual_ != nullptr ? *unqual_ : *this; }
+
+    const std::string &tag() const { return cls().tag_; }
 
     // `class X` and `struct X` build the same kind of type and differ only in the
     // default access - and in what a diagnostic should call it. "struct Account"
     // for something written as a class sends the reader after a missing line.
-    bool declaredClass() const { return unqual_ ? unqual_->declaredClass() : isClass_; }
+    bool declaredClass() const { return cls().isClass_; }
     void setDeclaredClass(bool c) { isClass_ = c; }
 
     // **A class written inside another one.** `tag()` is the qualified name, every
     // table being keyed by it; `localName()` is the component both ABIs spell, and
     // `enclosing()` is what Itanium's substitution table has to recognise.
     const std::string &localName() const {
-        if (unqual_) return unqual_->localName();
-        return local_.empty() ? tag_ : local_;
+        return cls().local_.empty() ? cls().tag_ : cls().local_;
     }
     void setLocalName(std::string n) { local_ = std::move(n); }
 
     // **A class written inside a namespace**, whose tag carries the namespaces as a
     // nested class's carries its classes - with nothing for `enclosing()` to point
     // at. The manglers ask it to tell "N::S" from a local class's "f::L".
-    bool inNamespace() const {
-        return unqual_ ? unqual_->inNamespace() : inNamespace_;
-    }
+    bool inNamespace() const { return cls().inNamespace_; }
     void setInNamespace() { inNamespace_ = true; }
 
     // **A class written inside a function**, carrying that function's linkage name,
     // which both ABIs wrap round this one. Until the type could answer this, such a
     // class as a template argument was spelled `7main::L` - a colon in a symbol.
-    const std::string &localOwner() const {
-        if (unqual_) return unqual_->localOwner();
-        return localOwner_;
-    }
+    const std::string &localOwner() const { return cls().localOwner_; }
     void setLocalOwner(std::string o) { localOwner_ = std::move(o); }
 
     // A class made by instantiating a class template. The name and arguments
     // are kept because the tag - "Box<int,3>" - is the parser's key and not
     // anything a linker has ever seen.
-    bool isSpecialization() const { return !templateName_.empty(); }
-    const std::string &templateName() const { return templateName_; }
-    const std::vector<TemplateArg> &templateArgs() const { return templateArgs_; }
+    bool isSpecialization() const { return !cls().templateName_.empty(); }
+    const std::string &templateName() const { return cls().templateName_; }
+    const std::vector<TemplateArg> &templateArgs() const { return cls().templateArgs_; }
     void setSpecialization(std::string name, std::vector<TemplateArg> args) {
         templateName_ = std::move(name);
         templateArgs_ = std::move(args);
     }
     const Type *enclosing() const {
-        return unqual_ ? unqual_->enclosing() : enclosing_;
+        return cls().enclosing_;
     }
     void setEnclosing(const Type *e) { enclosing_ = e; }
     // Who may name this class, when it is written inside another one. A
     // nested class is a member like any other and `private:` reaches it.
     Access nestedAccess() const {
-        return unqual_ ? unqual_->nestedAccess() : nestedAccess_;
+        return cls().nestedAccess_;
     }
     void setNestedAccess(Access a) { nestedAccess_ = a; }
 
     // The one base class, or null: a base subobject sits at offset 0, so a derived
     // object's address is its base's. And whether any virtual function exists here
     // or in a base, which decides the layout before the members are placed.
-    bool polymorphic() const { return unqual_ ? unqual_->polymorphic() : polymorphic_; }
+    bool polymorphic() const { return cls().polymorphic_; }
     void setPolymorphic(bool p) { polymorphic_ = p; }
 
     // **Whether copying this class is a function call rather than a move of bytes**,
     // which both platform ABIs make a question about how it is *passed*. Measured
     // with cl and clang; on the type, because the backends must agree with the parser.
-    bool nonTrivialCopy() const {
-        return unqual_ ? unqual_->nonTrivialCopy() : nonTrivialCopy_;
-    }
+    bool nonTrivialCopy() const { return cls().nonTrivialCopy_; }
     void setNonTrivialCopy(bool n) { nonTrivialCopy_ = n; }
 
     // **Whether this class has a destructor to run.** It decides how the class is
     // passed, and the ABIs disagree: Itanium by address whatever the size with the
     // caller destroying, Microsoft by size with the callee. Measured.
-    bool hasDestructor() const {
-        return unqual_ ? unqual_->hasDestructor() : hasDestructor_;
-    }
+    bool hasDestructor() const { return cls().hasDestructor_; }
     void setHasDestructor(bool h) { hasDestructor_ = h; }
 
     // **Every base, with the offset it sits at.** The first is at 0 and a second is
@@ -247,7 +243,7 @@ public:
         Access access;
     };
     const std::vector<BaseSpec> &bases() const {
-        return unqual_ ? unqual_->bases() : bases_;
+        return cls().bases_;
     }
     void addBase(const Type *b, int offset, Access how) {
         bases_.push_back(BaseSpec{ b, offset, how });
@@ -264,7 +260,7 @@ public:
         return b.empty() ? Access::Public : b[0].access;
     }
     const std::vector<Member> &members() const {
-        return unqual_ ? unqual_->members() : members_;
+        return cls().members_;
     }
     const Member *findMember(const std::string &name) const;
 
@@ -283,7 +279,7 @@ public:
         long long value = 0;
     };
     const std::vector<StaticMember> &staticMembers() const {
-        return unqual_ ? unqual_->staticMembers() : statics_;
+        return cls().statics_;
     }
     void addStaticMember(StaticMember s) { statics_.push_back(std::move(s)); }
     // Searched up through the bases, the way a member function is: a static
@@ -295,7 +291,7 @@ public:
     // **Where this class's data actually ends, before the padding.** A base occupies
     // this rather than sizeof, so a derived class may sit in the base's tail
     // padding - what Itanium says and clang does. Equal to size() without one.
-    int dataSize() const { return unqual_ ? unqual_->dataSize() : dataSize_; }
+    int dataSize() const { return cls().dataSize_; }
     void setDataSize(int d) { dataSize_ = d; }
 
     const Type *returns() const { return pointee_; }
@@ -303,13 +299,13 @@ public:
     bool isVariadicFn() const { return variadic_; }
     bool isFunction() const { return kind_ == Kind::Function; }
     bool isMemberPointer() const {
-        return unqual_ ? unqual_->isMemberPointer() : kind_ == Kind::MemberPointer;
+        return cls().kind_ == Kind::MemberPointer;
     }
     // **A pointer to a member *function* wears the shape of a struct**, so that
     // every backend already knows how to copy, pass and return one. `kind_` is
     // Struct, and this flag tells describe() and the manglers what it really is.
     bool isMemberFunctionPointer() const {
-        return unqual_ ? unqual_->isMemberFunctionPointer() : memberFn_;
+        return cls().memberFn_;
     }
     void setMemberFunctionPointer() { memberFn_ = true; }
     bool isFunctionPointer() const {
