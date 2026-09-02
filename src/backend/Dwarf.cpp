@@ -41,7 +41,10 @@ const int kFormAddr = 0x01, kFormData2 = 0x05, kFormData4 = 0x06;
 const int kFormString = 0x08, kFormData1 = 0x0b, kFormFlag = 0x0c;
 const int kFormRef4 = 0x13, kFormSecOffset = 0x17, kFormExprLoc = 0x18;
 
-const int kLangC89 = 0x01;
+// DW_LANG_C_plus_plus. It was DW_LANG_C89 - 0x01, inherited from the compiler
+// this was forked from - which is a debugger being told the wrong language by a
+// C++ compiler, and it decides how a name is printed and demangled.
+const int kLangCpp = 0x04;
 const int kAteFloat = 0x04, kAteSigned = 0x05, kAteSignedChar = 0x06;
 const int kAteUnsigned = 0x07, kAteUnsignedChar = 0x08;
 
@@ -431,8 +434,8 @@ void writeDwarf(std::string &out, const DwarfSpelling &sp, const Target &target,
     out += "  .byte 8\n";
 
     num(out, "  .byte", kAbCompileUnit);
-    str(out, "cc1");
-    num(out, "  .byte", kLangC89);
+    str(out, "cxx1");
+    num(out, "  .byte", kLangCpp);
     str(out, file);
     str(out, compDir);
     line(out, "  .quad " + fns.front().begin);
