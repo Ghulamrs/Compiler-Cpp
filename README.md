@@ -5,8 +5,9 @@
 depends on no compiler framework: its own lexer, preprocessor, parser, type
 system and three code generators.
 
-It is early. See `CLAUDE.md` for the ladder it is climbing and where on it the
-tree currently sits.
+It is early. `CLAUDE.md` opens with **"Reading this tree"**, which is the order
+to read this one in - the ladder, the pipeline by file, a case per rung, and the
+suites - and then holds the measurement behind each decision.
 
 ## Build
 
@@ -15,8 +16,8 @@ make
 ```
 
 Needs a C++14 compiler and nothing else. `clang++` on a Mac, `g++` on Linux;
-both are checked, and `cl` is the third when the MSVC project is generated
-from `tools/`.
+both are checked, and `cl` is the third, through `msvc\build.cmd` on the
+Windows box. `tools/verify-three` builds and tests on all three from the Mac.
 
 ## Use
 

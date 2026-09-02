@@ -87,7 +87,7 @@ BINDIR  ?= .
 # suffix that changes by platform is one more thing a script has to know.
 TARGET   = $(BINDIR)/cxx1.exe
 
-.PHONY: all test golden clean help
+.PHONY: all test golden corpus clean help
 
 all: $(TARGET)
 
@@ -126,6 +126,7 @@ help:
 	@echo "make            build cxx1 with $(CXX)"
 	@echo "make test       build and run the four suites"
 	@echo "make golden     record what emit.sh emits now, to compare a change against"
+	@echo "make corpus     run the 424 inherited C cases; gates nothing"
 	@echo "make clean"
 	@echo ""
 	@echo "cxx1 emits assembly for x86_64-linux, x86_64-windows and"
@@ -137,9 +138,14 @@ help:
 golden: $(TARGET)
 	@./tests/emit.sh --record
 
+# The inherited C corpus. Not part of `make test` and not a pass rate - see
+# tests/c-corpus/README, which says what each part of the failing set is.
+corpus: $(TARGET)
+	@./tests/corpus.sh
+
 clean:
 	rm -rf $(OBJDIR) $(TARGET)
-	rm -rf tests/out-run tests/out-emit
+	rm -rf tests/out-run tests/out-emit tests/out-corpus
 # **tests/out-emit.golden is deliberately not on that line**, and this is the
 # exception the rule below is otherwise right about: a golden is recorded before
 # a change and read after one, with a rebuild in between, so a clean that took it

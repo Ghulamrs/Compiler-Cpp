@@ -24,6 +24,41 @@ Trigraphs are still live in C++14, so write `'?\?'` and not `'??'` in any
 diagnostic. A C++ compiler's messages are full of quoted punctuation, so this
 will come up more here than it did in Compiler-S, where it cost an afternoon.
 
+## Reading this tree
+
+**There is an order that works, and nothing here said what it was.** This file
+is written in the order things happened, which is the right shape for a record
+and the wrong one for a first reading - its first sections after this one are
+changelog entries. What follows is the path, and every item on it already
+existed; what was missing was the list.
+
+1. **`README.md`** - what cxx1 is, what it is not, and how to build it.
+2. **Six sections of this file, in this order**, and no others yet: "Two
+   languages, and they are not the same one", "Where this came from", "What
+   makes C++ different from C to parse", "The ladder", "Decisions already
+   taken", "How correctness is established". Then "Understandable means
+   checkable", which is how a change to any of it is judged.
+3. **The pipeline, by file**: `main.cpp` (five lines) → `Driver.h` and
+   `Driver::compile` → `Lexer.h` → `Preprocessor.h` → **`parser/Parser.h`**,
+   which at fourteen hundred lines is the front end's design document and says
+   so nowhere else → `Ast.h` → `Type.h`, whose `class Target` is the machine →
+   `Abi.h` and `backend/Backend.h` → `backend/Walker.h` → one code generator,
+   `backend/X86_64Linux.h`.
+4. **One case per rung**, whose headers are the best short prose in the tree:
+   `class.cpp`, `inherit.cpp`, `multiple.cpp`, `thunk.cpp`, `tuple.cpp`,
+   `cleanup.cpp`, `lambda.cpp`, and `refused.cpp` for what is said no to.
+5. **The suites**: the header comments of `tests/run.sh`, `tests/emit.sh`,
+   `tests/names.sh`, `tests/overload.sh`, then `tools/verify-three`, which is
+   the three-box rule with a command behind it.
+6. **`docs/`**: `CONFORMANCE.md` for what compiles and should not, the newest
+   `HANDOVER-*.md` for where a round stopped, and
+   `DESIGN-REVIEW-2026-09-02.md` for what to change next and what not to.
+
+**What this file is *for*, once that reading is done**, is the measurement
+behind a line of code: why an ABI answer is what it is, what a bug looked like
+before it was mended, which oracle was asked. Search it by its `## ` headings;
+do not read it end to end.
+
 ## The parser is twelve files
 
 `Parser.cpp` was 9,639 lines and 450 KB, which is one translation unit: every
@@ -2505,7 +2540,7 @@ list, and a parameter written after a pack.
 
 Suites 87 / 137 / 46; the C corpus is unchanged.
 
-## Rung 6: exceptions, planned
+## Rung 6: exceptions - the plan it was built to, kept as written
 
 **6.1 has landed and has its own section below.** What follows is the order
 the rest is meant to happen in, written before any of it.
@@ -3059,12 +3094,15 @@ exception to cross it.
 Suites 88 / 137 / 46 after 6.2, which adds only a refusal - what `throw`
 actually does needs a handler, and the tool is where that lives.
 
-## Rung 7: the C++11 layer, planned
+## Rung 7: the C++11 layer - the plan it was built to, kept as written
 
 **The last rung, and the widest.** Six features that mostly do not depend on
 each other, so this splits where templates and exceptions had to be pushed
-through in one piece. The order below is by what each one needs from the
-others, and nothing after 7.1 is written.
+through in one piece. The order below is by what each one needs from the others.
+
+**All of it landed** - see "Rung 7.6: lambdas, and the ladder is walked" and the
+sections after it. "Nothing after 7.1 is written" was true the day this was
+written and is kept because the plan is worth reading against what it became.
 
 **7.1 has landed.** [dcl.spec.auto] says a variable's `auto` is deduced *as
 if by template argument deduction from a function call*, which is not a
@@ -4840,6 +4878,12 @@ diff of it means what it looks like it means.
 the next run read a golden of 822 and reported 411 removed. It caught its own
 corruption, which is the behaviour to keep; recording now removes the duplicates
 and refuses to record at all if the count does not match what was emitted.
+
+**`tests/corpus.sh` runs the 424 inherited C cases and gates on nothing.** They
+came from Compiler-C untriaged, they are C, and this is a C++11 compiler - so
+the count is not a pass rate and `tests/c-corpus/README` says what each part of
+the failing set actually is. Measured 2026-09-02 on the Mac: 365 ran and agreed,
+58 refused, 1 wrong. What it is for is the failing set, diffed across a change.
 
 `tests/run.sh` compiles and runs each case in `tests/cases/` on this machine
 and diffs against its `.expected`; a case with a `.error` file instead must

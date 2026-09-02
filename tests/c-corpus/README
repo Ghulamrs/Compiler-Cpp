@@ -1,0 +1,56 @@
+424 C programs, inherited, untriaged, and not a pass rate
+========================================================
+
+These came over whole from Compiler-C, the C90 compiler this one was forked
+from, on 2026-08-26. They are **C**, and cxx1 is a C++11 compiler. Nothing in
+the build gates on them: `make test` does not look here, and a case that stops
+compiling is as likely to be C++ doing what C++ does as it is to be a fault.
+
+Each program says what it should exit with, in a `// expect: N` line on the
+first line. That convention is theirs, not `tests/cases/`'s, which uses sidecar
+files instead - and it is the reason these two directories cannot be run by one
+script.
+
+Running them
+------------
+
+    tests/corpus.sh              all of them, and the split
+    tests/corpus.sh add          one, with what it said
+
+It exits 0 whatever happens. What it is for is `tests/out-corpus/FAILING`: run
+it before a change and after one, and **diff the failing set**. A case that
+moves between the lists is worth reading; the count on its own is not.
+
+What the split was on 2026-09-02, on the Mac
+--------------------------------------------
+
+    365 ran and agreed, 58 refused, 1 wrong, of 424
+
+Every one of the 59 was read, and none of them is a compiler fault:
+
+* **39 refused: a string literal passed to a `char *` parameter.** The case
+  writes `int printf(char *fmt, ...);` and calls it with `"%u\n"`. In C++11 a
+  string literal is `const char[N]` and does not convert, so there is no
+  matching function. C says yes, C++ says no, and cxx1 is right.
+* **7 refused at the link: `putchar(int)` undefined.** The case declares the
+  libc function itself, without `extern "C"`, so the name is mangled and the C
+  library does not have it. Again C++ behaving as C++; `#include <stdio.h>`
+  from `lib/`, which wraps its declarations, links fine.
+* **6 refused: the same string-literal rule** reached by an assignment rather
+  than a call.
+* **1 wrong: `pp_predefined`, expecting 0 and getting 3**, because it asks
+  `#ifndef __linux__` and this is a Mac. The corpus was written for one
+  machine, so even the wrong bucket has to be read rather than counted.
+
+So the number is not 379/424, which is what this file used to be quoted at in
+CLAUDE.md with nothing left in the tree able to reproduce it. The runners that
+produced it were deleted with the fork.
+
+Asking clang about one of them
+------------------------------
+
+    clang++ -x c++ -std=c++11 -pedantic-errors tests/c-corpus/add.c
+
+`-x c++` is not optional: without it clang compiles the file as C and agrees
+with everything. Without `-pedantic-errors` the string-literal rule is a
+warning it keeps for old C++, which is the other half of the same trap.

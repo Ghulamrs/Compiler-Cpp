@@ -99,8 +99,17 @@ if [ ! -d "$GOLD" ]; then
     exit
 fi
 
-changed=0; added=0; removed=0; shown=0; golden=0
+# **A name like `auto 2.x86_64-linux.s` is not a file this compiler wrote.** They
+# appear under ~/Documents on their own - CLAUDE.md records the phenomenon - and
+# they turned up in a golden that had been recorded clean, so deleting them once
+# is not enough. Both sides skip them and the count is printed, never silent.
+isDuplicate() {
+    case $1 in *' '[0-9].s|*' '[0-9][0-9].s) return 0 ;; *) return 1 ;; esac
+}
+
+changed=0; added=0; removed=0; shown=0; golden=0; dups=0
 for now in "$OUT"/*.s; do
+    if isDuplicate "$(basename "$now")"; then dups=$((dups + 1)); continue; fi
     was="$GOLD/$(basename "$now")"
     if [ ! -f "$was" ]; then
         added=$((added + 1))
@@ -118,11 +127,15 @@ done
 if [ "$changed" -gt "$shown" ]; then echo "  ... and $((changed - shown)) more"; fi
 for was in "$GOLD"/*.s; do
     [ -f "$was" ] || continue     # an unmatched glob is the name of the pattern
+    if isDuplicate "$(basename "$was")"; then dups=$((dups + 1)); continue; fi
     golden=$((golden + 1))
     [ -f "$OUT/$(basename "$was")" ] || removed=$((removed + 1))
 done
 
 sed 's/^/emit.sh: golden /' "$GOLD/RECORDED" 2>/dev/null || true
 echo "emit.sh: golden - $changed of $golden files changed, $added added, $removed removed"
+if [ "$dups" -gt 0 ]; then
+    echo "emit.sh: golden - $dups duplicate ' 2' copies ignored, which macOS made"
+fi
 
 [ "$fail" -eq 0 ]
