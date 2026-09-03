@@ -10,7 +10,8 @@
 #include <cstring>
 
 StmtPtr Parser::constructLocal(const Declared &d, int offset,
-                               std::vector<ExprPtr> args, bool copyInit) {
+                               std::vector<ExprPtr> args, bool copyInit,
+                               bool valueInit) {
     const std::string key = constructorKey(d.type->tag());
     const Signature &ctor = resolveOverload(key, args, d.pos);
     applyDefaults(ctor, args, d.pos);
@@ -48,6 +49,19 @@ StmtPtr Parser::constructLocal(const Declared &d, int offset,
     ExprPtr call = completeCall(d.type->tag(), ctor.symbol, nullptr,
                                 types_.get(Kind::Void), full, false, d.pos,
                                 std::move(all));
+
+    // **The zeroing half of [dcl.init]/8, spelt as the temporary path spells
+    // it.** A constructor somebody wrote is the whole of the initialisation; an
+    // implicit one leaves the members it does not name, so `{}` zeroes first.
+    if (valueInit && ctor.implicit) {
+        ExprPtr fresh(Var::local(d.name, offset));
+        fresh->setType(d.type);
+        if (ExprPtr chain = zeroChain(*fresh, d.type->unqualified())) {
+            ExprPtr seq(new Comma(std::move(chain), std::move(call)));
+            seq->setType(types_.get(Kind::Void));
+            call = std::move(seq);
+        }
+    }
     return StmtPtr(new ExprStmt(std::move(call)));
 }
 
@@ -1696,7 +1710,7 @@ void Parser::defineStaticMember(Declared &d, Program &program) {
 
     std::vector<GlobalPiece> pieces;
     bool hasInit = false;
-    if (consume("=")) {
+    if (consume("=") || atBracedInitialiser(d.name)) {
         Init in = parseInitialiser();
         flattenInit(s->type, in, 0, pieces);
         hasInit = true;

@@ -123,6 +123,21 @@ StmtPtr Parser::declarationBody() {
                 src_.fail(d.pos, "'" + d.name + "' is static and has a "
                                  "constructor - running one before main is not "
                                  "supported yet");
+            // **`C c{};` and `C c = {};` value-initialise.** [dcl.init]/11 sends
+            // an empty list to /8, which is the default constructor - and the
+            // zeroing before it that `constructLocal` puts in for an implicit one.
+            bool valueInit = false;
+            bool valueInitCopied = false;
+            if ((peek().is("{") && peekAt(1).is("}")) ||
+                (peek().is("=") && peekAt(1).is("{") && peekAt(2).is("}"))) {
+                // `= {}` is copy-initialisation and `{}` is not, which is the
+                // whole difference an `explicit` default constructor makes.
+                valueInitCopied = consume("=");
+                expect("{");
+                expect("}");
+                valueInit = true;
+            }
+
             // **A braced initialiser, and the two different answers it has.**
             // [dcl.init.aggr]/1 in C++11 makes a class with a member initialiser no
             // aggregate; where it wrote none, the braces want C++11 list-init.
@@ -141,7 +156,7 @@ StmtPtr Parser::declarationBody() {
                                  "parentheses");
             }
             std::vector<ExprPtr> args;
-            bool copyInit = false;
+            bool copyInit = valueInitCopied;
             if (consume("(")) {
                 if (peek().is(")"))
                     src_.fail(d.pos, "'" + d.name + "()' declares a function "
@@ -226,7 +241,8 @@ StmtPtr Parser::declarationBody() {
                 store->setType(d.type);
                 inits.push_back(StmtPtr(new ExprStmt(std::move(store))));
             } else {
-                inits.push_back(constructLocal(d, off, std::move(args), copyInit));
+                inits.push_back(constructLocal(d, off, std::move(args), copyInit,
+                                               valueInit));
             }
             flushTemporaries(inits);
             if (destructorOf(d.type) != nullptr)
@@ -317,7 +333,7 @@ StmtPtr Parser::declarationBody() {
             staticSymbols_.push_back(symbol);
             std::vector<GlobalPiece> pieces;
             bool hasInit = false;
-            if (consume("=")) {
+            if (consume("=") || atBracedInitialiser(d.name)) {
                 Init in = parseInitialiser();
                 if (d.type->isArray() && d.type->length() < 0)
                     d.type = types_.arrayOf(d.type->pointee(),
@@ -336,10 +352,10 @@ StmtPtr Parser::declarationBody() {
             continue;
         }
 
-        bool hasInit = peek().is("=");
+        bool hasInit = peek().is("=") || atBracedInitialiser(d.name);
         Init in;
         if (hasInit) {
-            at_++;
+            consume("=");
             in = parseInitialiser();
             if (d.type->isArray() && d.type->length() < 0)
                 d.type = types_.arrayOf(d.type->pointee(),
@@ -1749,7 +1765,7 @@ void Parser::topLevel(Program &program) {
             // than in the value this wants.
             bool constantKnown = false;
             long long constantValue = 0;
-            if (consume("=")) {
+            if (consume("=") || atBracedInitialiser(d.name)) {
                 Init in = parseInitialiser();
                 if (d.type->isArray() && d.type->length() < 0)
                     d.type = types_.arrayOf(d.type->pointee(),

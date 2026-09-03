@@ -407,7 +407,21 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     std::vector<ExprPtr> ctorArgs;
     bool hasInit = false;
     ExprPtr init;
-    if (peek().is("(")) {
+    // **`new T{}` is `new T()`.** [dcl.init]/11 sends both to value-initialisation,
+    // and the empty pair is the only braces read here: every branch below takes
+    // "nothing inside the parentheses" to mean exactly that.
+    const bool braces = peek().is("{");
+    if (braces && !peekAt(1).is("}"))
+        src_.fail(peek().pos, "'new " + made->describe() + "{...}' is "
+                              "list-initialisation, and that is not supported "
+                              "yet - write 'new " + made->describe() +
+                              "(...)'. The empty pair, 'new " +
+                              made->describe() + "{}', is read: it "
+                              "value-initialises");
+    if (braces) {
+        at_ += 2;
+        hasInit = true;
+    } else if (peek().is("(")) {
         at_++;
         hasInit = true;
         if (array) {

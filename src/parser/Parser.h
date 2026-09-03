@@ -784,8 +784,11 @@ private:
     void emitDestructors(std::vector<StmtPtr> &into, std::size_t from,
                          std::size_t pos, int except = -1,
                          std::size_t to = static_cast<std::size_t>(-1));
+    // `valueInit` is the `{}` half of [dcl.init]/8: the object is zeroed before
+    // the constructor runs, and only where nobody wrote that constructor.
     StmtPtr constructLocal(const Declared &d, int offset,
-                           std::vector<ExprPtr> args, bool copyInit = false);
+                           std::vector<ExprPtr> args, bool copyInit = false,
+                           bool valueInit = false);
 
     // A static data member: declared inside the class, defined outside it,
     // and reached by all three of `C::n`, `obj.n` and `p->n`.
@@ -1153,6 +1156,10 @@ private:
     };
 
     Init parseInitialiser();
+    // Answers whether a declaration is initialised by braces, and refuses the
+    // braces this compiler does not read - which is every pair with a value in
+    // it. The empty pair is value-initialisation and parseInitialiser takes it.
+    bool atBracedInitialiser(const std::string &name);
     bool constantInitialiser(const Type *t, const Init &in, long long *out) const;
 
     // **A `constexpr` function, kept so that fold() can run it.** [dcl.constexpr] in

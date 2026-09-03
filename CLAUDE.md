@@ -3913,12 +3913,60 @@ base and every member has to answer for itself. A member the layout copied down
 from a base is skipped, since the base already answered - `memberFromBase` is
 that test, which the destructor walk had been spelling out inline.
 
-**The refusal names a spelling that works, and one that does not.**
-`const S s = S();` compiles here; `const S s = {};` does not - an empty braced
-initialiser is refused with "an initialiser list needs at least one value" where
-clang value-initialises. That is the natural remedy a reader reaches for, so the
-message points at the other one, and the empty-braces gap is written down in the
-section below rather than left to be discovered at the wall.
+**The refusal names two spellings that work.** `const S s = S();` and
+`const S s = {};` both compile - the second only since 2026-09-03, and until
+then it was the first thing a reader tried after this refusal and the second
+wall they met. See "An empty pair of braces is value-initialisation" below.
+
+## An empty pair of braces is value-initialisation
+
+`{}` is not a list with nothing in it. [dcl.init]/11 sends it to /8, the
+paragraph `T()` already followed here, and the two are the same thing written
+two ways. Implemented 2026-09-03; before that every spelling of it was refused,
+and by three different messages: one about lists needing a value, one about
+list-initialisation, and for the rest `expected ';'` two tokens later.
+
+Where it is read: an initialiser after `=` - `int n = {}`, `P p = {}`,
+`const P p = {}`, at file scope, on a static local, on a static data member -
+the direct form written with no `=` (`P p{}`, `int n{}`, `C c{}`), and
+`new T{}` and `new T[n]{}`.
+
+**The two halves of /8 are the whole of the work.** For everything without a
+constructor it is a zeroing: `initZero` says it in a function, and at file scope
+it is said by emitting no piece at all, which `segmentFor` already reads as
+`.bss`. For a class with a constructor, value-initialisation *calls* it - and
+zeroes the object first only where that constructor is implicit, since one
+somebody wrote is the whole of the initialisation. `constructLocal` carries that
+half, spelled as `ParserExprNew` had already spelled it for `T()` and `new T()`.
+
+| written | what happens |
+| --- | --- |
+| `struct U { int a; int b; U() { a = 1; } }; U u = {};` | `U()` runs, and `b` is left as it was |
+| `struct I { int a; int b; }; I i = {};` | zeroed, then the implicit constructor |
+
+Measured on the arm64 assembly rather than argued: the first calls one function
+and stores nothing, the second stores two zeroes and then calls.
+
+**`= {}` is copy-initialisation and `{}` is not**, which is the whole of what an
+`explicit` default constructor changes - clang refuses `C c = {};` there and
+takes `C c{};`, and so does this.
+
+**What is still refused, and by name.** Braces with a value in them are
+list-initialisation - `P p{1, 2}`, `new P{1}` - which this compiler does not do.
+The refusal says so and names `= {...}`, which for everything it reads braces on
+means the same thing; before this it was `expected ';'` two tokens later.
+`int a[] = {};` is refused because `{}` counts nothing and an array of no
+elements is not C++ - clang calls that an extension and refuses it under
+`-pedantic-errors` too. A member's own initialiser written `int a = {};` keeps
+the refusal it had: that one is replayed as an expression once per constructor,
+which is a different mechanism from any of the above. `auto x{}` now joins
+`auto x = {}` in being refused for the reason that is true of it - deducing from
+braces wants an `initializer_list` - where it used to be told it had no
+initialiser at all.
+
+`tests/cases/value-init-empty-braces.cpp` runs twenty of them,
+`list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
+two refusals.
 
 ## Ordinary C++ this refuses, and none of it is on the ladder
 
@@ -3960,12 +4008,11 @@ calling an operator function by its name - `a.operator+(b)`, `operator+(a, b)`
 - was refused with `'operator' is not supported yet` about a feature this
 compiler has. See "Operator overloading".
 
-**`const S s = {};` - an empty braced initialiser.** clang value-initialises it;
-this says "an initialiser list needs at least one value", which is a rule about
-lists where the question is about `{}` meaning `T()`. It matters more than its
-size: it is the first thing a reader tries after the const refusal above, and
-the two together would otherwise be a wall. `const S s = S();` is the spelling
-that works and the one that refusal names.
+**A fifth was found here and is fixed**: `const S s = {};`, an empty braced
+initialiser, was refused with "an initialiser list needs at least one value" - a
+rule about lists answering a question about `{}` meaning `T()`. It was the first
+thing a reader tried after the const refusal above, so the two together were a
+wall. See "An empty pair of braces is value-initialisation".
 
 ## What is in `tools/`, and what was inherited and is dead
 

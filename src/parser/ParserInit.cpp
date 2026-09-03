@@ -16,8 +16,10 @@ Parser::Init Parser::parseInitialiser() {
     in.pos = peek().pos;
     if (consume("{")) {
         in.isList = true;
-        if (peek().is("}"))
-            src_.fail(in.pos, "an initialiser list needs at least one value");
+        // **`{}` is not an empty list, it is value-initialisation.** [dcl.init]/11
+        // sends it to /8, the paragraph `T()` already follows here; every reader
+        // of an `Init` below takes no items as "zero it", so none tests for this.
+        if (consume("}")) return in;
         for (;;) {
             in.items.push_back(parseInitialiser());
             if (consume("}")) break;
@@ -28,6 +30,18 @@ Parser::Init Parser::parseInitialiser() {
     }
     in.value = assign();
     return in;
+}
+
+bool Parser::atBracedInitialiser(const std::string &name) {
+    if (!peek().is("{")) return false;
+    if (!peekAt(1).is("}"))
+        src_.fail(peek().pos, "'" + name + "{...}' is list-initialisation, and "
+                              "that is not supported yet - write '" + name +
+                              " = {...}', which for everything this compiler "
+                              "reads braces on means the same thing. Empty "
+                              "braces, '" + name + "{}', are read: they "
+                              "value-initialise");
+    return true;
 }
 
 const StrLit *Parser::stringInitialiser(const Init &in, const Type *type) {
@@ -76,6 +90,12 @@ long long Parser::inferredLength(const Init &in, const Type *element, std::size_
     if (!in.isList)
         src_.fail(pos, "an array with no length needs a braced initialiser to "
                        "count, or a string to measure");
+    // `{}` counts nothing, and an array of no elements is not C++ - clang says
+    // the same, calling it an extension it will not take under -pedantic-errors.
+    if (in.items.empty())
+        src_.fail(pos, "'{}' gives an array with no length nothing to count "
+                       "from, and an array of no elements is not C++ - write a "
+                       "length, or a value to take one from");
 
     if (element->isArray() || element->isStructOrUnion()) {
         InitCursor c{ const_cast<std::vector<Init> *>(&in.items), 0 };
@@ -232,6 +252,13 @@ void Parser::emitAggregate(const std::string &name, std::vector<InitStep> &path,
 
 void Parser::emitInit(const std::string &name, std::vector<InitStep> &path,
                       const Type *type, Init &in, std::vector<StmtPtr> &out) {
+    // Value-initialisation, which for everything that reaches here is zeroing:
+    // a class with a constructor to run never does, the declaration parser
+    // takes that shape before an `Init` is built for it.
+    if (in.isList && in.items.empty()) {
+        initZero(name, path, type, in.pos, out);
+        return;
+    }
     if (const StrLit *s = stringInitialiser(in, type)) {
         emitString(name, path, type, s, in.pos, out);
         return;
@@ -584,6 +611,9 @@ void Parser::flattenAggregate(const Type *type, InitCursor &c, int base,
 
 void Parser::flattenInit(const Type *type, Init &in, int base,
                          std::vector<GlobalPiece> &out) {
+    // The same value-initialisation `emitInit` spells with `initZero`, said the
+    // way a global says it: no pieces at all, which `segmentFor` reads as .bss.
+    if (in.isList && in.items.empty()) return;
     if (const StrLit *s = stringInitialiser(in, type)) {
         const std::string &text = s->text();
         if (static_cast<long long>(text.size()) > type->length())

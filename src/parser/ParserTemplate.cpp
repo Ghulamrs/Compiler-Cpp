@@ -852,13 +852,16 @@ const Type *Parser::substituteDeduced(const Type *t, const Type *with) {
 // what it would have seen with the type written out.
 const Type *Parser::deduceAuto(const Type *declared, const std::string &name,
                                std::size_t pos) {
-    if (!peek().is("="))
+    // `auto x{...}` has an initialiser and is refused for the reason below, not
+    // for having none - the braces are what cannot be deduced from, however
+    // they were introduced.
+    if (!peek().is("=") && !peek().is("{"))
         src_.fail(pos, "'" + name + "' is declared 'auto' and has no "
                        "initialiser, so there is nothing to deduce its type "
                        "from");
 
     const std::size_t resume = at_;
-    at_++;                                   // the '='
+    consume("=");
     if (peek().is("{"))
         src_.fail(peek().pos, "'auto' from a braced initialiser is not "
                               "supported yet - it deduces an "
