@@ -3842,10 +3842,11 @@ initialises can never be given a value afterwards, so the declaration is
 ill-formed rather than merely unwise. It is refused now, at a local and at file
 scope alike, `extern` excepted because that declares rather than defines.
 
-**Where the line falls was measured, thirteen shapes against clang, because the
-paragraph's letter and what compilers do are not the same.** [dcl.init]/7 says
-"a class type with a user-provided default constructor"; clang applies CWG 253,
-which asks instead whether anything would be left unset:
+**Where the line falls was measured against all three, fifteen shapes, because
+the paragraph's letter and what compilers do are not the same.** [dcl.init]/7
+says "a class type with a user-provided default constructor"; clang applies CWG
+253, which asks instead whether anything would be left unset - **and g++ answers
+identically on every one of the fifteen**, which is what made it safe to take:
 
 ```cpp
 struct A { int a; };                 const A a;   // refused, and clang refuses
@@ -3858,6 +3859,17 @@ struct G { B b; int n; };            const G g;   // refused, for the same reaso
 const int n;                                      // refused
 const A arr[2];                                   // refused
 ```
+
+**cl is looser, in exactly three of the fifteen, and cxx1 does not follow it.**
+Measured with cl 19.44 at `/std:c++14 /permissive-` - it has no C++11 mode to
+ask: a bare POD local (`const A a;`), an array of one (`const A arr[2];`) and a
+POD at file scope are all accepted there and refused by clang, by g++ and here.
+It refuses `const int n;` and the mixed cases as they do, so its rule is closer
+to "a class is fine, a scalar is not" than to CWG 253's walk. Where a *language*
+rule has the two Itanium oracles agreeing against cl, this tree follows them and
+records the difference - which is the opposite of how an *ABI* question is
+settled, and worth keeping straight: cl is the authority on the Microsoft ABI
+and no authority at all on what C++ means.
 
 `constDefaultInitialisable` is that walk, and it is recursive because the rule
 is: a user-provided constructor answers for the whole class, and otherwise every

@@ -142,6 +142,20 @@ So a program that *counts* constructor calls has no single right answer here,
 and `tests/cases/by-value.cpp` deliberately does not count them.
 `member-init-class.cpp` counts *live objects* instead, which is 0 either way.
 
+## Three const declarations cl accepts and this refuses
+
+`const A a;` for a plain struct, `const A arr[2];`, and the same at file scope
+are ill-formed by [dcl.init]/7 as clang and g++ both read it - CWG 253 - and are
+accepted by cl 19.44 at `/std:c++14 /permissive-`. cxx1 refuses them, so a
+program written against MSVC alone can meet a refusal here.
+
+The three of them are the only shapes of fifteen measured where the oracles
+disagree; cl refuses `const int n;` and the mixed cases exactly as the other two
+do. **This is a language question, not an ABI one**, which is why the two that
+agree win: cl is the authority on the Microsoft ABI and no authority on what C++
+means. `tests/cases/const-uninitialised.cpp` and its `-ok` neighbour pin both
+sides of the line.
+
 ## A `const` member does not make the special members deleted
 
 ```cpp
