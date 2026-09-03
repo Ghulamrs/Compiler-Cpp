@@ -1390,6 +1390,23 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
                            partial ? usePacks : packs, &undo);
 
     at_ = partial ? decl.partials[which].bodyAt : decl.afterParams;
+    // **A specialization is not a member of whatever class asked for it.**
+    // `inner<K> held_;` inside `outer<K>` instantiates `inner<int>` while
+    // `outer<int>`'s body is being read, and the class context still in effect
+    // made the new class nested: it took the tag `outer<int>::inner<int>`, a
+    // name nothing else forms, so its constructor and destructor were declared
+    // under one name and emitted under none. `vector` inside `map` is that
+    // shape, and it is the shape of any container built out of another.
+    //
+    // The enclosing namespace is deliberately left alone - a template declared
+    // in `std` specializes into `std` - and only the class nesting is dropped.
+    std::vector<const Type *> outerClasses;
+    outerClasses.swap(classStack_);
+    const Type *outerCurrent = currentClass_;
+    currentClass_ = nullptr;
+    const std::string outerInline = inlineOwner_;
+    inlineOwner_.clear();
+
     classInstantiationTag_ = tag;
     if (partial) classInstantiationOf_ = decl.name;
     instantiatingArgs_ = args;
@@ -1404,6 +1421,9 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     classInstantiationTag_.clear();
     classInstantiationOf_.clear();
     instantiatingArgs_.clear();
+    classStack_.swap(outerClasses);
+    currentClass_ = outerCurrent;
+    inlineOwner_ = outerInline;
     deferSpecializationBodies_ = wasDeferring;
     std::vector<PendingBody> bodies;
     bodies.swap(heldForSpecialization_);

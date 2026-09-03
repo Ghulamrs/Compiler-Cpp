@@ -1,0 +1,43 @@
+// <utility> - `pair`, and the two functions that go with it.
+//
+// It is here because `<map>` needs it: a map's element *is* a pair, and its
+// iterator is a pointer to one, so `it->first` and `it->second` are an ordinary
+// member access through an ordinary pointer.
+#ifndef _CXX1_UTILITY
+#define _CXX1_UTILITY
+
+#include <cstddef>
+
+namespace std {
+
+// **`first` and `second` are public and that is the whole of the type.** The
+// constructors are here so a pair can be built in one expression; the copy and
+// the assignment are the compiler's, which is right because a pair owns nothing
+// beyond whatever its members own.
+template <class T1, class T2>
+struct pair {
+    typedef T1 first_type;
+    typedef T2 second_type;
+
+    pair() : first(), second() {}
+    pair(const T1 &a, const T2 &b) : first(a), second(b) {}
+
+    T1 first;
+    T2 second;
+};
+
+template <class T1, class T2>
+static pair<T1, T2> make_pair(const T1 &a, const T2 &b) {
+    return pair<T1, T2>(a, b);
+}
+
+template <class T>
+static void swap(T &a, T &b) {
+    T held(a);
+    a = b;
+    b = held;
+}
+
+}  // namespace std
+
+#endif

@@ -318,6 +318,14 @@ std::size_t Parser::qualifiedTypeEnd() const {
          k += 2) {
         q += "::" + peekAt(k + 1).text;
         if (findTypedef(q) != nullptr) typeEnd = k + 2;
+        // **`std::vector<int> v;` - the name stops at a class template too.**
+        // A template is not a type until its arguments are given, so the `<`
+        // is part of the question: without it `std::vector` names nothing that
+        // could be declared, and with it the whole thing is a type. Read as a
+        // typedef only, a qualified template name was not a declaration at all
+        // and the statement went to the expression path, which reported the
+        // template "was not declared in 'std'".
+        if (peekAt(k + 2).is("<") && isClassTemplate(q)) typeEnd = k + 2;
     }
     return typeEnd;
 }

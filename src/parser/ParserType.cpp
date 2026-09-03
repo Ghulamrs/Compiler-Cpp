@@ -859,7 +859,7 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // named where a type was expected is not, and is refused by name.
     if (peek().kind == TokenKind::Ident && isTemplateName(peek().text) &&
         peekAt(1).is("<")) {
-        const TemplateDecl decl = templates_[peek().text];
+        const TemplateDecl decl = findTemplate(peek().text)->second;
         if (!decl.isClass) refuseTemplateId();
         const std::size_t tpos = peek().pos;
         at_++;
@@ -882,6 +882,14 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
             std::string q = peek().text;
             const Type *found = nullptr;
             std::size_t consumed = 0;
+            // **`std::vector<int>` - a class template named qualified.** The
+            // same walk, stopping at a template instead of a typedef, with the
+            // `<` part of the question: a template is not a type until its
+            // arguments are given. Tracked separately from `found` so that the
+            // longer of the two wins, which is the rule this loop already has
+            // for `Outer::Inner`.
+            std::string tmpl;
+            std::size_t tmplConsumed = 0;
             for (std::size_t k = 1; peekAt(k).is("::") &&
                                     peekAt(k + 1).kind == TokenKind::Ident;
                  k += 2) {
@@ -890,6 +898,17 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
                     found = n;
                     consumed = k + 2;
                 }
+                if (peekAt(k + 2).is("<") && isClassTemplate(q)) {
+                    tmpl = q;
+                    tmplConsumed = k + 2;
+                }
+            }
+            if (tmplConsumed > consumed) {
+                const std::size_t tpos = peek().pos;
+                at_ += tmplConsumed;
+                const Type *cls = instantiateClass(findTemplate(tmpl)->second,
+                                                   tpos);
+                return memberTypeWalk(cls);
             }
             if (found != nullptr) {
                 // A nested class is a member, and `private:` reaches it.
@@ -1290,7 +1309,7 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
     // name just read is a class template, so what follows it is an argument list and
     // the class it makes is the qualifier. The rest is read by the loop below.
     {
-        auto tmpl = templates_.find(name);
+        auto tmpl = findTemplate(name);
         if (!name.empty() && peek().is("<") && tmpl != templates_.end() &&
             tmpl->second.isClass) {
             const std::size_t tpos = pos;

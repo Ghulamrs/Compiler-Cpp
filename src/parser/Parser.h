@@ -208,6 +208,33 @@ private:
         std::vector<Partial> partials;
     };
     std::map<std::string, TemplateDecl> templates_;
+    // **A template is keyed by its bare name, and named by either spelling.**
+    // `std::pair<int, char>` and, from inside `std` or under a directive that
+    // opens it, `pair<int, char>` are the same template - so the qualified form
+    // drops the namespaces in front of the name before it looks. Registering
+    // under the qualified name instead would be tidier and is a bigger change:
+    // twelve sites read this table, two of them by a key stored on a Type.
+    //
+    // The limit that comes with the bare key, written down because it is real:
+    // two namespaces cannot each have a template of the same name. That was
+    // already true before either spelling could find one, so this widens what
+    // can be *named* without widening what can be *declared*.
+    std::map<std::string, TemplateDecl>::const_iterator
+    findTemplate(const std::string &written) const {
+        std::map<std::string, TemplateDecl>::const_iterator it =
+            templates_.find(written);
+        if (it != templates_.end()) return it;
+        const std::string::size_type cut = written.rfind("::");
+        if (cut == std::string::npos) return templates_.end();
+        return templates_.find(written.substr(cut + 2));
+    }
+    // Whether a name, either spelling, is a class template - which is the one
+    // question the type and expression paths both have to ask.
+    bool isClassTemplate(const std::string &written) const {
+        std::map<std::string, TemplateDecl>::const_iterator it =
+            findTemplate(written);
+        return it != templates_.end() && it->second.isClass;
+    }
 
     // ---- Rung 5.2: function templates, explicit arguments ----
     // One specialization that has been asked for. The body is not written where the

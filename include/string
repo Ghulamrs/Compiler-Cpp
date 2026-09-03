@@ -136,14 +136,18 @@ public:
         return npos;
     }
 
-    size_type find_first_of(const char *set) const {
+    // The parameter is `wanted` and not `set`, which it was: once `<set>` is
+    // included as well, `set` names a class template, and this compiler reads
+    // the template in preference to the parameter that shadows it. A header
+    // has no business using a library name for a parameter either way.
+    size_type find_first_of(const char *wanted) const {
         for (size_type i = 0; i < len_; i++)
-            if (std::strchr(set, buf_[i]) != 0 && buf_[i] != 0) return i;
+            if (std::strchr(wanted, buf_[i]) != 0 && buf_[i] != 0) return i;
         return npos;
     }
-    size_type find_last_of(const char *set) const {
+    size_type find_last_of(const char *wanted) const {
         for (size_type i = len_; i-- > 0; )
-            if (std::strchr(set, buf_[i]) != 0 && buf_[i] != 0) return i;
+            if (std::strchr(wanted, buf_[i]) != 0 && buf_[i] != 0) return i;
         return npos;
     }
 

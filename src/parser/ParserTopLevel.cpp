@@ -1078,8 +1078,26 @@ Program Parser::parse() {
     current_ = &program;
     while (peek().kind != TokenKind::End)
         topLevel(program);
-    instantiatePending();
-    defineImplicitFunctions();
+    // **Each of these two can give the other more to do, so they alternate.**
+    // A template's member body is replayed only once something uses it, and an
+    // implicit constructor is synthesised only once something needs one - and a
+    // synthesised constructor is a *use*. `inner<K> held_;` inside `outer<K>`
+    // is the shape: `outer<int>`'s implicit constructor calls
+    // `inner<int>::inner()`, and it was synthesised after the replay had
+    // finished, so that constructor was declared under a name nothing emitted.
+    // Run once each, the program linked only when the inner template happened
+    // to be named at top level too.
+    //
+    // The loop ends when neither adds a function. The bound is a guard against
+    // a cycle rather than a limit on depth: each pass emits at least one
+    // function or stops, so a program needing more passes than this has
+    // something else wrong with it.
+    for (int pass = 0; pass < 64; pass++) {
+        const std::size_t had = program.functions.size();
+        instantiatePending();
+        defineImplicitFunctions();
+        if (program.functions.size() == had) break;
+    }
     if (program.functions.empty())
         src_.fail(0, "the file defines no functions");
     return program;

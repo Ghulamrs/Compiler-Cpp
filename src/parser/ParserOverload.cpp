@@ -53,6 +53,20 @@ int publicBaseOffset(const Type *derived, const Type *base);
 ExprPtr Parser::convert(ExprPtr e, const Type *to) const {
     if (e->type() == to) return e;
 
+    // **A class differing only in const-ness is the same object**, so there is
+    // nothing here to convert: [conv.qual] changes the type and not the value,
+    // and the object keeps its address and its bytes. Re-labelled rather than
+    // cast, because the Cast below reaches `genConversion`, which reads a class
+    // as a scalar and truncates its address to the object's *size* - so a 1, 2
+    // or 4-byte class copied from a `const` reference segfaulted, while 8 bytes
+    // and up survived because the truncation happened to keep the whole
+    // pointer. `struct N { int id; };` in a `vector` is how it was met.
+    if (to->unqualified() == e->type()->unqualified() &&
+        to->unqualified()->isStructOrUnion()) {
+        e->setType(to);
+        return e;
+    }
+
     // **Derived * to Base * moves the value where the base is not the first one**
     // - B at 4 walks the pointer forward by four. The null check is the rule and
     // not caution: a null pointer converts to one, and `(char *)0 + 4` is not null.

@@ -1,0 +1,147 @@
+// <vector> - a growing array.
+//
+// **The iterator is a pointer.** `vector<T>::iterator` is `T *` and nothing
+// more, which is the simplification that makes this header short: `++it`, `*it`,
+// `it->m`, `it != v.end()` and `std::copy(v.begin(), v.end(), ...)` are all the
+// built-in operations on a pointer, so none of them has to be written here. A
+// conforming library wraps the pointer in a class to catch a `vector<int>`
+// iterator being compared against a `vector<char>` one; this does not, and that
+// is the cost.
+//
+// It follows that **any insertion invalidates every iterator**, as it does in a
+// real vector when the buffer is regrown, and that `begin()` on an empty vector
+// answers null rather than a valid one-past-the-end - which is why `begin()` and
+// `end()` are both null then, and comparing them still works.
+//
+// The elements are owned: the copy constructor copies them, the assignment
+// replaces them, and the destructor destroys them. What is *not* here is
+// element destruction on `pop_back`, `clear` or `erase` - the slot is dropped
+// and the object in it is not destroyed. For a `vector<T *>` or a
+// `vector<POD>`, which is every use in the tree this was written for, that is
+// exactly right; for a `vector<string>` it leaks. Written down rather than
+// hidden, because this header is honest about being a subset.
+#ifndef _CXX1_VECTOR
+#define _CXX1_VECTOR
+
+#include <cstddef>
+#include <cstdlib>
+
+namespace std {
+
+template <class T>
+class vector {
+public:
+    typedef std::size_t size_type;
+    typedef T *iterator;
+    typedef const T *const_iterator;
+
+    vector() : items_(0), size_(0), cap_(0) {}
+    vector(const vector &o) : items_(0), size_(0), cap_(0) { copyFrom(o); }
+    vector(size_type n, const T &v) : items_(0), size_(0), cap_(0) {
+        reserve(n);
+        for (size_type i = 0; i < n; i++) push_back(v);
+    }
+    ~vector() { std::free(items_); }
+
+    vector &operator=(const vector &o) {
+        if (this != &o) {
+            std::free(items_);
+            items_ = 0;
+            size_ = 0;
+            cap_ = 0;
+            copyFrom(o);
+        }
+        return *this;
+    }
+
+    void push_back(const T &v) {
+        if (size_ == cap_) grow(cap_ == 0 ? 4 : cap_ * 2);
+        items_[size_] = v;
+        size_++;
+    }
+    void pop_back() { if (size_ != 0) size_--; }
+
+    size_type size() const { return size_; }
+    bool empty() const { return size_ == 0; }
+    void clear() { size_ = 0; }
+
+    T &operator[](size_type i) { return items_[i]; }
+    const T &operator[](size_type i) const { return items_[i]; }
+    T &at(size_type i) { return items_[i]; }
+    const T &at(size_type i) const { return items_[i]; }
+
+    T &back() { return items_[size_ - 1]; }
+    const T &back() const { return items_[size_ - 1]; }
+    T &front() { return items_[0]; }
+    const T &front() const { return items_[0]; }
+
+    iterator begin() { return items_; }
+    iterator end() { return items_ + size_; }
+    const_iterator begin() const { return items_; }
+    const_iterator end() const { return items_ + size_; }
+
+    void reserve(size_type n) { if (n > cap_) grow(n); }
+
+    void resize(size_type n, const T &v) {
+        if (n > size_) {
+            reserve(n);
+            for (size_type i = size_; i < n; i++) items_[i] = v;
+        }
+        size_ = n;
+    }
+    void resize(size_type n) {
+        if (n > size_) reserve(n);
+        size_ = n;
+    }
+
+    // **`insert` and `erase` take a pointer into this vector**, which is what
+    // the iterator is. `insert` answers a pointer to the element put in, and
+    // that pointer is only good until the next insertion.
+    iterator insert(iterator at, const T &v) {
+        const size_type where = (size_type)(at - items_);
+        if (size_ == cap_) grow(cap_ == 0 ? 4 : cap_ * 2);
+        for (size_type i = size_; i > where; i--) items_[i] = items_[i - 1];
+        items_[where] = v;
+        size_++;
+        return items_ + where;
+    }
+    iterator erase(iterator at) {
+        const size_type where = (size_type)(at - items_);
+        for (size_type i = where; i + 1 < size_; i++) items_[i] = items_[i + 1];
+        if (size_ != 0) size_--;
+        return items_ + where;
+    }
+
+private:
+    void copyFrom(const vector &o) {
+        reserve(o.size_);
+        for (size_type i = 0; i < o.size_; i++) push_back(o.items_[i]);
+    }
+    // **The buffer is zeroed, and that is not tidiness.** A slot is filled by
+    // assigning into it - `items_[size_] = v` - and nothing has constructed the
+    // object that assignment is writing over. A real library places the object
+    // into raw storage instead; there is no placement new here, so the storage
+    // is made into something an assignment may legally overwrite.
+    //
+    // Zero is that something **for every class in this library and not in
+    // general**: a zeroed `string` is buf_ 0, len_ 0, cap_ 0, which its
+    // assignment reads as an empty string, and a zeroed `vector` likewise. A
+    // class whose zero state is not a valid object cannot go in one of these,
+    // and `vector<vector<int> >` segfaulting on `free()` of a garbage pointer
+    // is what asking showed.
+    void grow(size_type want) {
+        T *fresh = (T *)std::calloc(want, sizeof(T));
+        for (size_type i = 0; i < size_; i++) fresh[i] = items_[i];
+        std::free(items_);
+        items_ = fresh;
+        cap_ = want;
+    }
+
+    T *items_;
+    size_type size_;
+    size_type cap_;
+};
+
+}  // namespace std
+
+#endif

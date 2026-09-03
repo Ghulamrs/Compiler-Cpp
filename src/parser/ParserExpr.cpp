@@ -819,6 +819,15 @@ ExprPtr Parser::primary(Program *program) {
             scope += "::" + peek().text;
             at_ += 2;
         }
+        // **`std::copy(a, b, c)` - a function template named qualified.** The
+        // namespaces are consumed by the loop above, so what is left at `peek()`
+        // is exactly what the unqualified path reads, and templateCall can take
+        // it unchanged. Asked before the name is read as a plain identifier,
+        // which would look it up as an ordinary function and report that a
+        // prototype must come first.
+        if (peek().kind == TokenKind::Ident && isTemplateName(peek().text))
+            return templateCall(program);
+
         const std::string full = scope + "::" + expectIdent("a name");
         if (consume("(")) {
             std::vector<ExprPtr> args;
