@@ -5,14 +5,27 @@ code in this repository.
 
 ## Two languages, and they are not the same one
 
-**`src/` is ISO C++14. The language `cxx1` compiles is C++11.** Keep these
-apart in every sentence you write about this project, because almost every
-confusing question here comes from conflating them.
+**`src/` is ISO C++14. The language `cxx1` compiles is C++11 — minus the list
+in `docs/EXCLUSIONS.md`, and with no C++ standard library at all.** Keep the
+two languages apart in every sentence you write about this project, because
+almost every confusing question here comes from conflating them.
 
 The consequence worth stating up front: **this compiler can never compile
 itself**, and that is deliberate rather than a gap. A C++11 compiler cannot
 read C++14 source. Self-hosting is not a milestone here and offering it as one
 is a mistake — see "How correctness is established" for what replaces it.
+
+**The subset is not a footnote, and "C++11" on its own was a claim this
+compiler cannot support.** `dynamic_cast` is refused — it is a rung of its own,
+not a missing branch — conversion functions do not exist, and `lib/` is sixteen
+**C** headers, so there is no `<string>`, no `<vector>` and no `std::` at all.
+An ordinary conforming C++98 program therefore does not compile here, and a
+reader who took the headline at its word would meet that with nowhere to look.
+`docs/EXCLUSIONS.md` is the list: 103 refusal sites at `1799815`, derived from
+the source by `tools/exclusions` rather than written by hand, and
+`tools/exclusions --check docs/EXCLUSIONS.md` reports every refusal the
+document does not cite. This is the tree's own rule 5 — *a claim with no oracle
+is not allowed to be believed* — applied to the first sentence of this file.
 
 `-std=c++14 -Wall -Wextra -Werror -pedantic` in the `Makefile`. A Mac cannot
 enforce C++14: Apple's libc++ hands you `std::string_view` in C++14 mode, so a
@@ -50,8 +63,10 @@ existed; what was missing was the list.
 5. **The suites**: the header comments of `tests/run.sh`, `tests/emit.sh`,
    `tests/names.sh`, `tests/overload.sh`, then `tools/verify-three`, which is
    the three-box rule with a command behind it.
-6. **`docs/`**: `CONFORMANCE.md` for what compiles and should not, the newest
-   `HANDOVER-*.md` for where a round stopped, and
+6. **`docs/`**: `EXCLUSIONS.md` for what this compiler does not accept — read
+   it before writing a program for cxx1, since it is the difference between
+   "C++11" and what is actually here — then `CONFORMANCE.md` for what compiles
+   and should not, the newest `HANDOVER-*.md` for where a round stopped, and
    `DESIGN-REVIEW-2026-09-02.md` for what to change next and what not to.
 
 **What this file is *for*, once that reading is done**, is the measurement
