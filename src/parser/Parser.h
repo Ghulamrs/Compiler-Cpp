@@ -531,7 +531,11 @@ private:
     // How well one argument matches one parameter, in the order [over.ics.scs] ranks
     // them - the values are compared, so do not reorder this enum. **Identity and
     // Qualification are both "Exact Match" and still not equal**: [over.ics.rank]/3.2.1.
-    enum class Rank { Identity, Qualification, Promotion, Conversion, Ellipsis, None };
+    // **UserDefined sits below every standard conversion and above the
+    // ellipsis** - [over.ics.rank]/2: a sequence with a converting constructor
+    // in it is worse than any sequence without one, however bad that one is.
+    enum class Rank { Identity, Qualification, Promotion, Conversion,
+                      UserDefined, Ellipsis, None };
     // `ranksObjectA`/`B` say whether that candidate's rank vector opens with an
     // implicit object parameter, which is how a rank position is mapped back to
     // the parameter it came from - a member and a non-member operator are ranked
@@ -1053,6 +1057,21 @@ private:
     StmtPtr microsoftThrow(ExprPtr value, std::size_t pos);
     // A call to something in the runtime, named by its symbol and needing no
     // declaration - the same shape callAllocator has used for operator new.
+    // A temporary built by a named constructor from arguments already parsed.
+    ExprPtr constructTemporary(const Type *plain, const Signature &ctor,
+                               std::vector<ExprPtr> args, bool zeroFirst,
+                               std::size_t pos);
+    // **[over.ics.user]: the one converting constructor that could make `to`
+    // out of `from`**, or null. Non-explicit, one parameter, and not the copy
+    // constructor - a copy is not a conversion. Two of them is an ambiguity and
+    // answers null, because guessing is worse than refusing.
+    const Signature *convertingConstructor(const Type *to, const Expr &from);
+    // **Only one user-defined conversion may appear in a sequence** -
+    // [over.ics.user]/1 - so this is the rule and not only a guard against the
+    // recursion that asking about a constructor's own parameter would start.
+    int rankingConversion_ = 0;
+    // The conversion itself, or null when none is needed or possible.
+    ExprPtr userConversion(const Type *param, ExprPtr &arg, std::size_t pos);
     ExprPtr runtimeCall(const char *symbol, const Type *returns,
                         std::vector<ExprPtr> args);
     ExprPtr callAllocator(const char *itanium, const char *microsoft,

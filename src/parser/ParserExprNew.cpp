@@ -164,7 +164,65 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
                        "taking these arguments - the one that matches is " +
                        (ctor.access == Access::Private ? "private" : "protected"));
     const bool zeroFirst = valueInit && ctor.implicit;
+    return constructTemporary(plain, ctor, std::move(args), zeroFirst, pos);
+}
 
+// **[over.ics.user]: the constructor that could make `to` out of `from`.**
+// One parameter, not `explicit`, and not a copy of `to` itself - copying is not
+// converting, and letting it count here would make every argument of the right
+// type look like a conversion. Two candidates is an ambiguity and answers null:
+// the standard refuses such a call, and so does this by finding nothing.
+const Parser::Signature *Parser::convertingConstructor(const Type *to,
+                                                       const Expr &from) {
+    const Type *plain = to->unqualified();
+    if (!plain->isStructOrUnion()) return nullptr;
+    const std::vector<std::size_t> *set = overloadsOf(constructorKey(plain->tag()));
+    if (set == nullptr) return nullptr;
+
+    const Signature *found = nullptr;
+    for (std::size_t k = 0; k < set->size(); k++) {
+        const Signature &c = functions_[(*set)[k]];
+        if (c.isExplicit || c.params.size() != 1) continue;
+        const Type *want = c.params[0];
+        const Type *bare = want->isReference() ? want->pointee()->unqualified()
+                                               : want->unqualified();
+        if (bare == plain) continue;                 // the copy constructor
+        if (rankArgument(from, want) == Rank::None) continue;
+        if (found != nullptr) return nullptr;        // ambiguous, so neither
+        found = &c;
+    }
+    return found;
+}
+
+// **The conversion an argument needs to become the parameter's class**, or null
+// where none is needed or possible. A reference parameter takes one only where
+// it is const: a temporary has nowhere to live otherwise, which is the rule that
+// stops `f(string &)` accepting a literal.
+ExprPtr Parser::userConversion(const Type *param, ExprPtr &arg, std::size_t pos) {
+    const Type *want = param->isReference() ? param->pointee() : param;
+    const Type *plain = want->unqualified();
+    if (!plain->isStructOrUnion()) return nullptr;
+    if (param->isReference() && !want->isConst()) return nullptr;
+    if (arg->type() == nullptr) return nullptr;
+    if (arg->type()->unqualified() == plain) return nullptr;
+
+    const Signature *ctor = convertingConstructor(plain, *arg);
+    if (ctor == nullptr) return nullptr;
+    markUsed(ctor);
+
+    std::vector<ExprPtr> one;
+    one.push_back(std::move(arg));
+    return constructTemporary(plain, *ctor, std::move(one), false, pos);
+}
+
+// **A temporary of `plain`, built by `ctor`, from arguments already parsed.**
+// The tail of `T(...)` with the reading taken off the front, so that an implicit
+// conversion - which has an argument but no tokens - builds the same thing the
+// written form does. One shape, not two: the alternative was a second copy of
+// this in the conversion path, which is the house bug.
+ExprPtr Parser::constructTemporary(const Type *plain, const Signature &ctor,
+                                   std::vector<ExprPtr> args, bool zeroFirst,
+                                   std::size_t pos) {
     const int slot = allocateFrameSlot(plain);
     if (destructorOf(plain) != nullptr)
         pendingTemps_.push_back(std::make_pair(slot, plain));

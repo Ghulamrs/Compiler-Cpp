@@ -7,12 +7,10 @@
 // worth repeating is that **every insertion invalidates every iterator**, where
 // a real map invalidates none.
 //
-// The keys are written `std::string("ada")` and not `"ada"` throughout, which
-// is not how anyone writes this. A literal where a `const std::string &` is
-// wanted needs a user-defined conversion in overload resolution - the
-// converting constructor called to make the argument - and this compiler does
-// that in an initialisation but not in a call. It is the next thing the library
-// needs and the reason this case reads the way it does.
+// The keys are written `"ada"` and not `std::string("ada")`, which is how
+// anyone writes this and which needed [over.ics.user] - a converting
+// constructor called to make an argument - to land first. This case read the
+// long way round for exactly one commit.
 //
 // What is checked: that `operator[]` inserts a default value and then replaces
 // rather than adds, that `find` and `count` answer without inserting, that the
@@ -28,17 +26,17 @@
 extern "C" int printf(const char *, ...);
 int main(void) {
     std::map<std::string, int> ages;
-    ages[std::string(std::string("ada"))] = 36;
-    ages[std::string(std::string("alan"))] = 41;
-    ages[std::string(std::string("grace"))] = 85;
-    ages[std::string(std::string("ada"))] = 37;                                 // replaces, not adds
-    printf("%d %d %d\n", (int)ages.size(), ages[std::string(std::string("ada"))], ages[std::string(std::string("grace"))]);
+    ages["ada"] = 36;
+    ages["alan"] = 41;
+    ages["grace"] = 85;
+    ages["ada"] = 37;                                 // replaces, not adds
+    printf("%d %d %d\n", (int)ages.size(), ages["ada"], ages["grace"]);
 
-    printf("%d %d\n", (int)ages.count(std::string("alan")), (int)ages.count(std::string("nobody")));
+    printf("%d %d\n", (int)ages.count("alan"), (int)ages.count("nobody"));
 
-    std::map<std::string, int>::iterator it = ages.find(std::string("alan"));
+    std::map<std::string, int>::iterator it = ages.find("alan");
     printf("%s %d %d\n", it->first.c_str(), it->second,
-           ages.find(std::string("nobody")) == ages.end());
+           ages.find("nobody") == ages.end());
 
     int total = 0;
     for (std::map<std::string, int>::iterator i = ages.begin(); i != ages.end(); ++i)
@@ -57,11 +55,11 @@ int main(void) {
     printf("%d %d %d\n", counts[7], counts[3], (int)counts.size());
 
     std::set<std::string> seen;
-    seen.insert(std::string("b"));
-    seen.insert(std::string("a"));
-    seen.insert(std::string("b"));
-    printf("%d %d %d\n", (int)seen.size(), (int)seen.count(std::string("a")),
-           (int)seen.count(std::string("z")));
+    seen.insert("b");
+    seen.insert("a");
+    seen.insert("b");
+    printf("%d %d %d\n", (int)seen.size(), (int)seen.count("a"),
+           (int)seen.count("z"));
     for (std::set<std::string>::iterator i = seen.begin(); i != seen.end(); ++i)
         printf("%s ", i->c_str());
     printf("\n");

@@ -280,6 +280,15 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
             continue;
         }
         std::string what = "argument " + std::to_string(i + 1) + " of '" + name + "'";
+        // **[over.ics.user]: a converting constructor may be called to make an
+        // argument.** `f("x")` where the parameter is `const std::string &`
+        // builds the string here, before the branches below - which know how to
+        // bind a reference and how to copy a class, and neither of which knows
+        // how to make one. Ranked as its own step in rankArgument, below every
+        // standard conversion, so a candidate needing this loses to one that
+        // does not.
+        if (ExprPtr made = userConversion(params[i], args[i], pos))
+            args[i] = std::move(made);
         if (params[i]->isReference()) {
             args[i] = bindReference(params[i], std::move(args[i]), pos, what);
             continue;

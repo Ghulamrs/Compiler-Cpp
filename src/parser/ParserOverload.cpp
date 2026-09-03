@@ -219,7 +219,22 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     // object - not a worse match, no match. More is a rung of its own.
     if (param->isReference()) {
         const Type *want = param->pointee();
-        if (want->unqualified() != given->unqualified()) return Rank::None;
+        if (want->unqualified() != given->unqualified()) {
+            // **A `const T &` takes a temporary, so it takes a conversion.**
+            // [over.ics.user] with [dcl.init.ref]: the converting constructor
+            // makes an object and the reference binds to it. A non-const
+            // reference gets nothing, because that object has nowhere to live
+            // beyond the call and binding to it would be a promise to write
+            // somewhere the caller can read.
+            if (want->isConst() && want->unqualified()->isStructOrUnion() &&
+                rankingConversion_ == 0) {
+                rankingConversion_++;
+                const Signature *made = convertingConstructor(want, arg);
+                rankingConversion_--;
+                if (made != nullptr) return Rank::UserDefined;
+            }
+            return Rank::None;
+        }
         if (!want->isConst() && given->isConst()) return Rank::None;
 
         // **Which reference will take this argument is a question about the
@@ -293,6 +308,17 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     // ambiguous, measured.
     if (to->isNullPtr() && from->isInteger())
         return isNullConstant(arg) ? Rank::Conversion : Rank::None;
+
+    // **Last of all, a converting constructor** - [over.ics.rank]/2 puts a
+    // user-defined conversion below every standard one, so this is asked only
+    // where nothing above it answered. A by-value class parameter reaches here
+    // the same way a `const T &` does above.
+    if (to->unqualified()->isStructOrUnion() && rankingConversion_ == 0) {
+        rankingConversion_++;
+        const Signature *made = convertingConstructor(to, arg);
+        rankingConversion_--;
+        if (made != nullptr) return Rank::UserDefined;
+    }
 
     return Rank::None;
 }

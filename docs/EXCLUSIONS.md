@@ -44,7 +44,7 @@ a grep is not.
 than they fire. `template <>` at `src/parser/ParserTemplate.cpp:38` is refused
 where a template parameter list is expected, while
 `template <> struct Box<int> { … };` compiles; the functional-cast temporary at
-`src/parser/ParserOverload.cpp:555` is refused during overload ranking, while
+`src/parser/ParserOverload.cpp:581` is refused during overload ranking, while
 `take(P(4))` and `P q = P(3);` compile. Both were checked with a program before
 this sentence was written, and the same habit is the reason `pending[]` had
 eight keywords in it that were implemented.
@@ -68,13 +68,11 @@ half of those needs nothing new - a prototype of `cout << x << endl` compiles
 and runs - and the input half needs a conversion function, `if (stream >> v)`
 being a stream converted to bool, which is the exclusion above.
 
-**And one thing the containers need to be written the way anyone writes them:**
-a user-defined conversion in overload resolution. `m["key"]` and `f(literal)`
-where the parameter is `const std::string &` want the converting constructor
-called to make the argument, and this compiler does that in an initialisation
-and not in a call - [over.ics.user]. Until it does, a literal has to be spelled
-`std::string("key")`, which is what tests/cases/include-map-set.cpp does and
-says.
+A converting constructor is called to make an argument now - [over.ics.user] -
+so `m["key"]` and `f(literal)` against a `const std::string &` parameter work,
+and the containers are written the way anyone writes them. What that rule does
+*not* do is chain: at most one user-defined conversion per sequence, so nothing
+makes a `Far` out of an `int` because a `Near` sits between them.
 
 Two limits the headers themselves carry, both compiler limits rather than
 choices. **There is no `inline`**, and no weak or linkonce linkage to give it,
@@ -109,11 +107,11 @@ What is left of it:
 
 - **`dynamic_cast` to a reference** — it has no null to answer with, so a
   failure throws `std::bad_cast`, and there is no C++ standard library here to
-  throw it from. `src/parser/ParserExprNew.cpp:242`
+  throw it from. `src/parser/ParserExprNew.cpp:300`
 - **`dynamic_cast` naming a class with more than one base** — that wants
   `__vmi_class_type_info`, a third shape carrying the bases' offsets and flags.
   Such a class still compiles and its vtable still works; only the cast is
-  refused. `src/parser/ParserExprNew.cpp:307`
+  refused. `src/parser/ParserExprNew.cpp:365`
 - **`typeid`** — in the keyword table below. Nothing emits a `type_info` for a
   *fundamental* type either; a class's is what landed.
 
@@ -251,22 +249,22 @@ it is written:
 - **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:640`
 - **a functional-cast temporary reached through overload ranking** — a
   converting constructor is not tried at a call.
-  `src/parser/ParserOverload.cpp:555`
+  `src/parser/ParserOverload.cpp:581`
 
 ## `new` and `delete`
 
 - **placement new**, and a parenthesised type-id after `new` —
-  `src/parser/ParserExprNew.cpp:515`
+  `src/parser/ParserExprNew.cpp:573`
 - **more than one value in a new-expression** —
-  `src/parser/ParserExprNew.cpp:594`
+  `src/parser/ParserExprNew.cpp:652`
 - **`new T[n]` of a class with a constructor** —
-  `src/parser/ParserExprNew.cpp:601`
+  `src/parser/ParserExprNew.cpp:659`
 - **`new T[n][m]`** — only the first dimension may be given.
-  `src/parser/ParserExprNew.cpp:543`
-- **`new T{...}`** — `src/parser/ParserExprNew.cpp:568`
-- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:803`
+  `src/parser/ParserExprNew.cpp:601`
+- **`new T{...}`** — `src/parser/ParserExprNew.cpp:626`
+- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:861`
 - **`delete[]` of a type with a destructor** — the count `new[]` would have
-  recorded is not written. `src/parser/ParserExprNew.cpp:871`
+  recorded is not written. `src/parser/ParserExprNew.cpp:929`
 
 ## Statements, exceptions and control
 
