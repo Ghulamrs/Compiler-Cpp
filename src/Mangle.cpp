@@ -573,8 +573,14 @@ public:
         }
         scopeOf(clsType, cls, localOwner);
         out += access;            // Q public, I protected, A private
-        out += 'E';               // this is __ptr64
-        out += constThis ? 'B' : 'A';
+        // **A static member has no `this`, so it spells none.** S, K and C are
+        // the static codes - public, protected, private - and after one the
+        // calling convention follows immediately: `?pub@S@@SAHH@Z` against a
+        // non-static `?nonstatic@S@@QEAAHH@Z`. Measured against clang.
+        if (access != 'S' && access != 'K' && access != 'C') {
+            out += 'E';           // this is __ptr64
+            out += constThis ? 'B' : 'A';
+        }
         out += 'A';               // __cdecl
         returnType(fn->returns());
         const std::vector<const Type *> &params = fn->params();

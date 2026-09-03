@@ -529,11 +529,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
             // **A static member is not part of the object**, so it leaves the
             // layout untouched and the cursor where it was.
-            if (msc == StorageStatic) {
-                if (peek().is("("))
-                    src_.fail(d.pos, "'" + d.name + "' is a static member "
-                                     "function, which is not supported yet - a "
-                                     "static data member works now");
+            if (msc == StorageStatic && !peek().is("(")) {
                 declareStaticMember(tag, type, d, access);
                 if (!consume(",")) break;
                 continue;
@@ -602,12 +598,25 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             // declarator leaves the parameter list for its caller, as a free
             // function's does. It goes in the same table, under "Point::get".
             if (peek().is("(")) {
+                const bool memberIsStatic = msc == StorageStatic;
                 std::vector<const Type *> mparams;
                 bool mvariadic = false;
                 parameterTypes(mparams, mvariadic);
                 d.type = types_.functionType(d.type, std::move(mparams), mvariadic);
                 bool constThis = false;
                 if (consume("const")) constThis = true;
+                // [class.static]/1: a static member function has no `this`, so
+                // there is nothing for either of these to qualify. Refused where
+                // written - a `const` quietly dropped would change a mangled
+                // name and nothing else, which is the worst kind of silence.
+                if (memberIsStatic && constThis)
+                    src_.fail(d.pos, "'" + d.name + "' is a static member "
+                                     "function and has no 'this', so 'const' "
+                                     "has nothing to qualify");
+                if (memberIsStatic && isVirtual)
+                    src_.fail(d.pos, "'" + d.name + "' cannot be both 'static' "
+                                     "and 'virtual' - one says there is no "
+                                     "object and the other dispatches on one");
                 pendingNoexcept_ = exceptionSpecification();
                 // **A `constexpr` member function is implicitly const in C++11**, and
                 // that is a mangling difference: clang spells it `_ZNK1B5twiceEi`.
@@ -622,7 +631,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                         src_.fail(d.pos, "a member function needs a class with "
                                          "a name - this one is anonymous");
                     declareMember(tag, d, constThis, access,
-                                  kind == Kind::Union, isVirtual);
+                                  kind == Kind::Union, isVirtual, memberIsStatic);
                     pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
                                                           tag + "::" + d.name });
                     skipBracedBlock();
@@ -633,7 +642,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     src_.fail(d.pos, "a member function needs a class with a "
                                      "name - this one is anonymous");
                 declareMember(tag, d, constThis, access, kind == Kind::Union,
-                              isVirtual);
+                              isVirtual, memberIsStatic);
                 if (!consume(",")) break;
                 continue;
             }

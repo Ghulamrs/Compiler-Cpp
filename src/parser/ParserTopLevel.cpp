@@ -595,16 +595,26 @@ void Parser::topLevel(Program &program) {
         // is not that one. Nothing reads a user overload's `pos`, so it never showed.
         const_cast<Signature *>(member)->defined = true;
 
-        // `this` takes the first slot, and its type carries the constness the member
-        // was declared with - so a const member function cannot write through it, by
-        // the ordinary rule that a const object's members are const.
-        const Type *pointee = constThis ? types_.withConst(memberOf) : memberOf;
-        const Type *thisType = types_.pointerTo(pointee);
-        inParams_ = true;
-        thisOffset_ = declare("this", thisType, d.pos);
-        inParams_ = false;
-        paramSlots.insert(paramSlots.begin(), Param{ thisType, thisOffset_ });
+        // **A static member's body gets no `this` slot**, which is the whole of
+        // what makes it static once the name is settled: the parameters it was
+        // written with are the parameters it has, and the first one stays in the
+        // first register rather than being pushed along by an object nobody
+        // passed. Everything else about the body - access, the class's own
+        // names in scope - is a member's.
+        inStaticMember_ = member->isStaticMember;
+        if (!member->isStaticMember) {
+            // `this` takes the first slot, and its type carries the constness the member
+            // was declared with - so a const member function cannot write through it, by
+            // the ordinary rule that a const object's members are const.
+            const Type *pointee = constThis ? types_.withConst(memberOf) : memberOf;
+            const Type *thisType = types_.pointerTo(pointee);
+            inParams_ = true;
+            thisOffset_ = declare("this", thisType, d.pos);
+            inParams_ = false;
+            paramSlots.insert(paramSlots.begin(), Param{ thisType, thisOffset_ });
+        }
     } else {
+        inStaticMember_ = false;
         declareFunction(d.name, d.type, params, variadic, true, d.pos,
                         sc == StorageStatic);
         // Which function's body is about to be read, so that an access check inside it
@@ -1015,9 +1025,17 @@ void Parser::topLevel(Program &program) {
     currentFunction_.clear();
     currentFunctionName_.clear();
     localTypes_.clear();
+    // **`static` on a member says which member, not which linkage.**
+    // [class.static]/1 against [basic.link]/3: on a free function the keyword
+    // means internal linkage, and on a member it means there is no `this` - and
+    // the member still has external linkage, so another translation unit can
+    // call it. Read the wrong way round, a member defined inside its class came
+    // out with no `.globl` and cl's object had nine symbols cxx1's did not.
+    const bool internal = memberOf != nullptr ? inUnnamedNamespace_
+                                              : internalLinkage(sc);
     program.functions.push_back(Function(d.name, emittedReturn, std::move(paramSlots),
                                          std::move(body), frame,
-                                         internalLinkage(sc), sretSlot,
+                                         internal, sretSlot,
                                          variadic, regSaveSlot, d.pos,
                                          std::move(fnVars_)));
     program.functions.back().setSymbol(definedSymbol);

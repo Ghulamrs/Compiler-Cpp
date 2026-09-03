@@ -87,6 +87,12 @@ private:
         // only about who may pick it. Written after `access` on purpose: the members up
         // to there are filled positionally by every `Signature{...}` in the parser.
         bool isExplicit = false;
+        // **A static member function is a member in every way but the one that
+        // matters at a call**: it is named inside the class, it obeys access,
+        // it overloads against the others - and it has no `this`. Recorded so
+        // that the one question a call asks, "does this need an object?", has a
+        // field to read rather than `owner` being made to mean two things.
+        bool isStaticMember = false;
         // **`noexcept` on this function**, which in C++11 is not part of its
         // type - so it changes no name and no overload set, and is recorded
         // only so that the `noexcept(e)` operator can answer.
@@ -794,16 +800,34 @@ private:
     // and reached by all three of `C::n`, `obj.n` and `p->n`.
     std::string staticMemberSymbol(const std::string &cls, const std::string &name,
                                    const Type *t, Access access, std::size_t pos);
+    // Whether a call to this function has to be given an object. A member's
+    // `owner` used to answer it on its own, and a static member is exactly the
+    // case where the two questions come apart.
+    static bool needsThis(const Signature &sig) {
+        return !sig.owner.empty() && !sig.isStaticMember;
+    }
+    // Whether any function under this key is a static member. A call written
+    // `C::f(...)` means one only if it is - `Base::f(...)` on an ordinary
+    // member is a different construct and must not be taken for this one.
+    bool hasStaticMemberNamed(const std::string &key) const {
+        const std::vector<std::size_t> *set = overloadsOf(key);
+        if (set == nullptr) return false;
+        for (std::size_t i = 0; i < set->size(); i++)
+            if (functions_[(*set)[i]].isStaticMember) return true;
+        return false;
+    }
     void declareStaticMember(const std::string &cls, Type *owner,
                              const Declared &d, Access access);
     void defineStaticMember(Declared &d, Program &program);
     ExprPtr staticMemberRef(const Type *owner, const Type::StaticMember &s,
                             const std::string &cls, std::size_t pos);
     void declareMember(const std::string &cls, const Declared &d, bool constThis,
-                       Access access, bool inUnion, bool isVirtual);
+                       Access access, bool inUnion, bool isVirtual,
+                       bool isStatic = false);
     std::string memberSymbol(const std::string &cls, const std::string &name,
                              const Type *fn, Access access, bool constThis,
-                             std::size_t pos, bool isVirtual = false);
+                             std::size_t pos, bool isVirtual = false,
+                             bool isStatic = false);
     // `S a[4];` - the default constructor once per element. Separate from
     // constructLocal because that one builds a single object and names the
     // class through d.type, which for an array is the array.
@@ -1053,6 +1077,11 @@ private:
     // everything declared inside is given internal linkage instead - which is
     // what [basic.link]/4 buys and the only part a single program can observe.
     bool inUnnamedNamespace_ = false;
+    // **The body being read belongs to a static member.** `currentClass_` is
+    // set for one, so without this a `this` in it finds the class and falls
+    // back to a stale thisOffset_ - reading whatever the last member function
+    // left there, which is a wrong answer no suite would see.
+    bool inStaticMember_ = false;
     // Whether a declaration here has internal linkage: written `static`, or
     // inside an unnamed namespace, which says the same thing about a name.
     bool internalLinkage(StorageClass sc) const {

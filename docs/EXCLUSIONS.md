@@ -114,13 +114,15 @@ SFINAE and variadic packs. What is left:
 - **instantiating a template that was only declared** —
   `src/parser/ParserTemplate.cpp:1544`
 - **`sizeof` of a template parameter in a signature** — the linker name would
-  have to spell the expression. `src/parser/ParserExpr.cpp:1565`
+  have to spell the expression. `src/parser/ParserExpr.cpp:1672`
 
 ## Classes, members and friends
 
 - **a virtual base** — `src/parser/ParserType.cpp:143`
-- **a static member function** — a static data member works.
-  `src/parser/ParserType.cpp:534`
+- **one name holding both a static and a non-static member**, where overload
+  resolution picks the non-static one — the arguments have been read by then,
+  and there is no honest way back to the call that takes an object.
+  `src/parser/ParserExpr.cpp:965`. A static member function on its own works.
 - **a member function of a union** — `src/parser/ParserClass.cpp:1752`
 - **`friend class X;`** — one named function can be befriended.
   `src/parser/ParserType.cpp:364`
@@ -129,26 +131,26 @@ SFINAE and variadic packs. What is left:
 - **a friend function defined inside the class body** —
   `src/parser/ParserType.cpp:393`
 - **a const member named in a mem-initialiser list** —
-  `src/parser/ParserTopLevel.cpp:669`
-- **a delegating constructor** — `src/parser/ParserTopLevel.cpp:715`
+  `src/parser/ParserTopLevel.cpp:679`
+- **a delegating constructor** — `src/parser/ParserTopLevel.cpp:725`
 
 ## Conversion functions and operators
 
 - **a conversion function**, `operator int()` — there are none at all, which is
   also why `explicit` on one is refused naming the conversion function rather
-  than the keyword. `src/parser/ParserType.cpp:974`,
-  `src/parser/ParserType.cpp:1086`, `src/parser/ParserType.cpp:310`
+  than the keyword. `src/parser/ParserType.cpp:983`,
+  `src/parser/ParserType.cpp:1095`, `src/parser/ParserType.cpp:310`
 - **`operator@=`**, the compound assignments — a compound assignment on a class
   is that operator alone and is not rewritten.
   `src/parser/ParserOperator.cpp:368`
 - **`operator new` / `operator delete`** as user functions —
-  `src/parser/ParserType.cpp:1077`
-- **`operator->*`** — `src/parser/ParserType.cpp:1082`
-- **a user-defined literal** — `src/parser/ParserType.cpp:1084`
+  `src/parser/ParserType.cpp:1086`
+- **`operator->*`** — `src/parser/ParserType.cpp:1091`
+- **a user-defined literal** — `src/parser/ParserType.cpp:1093`
 - **an operator that can be named but not reached** — refused at the
   declaration, because a function that links and can never be called is the
   half-built thing this project refuses everywhere.
-  `src/parser/ParserType.cpp:1137`
+  `src/parser/ParserType.cpp:1146`
 
 ## Initialisation, and braces
 
@@ -156,11 +158,11 @@ SFINAE and variadic packs. What is left:
   arguments in parentheses. The *empty* pair is read: `{}` is
   value-initialisation. `src/parser/ParserStmt.cpp:157`,
   `src/parser/ParserInit.cpp:38`
-- **a braced default argument** — `src/parser/ParserClass.cpp:2286`,
+- **a braced default argument** — `src/parser/ParserClass.cpp:2312`,
   `src/parser/ParserTopLevel.cpp:514`
-- **a braced member initialiser** — `src/parser/ParserType.cpp:667`
+- **a braced member initialiser** — `src/parser/ParserType.cpp:676`
 - **an initialiser for an array of a class** —
-  `src/parser/ParserStmt.cpp:101`, `src/parser/ParserTopLevel.cpp:687`
+  `src/parser/ParserStmt.cpp:101`, `src/parser/ParserTopLevel.cpp:697`
 - **an array of a class with a destructor** — the elements would have to be
   destroyed in reverse; an array of a class with only constructors works.
   `src/parser/ParserStmt.cpp:109`
@@ -184,20 +186,20 @@ it is written:
 ## Expressions
 
 - **`?:` as an lvalue** — real C++ when both arms are lvalues; bind the
-  reference in an `if`/`else`. `src/parser/ParserExpr.cpp:1137`
+  reference in an `if`/`else`. `src/parser/ParserExpr.cpp:1244`
 - **`static_cast` of a reference to a different type** —
   `src/parser/ParserExpr.cpp:232`
 - **a name qualified with `::` alone**, the global scope —
-  `src/parser/ParserExpr.cpp:769`
+  `src/parser/ParserExpr.cpp:777`
 - **choosing an overload by the type it is assigned to** —
-  `src/parser/ParserExpr.cpp:984`
+  `src/parser/ParserExpr.cpp:1091`
 - **a pointer to a *virtual* member function** — it holds a vtable index where
-  this holds an address. `src/parser/ParserExpr.cpp:1437`
+  this holds an address. `src/parser/ParserExpr.cpp:1544`
 - **a pointer to a *const* member function** — the constness of `this` is not
-  part of a function type here. `src/parser/ParserType.cpp:1218`
+  part of a function type here. `src/parser/ParserType.cpp:1227`
 - **postfix `++` / `--` on a bit-field** — the prefix form works.
   `src/parser/ParserOperator.cpp:477`
-- **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:606`
+- **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:614`
 - **a functional-cast temporary reached through overload ranking** — a
   converting constructor is not tried at a call.
   `src/parser/ParserOverload.cpp:541`
@@ -270,23 +272,23 @@ beside it goes in the same commit.
 | --- | --- | --- |
 | `1'000`, a digit separator | C++14 | `src/Lexer.cpp:146` |
 | `0b101`, a binary literal | C++14 | `src/Lexer.cpp:250` |
-| `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1032` |
+| `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1139` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:184` |
-| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2274`, `src/parser/ParserTopLevel.cpp:466` |
+| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2300`, `src/parser/ParserTopLevel.cpp:466` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:396` |
 | a variable template | C++14 | `src/parser/ParserTemplate.cpp:309` |
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:642`, `src/parser/ParserStmt.cpp:150`, `src/parser/ParserTopLevel.cpp:265` |
 | `static_assert` with no message | C++17 | `src/parser/ParserConst.cpp:31` |
 | `namespace N::M { }` | C++17 | `src/parser/ParserTopLevel.cpp:92` |
-| an attribute, `[[noreturn]]` | none parse | `src/parser/ParserType.cpp:988` |
+| an attribute, `[[noreturn]]` | none parse | `src/parser/ParserType.cpp:997` |
 
 ## Keywords the parser has no rule for
 
 Twenty, from `pending[]` in `src/parser/Parser.cpp`. Each is refused **by
 name** at the three doors a keyword can arrive at — an expression, a member
 declaration, and a name — rather than as a parse error further along:
-`src/parser/Parser.cpp:99`, `src/parser/ParserExpr.cpp:543`,
-`src/parser/ParserType.cpp:992`.
+`src/parser/Parser.cpp:99`, `src/parser/ParserExpr.cpp:551`,
+`src/parser/ParserType.cpp:1001`.
 
     alignas   alignof   and       and_eq    asm
     bitand    bitor     char16_t  char32_t  compl
@@ -325,7 +327,7 @@ judgement in a program. They are named here instead:
 - `src/parser/ParserType.cpp:167` — a base class that is not yet defined. An
   ordinary error: a derived object contains its base, so the base has to be
   complete.
-- `src/Mangle.cpp:487`, `src/Mangle.cpp:927` — a type with no Itanium or
+- `src/Mangle.cpp:487`, `src/Mangle.cpp:933` — a type with no Itanium or
   Microsoft linkage name. Internal: reaching either means a type was built that
   the mangler was never taught, which is a bug in this compiler and not a
   statement about the language.

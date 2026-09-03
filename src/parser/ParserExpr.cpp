@@ -512,6 +512,14 @@ ExprPtr Parser::primary(Program *program) {
         if (currentClass_ == nullptr)
             src_.fail(pos, "'this' is only inside a member function, and this "
                            "is not one");
+        // [class.static]/1: a static member function has no `this`. Said here
+        // rather than let through - `currentClass_` is set for one, so the
+        // fallback below would hand back whatever offset the last member
+        // function used.
+        if (inStaticMember_)
+            src_.fail(pos, "'this' is not available in a static member "
+                           "function - it is not called on an object, so there "
+                           "is none to point at");
         const Local *slot = findLocal("this");
         ExprPtr v(Var::local("this", slot != nullptr ? slot->offset : thisOffset_));
         v->setType(slot != nullptr ? slot->type
@@ -833,6 +841,56 @@ ExprPtr Parser::primary(Program *program) {
         }
     }
 
+    // **`S::f(...)` - a static member function, called with no object.** The
+    // twin of the static *data* member found just above, and looked up the same
+    // way. It claims the name only when the set under it actually holds a
+    // static: `Base::f(...)` naming an ordinary member is a different
+    // construct, and taking it for this one would turn a call into an error.
+    if (peek().kind == TokenKind::Ident && peekAt(1).is("::")) {
+        std::string q = peek().text;
+        std::string key;
+        std::size_t consumed = 0;
+        for (std::size_t k = 1; peekAt(k).is("::") &&
+                                peekAt(k + 1).kind == TokenKind::Ident; k += 2) {
+            const std::string candidate = q + "::" + peekAt(k + 1).text;
+            if (peekAt(k + 2).is("(") && hasStaticMemberNamed(candidate)) {
+                key = candidate;
+                consumed = k + 2;
+            }
+            q += "::" + peekAt(k + 1).text;
+        }
+        if (!key.empty()) {
+            const std::size_t qpos = peek().pos;
+            at_ += consumed;
+            expect("(");
+            std::vector<ExprPtr> args;
+            parseArguments(args);
+            const Signature &sig = resolveOverload(key, args, qpos);
+            applyDefaults(sig, args, qpos);
+            // A static member obeys access like any other - the check the
+            // `.` and `->` paths make in memberCallWith, made here because
+            // this call never goes through them.
+            if (sig.access != Access::Public) {
+                const Type *ownerType = findTypedef(sig.owner);
+                if (ownerType == nullptr || (!insideAccessOf(ownerType) &&
+                                             !isFriendOf(ownerType))) {
+                    const char *how = sig.access == Access::Private
+                                          ? "private" : "protected";
+                    src_.fail(qpos, "'" + key + "' is " + how + " in '" +
+                                    sig.owner + "' - it can be called only "
+                                    "from inside the class");
+                }
+            }
+            if (needsThis(sig))
+                src_.fail(qpos, "'" + key + "' is not a static member function, "
+                                "so it has to be called on an object - the "
+                                "overload chosen here needs a 'this'");
+            return completeCall(key, sig.symbol, nullptr, sig.returns,
+                                sig.params, sig.variadic, qpos, std::move(args),
+                                false);
+        }
+    }
+
     if (peek().kind == TokenKind::Ident) {
         std::string name = peek().text;
         std::size_t pos = peek().pos;
@@ -866,6 +924,55 @@ ExprPtr Parser::primary(Program *program) {
         bool inherited = false;
         for (const Type *c = currentClass_; c != nullptr; c = c->base())
             if (overloadsOf(c->tag() + "::" + name) != nullptr) { inherited = true; break; }
+        // **A static member called by its bare name, from inside the class.**
+        // [class.static]/1 makes it `C::f(...)` and not `this->f(...)`: the
+        // object is not merely unused, it is absent. Asked before the branch
+        // below, which would hand the call an object the function has no slot
+        // for - and which is also the only branch reachable from inside another
+        // static member, where there is no `this` local to find.
+        if (peekAt(1).is("(") && !callsThroughObject && currentClass_ != nullptr &&
+            l == nullptr && g == nullptr) {
+            std::string key;
+            for (const Type *c = currentClass_; c != nullptr; c = c->base())
+                if (hasStaticMemberNamed(c->tag() + "::" + name)) {
+                    key = c->tag() + "::" + name;
+                    break;
+                }
+            if (!key.empty()) {
+                at_ += 2;
+                std::vector<ExprPtr> args;
+                parseArguments(args);
+                const Signature &sig = resolveOverload(key, args, pos);
+                applyDefaults(sig, args, pos);
+                // A static member obeys access like any other - the check the
+                // `.` and `->` paths make in memberCallWith, made here because
+                // this call never goes through them.
+                if (sig.access != Access::Public) {
+                    const Type *ownerType = findTypedef(sig.owner);
+                    if (ownerType == nullptr || (!insideAccessOf(ownerType) &&
+                                                         !isFriendOf(ownerType))) {
+                        const char *how = sig.access == Access::Private
+                                                      ? "private" : "protected";
+                        src_.fail(pos, "'" + key + "' is " + how + " in '" +
+                                                sig.owner + "' - it can be called only "
+                                                "from inside the class");
+                    }
+                }
+                // One name holding both kinds is legal C++ and is refused here
+                // rather than guessed at: the arguments are already read, so
+                // there is no honest way back to the call that takes an object.
+                if (needsThis(sig))
+                    src_.fail(pos, "'" + name + "' names both a static and a "
+                                   "non-static member here, and overload "
+                                   "resolution chose the non-static one - "
+                                   "which is not supported yet; call it on an "
+                                   "object, or give the two different names");
+                return completeCall(key, sig.symbol, nullptr, sig.returns,
+                                    sig.params, sig.variadic, pos,
+                                    std::move(args), false);
+            }
+        }
+
         if (peekAt(1).is("(") && !callsThroughObject && currentClass_ != nullptr &&
             l == nullptr && g == nullptr && inherited) {
             if (const Local *self = findLocal("this")) {

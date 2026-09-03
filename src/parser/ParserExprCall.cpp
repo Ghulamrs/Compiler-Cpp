@@ -346,6 +346,23 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
         src_.fail(pos, "'" + name + "' is " + how + " in '" + plain->describe() +
                        "' - it can be called only from inside the class");
     }
+    // **A static member called through an object.** [class.static]/1 allows the
+    // spelling and the function still gets no `this`; [expr.ref] still evaluates
+    // the object expression, which is what the Comma is for - the same rule
+    // `p->count` follows for a static *data* member, applied to its twin. The
+    // const check below does not apply: with no `this` there is nothing a const
+    // object could be promised about.
+    if (sig.isStaticMember) {
+        ExprPtr call = completeCall(key, sig.symbol, nullptr, sig.returns,
+                                    sig.params, sig.variadic, pos,
+                                    std::move(args), false);
+        if (clonePure(*object) != nullptr) return call;
+        const Type *rt = call->type();
+        ExprPtr both(new Comma(std::move(object), std::move(call)));
+        both->setType(rt);
+        return both;
+    }
+
     if (cls->isConst() && !sig.constThis)
         src_.fail(pos, "'" + name + "' is not a const member function, and this "
                        "object is const - calling it could change what the "

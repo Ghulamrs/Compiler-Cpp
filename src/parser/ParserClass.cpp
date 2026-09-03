@@ -1747,7 +1747,7 @@ ExprPtr Parser::staticMemberRef(const Type *owner, const Type::StaticMember &s,
 // exist: two members with different parameters are two entries under that key.
 void Parser::declareMember(const std::string &cls, const Declared &d,
                            bool constThis, Access access, bool inUnion,
-                           bool isVirtual) {
+                           bool isVirtual, bool isStatic) {
     if (inUnion)
         src_.fail(d.pos, "a member function of a union is not supported yet");
 
@@ -1765,6 +1765,26 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
 
     if (inUnion && isVirtual)
         src_.fail(d.pos, "a union cannot have a virtual function");
+
+    // **A static member takes no slot and overrides nothing.** It is not part
+    // of an object, so there is no object to dispatch on; [class.static]/1 says
+    // it can be neither `virtual` nor cv-qualified, and both are refused where
+    // they are written rather than quietly dropped here.
+    if (isStatic) {
+        const std::string sym = memberSymbol(cls, d.name, fn, access, false,
+                                             d.pos, false, true);
+        if (!pendingDefaults_.empty()) defaultArgs_[sym] = pendingDefaults_;
+        pendingDefaults_.clear();
+        set.push_back(functions_.size());
+        functions_.push_back(Signature{
+            d.name, sym,
+            fn->returns(), params, fn->isVariadicFn(), false, d.pos, false,
+            cls, false, access, false });
+        functions_.back().isStaticMember = true;
+        functions_.back().isNoexcept = pendingNoexcept_;
+        pendingNoexcept_ = false;
+        return;
+    }
 
     // **A slot is taken once and then kept**: an override replaces the entry the base
     // put there, matching on the signature minus the return type. **And finding that
@@ -1818,11 +1838,17 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
 // choice here.
 std::string Parser::memberSymbol(const std::string &cls, const std::string &name,
                                  const Type *fn, Access access, bool constThis,
-                                 std::size_t pos, bool isVirtual) {
+                                 std::size_t pos, bool isVirtual, bool isStatic) {
     // Q public, I protected, A private - the Microsoft ABI puts the access in the name
     // and Itanium does not, both measured. **And a virtual member is U on Microsoft
     // whatever its access**: ?who@Base@@UEAAHXZ against ?plain@Base@@QEAAHXZ.
-    const char code = isVirtual        ? 'U'
+    // **A static member is S, K or C** - public, protected, private - where a
+    // non-static is Q, I or A. Itanium spells a static member exactly as it
+    // spells any other, `_ZN1S3pubEi`, so only this half of the pair moves.
+    const char code = isStatic && access == Access::Public    ? 'S'
+                    : isStatic && access == Access::Protected ? 'K'
+                    : isStatic                                ? 'C'
+                    : isVirtual        ? 'U'
                     : access == Access::Public    ? 'Q'
                     : access == Access::Protected ? 'I'
                                                   : 'A';
