@@ -22,7 +22,7 @@ tools/exclusions --count                  # the two numbers below
 tools/exclusions --check docs/EXCLUSIONS.md
 ```
 
-**Measured at `7aa423d`: 104 refusal sites, 96 distinct messages.** Every site
+**Measured at `01b63a1`: 103 refusal sites, 95 distinct messages.** Every site
 is cited below, which is what `--check` verifies — it reports each refusal the
 source raises and this document does not cite, and each citation whose site is
 gone. Run it after adding or removing a refusal; a document that has to be
@@ -51,10 +51,28 @@ eight keywords in it that were implemented.
 
 ---
 
-## The largest exclusion is not a language feature
+## The library, which is no longer nothing
 
-**There is no C++ standard library, and there never will be** — `lib/` is
-sixteen **C** headers: `assert.h`, `ctype.h`, `errno.h`, `float.h`, `limits.h`,
+**`include/` holds the C++ headers this compiler ships**, and `lib/` holds the
+sixteen C headers underneath them. What is there: `<cstddef>`, `<cstdlib>`,
+`<cstring>`, `<cmath>` and `<cctype>`, each its C header wrapped by
+using-declarations into `std`, with every name that header declares; and
+`<string>`, which is a class.
+
+What is not there yet: `<vector>`, `<map>`, `<set>`, `<iostream>`, `<sstream>`,
+`<fstream>` and `<algorithm>`. The language they need is in place - the four
+operators a container cannot be written without landed, and a class that owns
+memory can now be returned by value - so these are work rather than questions.
+
+Two limits the headers themselves carry, both compiler limits rather than
+choices. **There is no `inline`**, and no weak or linkonce linkage to give it,
+so a header's non-member functions are `static`: every translation unit that
+includes one gets its own copy. And **`<cmath>` overloads nothing** - `lib/`
+declares the `double` form alone, so `std::sqrt(2.0f)` converts to double and
+back rather than calling `sqrtf`. The answer is right; the call is not the one a
+conforming library makes.
+
+The C headers underneath, unchanged and usable on their own: `assert.h`, `ctype.h`, `errno.h`, `float.h`, `limits.h`,
 `locale.h`, `math.h`, `memory.h`, `setjmp.h`, `signal.h`, `stdarg.h`,
 `stddef.h`, `stdio.h`, `stdlib.h`, `string.h`, `time.h`.
 
@@ -120,7 +138,7 @@ SFINAE and variadic packs. What is left:
 - **instantiating a template that was only declared** —
   `src/parser/ParserTemplate.cpp:1544`
 - **`sizeof` of a template parameter in a signature** — the linker name would
-  have to spell the expression. `src/parser/ParserExpr.cpp:1731`
+  have to spell the expression. `src/parser/ParserExpr.cpp:1741`
 
 ## Classes, members and friends
 
@@ -128,7 +146,7 @@ SFINAE and variadic packs. What is left:
 - **one name holding both a static and a non-static member**, where overload
   resolution picks the non-static one — the arguments have been read by then,
   and there is no honest way back to the call that takes an object.
-  `src/parser/ParserExpr.cpp:993`. A static member function on its own works.
+  `src/parser/ParserExpr.cpp:1003`. A static member function on its own works.
 - **a member function of a union** — `src/parser/ParserClass.cpp:1844`
 - **`friend class X;`** — one named function can be befriended.
   `src/parser/ParserType.cpp:364`
@@ -146,15 +164,16 @@ SFINAE and variadic packs. What is left:
   also why `explicit` on one is refused naming the conversion function rather
   than the keyword. `src/parser/ParserType.cpp:983`,
   `src/parser/ParserType.cpp:1095`, `src/parser/ParserType.cpp:310`
-- **`operator@=`**, the compound assignments — a compound assignment on a class
-  is that operator alone and is not rewritten.
-  `src/parser/ParserOperator.cpp:368`
 - **`operator new` / `operator delete`** as user functions —
   `src/parser/ParserType.cpp:1086`
 - **`operator->*`** — `src/parser/ParserType.cpp:1091`
 - **a user-defined literal** — `src/parser/ParserType.cpp:1093`
 - **`operator&&`, `operator||`, `operator,` and `operator->*`** — the four that
   still fall into the generic refusal below, **named** rather than left to it.
+  The ten compound assignments used to be here too and are reachable now; a
+  class that declares `operator+` and `operator=` but not `operator+=` is still
+  refused `+=`, because [over.ass] makes each `@=` an operator of its own and
+  the rewrite into `+` and an assignment is for built-in operands only.
   A bullet that says only "an operator that can be named but not reached" hid
   `operator[]`, `operator=` and `operator->` for as long as it stood, which
   meant the document could not answer "can a container be written here?" - and
@@ -168,7 +187,7 @@ SFINAE and variadic packs. What is left:
   Every other overloadable operator resolves from an expression, asked of a
   one-line program each: `+ - * / % & | ^ << >> == != < <= > >=` binary,
   `+ - * & ! ~ ++ --` unary, and `() [] = ->`.
-  `src/parser/ParserType.cpp:1163`
+  `src/parser/ParserType.cpp:1175`
 
 ## Initialisation, and braces
 
@@ -204,7 +223,7 @@ it is written:
 ## Expressions
 
 - **`?:` as an lvalue** — real C++ when both arms are lvalues; bind the
-  reference in an `if`/`else`. `src/parser/ParserExpr.cpp:1258`
+  reference in an `if`/`else`. `src/parser/ParserExpr.cpp:1268`
 - **`static_cast` of a reference to a different type** —
   `src/parser/ParserExpr.cpp:232`
 - **a name qualified with `::` alone**, the global scope —
@@ -212,11 +231,11 @@ it is written:
 - **choosing an overload by the type it is assigned to** —
   `src/parser/ParserExpr.cpp:463`
 - **a pointer to a *virtual* member function** — it holds a vtable index where
-  this holds an address. `src/parser/ParserExpr.cpp:1603`
+  this holds an address. `src/parser/ParserExpr.cpp:1613`
 - **a pointer to a *const* member function** — the constness of `this` is not
-  part of a function type here. `src/parser/ParserType.cpp:1244`
+  part of a function type here. `src/parser/ParserType.cpp:1256`
 - **postfix `++` / `--` on a bit-field** — the prefix form works.
-  `src/parser/ParserOperator.cpp:477`
+  `src/parser/ParserOperator.cpp:489`
 - **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:640`
 - **a functional-cast temporary reached through overload ranking** — a
   converting constructor is not tried at a call.
@@ -290,7 +309,7 @@ beside it goes in the same commit.
 | --- | --- | --- |
 | `1'000`, a digit separator | C++14 | `src/Lexer.cpp:146` |
 | `0b101`, a binary literal | C++14 | `src/Lexer.cpp:250` |
-| `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1153` |
+| `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1163` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:184` |
 | `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2392`, `src/parser/ParserTopLevel.cpp:466` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:396` |

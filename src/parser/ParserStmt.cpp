@@ -1099,8 +1099,23 @@ StmtPtr Parser::statementBody() {
             }
             return StmtPtr(new Return(nullptr));
         }
-        ExprPtr value = endFullExpression(returnType_->isReference() ? expr()
-                                                                  : decay(expr()));
+        ExprPtr returned = returnType_->isReference() ? expr() : decay(expr());
+        // **The temporary that *is* the returned value must not be destroyed
+        // here.** `return string(p, n);` builds a class temporary, and
+        // classTemporary puts it on the pending list to die at the end of the
+        // full expression - which is this statement. But the value travels out
+        // through the hidden pointer as *bytes*: destroy the temporary first and
+        // the caller is handed a shallow copy of an object whose resources have
+        // been released. `substr` returned the right length and an empty buffer,
+        // and `operator+` lost half its text, for exactly this reason.
+        //
+        // Releasing it hands ownership to the caller, which is what returning by
+        // value means. The caller then copy-constructs from those bytes and the
+        // hidden temporary is not destroyed there either - that leak is a
+        // separate open finding, and a leak is not a wrong answer.
+        if (!returnType_->isReference() && returnType_->isStructOrUnion())
+            releaseTemporary(*returned);
+        ExprPtr value = endFullExpression(std::move(returned));
         bool returnedParameter = false;
         if (returnType_->isReference()) {
             value = bindReference(returnType_, std::move(value), pos,

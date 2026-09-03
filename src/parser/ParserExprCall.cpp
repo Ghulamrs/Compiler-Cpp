@@ -77,6 +77,32 @@ void Parser::flushTemporaries(std::vector<StmtPtr> &into) {
     }
 }
 
+// **Take one temporary off the pending list**, because something else has
+// become responsible for it. The only caller is `return`, where the value
+// leaves the frame: the object the expression yields is the object the caller
+// receives, so destroying it at the end of this full expression would release
+// what the caller is about to be given. A constructed temporary is
+// `Comma(build, slot)`, so the slot is found by walking to the right.
+void Parser::releaseTemporary(const Expr &value) {
+    const Expr *at = &value;
+    for (;;) {
+        if (const Comma *c = dynamic_cast<const Comma *>(at)) { at = &c->right(); continue; }
+        // Both, and in either order: classTemporary hands back
+        // `*(ctor(&tmp), &tmp)`, so the walk passes a dereference, a comma and
+        // an address-of before it reaches the slot.
+        if (const Unary *u = dynamic_cast<const Unary *>(at))
+            if (u->op() == '*' || u->op() == '&') { at = &u->operand(); continue; }
+        break;
+    }
+    const Var *v = dynamic_cast<const Var *>(at);
+    if (v == nullptr || !v->isLocal()) return;
+    for (std::size_t i = 0; i < pendingTemps_.size(); i++)
+        if (pendingTemps_[i].first == v->offset()) {
+            pendingTemps_.erase(pendingTemps_.begin() + i);
+            return;
+        }
+}
+
 ExprPtr Parser::endFullExpression(ExprPtr e) {
     if (pendingTemps_.empty()) return e;
     std::vector<std::pair<int, const Type *> > mine;

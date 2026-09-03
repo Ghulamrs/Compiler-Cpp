@@ -301,6 +301,19 @@ void X86_64Linux::genAddr(const Expr &e) {
     if (const Conditional *q = dynamic_cast<const Conditional *>(&e)) {
         if (q->type()->isStructOrUnion()) { q->accept(*this); return; }
     }
+    // **A constructed temporary is a Comma, and it has an address.**
+    // `return string(p, n);` builds the object into a slot and yields the slot -
+    // `Comma(build, slot)`, from completeCall - so the address of the whole is
+    // the address of the right side, once the left has run. Without this a class
+    // with a user copy constructor *and* a destructor could not return a
+    // temporary built by one of its own constructors, which is the shape of
+    // every `substr`; the two halves were needed together, which is why nothing
+    // simpler than a string class reached it.
+    if (const Comma *c = dynamic_cast<const Comma *>(&e)) {
+        c->left().accept(*this);
+        genAddr(c->right());
+        return;
+    }
     std::fprintf(stderr, "codegen: this has no address\n");
     std::exit(1);
 }

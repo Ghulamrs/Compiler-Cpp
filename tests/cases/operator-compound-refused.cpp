@@ -7,6 +7,11 @@
 // `operator+`, that rewrite started finding it too, and `a += b` compiled
 // into a call the standard does not sanction, for a class that never declared
 // `operator+=`. clang refuses the same program.
+//
+// **The rule survived `operator+=` becoming reachable**, which is why this case
+// is kept rather than replaced: a class that declares `+=` now gets the call,
+// and a class that declares only `+` is still refused. Only the message moved -
+// it says what is missing instead of saying the operator is unsupported.
 struct V {
     int x;
     V operator+(const V &o) const;

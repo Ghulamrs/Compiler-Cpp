@@ -1046,6 +1046,9 @@ private:
     // for returns** - [class.temporary], visible in `printf("%d", useD(d))`.
     std::vector<std::pair<int, const Type *> > pendingTemps_;
     ExprPtr endFullExpression(ExprPtr e);
+    // Drop the temporary this expression yields from the pending list, because
+    // its ownership is leaving the frame. `return` is the only caller.
+    void releaseTemporary(const Expr &value);
     void flushTemporaries(std::vector<StmtPtr> &into);
     ExprPtr completeCall(const std::string &name, const std::string &symbol,
                          ExprPtr callee, const Type *returns,

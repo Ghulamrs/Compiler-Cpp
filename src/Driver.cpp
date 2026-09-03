@@ -37,6 +37,14 @@ const std::size_t kThreadFrom = 4;
 #ifndef CXX1_INCLUDE_DIR
 #define CXX1_INCLUDE_DIR ""
 #endif
+// **The C++ headers are a second directory, not more files in the first.**
+// `include/` holds `<cstddef>` and `<vector>`; `lib/` holds the C headers those
+// wrap, and a program may reach either. They are separate so that the C library
+// stays what it was - a thing a program can use on its own, or replace with -I -
+// while the C++ headers on top of it are a layer that can be left out entirely.
+#ifndef CXX1_CXX_INCLUDE_DIR
+#define CXX1_CXX_INCLUDE_DIR ""
+#endif
 
 void Driver::usage(char *file) {
     std::fprintf(stderr,
@@ -475,6 +483,11 @@ bool Driver::parseArguments(int argc, char **argv) {
         }
     }
 
+    // C++ first, then C: `<cstddef>` has to be found before it can include
+    // `<stddef.h>`, and a `-I` the user wrote comes before both because it is
+    // already in the list by the time this runs.
+    if (CXX1_CXX_INCLUDE_DIR[0] != '\0')
+        searchPath_.push_back(CXX1_CXX_INCLUDE_DIR);
     if (CXX1_INCLUDE_DIR[0] != '\0') searchPath_.push_back(CXX1_INCLUDE_DIR);
 
     if (inputs.empty()) { usage(argv[0]); return false; }

@@ -1,0 +1,34 @@
+// <cstdlib> - The general-purpose C functions, under `std::`.
+//
+// `atol` and `strtod` are what the Compiler++ tree reaches for; the rest are
+// here because [cstdlib.syn] says the whole header goes in, and leaving out
+// what nothing happens to call is how a library grows holes.
+//
+// Derived from lib/stdlib.h: every name that header declares is named here, and
+// the two are checked against each other by the case that includes both.
+#ifndef _CXX1_CSTDLIB
+#define _CXX1_CSTDLIB
+
+#include <stdlib.h>
+
+namespace std {
+
+using ::abort;
+using ::abs;
+using ::atoi;
+using ::atol;
+using ::bsearch;
+using ::calloc;
+using ::exit;
+using ::free;
+using ::labs;
+using ::malloc;
+using ::qsort;
+using ::rand;
+using ::realloc;
+using ::srand;
+using ::strtod;
+
+}  // namespace std
+
+#endif

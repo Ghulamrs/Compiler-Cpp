@@ -361,15 +361,27 @@ ExprPtr Parser::compound(BinOp op, ExprPtr target, ExprPtr value, std::size_t po
     requireAssignable(*target, pos, "the left of a compound assignment");
     const Type *to = target->type();
 
-    // **`a += b` is not `a = a + b` when a is a class.** Reading the target back,
-    // combining and storing is the right rewrite for a built-in operand and the
-    // wrong one for a class, where [over.match.oper] wants `operator+=` alone.
-    if (to->unqualified()->isStructOrUnion())
-        src_.fail(pos, std::string("'operator") + binOpSpelling(op) +
-                       "=' is not supported yet - and a compound assignment on "
-                       "a class is that operator alone: it is not rewritten "
-                       "into '" + binOpSpelling(op) + "' and an assignment the "
-                       "way it is for a built-in type");
+    // **`a += b` is not `a = a + b` when a is a class.** Reading the target
+    // back, combining and storing is the right rewrite for a built-in operand
+    // and the wrong one for a class, where [over.match.oper] wants
+    // `operator+=` alone - so a class that has `operator+` and `operator=` and
+    // not this one cannot be written `+=` at all, and says so.
+    if (to->unqualified()->isStructOrUnion()) {
+        const std::string name = std::string("operator") + binOpSpelling(op) + "=";
+        if (resolveOperator(name, *target, value.get(), pos) !=
+            OperatorChoice::Member)
+            src_.fail(pos, "'" + to->unqualified()->describe() + "' declares no "
+                           "'" + name + "' that takes this, and a compound "
+                           "assignment on a class is that operator alone - it "
+                           "is not rewritten into '" + binOpSpelling(op) +
+                           "' and an assignment the way it is for a built-in "
+                           "type");
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(value));
+        const Type *objectType = target->type();
+        return memberCallWith(std::move(target), objectType, name, pos,
+                              std::move(args));
+    }
 
     if (ExprPtr readBack = clonePure(*target)) {
         ExprPtr combined = (op == BinOp::Shl || op == BinOp::Shr)

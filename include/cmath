@@ -1,0 +1,42 @@
+// <cmath> - The floating-point functions, under `std::`.
+//
+// C++ overloads each of these for `float` and `long double` as well. This does
+// not: `lib/math.h` declares the `double` form alone, so `std::sqrt(2.0f)`
+// converts to double and back rather than calling `sqrtf`. The answer is the
+// same one; the call is not the one a conforming library would make.
+//
+// Derived from lib/math.h: every name that header declares is named here, and
+// the two are checked against each other by the case that includes both.
+#ifndef _CXX1_CMATH
+#define _CXX1_CMATH
+
+#include <math.h>
+
+namespace std {
+
+using ::acos;
+using ::asin;
+using ::atan;
+using ::atan2;
+using ::ceil;
+using ::cos;
+using ::cosh;
+using ::exp;
+using ::fabs;
+using ::floor;
+using ::fmod;
+using ::frexp;
+using ::ldexp;
+using ::log;
+using ::log10;
+using ::modf;
+using ::pow;
+using ::sin;
+using ::sinh;
+using ::sqrt;
+using ::tan;
+using ::tanh;
+
+}  // namespace std
+
+#endif

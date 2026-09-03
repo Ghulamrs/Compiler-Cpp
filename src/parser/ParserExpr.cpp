@@ -949,9 +949,19 @@ ExprPtr Parser::primary(Program *program) {
         // An unqualified call inside a member function looks for a member of this
         // class first - [class.mfct.non-static] makes `secret()` mean
         // `this->secret()` - before the free-function branch calls it undeclared.
+        // **A class's own name inside it is not a member function.**
+        // [class.qual]/2: `S(3)` written inside a member of `S` is a temporary,
+        // and the constructor is not something a name can call. Its table key
+        // is `S::S`, which is exactly what this search would find - so
+        // `return S(3);` inside a member was dispatched as a member call and
+        // reported that the constructor "is not a const member function", or in
+        // a non-const member that the function returned void. Skipped here, and
+        // the class-temporary branch below then reads it as what it is.
         bool inherited = false;
-        for (const Type *c = currentClass_; c != nullptr; c = c->base())
+        for (const Type *c = currentClass_; c != nullptr; c = c->base()) {
+            if (name == localOf(c->tag())) break;
             if (overloadsOf(c->tag() + "::" + name) != nullptr) { inherited = true; break; }
+        }
         // **A static member called by its bare name, from inside the class.**
         // [class.static]/1 makes it `C::f(...)` and not `this->f(...)`: the
         // object is not merely unused, it is absent. Asked before the branch

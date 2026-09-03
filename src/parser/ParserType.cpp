@@ -1134,6 +1134,18 @@ void Parser::checkOperatorDeclarable(const std::string &name, std::size_t params
     // the same. Recognised by that parameter being an int, the only shape allowed.
     if (operands == 2 && (spelling == "++" || spelling == "--")) return;
 
+    // **The compound assignments, `@=`.** [over.ass] makes each a member like
+    // plain assignment and puts no constraint on what it takes - `s += 'c'` and
+    // `s += t` are two overloads of one name. A class's `+=` is that operator
+    // alone: it is not rewritten into `+` and an assignment, which is why
+    // having `operator+` and `operator=` does not give you this one.
+    static const char *const compound[] = {
+        "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="
+    };
+    if (operands == 2 && member)
+        for (const char *k : compound)
+            if (spelling == k) return;
+
     // **[over.sub]: subscripting is a member and takes exactly one argument.**
     // There is no non-member form, so `operands == 2 && member` is the whole of
     // the shape - a free `operator[]` is a different error and is caught below
