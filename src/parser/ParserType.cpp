@@ -303,18 +303,27 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             continue;
         }
 
-        // Anything else it was written on. A conversion function is named separately
-        // because `explicit operator bool()` is the other place the standard allows
-        // it, and "a constructor" would send the reader after the wrong mistake.
+        // **`explicit` on a conversion function is C++11 and is not built.**
+        // Asked before the general complaint below, which would otherwise send
+        // the reader after the wrong mistake: the keyword *does* belong here,
+        // and it is the rule behind it that is missing. An explicit conversion
+        // has to be refused everywhere except a `static_cast` and a condition,
+        // and accepting the word while ignoring that is a claim the compiler
+        // cannot support.
+        if (isExplicit && peek().is("operator") &&
+            peekAt(1).kind != TokenKind::Punct)
+            src_.fail(explicitAt, "'explicit' on a conversion function is "
+                                  "C++11 and is not supported yet - the "
+                                  "conversion itself works, and an explicit one "
+                                  "would have to be refused everywhere except a "
+                                  "static_cast and a condition");
+
+        // Anything else it was written on: neither a constructor, which the
+        // branch above read, nor a conversion function.
         if (isExplicit)
-            src_.fail(explicitAt,
-                      peek().is("operator")
-                          ? "'explicit' on a conversion function is C++11 and "
-                            "would work here, but a conversion function is not "
-                            "supported yet at all - so there is nothing for it "
-                            "to apply to"
-                          : "'explicit' applies to a constructor, and this "
-                            "declaration is not one");
+            src_.fail(explicitAt, "'explicit' applies to a constructor or a "
+                                  "conversion function, and this declaration "
+                                  "is neither");
 
         // **The replay must not start at `virtual`.** A held body is re-read through
         // the ordinary out-of-line path, where the keyword is not written, so it is
@@ -809,6 +818,38 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     std::size_t start = peek().pos;
     *storage = StorageNone;
 
+    // **A conversion function's name *is* its return type**, which is the one
+    // place in the language where those two are the same thing. So the type is
+    // read out of the name here without being consumed, and the declarator then
+    // reads `operator int` whole in the ordinary way - which is what makes one
+    // path serve all three spellings: the member declaration, the out-of-class
+    // definition `S::operator int()`, and the replay of a body held inside the
+    // class, which restarts at the `operator` and would otherwise meet a
+    // declaration with no type at all.
+    //
+    // First without a qualification, then with one. The qualified form is
+    // scanned past rather than consumed, because the declarator wants
+    // `S::operator int` entire and what this answers is what the conversion
+    // makes, which is inside the name rather than in front of it.
+    {
+        std::size_t k = 0;
+        if (peek().kind == TokenKind::Ident && peekAt(1).is("::"))
+            while (peekAt(k).kind == TokenKind::Ident && peekAt(k + 1).is("::"))
+                k += 2;
+        if (peekAt(k).is("operator") && peekAt(k + 1).kind != TokenKind::Punct) {
+            const std::size_t resume = at_;
+            at_ += k;
+            operatorName();
+            const Type *to = conversionTarget_;
+            conversionTarget_ = nullptr;
+            at_ = resume;
+            if (to != nullptr) {
+                *storage = StorageNone;
+                return to;
+            }
+        }
+    }
+
     for (;;) {
         if (consume("static"))  { *storage = StorageStatic; continue; }
         if (consume("extern"))  { *storage = StorageExtern; continue; }
@@ -996,13 +1037,16 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         return quals->isConst ? types_.withConst(deduced) : deduced;
     }
     // Same reason as in expectIdent: `friend`, `mutable`, `explicit`, `using` and
-    // `static_assert` all begin a member declaration in C++ and none begins one here.
-    // **And a declaration whose *type* is `operator` is a conversion function.**
+    // `static_assert` all begin a member declaration in C++ and none begins one
+    // here. **A conversion function is read at the top of this function**, so
+    // what reaches here is an `operator` this compiler could not make a name
+    // out of - `operator` followed by punctuation that is not an operator.
     if (peek().is("operator"))
-        src_.fail(peek().pos, "a conversion function is not supported yet - "
-                              "this declaration names a type to convert to "
-                              "where every operator that can be overloaded "
-                              "here is punctuation");
+        src_.fail(peek().pos, "'operator' here names neither an operator this "
+                              "compiler can overload nor a type it can convert "
+                              "to - a conversion function's name is a type, and "
+                              "every operator that can be overloaded is "
+                              "punctuation");
     if (peek().is("explicit"))
         src_.fail(peek().pos, "'explicit' is written on a constructor's "
                               "declaration inside its class, and nowhere else "
@@ -1110,11 +1154,43 @@ std::string Parser::operatorName() {
         src_.fail(pos, "'operator->*' is not supported yet");
     if (peek().kind == TokenKind::Str)
         src_.fail(pos, "a user-defined literal is not supported yet");
-    if (peek().kind != TokenKind::Punct)
-        src_.fail(pos, "a conversion function is not supported yet - "
-                       "'operator " + spelling + "' names a type to convert "
-                       "to, where every operator this compiler can overload "
-                       "is punctuation");
+    // **A type after `operator` is a conversion function**, not an operator
+    // that happens to be spelled with letters. `operator bool()` and
+    // `operator char *()` both come here; every operator that can be
+    // overloaded is punctuation, so the token kind is the whole test.
+    //
+    // The name it is filed under is `operator ` and the type, with a space -
+    // which is what tells it from `operator+` at every later reading, the
+    // punctuation forms having none.
+    if (peek().kind != TokenKind::Punct) {
+        StorageClass csc;
+        Qualifiers cq;
+        const Type *to = specifiers(&csc, &cq);
+        if (cq.isConst) to = types_.withConst(to);
+        // **A conversion-declarator is only `*` and `&`** - [class.conv.fct]
+        // and the grammar for conversion-type-id, which has no function and no
+        // array declarator in it. That is not a simplification: the `()` after
+        // `operator int` is the *parameter list*, so reading a general
+        // declarator here swallowed it and left the parameter list unread.
+        for (;;) {
+            if (consume("*")) {
+                to = types_.pointerTo(to);
+                while (peek().is("const") || peek().is("volatile")) {
+                    if (peek().is("const")) to = types_.withConst(to);
+                    at_++;
+                }
+                continue;
+            }
+            if (peek().is("&") && !peekAt(1).is("&")) {
+                at_++;
+                to = types_.referenceTo(to);
+                continue;
+            }
+            break;
+        }
+        conversionTarget_ = to;
+        return "operator " + to->describe();
+    }
     if (findOperator(spelling) == nullptr)
         src_.fail(peek().pos, "'" + spelling + "' is not an operator, so "
                               "there is nothing here to overload");

@@ -103,6 +103,42 @@ ExprPtr Parser::overloadedBinary(BinOp op, ExprPtr &lhs, ExprPtr &rhs,
         break;
     }
 
+    // **No operator took them, so the built-in one is offered a class that can
+    // become a number.** [over.match.oper]/9: where overload resolution finds
+    // nothing, the built-in candidates are considered, and a class reaches those
+    // through its conversion function. Asked here and not earlier, because an
+    // `operator+` written for the class is the better answer whenever there is
+    // one - `s + 1` calling `operator int` is what a class means when it has
+    // said nothing else.
+    {
+        const bool leftIsClass = lt->unqualified()->isStructOrUnion();
+        const bool rightIsClass = rt->unqualified()->isStructOrUnion();
+        ExprPtr l = std::move(lhs);
+        ExprPtr r = std::move(rhs);
+        bool moved = false;
+        if (leftIsClass && soleNumericConversion(lt) != nullptr) {
+            const Type *object = l->type();
+            std::vector<ExprPtr> none;
+            l = memberCallWith(std::move(l), object,
+                               soleNumericConversion(lt)->name, pos,
+                               std::move(none));
+            moved = true;
+        }
+        if (rightIsClass && soleNumericConversion(rt) != nullptr) {
+            const Type *object = r->type();
+            std::vector<ExprPtr> none;
+            r = memberCallWith(std::move(r), object,
+                               soleNumericConversion(rt)->name, pos,
+                               std::move(none));
+            moved = true;
+        }
+        if (moved && !l->type()->unqualified()->isStructOrUnion() &&
+            !r->type()->unqualified()->isStructOrUnion())
+            return arithmetic(op, std::move(l), std::move(r), pos);
+        lhs = std::move(l);
+        rhs = std::move(r);
+    }
+
     src_.fail(pos, "'" + lt->describe() + "' and '" + rt->describe() +
                    "' cannot be combined with '" + spelling + "' - one of them "
                    "is a class, and no '" + name + "' is declared that takes "
@@ -1548,7 +1584,7 @@ ExprPtr Parser::unary() {
         ExprPtr v = castExpr();
         if (ExprPtr call = overloadedUnary("+", v, pos)) return call;
         v = decay(std::move(v));
-        requireScalar(*v, pos, "unary '+'");
+        v = contextualScalar(std::move(v), pos, "unary '+'");
         return v;
     }
 
@@ -1574,7 +1610,7 @@ ExprPtr Parser::unary() {
         ExprPtr v = castExpr();
         if (ExprPtr call = overloadedUnary("!", v, pos)) return call;
         v = decay(std::move(v));
-        requireScalar(*v, pos, "'!'");
+        v = contextualScalar(std::move(v), pos, "'!'");
         ExprPtr node(new Unary('!', std::move(v)));
         node->setType(types_.get(Kind::Bool));   // [expr.unary.op]/9
         return node;

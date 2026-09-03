@@ -14,3 +14,11 @@ int main(void) {
     f.v = 1;
     return f ? 1 : 0;
 }
+
+// **What this case is about changed under it, which is worth recording.** It
+// used to say that a conversion function was not supported *at all*, so
+// `explicit` had nothing to apply to. Conversion functions work now, in both
+// directions and on all three targets, and what is refused is the keyword
+// alone: an explicit one has to be refused everywhere except a `static_cast`
+// and a condition, and accepting the word while ignoring that rule would be a
+// claim the compiler cannot support - the defect docs/EXCLUSIONS.md exists for.

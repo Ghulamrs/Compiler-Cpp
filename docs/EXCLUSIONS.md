@@ -22,7 +22,7 @@ tools/exclusions --count                  # the two numbers below
 tools/exclusions --check docs/EXCLUSIONS.md
 ```
 
-**Measured at `01b63a1`: 103 refusal sites, 95 distinct messages.** Every site
+**Measured at `ffdf677`: 101 refusal sites, 93 distinct messages.** Every site
 is cited below, which is what `--check` verifies — it reports each refusal the
 source raises and this document does not cite, and each citation whose site is
 gone. Run it after adding or removing a refusal; a document that has to be
@@ -44,7 +44,7 @@ a grep is not.
 than they fire. `template <>` at `src/parser/ParserTemplate.cpp:38` is refused
 where a template parameter list is expected, while
 `template <> struct Box<int> { … };` compiles; the functional-cast temporary at
-`src/parser/ParserOverload.cpp:581` is refused during overload ranking, while
+`src/parser/ParserOverload.cpp:607` is refused during overload ranking, while
 `take(P(4))` and `P q = P(3);` compile. Both were checked with a program before
 this sentence was written, and the same habit is the reason `pending[]` had
 eight keywords in it that were implemented.
@@ -63,10 +63,10 @@ using-declarations into `std`, with every name that header declares; and
 vector is a growing array, a map is a sorted vector of pairs, a set is a sorted
 vector, and an iterator in all of them is a pointer.
 
-What is not there yet: `<iostream>`, `<sstream>` and `<fstream>`. The output
-half of those needs nothing new - a prototype of `cout << x << endl` compiles
-and runs - and the input half needs a conversion function, `if (stream >> v)`
-being a stream converted to bool, which is the exclusion above.
+What is not there yet: `<iostream>`, `<sstream>` and `<fstream>`. Nothing in
+the language stands in the way of them any more: a prototype of
+`cout << x << endl` with manipulators compiles and runs, and `if (stream >> v)`
+- a stream converted to bool - is a conversion function, which now works.
 
 A converting constructor is called to make an argument now - [over.ics.user] -
 so `m["key"]` and `f(literal)` against a `const std::string &` parameter work,
@@ -107,11 +107,11 @@ What is left of it:
 
 - **`dynamic_cast` to a reference** — it has no null to answer with, so a
   failure throws `std::bad_cast`, and there is no C++ standard library here to
-  throw it from. `src/parser/ParserExprNew.cpp:300`
+  throw it from. `src/parser/ParserExprNew.cpp:391`
 - **`dynamic_cast` naming a class with more than one base** — that wants
   `__vmi_class_type_info`, a third shape carrying the bases' offsets and flags.
   Such a class still compiles and its vtable still works; only the cast is
-  refused. `src/parser/ParserExprNew.cpp:365`
+  refused. `src/parser/ParserExprNew.cpp:456`
 - **`typeid`** — in the keyword table below. Nothing emits a `type_info` for a
   *fundamental* type either; a class's is what landed.
 
@@ -148,7 +148,7 @@ SFINAE and variadic packs. What is left:
 - **instantiating a template that was only declared** —
   `src/parser/ParserTemplate.cpp:1564`
 - **`sizeof` of a template parameter in a signature** — the linker name would
-  have to spell the expression. `src/parser/ParserExpr.cpp:1750`
+  have to spell the expression. `src/parser/ParserExpr.cpp:1786`
 
 ## Classes, members and friends
 
@@ -156,28 +156,30 @@ SFINAE and variadic packs. What is left:
 - **one name holding both a static and a non-static member**, where overload
   resolution picks the non-static one — the arguments have been read by then,
   and there is no honest way back to the call that takes an object.
-  `src/parser/ParserExpr.cpp:1012`. A static member function on its own works.
+  `src/parser/ParserExpr.cpp:1048`. A static member function on its own works.
 - **a member function of a union** — `src/parser/ParserClass.cpp:1844`
 - **`friend class X;`** — one named function can be befriended.
-  `src/parser/ParserType.cpp:364`
+  `src/parser/ParserType.cpp:373`
 - **befriending one member function of another class** —
-  `src/parser/ParserType.cpp:376`
+  `src/parser/ParserType.cpp:385`
 - **a friend function defined inside the class body** —
-  `src/parser/ParserType.cpp:393`
+  `src/parser/ParserType.cpp:402`
 - **a const member named in a mem-initialiser list** —
   `src/parser/ParserTopLevel.cpp:679`
 - **a delegating constructor** — `src/parser/ParserTopLevel.cpp:725`
 
 ## Conversion functions and operators
 
-- **a conversion function**, `operator int()` — there are none at all, which is
-  also why `explicit` on one is refused naming the conversion function rather
-  than the keyword. `src/parser/ParserType.cpp:1002`,
-  `src/parser/ParserType.cpp:1114`, `src/parser/ParserType.cpp:310`
+- **`explicit` on a conversion function** — C++11's addition, and the only part
+  of one that is missing: an explicit conversion has to be refused everywhere
+  except a `static_cast` and a condition, and accepting the keyword while
+  ignoring that rule is a claim the compiler cannot support, which is the defect
+  this file exists for. `src/parser/ParserType.cpp:315`. The conversion function
+  itself works, in both directions and on all three targets.
 - **`operator new` / `operator delete`** as user functions —
-  `src/parser/ParserType.cpp:1105`
-- **`operator->*`** — `src/parser/ParserType.cpp:1110`
-- **a user-defined literal** — `src/parser/ParserType.cpp:1112`
+  `src/parser/ParserType.cpp:1149`
+- **`operator->*`** — `src/parser/ParserType.cpp:1154`
+- **a user-defined literal** — `src/parser/ParserType.cpp:1156`
 - **`operator&&`, `operator||`, `operator,` and `operator->*`** — the four that
   still fall into the generic refusal below, **named** rather than left to it.
   The ten compound assignments used to be here too and are reachable now; a
@@ -197,7 +199,7 @@ SFINAE and variadic packs. What is left:
   Every other overloadable operator resolves from an expression, asked of a
   one-line program each: `+ - * / % & | ^ << >> == != < <= > >=` binary,
   `+ - * & ! ~ ++ --` unary, and `() [] = ->`.
-  `src/parser/ParserType.cpp:1194`
+  `src/parser/ParserType.cpp:1270`
 
 ## Initialisation, and braces
 
@@ -207,7 +209,7 @@ SFINAE and variadic packs. What is left:
   `src/parser/ParserInit.cpp:38`
 - **a braced default argument** — `src/parser/ParserClass.cpp:2404`,
   `src/parser/ParserTopLevel.cpp:514`
-- **a braced member initialiser** — `src/parser/ParserType.cpp:676`
+- **a braced member initialiser** — `src/parser/ParserType.cpp:685`
 - **an initialiser for an array of a class** —
   `src/parser/ParserStmt.cpp:101`, `src/parser/ParserTopLevel.cpp:697`
 - **an array of a class with a destructor** — the elements would have to be
@@ -233,49 +235,49 @@ it is written:
 ## Expressions
 
 - **`?:` as an lvalue** — real C++ when both arms are lvalues; bind the
-  reference in an `if`/`else`. `src/parser/ParserExpr.cpp:1277`
+  reference in an `if`/`else`. `src/parser/ParserExpr.cpp:1313`
 - **`static_cast` of a reference to a different type** —
-  `src/parser/ParserExpr.cpp:232`
+  `src/parser/ParserExpr.cpp:268`
 - **a name qualified with `::` alone**, the global scope —
-  `src/parser/ParserExpr.cpp:803`
+  `src/parser/ParserExpr.cpp:839`
 - **choosing an overload by the type it is assigned to** —
-  `src/parser/ParserExpr.cpp:463`
+  `src/parser/ParserExpr.cpp:499`
 - **a pointer to a *virtual* member function** — it holds a vtable index where
-  this holds an address. `src/parser/ParserExpr.cpp:1622`
+  this holds an address. `src/parser/ParserExpr.cpp:1658`
 - **a pointer to a *const* member function** — the constness of `this` is not
-  part of a function type here. `src/parser/ParserType.cpp:1275`
+  part of a function type here. `src/parser/ParserType.cpp:1351`
 - **postfix `++` / `--` on a bit-field** — the prefix form works.
   `src/parser/ParserOperator.cpp:489`
-- **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:640`
+- **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:676`
 - **a functional-cast temporary reached through overload ranking** — a
   converting constructor is not tried at a call.
-  `src/parser/ParserOverload.cpp:581`
+  `src/parser/ParserOverload.cpp:607`
 
 ## `new` and `delete`
 
 - **placement new**, and a parenthesised type-id after `new` —
-  `src/parser/ParserExprNew.cpp:573`
+  `src/parser/ParserExprNew.cpp:664`
 - **more than one value in a new-expression** —
-  `src/parser/ParserExprNew.cpp:652`
+  `src/parser/ParserExprNew.cpp:743`
 - **`new T[n]` of a class with a constructor** —
-  `src/parser/ParserExprNew.cpp:659`
+  `src/parser/ParserExprNew.cpp:750`
 - **`new T[n][m]`** — only the first dimension may be given.
-  `src/parser/ParserExprNew.cpp:601`
-- **`new T{...}`** — `src/parser/ParserExprNew.cpp:626`
-- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:861`
+  `src/parser/ParserExprNew.cpp:692`
+- **`new T{...}`** — `src/parser/ParserExprNew.cpp:717`
+- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:952`
 - **`delete[]` of a type with a destructor** — the count `new[]` would have
-  recorded is not written. `src/parser/ParserExprNew.cpp:929`
+  recorded is not written. `src/parser/ParserExprNew.cpp:1020`
 
 ## Statements, exceptions and control
 
 - **a local with a destructor and a `try` in one function** — each is a range
   in the call-site table and one would have to split the other.
-  `src/parser/ParserStmt.cpp:600`, `src/parser/ParserStmt.cpp:811`
-- **a `try` inside another** — `src/parser/ParserStmt.cpp:849`
+  `src/parser/ParserStmt.cpp:600`, `src/parser/ParserStmt.cpp:812`
+- **a `try` inside another** — `src/parser/ParserStmt.cpp:850`
 - **catching by reference** — catch by value.
-  `src/parser/ParserStmt.cpp:900`
+  `src/parser/ParserStmt.cpp:901`
 - **a rethrow**, `throw;` with nothing after it —
-  `src/parser/ParserStmt.cpp:1073`
+  `src/parser/ParserStmt.cpp:1074`
 - **a dynamic exception specification**, `throw(T)` — `throw()` with nothing in
   it is `noexcept` and works. `src/parser/ParserConst.cpp:71`
 - **a range-based `for` over anything but an array** — a class would need its
@@ -295,7 +297,7 @@ it is written:
   class's overload set. `src/parser/ParserType.cpp:265`
 - **a using-declaration inside a block** — it would declare a name for the rest
   of the block and rank against the locals beside it.
-  `src/parser/ParserStmt.cpp:1057`. The one at namespace scope,
+  `src/parser/ParserStmt.cpp:1058`. The one at namespace scope,
   `using N::f;`, works, and so does `using namespace N;` here.
 
 ## Lambdas
@@ -319,7 +321,7 @@ beside it goes in the same commit.
 | --- | --- | --- |
 | `1'000`, a digit separator | C++14 | `src/Lexer.cpp:146` |
 | `0b101`, a binary literal | C++14 | `src/Lexer.cpp:250` |
-| `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1172` |
+| `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1208` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:184` |
 | `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2392`, `src/parser/ParserTopLevel.cpp:466` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:396` |
@@ -327,15 +329,15 @@ beside it goes in the same commit.
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:642`, `src/parser/ParserStmt.cpp:150`, `src/parser/ParserTopLevel.cpp:265` |
 | `static_assert` with no message | C++17 | `src/parser/ParserConst.cpp:31` |
 | `namespace N::M { }` | C++17 | `src/parser/ParserTopLevel.cpp:92` |
-| an attribute, `[[noreturn]]` | none parse | `src/parser/ParserType.cpp:1016` |
+| an attribute, `[[noreturn]]` | none parse | `src/parser/ParserType.cpp:1060` |
 
 ## Keywords the parser has no rule for
 
 Twenty, from `pending[]` in `src/parser/Parser.cpp`. Each is refused **by
 name** at the three doors a keyword can arrive at — an expression, a member
 declaration, and a name — rather than as a parse error further along:
-`src/parser/Parser.cpp:99`, `src/parser/ParserExpr.cpp:577`,
-`src/parser/ParserType.cpp:1020`.
+`src/parser/Parser.cpp:99`, `src/parser/ParserExpr.cpp:613`,
+`src/parser/ParserType.cpp:1064`.
 
     alignas   alignof   and       and_eq    asm
     bitand    bitor     char16_t  char32_t  compl
@@ -356,7 +358,7 @@ guessed wrong twice.
 
 - **`return` inside a `catch` on x86_64-windows** — a handler is a funclet
   there, so leaving one early is a return of the address to carry on at.
-  `src/parser/ParserStmt.cpp:1082`
+  `src/parser/ParserStmt.cpp:1083`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation
@@ -374,7 +376,7 @@ judgement in a program. They are named here instead:
 - `src/parser/ParserType.cpp:167` — a base class that is not yet defined. An
   ordinary error: a derived object contains its base, so the base has to be
   complete.
-- `src/Mangle.cpp:487`, `src/Mangle.cpp:956` — a type with no Itanium or
+- `src/Mangle.cpp:517`, `src/Mangle.cpp:991` — a type with no Itanium or
   Microsoft linkage name. Internal: reaching either means a type was built that
   the mangler was never taught, which is a bug in this compiler and not a
   statement about the language.

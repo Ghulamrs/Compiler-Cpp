@@ -21,6 +21,14 @@ static std::vector<std::string> scopeComponents(const std::string &name) {
 
 #include <vector>
 
+// **A conversion function is told by the space in its name.** It is filed as
+// `operator bool`; every operator that can be overloaded is punctuation and is
+// filed as `operator+`, with none. One test, so the two manglers cannot come to
+// different conclusions about which kind of member they are spelling.
+static bool isConversionFunction(const std::string &name) {
+    return name.compare(0, 9, "operator ") == 0;
+}
+
 namespace {
 
 // A type is const-qualified in its own right when it is not the same object as its
@@ -169,6 +177,14 @@ public:
     // and its letters - `_ZNK1VplERKS_` against `_ZNK1V3addERKS_` - and everything
     // either side of it is unchanged. `unary` picks between the two codes.
     void writtenName(const std::string &name, bool unary) {
+        // **`cv` and then the type**, which is the whole of a conversion
+        // function's name on this ABI: `_ZNK1ScvbEv` for `operator bool() const`.
+        // The type comes from the *return* type, those being the same thing here.
+        if (isConversionFunction(name)) {
+            out += "cv";
+            type(conversionTo_);
+            return;
+        }
         const std::string spelling = operatorSpelling(name);
         if (const OperatorCode *op = findOperator(spelling)) {
             out += itaniumOperatorCode(*op, unary);
@@ -178,9 +194,14 @@ public:
         out += name;
     }
 
+    // What a conversion function converts to, for writtenName - which is given
+    // a name and not a signature and so cannot reach the return type itself.
+    const Type *conversionTo_ = nullptr;
+
     void memberFunction(const std::string &cls, const Type *clsType,
                         const std::string &name,
                         const Type *fn, bool constThis) {
+        conversionTo_ = fn->returns();
         out = "_ZN";
         if (constThis) out += "K";
         prefix(clsType, cls);
@@ -245,6 +266,15 @@ public:
     void typeInfoFor(const Type *t) { type(t); }
 
     void function(const std::string &name, const Type *fn, bool internal) {
+        // **The `L` is not written on an operator's name.** clang marks an
+        // internal-linkage *identifier* - `_ZL8ordinaryi` - and does not mark an
+        // operator, however it is declared: `static int operator+(const W &,
+        // int)` is `_ZplRK1Wi`, with the same local symbol binding and no L.
+        // Measured across `+`, `-` and `==` beside an ordinary static in one
+        // file, so it is the kind of name that decides and not the operator.
+        if (internal && (findOperator(operatorSpelling(name)) != nullptr ||
+                         isConversionFunction(name)))
+            internal = false;
         out = internal ? "_ZL" : "_Z";
         // **A name with a scope in it is a nested-name**, `_ZN1N1fEi`, and a
         // namespace component is written exactly as a class one is.
@@ -561,6 +591,11 @@ public:
     // back-reference**: in `??HV@@QEBA?AU0@D@Z` the class is back-reference *0*,
     // where a named member would have left it 1. Arity plays no part here.
     bool operatorPrefix(const std::string &name) {
+        // **`??B`, and unlike every other operator it writes its return type**
+        // - which memberFunction already does for all of them, so naming it is
+        // the whole of the difference: `??BS@@QEBA_NXZ` for
+        // `operator bool() const`. Measured against clang.
+        if (isConversionFunction(name)) { out = "??B"; return true; }
         const OperatorCode *op = findOperator(operatorSpelling(name));
         if (op == nullptr) return false;
         out = "??";

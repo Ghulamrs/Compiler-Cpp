@@ -239,8 +239,8 @@ ExprPtr Parser::logicalAnd() {
         at_++;
         ExprPtr r = decay(bitOr());
         n = decay(std::move(n));
-        requireScalar(*n, pos, "'&&'");
-        requireScalar(*r, pos, "'&&'");
+        n = contextualScalar(std::move(n), pos, "'&&'");
+        r = contextualScalar(std::move(r), pos, "'&&'");
         ExprPtr node(new Binary(BinOp::LAnd, std::move(n), std::move(r)));
         node->setType(types_.get(Kind::Bool));   // [expr.log.and]/1
         n = std::move(node);
@@ -255,8 +255,8 @@ ExprPtr Parser::logicalOr() {
         at_++;
         ExprPtr r = decay(logicalAnd());
         n = decay(std::move(n));
-        requireScalar(*n, pos, "'||'");
-        requireScalar(*r, pos, "'||'");
+        n = contextualScalar(std::move(n), pos, "'||'");
+        r = contextualScalar(std::move(r), pos, "'||'");
         ExprPtr node(new Binary(BinOp::LOr, std::move(n), std::move(r)));
         node->setType(types_.get(Kind::Bool));   // [expr.log.or]/1
         n = std::move(node);
@@ -505,7 +505,7 @@ ExprPtr Parser::conditional() {
     std::size_t pos = peek().pos;
     at_++;
     cond = decay(std::move(cond));
-    requireScalar(*cond, pos, "the condition of '?:'");
+    cond = contextualScalar(std::move(cond), pos, "the condition of '?:'");
 
     ExprPtr a = decay(expr());
     expect(":");

@@ -618,7 +618,8 @@ StmtPtr Parser::switchStatement() {
     std::size_t pos = peek().pos;
     expect("switch");
     expect("(");
-    ExprPtr cond = endFullExpression(decay(expr()));
+    ExprPtr cond = contextualScalar(endFullExpression(decay(expr())), pos,
+                                   "this condition");
     if (!cond->type()->isInteger())
         src_.fail(pos, "a switch needs an integer, not '" +
                        cond->type()->describe() + "'");
@@ -1247,7 +1248,8 @@ StmtPtr Parser::statementBody() {
     }
     if (consume("if")) {
         expect("(");
-        ExprPtr cond = endFullExpression(decay(expr()));
+        ExprPtr cond = contextualScalar(endFullExpression(decay(expr())), peek().pos,
+                                   "this condition");
         expect(")");
         StmtPtr thenArm = statement();
         StmtPtr elseArm;
@@ -1256,7 +1258,8 @@ StmtPtr Parser::statementBody() {
     }
     if (consume("while")) {
         expect("(");
-        ExprPtr cond = endFullExpression(decay(expr()));
+        ExprPtr cond = contextualScalar(endFullExpression(decay(expr())), peek().pos,
+                                   "this condition");
         expect(")");
         loopDepth_++;
         loopMarks_.push_back(alive_.size());
@@ -1280,7 +1283,8 @@ StmtPtr Parser::statementBody() {
         loopDepth_--;
         expect("while");
         expect("(");
-        ExprPtr cond = endFullExpression(decay(expr()));
+        ExprPtr cond = contextualScalar(endFullExpression(decay(expr())), peek().pos,
+                                   "this condition");
         expect(")");
         expect(";");
         return StmtPtr(new DoWhile(std::move(body), std::move(cond)));

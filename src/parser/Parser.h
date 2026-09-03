@@ -947,6 +947,16 @@ private:
     std::map<std::size_t, MadeLambda> lambdaAt_;
 
     std::string operatorName();
+    // **The type a conversion function converts to**, set by operatorName when
+    // it reads one and read by the caller straight after. A conversion
+    // function's *return* type is its name, which is the one place those two
+    // are the same thing, and this is how the name reader hands it over.
+    const Type *conversionTarget_ = nullptr;
+    // Whether a member name is a conversion function's. The punctuation forms
+    // are `operator+` with no space; this one is `operator bool`, with one.
+    static bool isConversionName(const std::string &name) {
+        return name.compare(0, 9, "operator ") == 0;
+    }
     std::string declaredName(const char *what);
 
     // [class.friend]. **A friend is not a member**: the declaration is written inside the
@@ -1066,6 +1076,14 @@ private:
     // constructor - a copy is not a conversion. Two of them is an ambiguity and
     // answers null, because guessing is worse than refusing.
     const Signature *convertingConstructor(const Type *to, const Expr &from);
+    // The conversion function on `from` giving `to`, or - with `to` null - any
+    // scalar, `bool` first. The mirror of the constructor above.
+    const Signature *conversionFunction(const Type *from, const Type *to);
+    // A class where a number or a pointer is wanted, converted by its own.
+    ExprPtr contextualScalar(ExprPtr e, std::size_t pos, const char *what);
+    // The single conversion to a scalar, or null where there are none or two -
+    // which the built-in operators need and a condition does not.
+    const Signature *soleNumericConversion(const Type *from);
     // **Only one user-defined conversion may appear in a sequence** -
     // [over.ics.user]/1 - so this is the rule and not only a guard against the
     // recursion that asking about a constructor's own parameter would start.

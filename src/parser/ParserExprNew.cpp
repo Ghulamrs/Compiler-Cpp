@@ -167,6 +167,97 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
     return constructTemporary(plain, ctor, std::move(args), zeroFirst, pos);
 }
 
+// **The conversion function on `from` that answers something usable.** The
+// mirror of the converting constructor: that one is a constructor of the
+// *target*, this one a member of the *source*. Where `to` is given, an exact
+// answer wins and anything a standard conversion can finish is taken otherwise;
+// where it is null - a condition, `!`, `&&` - any scalar will do and `bool` is
+// preferred, which is what a contextual conversion asks for.
+//
+// Two that could each serve is an ambiguity and answers null, the same rule and
+// for the same reason as the constructor search.
+const Parser::Signature *Parser::conversionFunction(const Type *from,
+                                                    const Type *to) {
+    const Type *plain = from->unqualified();
+    if (!plain->isStructOrUnion()) return nullptr;
+
+    // **Walked over the signature table and not over a member list**, because
+    // there is no member list: the table is keyed by `Class::name`, so a class's
+    // conversions cannot be asked for without already knowing what they convert
+    // to. A class has very few, and this runs only where a class stands where a
+    // scalar was wanted.
+    const Signature *best = nullptr;
+    bool exact = false;
+    for (const Type *c = plain; c != nullptr; c = c->base()) {
+        for (std::size_t k = 0; k < functions_.size(); k++) {
+            const Signature &f = functions_[k];
+            if (f.owner != c->tag()) continue;
+            if (!isConversionName(f.name) || !f.params.empty()) continue;
+            const Type *gives = f.returns;
+            if (to == nullptr) {
+                if (!gives->unqualified()->isScalar()) continue;
+                if (gives->isBool()) return &f;          // the one asked for
+                if (best != nullptr && !exact) return nullptr;
+                if (best == nullptr) best = &f;
+                continue;
+            }
+            if (gives->unqualified() == to->unqualified()) {
+                if (exact) return nullptr;               // two exact answers
+                best = &f;
+                exact = true;
+                continue;
+            }
+            if (exact) continue;
+            if (!gives->unqualified()->isScalar() || !to->isScalar()) continue;
+            if (best != nullptr) return nullptr;
+            best = &f;
+        }
+    }
+    return best;
+}
+
+// **The one conversion this class has to a number or a pointer**, or null when
+// it has none or has more than one. Not the same question as the contextual
+// conversion above, and the difference is the whole of a bug this caught:
+// [conv]/3 says a condition wants *bool*, so a class with `operator bool` and
+// `operator int` converts unambiguously there - and [over.match.oper]/9 offers
+// the built-in operators *every* conversion the class has, so the same class in
+// `a + 1` is ambiguous and clang refuses it. Preferring bool in both places
+// answered 2 where the program has no meaning.
+const Parser::Signature *Parser::soleNumericConversion(const Type *from) {
+    const Type *plain = from->unqualified();
+    if (!plain->isStructOrUnion()) return nullptr;
+    const Signature *only = nullptr;
+    for (const Type *c = plain; c != nullptr; c = c->base())
+        for (std::size_t k = 0; k < functions_.size(); k++) {
+            const Signature &f = functions_[k];
+            if (f.owner != c->tag()) continue;
+            if (!isConversionName(f.name) || !f.params.empty()) continue;
+            if (!f.returns->unqualified()->isScalar()) continue;
+            if (only != nullptr) return nullptr;
+            only = &f;
+        }
+    return only;
+}
+
+// **A class where a number or a pointer is wanted**, converted by its own
+// conversion function - a condition, `!`, `&&`, `||`, `?:`. [conv]/3 calls this
+// the contextual conversion to bool; here any scalar the class offers will do,
+// with bool preferred, because what the operand is then used for is a test
+// against zero either way.
+ExprPtr Parser::contextualScalar(ExprPtr e, std::size_t pos, const char *what) {
+    if (e->type() != nullptr && e->type()->unqualified()->isStructOrUnion()) {
+        if (const Signature *how = conversionFunction(e->type(), nullptr)) {
+            const Type *object = e->type();
+            std::vector<ExprPtr> none;
+            e = memberCallWith(std::move(e), object, how->name, pos,
+                               std::move(none));
+        }
+    }
+    requireScalar(*e, pos, what);
+    return e;
+}
+
 // **[over.ics.user]: the constructor that could make `to` out of `from`.**
 // One parameter, not `explicit`, and not a copy of `to` itself - copying is not
 // converting, and letting it count here would make every argument of the right

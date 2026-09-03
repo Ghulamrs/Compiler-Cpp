@@ -53,6 +53,23 @@ int publicBaseOffset(const Type *derived, const Type *base);
 ExprPtr Parser::convert(ExprPtr e, const Type *to) const {
     if (e->type() == to) return e;
 
+    // **A class converted by its own conversion function**, which is where a
+    // class reaches a number, a pointer or a bool. Written here so that every
+    // caller of convert gets it - an initialisation, an assignment, an
+    // argument, a return - rather than at each of those in turn.
+    if (e->type() != nullptr && e->type()->unqualified()->isStructOrUnion() &&
+        !to->unqualified()->isStructOrUnion()) {
+        Parser *self = const_cast<Parser *>(this);
+        if (const Signature *how = self->conversionFunction(e->type(), to)) {
+            const Type *object = e->type();
+            std::vector<ExprPtr> none;
+            ExprPtr got = self->memberCallWith(std::move(e), object, how->name,
+                                               0, std::move(none));
+            return got->type() == to ? std::move(got)
+                                     : convert(std::move(got), to);
+        }
+    }
+
     // **A class differing only in const-ness is the same object**, so there is
     // nothing here to convert: [conv.qual] changes the type and not the value,
     // and the object keeps its address and its bytes. Re-labelled rather than
@@ -226,12 +243,15 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
             // reference gets nothing, because that object has nowhere to live
             // beyond the call and binding to it would be a promise to write
             // somewhere the caller can read.
-            if (want->isConst() && want->unqualified()->isStructOrUnion() &&
-                rankingConversion_ == 0) {
+            if (want->isConst() && rankingConversion_ == 0) {
                 rankingConversion_++;
-                const Signature *made = convertingConstructor(want, arg);
+                const bool usable =
+                    want->unqualified()->isStructOrUnion()
+                        ? convertingConstructor(want, arg) != nullptr
+                        : (given->unqualified()->isStructOrUnion() &&
+                           conversionFunction(given, want) != nullptr);
                 rankingConversion_--;
-                if (made != nullptr) return Rank::UserDefined;
+                if (usable) return Rank::UserDefined;
             }
             return Rank::None;
         }
@@ -309,15 +329,21 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     if (to->isNullPtr() && from->isInteger())
         return isNullConstant(arg) ? Rank::Conversion : Rank::None;
 
-    // **Last of all, a converting constructor** - [over.ics.rank]/2 puts a
-    // user-defined conversion below every standard one, so this is asked only
-    // where nothing above it answered. A by-value class parameter reaches here
-    // the same way a `const T &` does above.
-    if (to->unqualified()->isStructOrUnion() && rankingConversion_ == 0) {
+    // **Last of all, a user-defined conversion** - [over.ics.rank]/2 puts one
+    // below every standard conversion, so this is asked only where nothing
+    // above it answered. Both directions live here: a constructor of the target
+    // when the target is a class, and a conversion function on the source when
+    // the source is one. The counter is [over.ics.user]/1 - at most one per
+    // sequence - and is also what stops either search recursing into the other.
+    if (rankingConversion_ == 0) {
         rankingConversion_++;
-        const Signature *made = convertingConstructor(to, arg);
+        const bool usable =
+            to->unqualified()->isStructOrUnion()
+                ? convertingConstructor(to, arg) != nullptr
+                : (from->unqualified()->isStructOrUnion() &&
+                   conversionFunction(from, to) != nullptr);
         rankingConversion_--;
-        if (made != nullptr) return Rank::UserDefined;
+        if (usable) return Rank::UserDefined;
     }
 
     return Rank::None;
@@ -680,6 +706,15 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
     if (ft->unqualified() == to->unqualified()) return;
 
     if (ft->isArithmetic() && to->isArithmetic()) return;
+
+    // **A class converts by its own conversion function**, [class.conv.fct] -
+    // the mirror of the converting constructor, and the same one rule: at most
+    // one user-defined conversion in a sequence, so what the function answers is
+    // finished by a standard conversion and no further.
+    if (ft->unqualified()->isStructOrUnion() &&
+        !to->unqualified()->isStructOrUnion() &&
+        const_cast<Parser *>(this)->conversionFunction(ft, to) != nullptr)
+        return;
 
     auto refuse = [&](const char *tail) {
         src_.fail(pos, what + " is '" + to->describe() + "' and this is '" +
