@@ -70,6 +70,15 @@ StmtPtr Parser::declarationBody() {
         Declared d = declarator(base);
         if (mentionsDeduced(d.type)) d.type = deduceAuto(d.type, d.name, d.pos);
 
+        // **A const object has to be initialised where it is declared**, and this
+        // is asked before the branch below rather than after it: a class whose
+        // constructor the *compiler* wrote initialises only what its members ask
+        // for, so `const S s;` reaches a constructor and still leaves a member
+        // holding the stack. sc is not read here - a `static` one is as const.
+        if (d.type->isConst() && !peek().is("=") && !peek().is("(") &&
+            !peek().is("{"))
+            requireConstInitialised(d.type, d.name, d.pos);
+
         // An object of a class with constructors is built by calling one, asked before
         // the branch below - `Point p(1)` and a function declaration look alike until
         // the type is known. **And an array of one**, which used to fall through.
@@ -1756,6 +1765,11 @@ void Parser::topLevel(Program &program) {
             } else if (quals.isConstexpr && sc != StorageExtern) {
                 src_.fail(d.pos, "'" + d.name + "' is 'constexpr' and has no "
                                  "initialiser - there is nothing for it to be");
+            } else if (d.type->isConst() && sc != StorageExtern) {
+                // The same [dcl.init]/7 the local path asks about. `extern` is
+                // exempt because it declares rather than defines: the definition
+                // is somewhere else and is where the initialiser has to be.
+                requireConstInitialised(d.type, d.name, d.pos);
             } else if (d.type->isArray() && d.type->length() < 0 &&
                        sc != StorageExtern) {
                 src_.fail(d.pos, "'" + d.name + "' has no length and no initialiser "

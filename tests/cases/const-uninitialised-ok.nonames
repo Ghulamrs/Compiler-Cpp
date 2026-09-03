@@ -1,0 +1,2 @@
+x86_64-linux  two differences, both already recorded elsewhere: cxx1 writes the C1 forms of Written's and OfWritten's inline constructors where clang emits only what a use asks for - docs/CONFORMANCE.md, "An inline member function is a strong symbol" - and clang zeroes `const Plain p = Plain();` with a call to memset where cxx1 writes the fields out, which is the answer a compiler that ships no runtime has to give
+x86_64-windows  the same memset, called by clang and not by cxx1; every name either writes is otherwise identical

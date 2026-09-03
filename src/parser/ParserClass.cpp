@@ -534,6 +534,61 @@ bool Parser::sameParameters(const std::vector<const Type *> &a,
     return true;
 }
 
+bool Parser::memberFromBase(const Type *cls, const Member &m) {
+    const std::vector<Type::BaseSpec> &bs = cls->bases();
+    for (std::size_t k = 0; k < bs.size(); k++)
+        if (m.offset >= bs[k].offset &&
+            m.offset < bs[k].offset + bs[k].type->dataSize())
+            return true;
+    return false;
+}
+
+// **[dcl.init]/7 refuses a const object that nothing would initialise**, and the
+// line is CWG 253's rather than the paragraph's letter - which is what clang
+// applies and what this was measured against: `const S s;` is refused for a
+// plain struct and accepted where every member has an initialiser of its own.
+bool Parser::constDefaultInitialisable(const Type *t) const {
+    const Type *u = t->unqualified();
+    while (u->isArray()) u = u->pointee()->unqualified();
+    if (!u->isStructOrUnion()) return false;      // `const int n;` and its kind
+
+    // A constructor somebody wrote initialises whatever it means to; one the
+    // compiler wrote initialises only what the members ask for, which is the
+    // whole of this question.
+    if (const Signature *ctor = defaultConstructorOf(u))
+        if (!ctor->implicit) return true;
+
+    const std::vector<Type::BaseSpec> &bs = u->bases();
+    for (std::size_t i = 0; i < bs.size(); i++)
+        if (!constDefaultInitialisable(bs[i].type)) return false;
+
+    const std::vector<Member> &ms = u->members();
+    for (std::size_t i = 0; i < ms.size(); i++) {
+        if (memberFromBase(u, ms[i])) continue;   // its own base answered for it
+        if (memberInit_.count(u->tag() + "::" + ms[i].name)) continue;
+        if (!constDefaultInitialisable(ms[i].type)) return false;
+    }
+    return true;
+}
+
+void Parser::requireConstInitialised(const Type *t, const std::string &name,
+                                     std::size_t pos) {
+    if (!t->isConst() || constDefaultInitialisable(t)) return;
+    const Type *u = t->unqualified();
+    while (u->isArray()) u = u->pointee()->unqualified();
+    if (u->isStructOrUnion())
+        // The suggestion is spelled with the tag and not with describe(), which
+        // says "struct S" - and `struct S()` is not something anybody can write.
+        src_.fail(pos, "'" + name + "' is const and nothing here would "
+                       "initialise it - '" + u->describe() + "' has no "
+                       "constructor of its own and leaves a member unset. Write "
+                       "'const " + u->tag() + " " + name + " = " +
+                       u->tag() + "();'");
+    src_.fail(pos, "'" + name + "' is const and has no initialiser, so it would "
+                   "hold whatever was there - [dcl.init]/7 refuses that. Give it "
+                   "a value where it is declared");
+}
+
 ExprPtr Parser::thisMember(int thisSlot, const Type *cls, const Member &m) {
     ExprPtr me(Var::local("this", thisSlot));
     me->setType(types_.pointerTo(cls));
@@ -934,12 +989,7 @@ void Parser::synthesizeDestructor(std::size_t which) {
     const std::vector<Member> &ms = type->members();
 
     for (std::size_t n = ms.size(); n-- > 0; ) {
-        bool fromBase = false;
-        for (std::size_t k = 0; k < bs.size() && !fromBase; k++)
-            if (ms[n].offset >= bs[k].offset &&
-                ms[n].offset < bs[k].offset + bs[k].type->dataSize())
-                fromBase = true;
-        if (fromBase) continue;
+        if (memberFromBase(type, ms[n])) continue;
 
         const Type *mt = ms[n].type;
         const Type *elem = mt->isArray() ? mt->pointee() : mt;

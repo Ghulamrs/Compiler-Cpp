@@ -468,6 +468,20 @@ private:
     // hand, each remembering the pointer type on `this`, the class on the
     // dereference and the member's bitfield width; another type is set by the caller.
     ExprPtr thisMember(int thisSlot, const Type *cls, const Member &m);
+
+    // A member the layout copied down from a base, told by the offset it sits
+    // at: a base occupies its data size, so anything inside that range came
+    // with it. The class's own members are the ones outside every base's.
+    static bool memberFromBase(const Type *cls, const Member &m);
+
+    // **Would default-initialising this leave anything uninitialised?** CWG 253,
+    // as clang applies it: a class with a constructor of its own is fine, and so
+    // is one whose every base and member is fine or carries an initialiser.
+    bool constDefaultInitialisable(const Type *t) const;
+
+    // [dcl.init]/7 for an object declared const with no initialiser at all.
+    void requireConstInitialised(const Type *t, const std::string &name,
+                                 std::size_t pos);
     // The statements that set an object's vptrs - the primary one and any a
     // polymorphic second base needs. Every constructor emits these, written
     // or implicit, which is why they live in one place.

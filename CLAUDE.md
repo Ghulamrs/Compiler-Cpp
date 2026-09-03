@@ -3834,6 +3834,44 @@ cannot tell two of them apart.
 from both parameter-list parsers, because a definition may carry them where the
 declaration did not.
 
+## A const object has to be initialised, and the line is CWG 253's
+
+**`const S s;` on a plain struct compiled and left the object holding whatever
+was there**, which is [dcl.init]/7's whole subject: a const object that nothing
+initialises can never be given a value afterwards, so the declaration is
+ill-formed rather than merely unwise. It is refused now, at a local and at file
+scope alike, `extern` excepted because that declares rather than defines.
+
+**Where the line falls was measured, thirteen shapes against clang, because the
+paragraph's letter and what compilers do are not the same.** [dcl.init]/7 says
+"a class type with a user-provided default constructor"; clang applies CWG 253,
+which asks instead whether anything would be left unset:
+
+```cpp
+struct A { int a; };                 const A a;   // refused, and clang refuses
+struct B { int a; B() : a(1) {} };   const B b;   // a constructor of its own
+struct C { int a = 5; };             const C c;   // every member initialised
+struct D { B b; };                   const D d;   // a member that answers for itself
+struct E : B { };                    const E e;   // and a base that does
+struct F { int a = 1; int b; };      const F f;   // refused: b is left unset
+struct G { B b; int n; };            const G g;   // refused, for the same reason
+const int n;                                      // refused
+const A arr[2];                                   // refused
+```
+
+`constDefaultInitialisable` is that walk, and it is recursive because the rule
+is: a user-provided constructor answers for the whole class, and otherwise every
+base and every member has to answer for itself. A member the layout copied down
+from a base is skipped, since the base already answered - `memberFromBase` is
+that test, which the destructor walk had been spelling out inline.
+
+**The refusal names a spelling that works, and one that does not.**
+`const S s = S();` compiles here; `const S s = {};` does not - an empty braced
+initialiser is refused with "an initialiser list needs at least one value" where
+clang value-initialises. That is the natural remedy a reader reaches for, so the
+message points at the other one, and the empty-braces gap is written down in the
+section below rather than left to be discovered at the wall.
+
 ## Ordinary C++ this refuses, and none of it is on the ladder
 
 **The gap this section exists to close.** `docs/CONFORMANCE.md` holds what
@@ -3873,6 +3911,13 @@ because each was a surprise. **A fourth was found with them and is fixed**:
 calling an operator function by its name - `a.operator+(b)`, `operator+(a, b)`
 - was refused with `'operator' is not supported yet` about a feature this
 compiler has. See "Operator overloading".
+
+**`const S s = {};` - an empty braced initialiser.** clang value-initialises it;
+this says "an initialiser list needs at least one value", which is a rule about
+lists where the question is about `{}` meaning `T()`. It matters more than its
+size: it is the first thing a reader tries after the const refusal above, and
+the two together would otherwise be a wall. `const S s = S();` is the spelling
+that works and the one that refusal names.
 
 ## What is in `tools/`, and what was inherited and is dead
 
