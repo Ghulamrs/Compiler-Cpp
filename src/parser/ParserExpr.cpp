@@ -471,15 +471,15 @@ ExprPtr Parser::primary(Program *program) {
         return reinterpretCast(pos);
     }
 
-    // **`dynamic_cast` needs run-time type information, and there is none.** The
-    // cast asks what an object actually is, which only a type_info beside its
-    // vtable answers, and none is emitted. A rung of its own, not a branch.
-    if (peek().is("dynamic_cast"))
-        src_.fail(peek().pos, "'dynamic_cast' asks what an object really is at "
-                              "run time, which needs a type_info beside its "
-                              "vtable - and this compiler emits none for a "
-                              "class yet. Casting *to* a base needs no such "
-                              "thing and 'static_cast' does it");
+    // **`dynamic_cast` asks what an object really is**, which the type_info
+    // beside its vtable answers - see emitClassTypeInfo. The pointer form is
+    // built here; the reference form throws on failure and wants <typeinfo>,
+    // so it is refused by name inside.
+    if (peek().is("dynamic_cast")) {
+        const std::size_t pos = peek().pos;
+        at_++;
+        return dynamicCast(pos);
+    }
 
     // **`nullptr` is a zero that knows it is not an integer.** At the machine it is
     // a pointer-sized 0 and the backends hear nothing about it; what the type buys

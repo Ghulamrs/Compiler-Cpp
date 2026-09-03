@@ -142,18 +142,24 @@ for pair in "x86_64-linux:x86_64-linux-gnu" \
     # clang for MSVC's EH funclets there would compare a feature cxx1 has
     # against one it does not.
     #
-    # **-fno-rtti is the same argument again**, and it arrived with vtables: a
-    # polymorphic class makes clang emit _ZTI and _ZTS - the typeinfo object
-    # and its name string - and cxx1 has no RTTI at all, refusing `typeid` by
-    # name. Under -fno-rtti clang writes a plain 0 in the vtable's typeinfo
-    # slot, which is exactly what cxx1 writes.
+    # **RTTI is asked for on the Itanium targets now, and that is the same
+    # argument a third time.** It used to be -fno-rtti everywhere, because a
+    # polymorphic class makes clang emit _ZTI and _ZTS and cxx1 emitted
+    # neither, writing a plain 0 in the vtable's typeinfo slot. cxx1 emits both
+    # for Itanium since `dynamic_cast` landed, so the two are comparable there
+    # and are compared - which is what caught the tag `__unnamed` and would
+    # catch a _ZTS spelled wrong. Windows keeps -fno-rtti: the Microsoft ABI's
+    # complete-object locator is not built, and asking for it there would
+    # compare a feature cxx1 has against one it does not.
     # **-fexceptions everywhere, since rung 6.5b step 4.** This asked clang for
     # -fno-exceptions on Windows while cxx1 had no exception tables for that
     # target: every case with a `throw` or a destructor would otherwise have
     # reported a missing feature as a naming difference. cxx1 throws, catches
     # and runs cleanups there now, so the two are comparable and are compared.
     EH=-fexceptions
-    if ! clang++ -x c++ -std=c++11 $EH -fno-rtti -w -target "$theirs" -S "$SRC" -o "$OUT/theirs.s" \
+    RTTI=-frtti
+    case "$mine" in x86_64-windows) RTTI=-fno-rtti ;; esac
+    if ! clang++ -x c++ -std=c++11 $EH $RTTI -w -target "$theirs" -S "$SRC" -o "$OUT/theirs.s" \
                  2>"$OUT/theirs.err"; then
         echo "$mine: clang refused it, so there is nothing to compare against"
         sed 's/^/    /' "$OUT/theirs.err" | head -3

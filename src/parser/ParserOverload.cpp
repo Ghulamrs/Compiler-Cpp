@@ -48,7 +48,7 @@ const Type *Parser::usualArithmetic(const Type *a, const Type *b) const {
 }
 
 // Defined below, beside the conversion rules it belongs with.
-static int publicBaseOffset(const Type *derived, const Type *base);
+int publicBaseOffset(const Type *derived, const Type *base);
 
 ExprPtr Parser::convert(ExprPtr e, const Type *to) const {
     if (e->type() == to) return e;
@@ -139,7 +139,7 @@ static bool isStringLiteral(const Expr &e) {
 // [conv.qual]: a pointer may gain const and never lose it, and const below the
 // first level counts only where every level above it is const too. Then whether
 // `base` is a public base of `derived`, and at what offset - every base, not one.
-static int publicBaseOffset(const Type *derived, const Type *base) {
+int publicBaseOffset(const Type *derived, const Type *base) {
     if (derived == nullptr || base == nullptr) return -1;
     const Type *d = derived->unqualified();
     const Type *b = base->unqualified();

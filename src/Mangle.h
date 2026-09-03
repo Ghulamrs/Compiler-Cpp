@@ -135,3 +135,10 @@ std::string itaniumDataName(const std::string &name, bool internal);
 // ABIs write as a scope list rather than part of the name, so the parser's two
 // call sites cannot concatenate. Measured: `_ZTVN1N1BE` and `??_7B@N@@6B@`.
 std::string vtableSymbol(const std::string &tag, bool microsoft);
+
+// A class's Itanium type_info, the string it points at, and the text of that
+// string - one encoding under two prefixes, the same nested form the vtable
+// symbol uses. `_ZTI4Base`, `_ZTS4Base`, and "4Base".
+std::string itaniumClassNameString(const std::string &tag);
+std::string itaniumClassTypeInfoSymbol(const std::string &tag);
+std::string itaniumClassTypeNameSymbol(const std::string &tag);

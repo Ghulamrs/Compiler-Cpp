@@ -614,6 +614,72 @@ ExprPtr Parser::thisMember(int thisSlot, const Type *cls, const Member &m) {
     return acc;
 }
 
+// **The type_info beside a vtable, and the name string beside that.** Two
+// objects per class and a third slot filled: `_ZTS4Base` holds the text "4Base",
+// `_ZTI4Base` points at it behind a vtable pointer that says which *kind* of
+// type_info this is, and the vtable's second word - a plain zero until now -
+// points at `_ZTI`. Measured from clang: a class with no base is
+// `__class_type_info`, one with a single public base is `__si_class_type_info`
+// and carries the base's `_ZTI` as a third word, and both are the library's
+// objects reached at +16, past their own two header words.
+//
+// The bases are walked, not just named: a chain's every link needs its own pair
+// or the runtime has nothing to walk, which is why this recurses.
+std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
+                                      std::size_t pos) {
+    const std::string ti = itaniumClassTypeInfoSymbol(tag);
+    for (std::size_t i = 0; i < current_->globals.size(); i++)
+        if (current_->globals[i].symbol == ti) return ti;      // one per class
+
+    // **A class this cannot describe gets none, and that is not an error here.**
+    // More than one base wants `__vmi_class_type_info`, a third shape carrying
+    // the bases' offsets and flags, which is not built. Such a class kept
+    // working before there was any type_info at all, so it keeps working now:
+    // the vtable's slot stays the zero it always held, and the only thing that
+    // cannot be done is a `dynamic_cast` naming it - which is refused there, by
+    // name, where the reader is asking for the thing that is missing.
+    const std::vector<Type::BaseSpec> &bases = cls->bases();
+    if (bases.size() > 1) return std::string();
+
+    // **The base first, and nothing is laid down until it answers.** A chain is
+    // only as describable as its links - with no `_ZTI` for the base there is
+    // nothing to point the third word at - and giving up after emitting the
+    // name string would leave a `_ZTS` in the object that nothing refers to.
+    std::string baseTypeInfo;
+    if (!bases.empty()) {
+        baseTypeInfo = emitClassTypeInfo(bases[0].type, bases[0].type->tag(), pos);
+        if (baseTypeInfo.empty()) return std::string();
+    }
+
+    const std::string ts = itaniumClassTypeNameSymbol(tag);
+    const std::string text = itaniumClassNameString(tag);
+    std::vector<GlobalPiece> letters;
+    for (std::size_t i = 0; i <= text.size(); i++)             // the NUL too
+        letters.push_back(GlobalPiece{ static_cast<int>(i), 1,
+                                       i < text.size() ? text[i] : 0,
+                                       std::string() });
+    const Type *chars = types_.arrayOf(types_.get(Kind::Char),
+                                       static_cast<long long>(text.size() + 1));
+    current_->globals.push_back(Global{ ts, ts, chars, std::move(letters),
+                                        true, false, true });
+
+    std::vector<GlobalPiece> pieces;
+    pieces.push_back(GlobalPiece{
+        0, 8, 16,
+        bases.empty() ? "_ZTVN10__cxxabiv117__class_type_infoE"
+                      : "_ZTVN10__cxxabiv120__si_class_type_infoE" });
+    pieces.push_back(GlobalPiece{ 8, 8, 0, ts });
+    if (!baseTypeInfo.empty())
+        pieces.push_back(GlobalPiece{ 16, 8, 0, baseTypeInfo });
+
+    const Type *word = types_.pointerTo(types_.get(Kind::Void));
+    const Type *object = types_.arrayOf(word,
+                                        static_cast<long long>(pieces.size()));
+    current_->globals.push_back(Global{ ti, ti, object, std::move(pieces),
+                                        true, false, true });
+    return ti;
+}
+
 void Parser::emitVtable(const Type *cls, const std::string &tag,
                         std::size_t pos) {
     if (tag.empty())
@@ -637,12 +703,18 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
     // deleting destructor, whose body calls an ordinary one nothing else names.
     if (const Signature *dtor = destructorOf(cls)) markSymbolUsed(dtor->symbol);
 
+    // **The typeinfo slot is filled now**, where it held a plain zero. Itanium
+    // only: the Microsoft ABI puts a complete-object locator in front of the
+    // table instead, and that is its own measurement.
+    const std::string typeInfo = ms ? std::string()
+                                    : emitClassTypeInfo(cls, tag, pos);
+
     std::vector<GlobalPiece> pieces;
     int at = 0;
     if (!ms) {
         pieces.push_back(GlobalPiece{ at, 8, 0, std::string() });  // offset-to-top
         at += 8;
-        pieces.push_back(GlobalPiece{ at, 8, 0, std::string() });  // typeinfo
+        pieces.push_back(GlobalPiece{ at, 8, 0, typeInfo });       // typeinfo
         at += 8;
     }
     for (std::size_t i = 0; i < slots.size(); i++) {
@@ -674,7 +746,10 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
             pieces.push_back(GlobalPiece{ at, 8, -static_cast<long long>(off),
                                           std::string() });
             at += 8;
-            pieces.push_back(GlobalPiece{ at, 8, 0, std::string() });
+            // A secondary table names the *complete* object's type_info, the
+            // same one the primary does - it is one object with two tables in
+            // it, not two objects.
+            pieces.push_back(GlobalPiece{ at, 8, 0, typeInfo });
             at += 8;
         }
         const std::vector<VSlot> &theirs = vtables_[b->tag()];

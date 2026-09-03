@@ -216,6 +216,131 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
 // ---------------------------------------------------------------- new and delete
 // **The four operator functions are called by name, and the names were measured**
 // at -O0 on all three targets. The platform's own: a cxx1 `new` meets clang's.
+// **`dynamic_cast<T *>(p)` - the one cast that asks the object.** Every other
+// cast is answered from the types written down; this one reads the vtable and
+// walks the inheritance graph the type_info objects carry, so all the compiler
+// emits is the question: the two `_ZTI`s and a call.
+//
+// The shape is clang's, measured: a null pointer casts to a null pointer
+// without asking, because `__dynamic_cast` reads the vtable through the pointer
+// it is given and would fault. The hint is -1, "unspecified" in the ABI, which
+// is always correct - clang computes the offset where it can prove one, and
+// that is a speed difference and not an answer difference.
+ExprPtr Parser::dynamicCast(std::size_t pos) {
+    expect("<");
+    StorageClass sc;
+    const Type *to = specifiers(&sc);
+    to = declarator(to, true).type;
+    if (!atClosingAngle())
+        src_.fail(peek().pos, "expected '>' to close 'dynamic_cast<'");
+    takeClosingAngle();
+    expect("(");
+    ExprPtr v = expr();
+    expect(")");
+
+    if (to->isReference())
+        src_.fail(pos, "'dynamic_cast' to a reference is not supported yet - it "
+                       "has no null to return, so a failure throws "
+                       "'std::bad_cast', and there is no C++ standard library "
+                       "here to throw it from; the pointer form works and "
+                       "answers with a null");
+    if (!to->isPointer() || !to->pointee()->unqualified()->isStructOrUnion())
+        src_.fail(pos, "'dynamic_cast' casts to a pointer to a class, and '" +
+                       to->describe() + "' is not one");
+
+    const Type *from = v->type();
+    if (!from->isPointer() || !from->pointee()->unqualified()->isStructOrUnion())
+        src_.fail(pos, "'dynamic_cast' needs a pointer to a class to ask about, "
+                       "and this is '" + from->describe() + "'");
+
+    const Type *source = from->pointee()->unqualified();
+    const Type *target = to->pointee()->unqualified();
+    // [expr.dynamic.cast]/6: the operand's class must be polymorphic, because
+    // the answer is read out of the vtable and a class without one has nothing
+    // to read.
+    if (!source->polymorphic())
+        src_.fail(pos, "'" + source->describe() + "' has no virtual function, "
+                       "so an object of it carries nothing that says what it "
+                       "really is - 'dynamic_cast' has nothing to ask");
+    if (target_.microsoftNames())
+        src_.fail(pos, "'dynamic_cast' is not supported yet for x86_64-windows "
+                       "- the Microsoft ABI answers it from a complete-object "
+                       "locator in front of the vtable rather than the Itanium "
+                       "type_info behind it, and that is a separate "
+                       "measurement; it works on the two Itanium targets");
+
+    // **[expr.dynamic.cast]/5: an upcast is not a question.** If the target is
+    // the operand's own class, or a public base of it, the answer follows from
+    // the types and the object is never asked - which is also why the runtime
+    // cannot be used for it: libc++abi's `__dynamic_cast` is written for the
+    // other direction and answers null here. That is how this was found, on a
+    // `dynamic_cast<Base *>(b)` that came back null and was then dereferenced.
+    if (publicBaseOffset(source, target) >= 0)
+        return convert(std::move(v), to);
+
+    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+
+    // The operand is wanted twice - once to test against null and once to hand
+    // to the runtime - and it is any expression, so it goes into a slot and
+    // both readers use that.
+    const int slot = allocateFrameSlot(voidPtr);
+    const std::string temp = ".dyn" + std::to_string(newTemps_++);
+    ExprPtr held(Var::local(temp, slot));
+    held->setType(voidPtr);
+    ExprPtr save(new Assign(std::move(held), std::move(v)));
+    save->setType(voidPtr);
+
+    // Either class may be one this compiler cannot describe - more than one
+    // base wants `__vmi_class_type_info`, which is not built. Refused here,
+    // where the reader asked for the thing that is missing, rather than at the
+    // class, which is legal and works for everything else.
+    for (int side = 0; side < 2; side++) {
+        const Type *cls = side == 0 ? source : target;
+        if (emitClassTypeInfo(cls, cls->tag(), pos).empty())
+            src_.fail(pos, "'" + cls->describe() + "' has more than one base, "
+                           "and describing that to the run time needs "
+                           "__vmi_class_type_info - a third shape carrying the "
+                           "bases' offsets and flags, which is not supported "
+                           "yet. A single base works");
+    }
+
+    auto typeInfoAddress = [&](const Type *cls) {
+        const std::string sym =
+            emitClassTypeInfo(cls, cls->tag(), pos);
+        Var *ti = Var::global(sym);
+        ti->setSymbol(sym);
+        ExprPtr ref(ti);
+        ref->setType(types_.get(Kind::Char));
+        ExprPtr addr(new Unary('&', std::move(ref)));
+        addr->setType(voidPtr);
+        return addr;
+    };
+
+    std::vector<ExprPtr> args;
+    ExprPtr object(Var::local(temp, slot));
+    object->setType(voidPtr);
+    args.push_back(std::move(object));
+    args.push_back(typeInfoAddress(source));
+    args.push_back(typeInfoAddress(target));
+    ExprPtr hint(new Num(-1LL));
+    hint->setType(types_.get(Kind::LongLong));
+    args.push_back(std::move(hint));
+
+    ExprPtr asked = runtimeCall("__dynamic_cast", to, std::move(args));
+
+    ExprPtr none(new Num(0LL));
+    none->setType(to);
+    ExprPtr test(Var::local(temp, slot));
+    test->setType(voidPtr);
+    ExprPtr chosen(new Conditional(std::move(test), std::move(asked),
+                                   std::move(none)));
+    chosen->setType(to);
+
+    ExprPtr whole(new Comma(std::move(save), std::move(chosen)));
+    whole->setType(to);
+    return whole;
+}
+
 ExprPtr Parser::runtimeCall(const char *symbol, const Type *returns,
                             std::vector<ExprPtr> args) {
     std::vector<int> argSlots(args.size(), 0);

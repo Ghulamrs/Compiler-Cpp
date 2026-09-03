@@ -453,6 +453,8 @@ private:
     // ordinary class and the template's own name for a specialization.
     std::string inlineOwnerName_;
 
+    std::string emitClassTypeInfo(const Type *cls, const std::string &tag,
+                                  std::size_t pos);
     void emitVtable(const Type *cls, const std::string &tag, std::size_t pos);
     // **Emitting a vtable uses everything the table points at.** The `used` flag
     // otherwise only ever comes from a call, and a slot holding a function's address is
@@ -1325,6 +1327,7 @@ private:
     std::size_t boundAt_ = 0;
     ExprPtr staticCast(std::size_t pos);
     ExprPtr constCast(std::size_t pos);
+    ExprPtr dynamicCast(std::size_t pos);
     ExprPtr reinterpretCast(std::size_t pos);
     ExprPtr unary();
     ExprPtr postfix();

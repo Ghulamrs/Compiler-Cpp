@@ -14,6 +14,13 @@
 // this one is used from nearly every part of the parser.
 int alignTo(int n, int a);
 
+// Where `base`'s subobject sits inside `derived`, or -1 if it is not a public
+// base of it at all; 0 when they are the same class. Overload resolution asks
+// it to rank a conversion to a base, and `dynamic_cast` asks it to tell an
+// upcast - which the types answer on their own - from a downcast, which only
+// the object can. Two seams, one rule.
+int publicBaseOffset(const Type *derived, const Type *base);
+
 // Does this expression name an object with an address of its own? Overload
 // resolution asks (a reference parameter binds by value category) and so does
 // reference binding itself, and those two live in different units.

@@ -972,6 +972,31 @@ std::string vtableSymbol(const std::string &tag, bool microsoft) {
     return out;
 }
 
+// **A class's type_info and the string beside it, which are one encoding under
+// two prefixes.** `_ZTS4Base` holds "4Base" and `_ZTI4Base` points at it: the
+// text of the name IS the type as a signature spells it, so the same nested
+// form vtableSymbol builds serves all three. Measured against clang for a
+// top-level class and one in a namespace.
+std::string itaniumClassNameString(const std::string &tag) {
+    const std::vector<std::string> parts = scopeComponents(tag);
+    std::string out;
+    if (parts.size() > 1) out += 'N';
+    for (const std::string &part : parts) {
+        out += std::to_string(part.size());
+        out += part;
+    }
+    if (parts.size() > 1) out += 'E';
+    return out;
+}
+
+std::string itaniumClassTypeInfoSymbol(const std::string &tag) {
+    return "_ZTI" + itaniumClassNameString(tag);
+}
+
+std::string itaniumClassTypeNameSymbol(const std::string &tag) {
+    return "_ZTS" + itaniumClassNameString(tag);
+}
+
 bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem) {
     if (itaniumBuiltin(t->kind()) == nullptr) {
         *problem = "only a fundamental type has a type_info object the "
