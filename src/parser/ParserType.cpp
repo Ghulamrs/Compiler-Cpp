@@ -1134,6 +1134,23 @@ void Parser::checkOperatorDeclarable(const std::string &name, std::size_t params
     // the same. Recognised by that parameter being an int, the only shape allowed.
     if (operands == 2 && (spelling == "++" || spelling == "--")) return;
 
+    // **[over.sub]: subscripting is a member and takes exactly one argument.**
+    // There is no non-member form, so `operands == 2 && member` is the whole of
+    // the shape - a free `operator[]` is a different error and is caught below
+    // by falling through, which says the operator cannot be reached rather than
+    // that its arity is wrong.
+    if (spelling == "[]" && operands == 2 && member) return;
+
+    // **[over.ass]: assignment is a member too**, and unlike subscripting it may
+    // take anything - `s = 3` is an `operator=(int)`. So only the member-ness is
+    // checked here; the one operand it writes is whatever it converts from.
+    if (spelling == "=" && operands == 2 && member) return;
+
+    // **[over.ref]: `operator->` is a member and takes nothing.** What it returns
+    // is checked where it is used, not here: a pointer ends the chain and a class
+    // continues it, and neither is knowable from the declaration alone.
+    if (spelling == "->" && operands == 1 && member) return;
+
     // The call operator has no arity to check: [over.call] lets it take
     // whatever it likes, and it has no non-member form to be confused with.
     if (spelling == "()" && member) return;

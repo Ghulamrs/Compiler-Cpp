@@ -120,7 +120,7 @@ SFINAE and variadic packs. What is left:
 - **instantiating a template that was only declared** —
   `src/parser/ParserTemplate.cpp:1544`
 - **`sizeof` of a template parameter in a signature** — the linker name would
-  have to spell the expression. `src/parser/ParserExpr.cpp:1672`
+  have to spell the expression. `src/parser/ParserExpr.cpp:1731`
 
 ## Classes, members and friends
 
@@ -128,7 +128,7 @@ SFINAE and variadic packs. What is left:
 - **one name holding both a static and a non-static member**, where overload
   resolution picks the non-static one — the arguments have been read by then,
   and there is no honest way back to the call that takes an object.
-  `src/parser/ParserExpr.cpp:965`. A static member function on its own works.
+  `src/parser/ParserExpr.cpp:993`. A static member function on its own works.
 - **a member function of a union** — `src/parser/ParserClass.cpp:1844`
 - **`friend class X;`** — one named function can be befriended.
   `src/parser/ParserType.cpp:364`
@@ -153,10 +153,22 @@ SFINAE and variadic packs. What is left:
   `src/parser/ParserType.cpp:1086`
 - **`operator->*`** — `src/parser/ParserType.cpp:1091`
 - **a user-defined literal** — `src/parser/ParserType.cpp:1093`
-- **an operator that can be named but not reached** — refused at the
-  declaration, because a function that links and can never be called is the
-  half-built thing this project refuses everywhere.
-  `src/parser/ParserType.cpp:1146`
+- **`operator&&`, `operator||`, `operator,` and `operator->*`** — the four that
+  still fall into the generic refusal below, **named** rather than left to it.
+  A bullet that says only "an operator that can be named but not reached" hid
+  `operator[]`, `operator=` and `operator->` for as long as it stood, which
+  meant the document could not answer "can a container be written here?" - and
+  the answer was no. Those three are reachable now; these four are what is
+  left, and none is needed to write one. The first two would want the
+  short-circuit to stop short-circuiting, which is the whole of why they are
+  rarely overloaded.
+- **an operator that can be named but not reached** — the rule the four above
+  are refused by: refused at the declaration, because a function that links and
+  can never be called is the half-built thing this project refuses everywhere.
+  Every other overloadable operator resolves from an expression, asked of a
+  one-line program each: `+ - * / % & | ^ << >> == != < <= > >=` binary,
+  `+ - * & ! ~ ++ --` unary, and `() [] = ->`.
+  `src/parser/ParserType.cpp:1163`
 
 ## Initialisation, and braces
 
@@ -192,20 +204,20 @@ it is written:
 ## Expressions
 
 - **`?:` as an lvalue** — real C++ when both arms are lvalues; bind the
-  reference in an `if`/`else`. `src/parser/ParserExpr.cpp:1244`
+  reference in an `if`/`else`. `src/parser/ParserExpr.cpp:1258`
 - **`static_cast` of a reference to a different type** —
   `src/parser/ParserExpr.cpp:232`
 - **a name qualified with `::` alone**, the global scope —
-  `src/parser/ParserExpr.cpp:777`
+  `src/parser/ParserExpr.cpp:803`
 - **choosing an overload by the type it is assigned to** —
-  `src/parser/ParserExpr.cpp:1091`
+  `src/parser/ParserExpr.cpp:463`
 - **a pointer to a *virtual* member function** — it holds a vtable index where
-  this holds an address. `src/parser/ParserExpr.cpp:1544`
+  this holds an address. `src/parser/ParserExpr.cpp:1603`
 - **a pointer to a *const* member function** — the constness of `this` is not
-  part of a function type here. `src/parser/ParserType.cpp:1227`
+  part of a function type here. `src/parser/ParserType.cpp:1244`
 - **postfix `++` / `--` on a bit-field** — the prefix form works.
   `src/parser/ParserOperator.cpp:477`
-- **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:614`
+- **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:640`
 - **a functional-cast temporary reached through overload ranking** — a
   converting constructor is not tried at a call.
   `src/parser/ParserOverload.cpp:541`
@@ -278,7 +290,7 @@ beside it goes in the same commit.
 | --- | --- | --- |
 | `1'000`, a digit separator | C++14 | `src/Lexer.cpp:146` |
 | `0b101`, a binary literal | C++14 | `src/Lexer.cpp:250` |
-| `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1139` |
+| `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1153` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:184` |
 | `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2392`, `src/parser/ParserTopLevel.cpp:466` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:396` |
@@ -293,7 +305,7 @@ beside it goes in the same commit.
 Twenty, from `pending[]` in `src/parser/Parser.cpp`. Each is refused **by
 name** at the three doors a keyword can arrive at — an expression, a member
 declaration, and a name — rather than as a parse error further along:
-`src/parser/Parser.cpp:99`, `src/parser/ParserExpr.cpp:551`,
+`src/parser/Parser.cpp:99`, `src/parser/ParserExpr.cpp:577`,
 `src/parser/ParserType.cpp:1001`.
 
     alignas   alignof   and       and_eq    asm
@@ -333,7 +345,7 @@ judgement in a program. They are named here instead:
 - `src/parser/ParserType.cpp:167` — a base class that is not yet defined. An
   ordinary error: a derived object contains its base, so the base has to be
   complete.
-- `src/Mangle.cpp:487`, `src/Mangle.cpp:938` — a type with no Itanium or
+- `src/Mangle.cpp:487`, `src/Mangle.cpp:956` — a type with no Itanium or
   Microsoft linkage name. Internal: reaching either means a type was built that
   the mangler was never taught, which is a bug in this compiler and not a
   statement about the language.

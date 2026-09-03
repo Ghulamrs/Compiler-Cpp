@@ -452,6 +452,32 @@ ExprPtr Parser::functionalCast(const Type *to, std::size_t pos) {
     return convert(std::move(v), types_.withoutConst(to));
 }
 
+// **A function's address, from its key.** What `f` means when it is not
+// called: the one function under that key, as a pointer to it, under the
+// linkage name and not the written one - `int (*p)(int) = g;` once emitted `g`
+// where the function is `_Z1gi`. Null when the key names no function, so the
+// caller can go on to say what it was expecting.
+ExprPtr Parser::functionAsValue(const std::string &key, std::size_t pos) {
+    if (const std::vector<std::size_t> *set = overloadsOf(key)) {
+        if (set->size() > 1)
+            src_.fail(pos, "'" + key + "' names " +
+                           std::to_string(set->size()) + " functions, and "
+                           "which one this is cannot be told from the use "
+                           "alone - choosing an overload by the type it is "
+                           "assigned to is not supported yet");
+    }
+    const Signature *sig = findFunction(key);
+    if (sig == nullptr) return nullptr;
+    Var *v = Var::global(key);
+    v->setSymbol(sig->symbol);
+    ExprPtr target(v);
+    const Type *fn = types_.functionType(sig->returns, sig->params, sig->variadic);
+    target->setType(fn);
+    ExprPtr n(new Unary('&', std::move(target)));
+    n->setType(types_.pointerTo(fn));
+    return n;
+}
+
 ExprPtr Parser::primary(Program *program) {
     if (peek().is("static_cast")) {
         std::size_t pos = peek().pos;
@@ -809,6 +835,8 @@ ExprPtr Parser::primary(Program *program) {
             n->setType(types_.intType());
             return n;
         }
+        // `take(N::nl)` - the function itself, written qualified and not called.
+        if (ExprPtr f = functionAsValue(full, qpos)) return f;
         src_.fail(qpos, "'" + full + "' was not declared in '" + scope + "'");
     }
 
@@ -1086,28 +1114,14 @@ ExprPtr Parser::primary(Program *program) {
         // Taking the address of an overloaded name needs a target type to choose by
         // - [over.over] - and there is none here. Refused by name rather than by
         // silently taking the first, which would compile and call the wrong one.
-        if (const std::vector<std::size_t> *set = overloadsOf(name)) {
-            if (set->size() > 1)
-                src_.fail(pos, "'" + name + "' names " +
-                               std::to_string(set->size()) + " functions, and "
-                               "which one this is cannot be told from the use "
-                               "alone - choosing an overload by the type it is "
-                               "assigned to is not supported yet");
-        }
-        if (const Signature *sig = findFunction(name)) {
-            Var *v = Var::global(name);
-            // **The linkage name, not the written one.** A call already went through
-            // the signature for this; a function named as a *value* did not, so
-            // `int (*p)(int) = g;` emitted `g` where the function is `_Z1gi`.
-            v->setSymbol(sig->symbol);
-            ExprPtr target(v);
-            const Type *fn = types_.functionType(sig->returns, sig->params,
-                                                 sig->variadic);
-            target->setType(fn);
-            ExprPtr n(new Unary('&', std::move(target)));
-            n->setType(types_.pointerTo(fn));
-            return n;
-        }
+        // **A function named as a value is looked up the way a call is.** The
+        // call path already asked qualifyForLookup, so `endl(o)` inside a
+        // namespace found `std::endl`; this path asked for the bare name and
+        // found nothing, which is why `cout << endl` - a function passed, not
+        // called - failed under a using-directive that the call form honoured.
+        if (ExprPtr f = functionAsValue(
+                qualifyForLookup(name, &Parser::hasFunctionNamed), pos))
+            return f;
         src_.fail(pos, "'" + name + "' was not declared");
     }
 
@@ -1350,6 +1364,28 @@ ExprPtr Parser::postfix() {
             at_++;
             ExprPtr index = expr();
             expect("]");
+            // **A class is subscripted by its own operator, not by pointer
+            // arithmetic.** [over.sub] gives it no non-member form, so the
+            // member is the only candidate and memberCallWith ranks it - which
+            // is what makes `v[i]` and `v[i] = x` differ only in what the
+            // returned reference is then used for.
+            const Type *subscripted = n->type()->unqualified();
+            if (subscripted->isStructOrUnion()) {
+                if (findMemberOwner(subscripted, "operator[]") == nullptr)
+                    src_.fail(pos, "'" + subscripted->describe() + "' is "
+                                   "subscripted here and declares no "
+                                   "'operator[]' - a class is not an array, so "
+                                   "there is no built-in meaning to fall back "
+                                   "on");
+                std::vector<ExprPtr> args;
+                args.push_back(std::move(index));
+                // The type is read out first: `n` is moved into the call, and
+                // the order the two arguments are evaluated in is not fixed.
+                const Type *objectType = n->type();
+                n = memberCallWith(std::move(n), objectType, "operator[]", pos,
+                                   std::move(args));
+                continue;
+            }
             ExprPtr sum = arithmetic(BinOp::Add, std::move(n), std::move(index), pos);
             if (!sum->type()->isPointer())
                 src_.fail(pos, "subscript needs an array or a pointer");
@@ -1362,6 +1398,29 @@ ExprPtr Parser::postfix() {
 
         if (peek().is("->")) {
             at_++;
+            // **[over.ref]: a class on the left of `->` is asked for a pointer,
+            // and the answer is asked again.** `it->m` where `operator->`
+            // returns another class with an `operator->` keeps going until one
+            // hands back a real pointer, which is what makes an iterator that
+            // wraps an iterator work. The count is a guard: a class whose
+            // `operator->` returns itself is a cycle, and a cycle has to be a
+            // diagnostic rather than a hung parser.
+            for (int hops = 0; n->type()->unqualified()->isStructOrUnion(); hops++) {
+                const Type *held = n->type()->unqualified();
+                if (findMemberOwner(held, "operator->") == nullptr)
+                    src_.fail(pos, "'->' needs a pointer, and '" +
+                                   held->describe() + "' is a class that "
+                                   "declares no 'operator->' to get one from");
+                if (hops == 16)
+                    src_.fail(pos, "'operator->' on '" + held->describe() +
+                                   "' keeps answering with a class that has "
+                                   "one too - [over.ref] applies it again each "
+                                   "time, so this never reaches a pointer");
+                std::vector<ExprPtr> args;
+                const Type *objectType = n->type();
+                n = memberCallWith(std::move(n), objectType, "operator->", pos,
+                                   std::move(args));
+            }
             if (!n->type()->isPointer() || !n->type()->pointee()->isStructOrUnion())
                 src_.fail(pos, "'->' needs a pointer to a struct or union, not '" +
                                n->type()->describe() + "'");

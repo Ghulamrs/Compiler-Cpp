@@ -549,6 +549,27 @@ ExprPtr Parser::assign() {
 
     const Type *to = n->type();
     ExprPtr value = decay(assign());
+
+    // **`t = 5` where the class declares an `operator=` that takes an int.**
+    // [over.ass] makes assignment a member, so resolveOperator's member half is
+    // the whole lookup - and it has to be asked before the built-in check,
+    // which knows only that an int is not a T.
+    //
+    // Asked only when the right side is *not* the class itself: the copy
+    // assignment below already answers that one, and answers it with the
+    // reference convention this compiler's calls use. Narrowed that way so
+    // that ordinary struct assignment reaches exactly the path it always has.
+    if (to->unqualified()->isStructOrUnion() && value->type() != nullptr &&
+        value->type()->unqualified() != to->unqualified() &&
+        resolveOperator("operator=", *n, value.get(), pos) ==
+            OperatorChoice::Member) {
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(value));
+        const Type *objectType = n->type();
+        return memberCallWith(std::move(n), objectType, "operator=", pos,
+                              std::move(args));
+    }
+
     checkAssignable(*value, to, pos, "the left of '='");
 
     // **A class with a copy assignment of its own is assigned by calling it**,

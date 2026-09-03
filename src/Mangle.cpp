@@ -834,7 +834,17 @@ private:
         if (microsoftBuiltin(t->kind()) == nullptr) {
             for (std::size_t i = 0; i < args_.size(); i++)
                 if (args_[i] == t) { out += static_cast<char>('0' + i); return; }
+            // **A type takes its slot after it is spelled, not before.** With a
+            // function pointer the difference is visible: the `O &` inside its
+            // signature finishes first and is slot 0, the pointer itself is
+            // slot 1, and an `O &` parameter after it is `0` - which is what cl
+            // and clang both write. Pushed before spelling, the pointer took 0
+            // and the same name came out `1`. A flat parameter list numbers the
+            // same way either way, which is why nothing saw it until a function
+            // took a manipulator and a stream.
+            type(t);
             if (args_.size() < 10) args_.push_back(t);
+            return;
         }
         type(t);
     }
@@ -846,7 +856,15 @@ private:
             out += "6A";
             type(p->returns());
             if (p->params().empty() && !p->isVariadicFn()) { out += "XZ"; return; }
-            for (const Type *a : p->params()) type(a);
+            // **The argument table is one table for the whole name**, and a
+            // parameter inside a function pointer's signature goes into it like
+            // any other. `apply(O &(*)(O &), O &)` is `...AEAUO@@AEAU1@@Z0@Z`
+            // from cl and clang alike - the outer `O &` is `0`, a back-reference
+            // to the one first seen *inside* the pointer. Spelled with type()
+            // these never entered the table and the outer one was written out
+            // in full, which names.sh caught on the first function that took
+            // both a manipulator and a stream.
+            for (const Type *a : p->params()) argument(a);
             out += p->isVariadicFn() ? "ZZ" : "@Z";
             return;
         }
