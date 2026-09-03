@@ -768,10 +768,27 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
         }
     }
 
+    // **The Microsoft locator goes in front of the table, not behind it.** A
+    // class with more than one base has no description this compiler can write
+    // - the same limit the Itanium half has - so it gets no locator and its
+    // table is what it always was; only a `dynamic_cast` naming it is refused.
+    std::string locatorWord;
+    if (ms && cls->bases().size() <= 1) {
+        MicrosoftRtti names;
+        std::string why;
+        if (microsoftClassRttiNames(cls, &names, &why)) {
+            locatorWord = names.locator;
+            bool had = false;
+            for (std::size_t i = 0; i < current_->rtti.size(); i++)
+                if (current_->rtti[i] == cls) had = true;
+            if (!had) current_->rtti.push_back(cls);
+        }
+    }
+
     const Type *entry = types_.pointerTo(types_.get(Kind::Void));
     const Type *table = types_.arrayOf(entry, static_cast<long long>(pieces.size()));
     current_->globals.push_back(Global{ symbol, symbol, table, std::move(pieces),
-                                        true, false, true });
+                                        true, false, true, locatorWord });
 }
 
 // A constructor, read at the point its '(' was seen: a member function whose name is

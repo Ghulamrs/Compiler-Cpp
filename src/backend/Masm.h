@@ -116,6 +116,9 @@ private:
     // The four objects the Microsoft ABI wants per thrown type. Emitted here
     // because no other target has anything like them.
     void emitThrowInfo(const Program &program);
+    // The five objects the Microsoft ABI wants per class with a vftable, for
+    // the same reason and in the same place.
+    void emitClassRtti(const Program &program);
 
     MasmSpelling masm_;
 };

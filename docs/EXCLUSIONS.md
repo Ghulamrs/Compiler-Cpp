@@ -22,7 +22,7 @@ tools/exclusions --count                  # the two numbers below
 tools/exclusions --check docs/EXCLUSIONS.md
 ```
 
-**Measured at `5b487fb`: 105 refusal sites, 97 distinct messages.** Every site
+**Measured at `7aa423d`: 104 refusal sites, 96 distinct messages.** Every site
 is cited below, which is what `--check` verifies — it reports each refusal the
 source raises and this document does not cite, and each citation whose site is
 gone. Run it after adding or removing a refusal; a document that has to be
@@ -72,21 +72,18 @@ in this tree with that in front of it.
 
 ## Run-time type information
 
-A class now carries a `type_info` on the Itanium targets — `_ZTI` and `_ZTS`
-beside its vtable, whose second slot points at it instead of holding a zero —
-and `dynamic_cast` to a pointer works there. What is left of it:
+A class carries a run-time description on all three targets now — `_ZTI` and
+`_ZTS` behind the vtable on Itanium, five `??_R` records and a locator in front
+of the vftable on Microsoft — and `dynamic_cast` to a pointer works on each.
+What is left of it:
 
-- **`dynamic_cast` for `x86_64-windows`** — the Microsoft ABI answers from a
-  complete-object locator in front of the vtable rather than the Itanium
-  type_info behind it, and that is a separate measurement.
-  `src/parser/ParserExprNew.cpp:266`
 - **`dynamic_cast` to a reference** — it has no null to answer with, so a
   failure throws `std::bad_cast`, and there is no C++ standard library here to
   throw it from. `src/parser/ParserExprNew.cpp:242`
 - **`dynamic_cast` naming a class with more than one base** — that wants
   `__vmi_class_type_info`, a third shape carrying the bases' offsets and flags.
   Such a class still compiles and its vtable still works; only the cast is
-  refused. `src/parser/ParserExprNew.cpp:300`
+  refused. `src/parser/ParserExprNew.cpp:307`
 - **`typeid`** — in the keyword table below. Nothing emits a `type_info` for a
   *fundamental* type either; a class's is what landed.
 
@@ -132,7 +129,7 @@ SFINAE and variadic packs. What is left:
   resolution picks the non-static one — the arguments have been read by then,
   and there is no honest way back to the call that takes an object.
   `src/parser/ParserExpr.cpp:965`. A static member function on its own works.
-- **a member function of a union** — `src/parser/ParserClass.cpp:1827`
+- **a member function of a union** — `src/parser/ParserClass.cpp:1844`
 - **`friend class X;`** — one named function can be befriended.
   `src/parser/ParserType.cpp:364`
 - **befriending one member function of another class** —
@@ -167,7 +164,7 @@ SFINAE and variadic packs. What is left:
   arguments in parentheses. The *empty* pair is read: `{}` is
   value-initialisation. `src/parser/ParserStmt.cpp:157`,
   `src/parser/ParserInit.cpp:38`
-- **a braced default argument** — `src/parser/ParserClass.cpp:2387`,
+- **a braced default argument** — `src/parser/ParserClass.cpp:2404`,
   `src/parser/ParserTopLevel.cpp:514`
 - **a braced member initialiser** — `src/parser/ParserType.cpp:676`
 - **an initialiser for an array of a class** —
@@ -188,7 +185,7 @@ it is written:
 - **a file-scope object with a constructor** —
   `src/parser/ParserTopLevel.cpp:271`
 - **a static data member of a class with a constructor** —
-  `src/parser/ParserClass.cpp:1781`
+  `src/parser/ParserClass.cpp:1798`
 - **a static reference** — `src/parser/ParserStmt.cpp:300`
 - **a reference at file scope** — `src/parser/ParserTopLevel.cpp:254`
 
@@ -216,17 +213,17 @@ it is written:
 ## `new` and `delete`
 
 - **placement new**, and a parenthesised type-id after `new` —
-  `src/parser/ParserExprNew.cpp:487`
-- **more than one value in a new-expression** —
-  `src/parser/ParserExprNew.cpp:566`
-- **`new T[n]` of a class with a constructor** —
-  `src/parser/ParserExprNew.cpp:573`
-- **`new T[n][m]`** — only the first dimension may be given.
   `src/parser/ParserExprNew.cpp:515`
-- **`new T{...}`** — `src/parser/ParserExprNew.cpp:540`
-- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:775`
+- **more than one value in a new-expression** —
+  `src/parser/ParserExprNew.cpp:594`
+- **`new T[n]` of a class with a constructor** —
+  `src/parser/ParserExprNew.cpp:601`
+- **`new T[n][m]`** — only the first dimension may be given.
+  `src/parser/ParserExprNew.cpp:543`
+- **`new T{...}`** — `src/parser/ParserExprNew.cpp:568`
+- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:803`
 - **`delete[]` of a type with a destructor** — the count `new[]` would have
-  recorded is not written. `src/parser/ParserExprNew.cpp:843`
+  recorded is not written. `src/parser/ParserExprNew.cpp:871`
 
 ## Statements, exceptions and control
 
@@ -283,7 +280,7 @@ beside it goes in the same commit.
 | `0b101`, a binary literal | C++14 | `src/Lexer.cpp:250` |
 | `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1139` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:184` |
-| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2375`, `src/parser/ParserTopLevel.cpp:466` |
+| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2392`, `src/parser/ParserTopLevel.cpp:466` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:396` |
 | a variable template | C++14 | `src/parser/ParserTemplate.cpp:309` |
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:642`, `src/parser/ParserStmt.cpp:150`, `src/parser/ParserTopLevel.cpp:265` |
@@ -336,7 +333,7 @@ judgement in a program. They are named here instead:
 - `src/parser/ParserType.cpp:167` — a base class that is not yet defined. An
   ordinary error: a derived object contains its base, so the base has to be
   complete.
-- `src/Mangle.cpp:487`, `src/Mangle.cpp:933` — a type with no Itanium or
+- `src/Mangle.cpp:487`, `src/Mangle.cpp:938` — a type with no Itanium or
   Microsoft linkage name. Internal: reaching either means a type was built that
   the mangler was never taught, which is a bug in this compiler and not a
   statement about the language.

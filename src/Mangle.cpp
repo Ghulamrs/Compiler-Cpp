@@ -495,6 +495,11 @@ private:
 
 class Microsoft : public Mangler {
 public:
+    // **The class as a type descriptor spells it**, `?AUBase@@` - which is the
+    // same thing a return type is written as, so this is that rule under the
+    // name the RTTI records ask for it by rather than a second copy of it.
+    void classAsTypeName(const Type *t) { returnType(t); }
+
     // ?name@Class@@ and then four letters - the access, __ptr64, the constness of
     // `this`, the calling convention - with every enclosing class innermost first,
     // closed by '@'. A local class's owner goes in as `?1?` and the whole name.
@@ -1010,6 +1015,47 @@ bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem) 
     m.typeInfoFor(t);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
+    return true;
+}
+
+// **The five objects the Microsoft ABI wants before it will answer a
+// `dynamic_cast`**, measured from clang: a TypeDescriptor naming the class, a
+// BaseClassDescriptor per class in the chain, an array of those, a
+// ClassHierarchyDescriptor over the array, and a CompleteObjectLocator that
+// ties the first and the last together and sits one word in front of the
+// vftable. Itanium hangs two objects off the vtable; this hangs five in front
+// of it, and `__RTDynamicCast` walks them.
+//
+// `??_R1A@?0A@EA@` carries the base's position as four numbers - mdisp 0,
+// pdisp -1, vdisp 0, attributes 0x40 - and they are constant here because a
+// class with more than one base is refused: its first base is always at offset
+// zero and never virtual, so there is nothing else they could say.
+bool microsoftClassRttiNames(const Type *cls, MicrosoftRtti *out,
+                             std::string *problem) {
+    if (!cls->isStructOrUnion()) {
+        *problem = "'" + cls->describe() + "' is not a class, so it has no "
+                   "run-time class description";
+        return false;
+    }
+    Microsoft type;
+    type.classAsTypeName(cls);                  // "?AUBase@@" - the type as a name
+    if (!type.ok) { *problem = type.problem; return false; }
+
+    Microsoft scope;
+    scope.scopeOf(cls, cls->tag());             // "Base@@" - the class as a scope
+    if (!scope.ok) { *problem = scope.problem; return false; }
+    // `scopeOf` closes the scope itself, so this is already `Leaf@@` - and
+    // `Shape@N@@` for one in a namespace. The four records differ only in what
+    // follows it: `8` for the three that describe the class, `6B@` for the
+    // locator, which names a vftable rather than the class.
+    const std::string within = scope.out;
+
+    out->decorated = "." + type.out;
+    out->descriptor = "??_R0" + type.out + "@8";
+    out->baseDescriptor = "??_R1A@?0A@EA@" + within + "8";
+    out->array = "??_R2" + within + "8";
+    out->hierarchy = "??_R3" + within + "8";
+    out->locator = "??_R4" + within + "6B@";
     return true;
 }
 

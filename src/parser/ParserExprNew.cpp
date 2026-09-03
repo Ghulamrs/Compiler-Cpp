@@ -262,13 +262,6 @@ ExprPtr Parser::dynamicCast(std::size_t pos) {
         src_.fail(pos, "'" + source->describe() + "' has no virtual function, "
                        "so an object of it carries nothing that says what it "
                        "really is - 'dynamic_cast' has nothing to ask");
-    if (target_.microsoftNames())
-        src_.fail(pos, "'dynamic_cast' is not supported yet for x86_64-windows "
-                       "- the Microsoft ABI answers it from a complete-object "
-                       "locator in front of the vtable rather than the Itanium "
-                       "type_info behind it, and that is a separate "
-                       "measurement; it works on the two Itanium targets");
-
     // **[expr.dynamic.cast]/5: an upcast is not a question.** If the target is
     // the operand's own class, or a public base of it, the answer follows from
     // the types and the object is never asked - which is also why the runtime
@@ -290,23 +283,37 @@ ExprPtr Parser::dynamicCast(std::size_t pos) {
     ExprPtr save(new Assign(std::move(held), std::move(v)));
     save->setType(voidPtr);
 
-    // Either class may be one this compiler cannot describe - more than one
-    // base wants `__vmi_class_type_info`, which is not built. Refused here,
-    // where the reader asked for the thing that is missing, rather than at the
-    // class, which is legal and works for everything else.
-    for (int side = 0; side < 2; side++) {
-        const Type *cls = side == 0 ? source : target;
-        if (emitClassTypeInfo(cls, cls->tag(), pos).empty())
-            src_.fail(pos, "'" + cls->describe() + "' has more than one base, "
-                           "and describing that to the run time needs "
-                           "__vmi_class_type_info - a third shape carrying the "
-                           "bases' offsets and flags, which is not supported "
-                           "yet. A single base works");
-    }
+    const bool ms = target_.microsoftNames();
 
-    auto typeInfoAddress = [&](const Type *cls) {
-        const std::string sym =
-            emitClassTypeInfo(cls, cls->tag(), pos);
+    // **The name of the object that describes a class, on whichever ABI.**
+    // Itanium reads a `_ZTI` hung off the back of the vtable; the Microsoft
+    // runtime reads a `??_R0` type descriptor reached through the locator in
+    // front of it. Either may be absent for the same reason - a class with more
+    // than one base is not describable here - and that is refused where the
+    // reader asked for it rather than at the class, which is legal and works
+    // for everything else.
+    auto describe = [&](const Type *cls) {
+        std::string sym;
+        if (ms) {
+            MicrosoftRtti names;
+            std::string why;
+            if (cls->bases().size() <= 1 &&
+                microsoftClassRttiNames(cls, &names, &why))
+                sym = names.descriptor;
+        } else {
+            sym = emitClassTypeInfo(cls, cls->tag(), pos);
+        }
+        if (sym.empty())
+            src_.fail(pos, "'" + cls->describe() + "' has more than one base, "
+                           "and describing that to the run time needs a shape "
+                           "carrying every base's offset and flags - "
+                           "__vmi_class_type_info on Itanium, a multiple-"
+                           "inheritance hierarchy on Microsoft - which is not "
+                           "supported yet. A single base works");
+        return sym;
+    };
+
+    auto typeInfoAddress = [&](const std::string &sym) {
         Var *ti = Var::global(sym);
         ti->setSymbol(sym);
         ExprPtr ref(ti);
@@ -316,17 +323,38 @@ ExprPtr Parser::dynamicCast(std::size_t pos) {
         return addr;
     };
 
+    const std::string sourceName = describe(source);
+    const std::string targetName = describe(target);
+
     std::vector<ExprPtr> args;
     ExprPtr object(Var::local(temp, slot));
     object->setType(voidPtr);
     args.push_back(std::move(object));
-    args.push_back(typeInfoAddress(source));
-    args.push_back(typeInfoAddress(target));
-    ExprPtr hint(new Num(-1LL));
-    hint->setType(types_.get(Kind::LongLong));
-    args.push_back(std::move(hint));
 
-    ExprPtr asked = runtimeCall("__dynamic_cast", to, std::move(args));
+    // **The two runtimes take their arguments in a different order and a
+    // different number**, which is the whole of the difference at the call.
+    // Microsoft: (p, the vfptr's offset in the object, source, target, is this
+    // a reference?). Itanium: (p, source, target, a hint at where the source
+    // sits inside the target - -1 being "unspecified", which is always right).
+    if (ms) {
+        ExprPtr delta(new Num(0LL));
+        delta->setType(types_.get(Kind::Int));
+        args.push_back(std::move(delta));
+    }
+    args.push_back(typeInfoAddress(sourceName));
+    args.push_back(typeInfoAddress(targetName));
+    if (ms) {
+        ExprPtr isReference(new Num(0LL));
+        isReference->setType(types_.get(Kind::Int));
+        args.push_back(std::move(isReference));
+    } else {
+        ExprPtr hint(new Num(-1LL));
+        hint->setType(types_.get(Kind::LongLong));
+        args.push_back(std::move(hint));
+    }
+
+    ExprPtr asked = runtimeCall(ms ? "__RTDynamicCast" : "__dynamic_cast",
+                                to, std::move(args));
 
     ExprPtr none(new Num(0LL));
     none->setType(to);
