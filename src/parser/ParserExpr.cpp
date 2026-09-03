@@ -1286,6 +1286,23 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
     // The direct binding: an addressable glvalue of exactly the type named, which the
     // reference then *is*. **isGlvalue and not isLvalue**, so an xvalue binds here
     // rather than being copied into a temporary - which runs a move on a copy.
+    // **Binding a reference to a base subobject.** The address is the object's,
+    // moved to where the base sits - which is nothing at all for a first base
+    // and an offset for any other, and `convert` is what knows the difference.
+    // It is a real binding rather than a copy: writing through the reference
+    // writes the object, which is the whole point of passing one.
+    if (isGlvalue(*init) && noAddressBecause == nullptr &&
+        it->unqualified() != referent->unqualified() &&
+        publicBaseOffset(it, referent) > -1 && !ref->isRValueReference()) {
+        if (it->isConst() && !referent->isConst())
+            src_.fail(pos, what + " is '" + ref->describe() + "' and this is '" +
+                           it->describe() + "' - a reference that can write "
+                           "cannot bind to a const");
+        ExprPtr addr(new Unary('&', std::move(init)));
+        addr->setType(types_.pointerTo(it->unqualified()));
+        return convert(std::move(addr), types_.pointerTo(referent));
+    }
+
     if (isGlvalue(*init) && noAddressBecause == nullptr &&
         it->unqualified() == referent->unqualified()) {
         if (it->isConst() && !referent->isConst())

@@ -1,0 +1,151 @@
+// <istream> - the input stream.
+//
+// The mirror of <ostream> and an aggregate for the same reason: `std::cin` is
+// an object at file scope, and a constructor there would have to run before
+// `main`. The `FILE *` is resolved by `target()` at the point of use.
+//
+// **Extraction is `fscanf` underneath, and that decides the corner cases.**
+// `>>` skips leading whitespace and stops at the first character that cannot
+// belong to the value, exactly as `%d` and `%lf` do - which is the behaviour
+// the standard describes, arrived at by using the same machinery rather than
+// by reimplementing it.
+#ifndef _CXX1_ISTREAM
+#define _CXX1_ISTREAM
+
+#include <cctype>
+#include <cstddef>
+#include <cstdio>
+#include <ostream>
+#include <string>
+
+namespace std {
+
+class istream {
+public:
+    FILE *fp_;
+    int which_;                 // unused for now: 0 is stdin
+    int state_;                 // 0 good, 1 failed, 2 at end of file
+    // Where a stringstream reads from, and how far it has got. Null for a file
+    // stream; `get()` and the word reader check it, and `scan()` cannot - which
+    // is why an istringstream converts through a buffer rather than fscanf.
+    const string *src_;
+    std::size_t pos_;
+
+    FILE *target() { return fp_ != 0 ? fp_ : stdin; }
+
+    bool good() const { return state_ == 0; }
+    bool fail() const { return state_ == 1; }
+    bool eof() const { return state_ == 2; }
+
+    // What makes `while (in >> x)` and `if (std::getline(in, s))` work.
+    operator bool() { return state_ == 0; }
+
+    // One `fscanf` conversion, and the same answer every time: one item read
+    // is success, zero is a failed match, and EOF is the end.
+    istream &scan(const char *how, void *where) {
+        if (src_ != 0) {
+            string w;
+            *this >> w;
+            if (w.size() == 0) return *this;
+            if (std::sscanf(w.c_str(), how, where) != 1) state_ = 1;
+            return *this;
+        }
+        int got = std::fscanf(target(), how, where);
+        if (got == 1) return *this;
+        state_ = got == 0 ? 1 : 2;
+        return *this;
+    }
+
+    istream &operator>>(int &v)           { return scan("%d", &v); }
+    istream &operator>>(unsigned int &v)  { return scan("%u", &v); }
+    istream &operator>>(long &v)          { return scan("%ld", &v); }
+    istream &operator>>(unsigned long &v) { return scan("%lu", &v); }
+    istream &operator>>(double &v)        { return scan("%lf", &v); }
+    istream &operator>>(float &v)         { return scan("%f", &v); }
+
+    // A char skips leading whitespace, which is what `>>` means and what
+    // `get(char &)` deliberately does not.
+    istream &operator>>(char &c) { return scan(" %c", &c); }
+
+    // A word: whitespace skipped, then everything up to the next whitespace.
+    // Read a character at a time rather than through `%s`, because `%s` cannot
+    // be told how much room it has and this one grows the string instead.
+    istream &operator>>(string &s) {
+        s = string();
+        int c = get();
+        while (c >= 0 && std::isspace(c)) c = get();
+        if (c < 0) { state_ = 2; return *this; }
+        while (c >= 0 && !std::isspace(c)) {
+            s += (char)c;
+            c = get();
+        }
+        if (c >= 0) unget((char)c);
+        return *this;
+    }
+
+    // Unformatted input: no whitespace is skipped and nothing is converted.
+    int get() {
+        if (src_ != 0) {
+            if (pos_ >= src_->size()) return -1;
+            char c = (*src_)[pos_];
+            pos_++;
+            return (int)(unsigned char)c;
+        }
+        return std::fgetc(target());
+    }
+    istream &get(char &c) {
+        int v = std::fgetc(target());
+        if (v < 0) { state_ = 2; return *this; }
+        c = (char)v;
+        return *this;
+    }
+    istream &unget(char c) {
+        if (src_ != 0) { if (pos_ > 0) pos_--; return *this; }
+        std::ungetc((int)c, target());
+        return *this;
+    }
+
+    // The member form, which writes into a buffer the caller sized. The
+    // delimiter is consumed and not stored, and a full buffer is a failure -
+    // both of which are what the standard asks for.
+    istream &getline(char *s, streamsize n, char delim) {
+        streamsize i = 0;
+        for (;;) {
+            int c = get();
+            if (c < 0) { if (i == 0) state_ = 2; break; }
+            if ((char)c == delim) break;
+            if (i + 1 >= n) { state_ = 1; unget((char)c); break; }
+            s[i] = (char)c;
+            i++;
+        }
+        if (n > 0) s[i] = '\0';
+        return *this;
+    }
+    istream &getline(char *s, streamsize n) { return getline(s, n, '\n'); }
+
+    istream &ignore(streamsize n) {
+        for (streamsize i = 0; i < n; i++)
+            if (get() < 0) { state_ = 2; break; }
+        return *this;
+    }
+};
+
+// The free function, which is the one a program reaches for. It answers the
+// stream so that `while (std::getline(in, line))` works, and that is the whole
+// reason `istream` has a conversion to bool.
+static istream &getline(istream &in, string &s, char delim) {
+    s = string();
+    int c = in.get();
+    if (c < 0) { in.state_ = 2; return in; }
+    while (c >= 0 && (char)c != delim) {
+        s += (char)c;
+        c = in.get();
+    }
+    return in;
+}
+
+static istream &getline(istream &in, string &s) { return getline(in, s, '\n'); }
+
+}  // namespace std
+
+#endif

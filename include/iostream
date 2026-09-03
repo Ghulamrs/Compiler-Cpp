@@ -1,0 +1,34 @@
+// <iostream> - the three streams every program starts with.
+//
+// **They are objects at file scope with no constructor**, which is the whole
+// trick this header turns. A `std::cout` built by a constructor would need that
+// constructor to run before `main`, and this compiler has nowhere to put the
+// code that would do it - so `ostream` is an aggregate, these are constant
+// initialisers, and the `FILE *` is resolved at the point of use instead. See
+// the comment at the top of <ostream>.
+//
+// **`static`, so each translation unit gets its own.** A header-only library
+// has no other choice: an `extern` object would need a definition in some
+// object file, and there is none to put it in. The observable difference is
+// nil for a program compiled as one unit, which is how this compiler is used.
+#ifndef _CXX1_IOSTREAM
+#define _CXX1_IOSTREAM
+
+#include <istream>
+#include <ostream>
+
+namespace std {
+
+// { fp_, which_, state_, buf_ } - a null FILE * and the number that says
+// which standard stream to resolve to. 1 is stdout, 2 is stderr, and the null
+// buf_ is what says this writes to a file rather than to a string.
+static ostream cout = { 0, 1, 0, 0 };
+static ostream cerr = { 0, 2, 0, 0 };
+// clog is cerr without the flush the standard does not promise either way.
+static ostream clog = { 0, 2, 0, 0 };
+
+static istream cin = { 0, 0, 0, 0, 0 };
+
+}  // namespace std
+
+#endif

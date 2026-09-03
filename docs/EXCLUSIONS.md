@@ -1,7 +1,8 @@
 # What cxx1 does not accept
 
-**The language cxx1 accepts is C++11 minus this list, and there is no C++
-standard library at all.** That sentence is why this file exists. `CLAUDE.md`
+**The language cxx1 accepts is C++11 minus this list, and the library it
+ships is the one in `include/` rather than a conforming one.** That sentence is
+why this file exists. `CLAUDE.md`
 opens by saying the language cxx1 compiles is C++11, which is the right
 headline and was, on its own, a claim the compiler cannot support: a C++11
 compiler that refuses `dynamic_cast` is a C++11 *subset*, and a reader who
@@ -44,7 +45,7 @@ a grep is not.
 than they fire. `template <>` at `src/parser/ParserTemplate.cpp:38` is refused
 where a template parameter list is expected, while
 `template <> struct Box<int> { … };` compiles; the functional-cast temporary at
-`src/parser/ParserOverload.cpp:607` is refused during overload ranking, while
+`src/parser/ParserOverload.cpp:621` is refused during overload ranking, while
 `take(P(4))` and `P q = P(3);` compile. Both were checked with a program before
 this sentence was written, and the same habit is the reason `pending[]` had
 eight keywords in it that were implemented.
@@ -63,10 +64,26 @@ using-declarations into `std`, with every name that header declares; and
 vector is a growing array, a map is a sorted vector of pairs, a set is a sorted
 vector, and an iterator in all of them is a pointer.
 
-What is not there yet: `<iostream>`, `<sstream>` and `<fstream>`. Nothing in
-the language stands in the way of them any more: a prototype of
-`cout << x << endl` with manipulators compiles and runs, and `if (stream >> v)`
-- a stream converted to bool - is a conversion function, which now works.
+`<iostream>`, `<ostream>`, `<istream>`, `<sstream>`, `<fstream>`, `<ios>` and
+`<cstdio>` are there now. Two things made them possible and one had to be
+fixed. **`std::cout` is an object at file scope with no constructor** - an
+aggregate with a constant initialiser, whose `FILE *` is resolved at the point
+of use - because a file-scope object with a constructor would have to run one
+before `main`, which is refused below. **`if (stream >> v)` is a conversion
+function**, which is why these could not have been written before those landed.
+And a **reference to a base would not bind to a derived object**, so
+`std::getline(istringstream, s)` found no matching function; the pointer form
+had always worked and the reference form was never done.
+
+A stringstream reuses its base's operators through one pointer - `ostream::buf_`
+and `istream::src_` - rather than a virtual, because a virtual needs a vptr and
+a vptr needs the constructor `cout` cannot have.
+
+What the streams do not have: **`rdbuf()` and the `streambuf` layer under it**,
+so `ss << in.rdbuf()` - the idiom for slurping a file - has no meaning here;
+read with `getline` or `ifstream::readAll`. There are no format flags either,
+so no `setw`, no `setprecision`, and no `boolalpha` - a `bool` prints as `1`,
+which is what the default is anyway.
 
 A converting constructor is called to make an argument now - [over.ics.user] -
 so `m["key"]` and `f(literal)` against a `const std::string &` parameter work,
@@ -86,13 +103,14 @@ The C headers underneath, unchanged and usable on their own: `assert.h`, `ctype.
 `locale.h`, `math.h`, `memory.h`, `setjmp.h`, `signal.h`, `stdarg.h`,
 `stddef.h`, `stdio.h`, `stdlib.h`, `string.h`, `time.h`.
 
-So there is no `<string>`, `<vector>`, `<map>`, `<set>`, `<iostream>`,
-`<sstream>`, `<algorithm>`, `<memory>` or `<initializer_list>`, and no `std::`
-namespace beyond what a program declares itself. This is a decision rather than
-a gap, and it is the one exclusion that stops an ordinary C++ program before
-the language is reached at all. It is also why a *language* feature is refused
-in one place: `auto` from a braced initialiser deduces an `initializer_list`,
-which there is no library for — `src/parser/ParserTemplate.cpp:866`.
+So what is still missing is `<memory>`, `<initializer_list>`, `<exception>`,
+`<stdexcept>`, `<iomanip>`, `<list>`, `<deque>`, `<iterator>`, `<limits>` and
+the rest - and inside the headers that do exist, whatever a program reaches for
+that was not written. This is a library sized to what has been asked of it
+rather than to the standard, and the distance between those two is not small.
+It is also why a *language* feature is refused in one place: `auto` from a
+braced initialiser deduces an `initializer_list`, which there is no library for
+— `src/parser/ParserTemplate.cpp:866`.
 
 A conforming C++ implementation is a compiler **and** a library. cxx1 is a
 language translator with three code generators. Read every claim about C++11
@@ -148,7 +166,7 @@ SFINAE and variadic packs. What is left:
 - **instantiating a template that was only declared** —
   `src/parser/ParserTemplate.cpp:1564`
 - **`sizeof` of a template parameter in a signature** — the linker name would
-  have to spell the expression. `src/parser/ParserExpr.cpp:1786`
+  have to spell the expression. `src/parser/ParserExpr.cpp:1803`
 
 ## Classes, members and friends
 
@@ -235,7 +253,7 @@ it is written:
 ## Expressions
 
 - **`?:` as an lvalue** — real C++ when both arms are lvalues; bind the
-  reference in an `if`/`else`. `src/parser/ParserExpr.cpp:1313`
+  reference in an `if`/`else`. `src/parser/ParserExpr.cpp:1330`
 - **`static_cast` of a reference to a different type** —
   `src/parser/ParserExpr.cpp:268`
 - **a name qualified with `::` alone**, the global scope —
@@ -243,7 +261,7 @@ it is written:
 - **choosing an overload by the type it is assigned to** —
   `src/parser/ParserExpr.cpp:499`
 - **a pointer to a *virtual* member function** — it holds a vtable index where
-  this holds an address. `src/parser/ParserExpr.cpp:1658`
+  this holds an address. `src/parser/ParserExpr.cpp:1675`
 - **a pointer to a *const* member function** — the constness of `this` is not
   part of a function type here. `src/parser/ParserType.cpp:1351`
 - **postfix `++` / `--` on a bit-field** — the prefix form works.
@@ -251,7 +269,7 @@ it is written:
 - **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:676`
 - **a functional-cast temporary reached through overload ranking** — a
   converting constructor is not tried at a call.
-  `src/parser/ParserOverload.cpp:607`
+  `src/parser/ParserOverload.cpp:621`
 
 ## `new` and `delete`
 

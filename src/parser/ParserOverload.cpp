@@ -232,10 +232,24 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     const Type *given = arg.type();
 
     // A reference parameter binds or it does not; there is no conversion to rank.
-    // The referents must be one type and a non-const reference cannot bind a const
-    // object - not a worse match, no match. More is a rung of its own.
+    // The referents must be one type, or the argument's must derive from the
+    // parameter's, and a non-const reference cannot bind a const object - not a
+    // worse match, no match.
     if (param->isReference()) {
         const Type *want = param->pointee();
+
+        // **A reference to a base binds to a derived object** - [dcl.init.ref],
+        // and the sequence is a derived-to-base Conversion, which is what makes
+        // `f(Base &)` lose to `f(Derived &)` for a Derived rather than tie with
+        // it. The pointer form of this has always worked; the reference form
+        // was left out, and `std::getline(istringstream, s)` is what found it.
+        if (want->unqualified() != given->unqualified() &&
+            publicBaseOffset(given, want) > -1 &&
+            isLvalue(arg) && !param->isRValueReference()) {
+            if (!want->isConst() && given->isConst()) return Rank::None;
+            return Rank::Conversion;
+        }
+
         if (want->unqualified() != given->unqualified()) {
             // **A `const T &` takes a temporary, so it takes a conversion.**
             // [over.ics.user] with [dcl.init.ref]: the converting constructor

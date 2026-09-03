@@ -16,12 +16,17 @@ read C++14 source. Self-hosting is not a milestone here and offering it as one
 is a mistake — see "How correctness is established" for what replaces it.
 
 **The subset is not a footnote, and "C++11" on its own was a claim this
-compiler cannot support.** `dynamic_cast` is refused — it is a rung of its own,
-not a missing branch — conversion functions do not exist, and `lib/` is sixteen
-**C** headers, so there is no `<string>`, no `<vector>` and no `std::` at all.
-An ordinary conforming C++98 program therefore does not compile here, and a
+compiler cannot support.** Some of that has since been answered — `dynamic_cast`
+works on all three targets, conversion functions exist, and `include/` holds a
+real library: `<string>`, `<vector>`, `<map>`, `<set>`, `<algorithm>`,
+`<utility>`, the five C wrappers, and the stream family `<iostream>`,
+`<ostream>`, `<istream>`, `<sstream>`, `<fstream>`, `<ios>`, `<cstdio>`. What
+remains is still a subset, and a large one: the library is sized to what has
+been asked of it rather than to the standard, `<memory>` and
+`<initializer_list>` are not there, and `docs/EXCLUSIONS.md` runs to a hundred
+entries. An ordinary conforming C++98 program may still not compile here, and a
 reader who took the headline at its word would meet that with nowhere to look.
-`docs/EXCLUSIONS.md` is the list: 103 refusal sites at `1799815`, derived from
+`docs/EXCLUSIONS.md` is the list — **101 refusal sites**, derived from
 the source by `tools/exclusions` rather than written by hand, and
 `tools/exclusions --check docs/EXCLUSIONS.md` reports every refusal the
 document does not cite. This is the tree's own rule 5 — *a claim with no oracle
