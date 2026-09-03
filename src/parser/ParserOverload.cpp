@@ -213,7 +213,22 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
         // for an object that has an address, and the better match where both are.
         if (param->isRValueReference() && isLvalue(arg)) return Rank::None;
         if (param->isRValueReference()) return Rank::Identity;
-        if (!isLvalue(arg)) return Rank::Qualification;
+
+        // **A value has no lvalue to bind, so `T &` is not viable for one** -
+        // and that was missing here, where a candidate is *ranked*. With one
+        // candidate it did not show: the call path refuses the binding later,
+        // by name. With two it did, and wrongly - `hold(int &)` was ranked
+        // beside `hold(const int &)` for `hold(7)`, and the pair came out
+        // ambiguous where clang, g++ and cl all pick the const one.
+        //
+        // **And a value bound to `const T &` keeps the qualification it is
+        // charged**, because that charge is how two tiebreaks are encoded here:
+        // [over.ics.rank]/3.2.3, an rvalue reference beating a const lvalue
+        // reference for an rvalue, and /3.2.6, the less qualified of two
+        // references winning. Both only ever compare two *references*;
+        // against a by-value parameter the charge is neutralised in
+        // betterCandidate, which is where `take(4)` becomes the ambiguity it is.
+        if (!isLvalue(arg)) return want->isConst() ? Rank::Qualification : Rank::None;
 
         return want->isConst() && !given->isConst() ? Rank::Qualification
                                                     : Rank::Identity;
@@ -281,11 +296,47 @@ std::string Parser::describeSignature(const Signature &f) {
 // The best viable function, or a refusal naming every candidate: F beats G when it
 // is no worse on every argument and better on one, and two that each win an
 // argument are the ambiguity. All conversions equal, a specialization loses.
+// The parameter a rank position came from, or null for an implicit object
+// parameter and for anything the ellipsis swallowed.
+const Type *Parser::rankedParameter(const Signature &f, std::size_t i,
+                                    bool ranksObject) {
+    if (ranksObject) {
+        if (i == 0) return nullptr;
+        i--;
+    }
+    return i < f.params.size() ? f.params[i] : nullptr;
+}
+
+// **A by-value parameter and a reference to the same type are the same match**,
+// and [over.ics.rank] gives neither a way to beat the other: one copies the
+// argument, one binds it, and both are the identity conversion. The
+// qualification a reference binding is charged in rankArgument is there to
+// separate two *references* - `T &` from `const T &`, where /3.2.6 does give an
+// answer - and against a by-value parameter it is not a difference at all.
+//
+// Letting it decide made `f(int)` quietly beat `f(const int &)` for an lvalue,
+// where clang and g++ both call the pair ambiguous. Measured on both, and on
+// four neighbouring shapes that were already right and had to stay so.
+bool Parser::sameMatchEitherWay(const Type *pa, const Type *pb) {
+    if (pa == nullptr || pb == nullptr) return false;
+    const bool ra = pa->isReference(), rb = pb->isReference();
+    if (ra == rb) return false;
+    const Type *va = ra ? pa->pointee()->unqualified() : pa->unqualified();
+    const Type *vb = rb ? pb->pointee()->unqualified() : pb->unqualified();
+    return va == vb;
+}
+
 bool Parser::betterCandidate(const std::vector<Rank> &a,
                              const std::vector<Rank> &b,
-                             const Signature &fa, const Signature &fb) const {
+                             const Signature &fa, const Signature &fb,
+                             bool ranksObjectA, bool ranksObjectB) const {
     bool better = false, worse = false;
     for (std::size_t i = 0; i < a.size() && i < b.size(); i++) {
+        if (a[i] == b[i]) continue;
+        if (sameMatchEitherWay(rankedParameter(fa, i, ranksObjectA),
+                               rankedParameter(fb, i, ranksObjectB)) &&
+            a[i] <= Rank::Qualification && b[i] <= Rank::Qualification)
+            continue;
         if (a[i] < b[i]) better = true;
         if (a[i] > b[i]) worse = true;
     }
@@ -393,12 +444,14 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
     std::size_t best = 0;
     for (std::size_t k = 1; k < which.size(); k++)
         if (betterCandidate(ranks[k], ranks[best],
-                            functions_[which[k]], functions_[which[best]]))
+                            functions_[which[k]], functions_[which[best]],
+                            member[k], member[best]))
             best = k;
     for (std::size_t k = 0; k < which.size(); k++) {
         if (k == best) continue;
         if (!betterCandidate(ranks[best], ranks[k],
-                             functions_[which[best]], functions_[which[k]])) {
+                             functions_[which[best]], functions_[which[k]],
+                             member[best], member[k])) {
             std::string why = "this use of '" + name + "' is ambiguous";
             for (std::size_t j = 0; j < which.size(); j++)
                 why += std::string("\n    candidate: ") +
@@ -553,12 +606,14 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
     std::size_t best = 0;
     for (std::size_t k = 1; k < viable.size(); k++)
         if (betterCandidate(ranks[k], ranks[best],
-                            functions_[viable[k]], functions_[viable[best]]))
+                            functions_[viable[k]], functions_[viable[best]],
+                            object != nullptr, object != nullptr))
             best = k;
     for (std::size_t k = 0; k < viable.size(); k++) {
         if (k == best) continue;
         if (!betterCandidate(ranks[best], ranks[k],
-                             functions_[viable[best]], functions_[viable[k]])) {
+                             functions_[viable[best]], functions_[viable[k]],
+                             object != nullptr, object != nullptr)) {
             std::string why = "this call to '" + name + "' is ambiguous";
             for (std::size_t j = 0; j < viable.size(); j++)
                 why += "\n    candidate: " + describeSignature(functions_[viable[j]]);

@@ -3834,6 +3834,42 @@ cannot tell two of them apart.
 from both parameter-list parsers, because a definition may carry them where the
 declaration did not.
 
+## A by-value parameter and a reference to it are the same match
+
+**`f(int)` beat `f(const int &)` for an lvalue without a word**, where clang, g++
+and cl all call the pair ambiguous. [over.ics.rank] gives neither a way to win:
+one copies the argument and the other binds it, and both are the identity
+conversion. The same for a prvalue, `f(4)`.
+
+**Why it was wrong is the interesting part.** A reference binding is charged a
+*qualification* conversion here for the const it adds - and that charge is not
+a mistake, it is how two tiebreaks are encoded in one number: [over.ics.rank]
+/3.2.6, the less qualified of two references winning (`hold(int &)` over
+`hold(const int &)` for an lvalue), and /3.2.3, an rvalue reference beating a
+const lvalue reference for an rvalue. Both only ever compare two *references*.
+Against a by-value parameter the charge is not a difference at all, and letting
+it decide is what made `f(int)` win. So `betterCandidate` neutralises it in
+exactly that pairing - `sameMatchEitherWay`, a by-value parameter and a
+reference to the same type - and the encoding stays for the two comparisons it
+is right about. Deleting the charge instead was tried first and cost the
+rvalue-reference preference: `g(S &&)` stopped beating `g(const S &)` for
+`static_cast<S &&>(a)`, which the overload suite said at once.
+
+**The neighbour found a second defect, and it was the worse one.** Writing the
+case that had to keep resolving - `hold(int &)` against `hold(const int &)` -
+showed `hold(7)` coming out *ambiguous* where all three oracles pick the const
+one: a mutable reference was being ranked as viable for a temporary. With one
+candidate it never showed, because the call path refuses the binding later and
+by name; with two it did. `T &` is not viable for a value now, at ranking, which
+is where clang says "no matching function".
+
+Both are in `tests/overload/`, where clang is asked on every run rather than a
+recorded answer: `ambiguous-value-vs-reference.cpp`, which both must refuse, and
+`reference-constness.cpp`, which both must resolve the same way. **All three
+oracles agree on every shape here** - measured on g++ 11.5 and cl 19.44 as well
+as clang - which is a different situation from the const rule beside this one,
+where cl stands apart.
+
 ## A const object has to be initialised, and the line is CWG 253's
 
 **`const S s;` on a plain struct compiled and left the object holding whatever

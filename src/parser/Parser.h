@@ -497,8 +497,23 @@ private:
     // them - the values are compared, so do not reorder this enum. **Identity and
     // Qualification are both "Exact Match" and still not equal**: [over.ics.rank]/3.2.1.
     enum class Rank { Identity, Qualification, Promotion, Conversion, Ellipsis, None };
+    // `ranksObjectA`/`B` say whether that candidate's rank vector opens with an
+    // implicit object parameter, which is how a rank position is mapped back to
+    // the parameter it came from - a member and a non-member operator are ranked
+    // side by side and do not open the same way.
     bool betterCandidate(const std::vector<Rank> &a, const std::vector<Rank> &b,
-                         const Signature &fa, const Signature &fb) const;
+                         const Signature &fa, const Signature &fb,
+                         bool ranksObjectA, bool ranksObjectB) const;
+
+    // The parameter a rank position came from, or null for an implicit object
+    // parameter and for anything the ellipsis swallowed.
+    static const Type *rankedParameter(const Signature &f, std::size_t i,
+                                       bool ranksObject);
+
+    // Whether two parameters are the same match either way round: a by-value one
+    // and a reference to the same type. [over.ics.rank] gives neither a way to
+    // beat the other, one copying the argument where the other binds it.
+    static bool sameMatchEitherWay(const Type *pa, const Type *pb);
 
     struct Declared {
         std::string name;
