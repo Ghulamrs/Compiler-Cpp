@@ -1043,6 +1043,21 @@ private:
     std::vector<std::string> namespaceStack_;
     // Namespaces named by a `using namespace` still open here, innermost last.
     std::vector<std::string> usingNamespaces_;
+    // **A using-declaration is an alias, not a table.** `using N::f;` says that
+    // the name it declares here - `f`, under whatever namespace encloses it -
+    // means `N::f`, so it is one qualified name against another and a namespace
+    // stays a prefix and a search, exactly as namespaceStack_ says.
+    std::map<std::string, std::string> usingDeclarations_;
+    // **An unnamed namespace is a named one that nothing outside can name.**
+    // It is opened under this tag so the prefix machinery is unchanged, and
+    // everything declared inside is given internal linkage instead - which is
+    // what [basic.link]/4 buys and the only part a single program can observe.
+    bool inUnnamedNamespace_ = false;
+    // Whether a declaration here has internal linkage: written `static`, or
+    // inside an unnamed namespace, which says the same thing about a name.
+    bool internalLinkage(StorageClass sc) const {
+        return sc == StorageStatic || inUnnamedNamespace_;
+    }
     // Every namespace ever opened, by full path. A qualified name has to be
     // told from a class's - `N::f` and `S::f` are written the same and mean
     // different lookups - and this is what tells them apart.
@@ -1058,6 +1073,10 @@ private:
     // name itself. `exists` says which table to ask, functions and variables differing.
     std::string qualifyForLookup(const std::string &name,
                                  bool (Parser::*exists)(const std::string &) const) const;
+    // The name a using-declaration redirects `key` to, following a chain of them
+    // and stopping at a fixed depth so that `using A::x;` and `using B::x;`
+    // written into a cycle cannot hang the parser instead of failing a lookup.
+    std::string followUsingDeclaration(const std::string &key) const;
     bool hasFunctionNamed(const std::string &key) const;
     bool hasGlobalNamed(const std::string &key) const;
     bool hasTypeNamed(const std::string &key) const;

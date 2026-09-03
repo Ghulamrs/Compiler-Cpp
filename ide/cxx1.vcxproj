@@ -67,7 +67,9 @@
     <ClCompile Include="..\src\parser\ParserInit.cpp" />
     <ClCompile Include="..\src\parser\ParserOperator.cpp" />
     <ClCompile Include="..\src\parser\ParserOverload.cpp" />
+    <ClCompile Include="..\src\parser\ParserConst.cpp" />
     <ClCompile Include="..\src\parser\ParserStmt.cpp" />
+    <ClCompile Include="..\src\parser\ParserTopLevel.cpp" />
     <ClCompile Include="..\src\parser\ParserTemplate.cpp" />
     <ClCompile Include="..\src\parser\ParserType.cpp" />
     <ClCompile Include="..\src\backend\Arm64Darwin.cpp" />

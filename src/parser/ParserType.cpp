@@ -257,6 +257,17 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         if (peek().is("template"))
             src_.fail(peek().pos, "a member template is not supported yet");
 
+        // **A using-declaration in a class is a different rule from one at
+        // namespace scope**, which this compiler has: here it redeclares a base
+        // member, changing its access or bringing an overload set into the
+        // derived class's own, and neither is an alias.
+        if (peek().is("using"))
+            src_.fail(peek().pos, "a using-declaration inside a class is not "
+                                  "supported yet - it redeclares a base member "
+                                  "here rather than naming it, which changes "
+                                  "access and overload resolution; one at "
+                                  "namespace scope works");
+
         // Where this member's declaration begins. A body written here is
         // replayed from exactly this token, so the replay re-reads the return
         // type and parameters rather than trying to rebuild them.

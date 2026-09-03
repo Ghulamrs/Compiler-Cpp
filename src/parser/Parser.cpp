@@ -159,18 +159,46 @@ bool Parser::hasTypeNamed(const std::string &key) const {
 // **Unqualified lookup inside a namespace, and it is a search and not a rule.**
 // The enclosing namespaces innermost outwards, then what `using namespace` has
 // opened, then the name as written - [basic.lookup.unqual] closely enough.
+// **A using-declaration is followed here and nowhere else.** Every lookup that
+// forms a candidate key asks this first, so the one rule serves `std::size_t`
+// written out and `size_t` found by the search alike. The hop count is a guard,
+// not a limit: a chain longer than this is a cycle, and a cycle must fail a
+// lookup rather than hang the parser.
+std::string Parser::followUsingDeclaration(const std::string &key) const {
+    std::string at = key;
+    for (int hops = 0; hops < 16; hops++) {
+        auto it = usingDeclarations_.find(at);
+        if (it == usingDeclarations_.end()) break;
+        at = it->second;
+    }
+    return at;
+}
+
 std::string Parser::qualifyForLookup(const std::string &name,
                                      bool (Parser::*exists)(const std::string &) const) const {
-    if (name.find("::") != std::string::npos) return name;
+    // Written qualified, so there is nothing to search - but `std::size_t` may
+    // still be a name a using-declaration put in `std`, and only the alias says
+    // what it stands for.
+    if (name.find("::") != std::string::npos) {
+        const std::string aliased = followUsingDeclaration(name);
+        return aliased != name && (this->*exists)(aliased) ? aliased : name;
+    }
     for (std::size_t i = namespaceStack_.size(); i-- > 0; ) {
         std::string prefix;
         for (std::size_t k = 0; k <= i; k++) prefix += namespaceStack_[k] + "::";
-        if ((this->*exists)(prefix + name)) return prefix + name;
-    }
-    for (std::size_t i = usingNamespaces_.size(); i-- > 0; ) {
-        const std::string key = usingNamespaces_[i] + "::" + name;
+        const std::string key = followUsingDeclaration(prefix + name);
         if ((this->*exists)(key)) return key;
     }
+    for (std::size_t i = usingNamespaces_.size(); i-- > 0; ) {
+        const std::string key =
+            followUsingDeclaration(usingNamespaces_[i] + "::" + name);
+        if ((this->*exists)(key)) return key;
+    }
+    // **Last, the name as written**, which is where a using-declaration at file
+    // scope is found: it declares an unqualified name and there is no prefix to
+    // put in front of it.
+    const std::string aliased = followUsingDeclaration(name);
+    if (aliased != name && (this->*exists)(aliased)) return aliased;
     return name;
 }
 
