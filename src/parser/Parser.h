@@ -933,9 +933,14 @@ private:
     StmtPtr constructLocalArray(const Declared &d, int offset, int indexSlot);
     ExprPtr memberCall(ExprPtr object, const Type *cls, const std::string &name,
                        std::size_t pos);
+    // `forceOwner` names the class a *qualified* call reached - `b.Base::f()`
+    // or, inside a member, `Base::f()`. [expr.call]/1: naming the function with
+    // a qualified-id suppresses the dispatch, so the base's version runs even
+    // where the object overrides it, and the lookup does not walk further up.
     ExprPtr memberCallWith(ExprPtr object, const Type *cls,
                            const std::string &name, std::size_t pos,
-                           std::vector<ExprPtr> args);
+                           std::vector<ExprPtr> args,
+                           const Type *forceOwner = nullptr);
     // The class up the chain that declares this member function, searching
     // every base rather than only the first.
     const Type *findMemberOwner(const Type *cls, const std::string &name) const;
@@ -996,7 +1001,12 @@ private:
     // Does the code being parsed have a member's-eye view of this class? Inside a lambda
     // that is the class it was *written in* and not the closure - [expr.prim.lambda]/7 -
     // and both access checks have to ask the same question or they disagree.
-    bool insideAccessOf(const Type *cls) const;
+    // `access` is the member's, because **protected** reaches further than
+    // private does: [class.access.base]/5 lets a derived class name a
+    // protected member of its base, and "are we inside that class" alone
+    // cannot say so. Defaulted to Private, which is the stricter question.
+    bool insideAccessOf(const Type *cls,
+                        Access access = Access::Private) const;
     // A name that is a *capture of the lambda around this one*: by the time an inner
     // lambda is read, that capture is a member of the outer closure. Answers the
     // expression that reads it, or null. Asked at lookup and where the closure is built.

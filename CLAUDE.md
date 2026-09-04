@@ -4019,6 +4019,35 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## `Base::f(...)` - the version an override replaced, and who may call it
+
+**[expr.call]/1: naming a function with a qualified-id suppresses the
+dispatch**, which is the whole reason an override writes `Base::f(...)`. Two of
+Compiler++'s sixteen sources do, as `cc::Lowering::lowerDecl(d)`.
+
+Three things had to be true, and the branch that already existed for a *static*
+member function is the shape they were built on - it claims the name only where
+the set holds a static, and refuses a non-static one by name, which is exactly
+the door this came through.
+
+**The lookup does not walk up.** A qualified call says which class's version it
+means, so `findMemberOwner` is not asked and `memberCallWith` takes the owner as
+given - one parameter, which also turns the dispatch off.
+
+**The base's own name has to resolve.** `cc::Base::f` is in the type table;
+plain `Base::f` is the **injected class name**, which is not - so the bases are
+walked and their `localName()` compared. That is the same half the
+mem-initialiser list needed one commit earlier, and finding it twice in two days
+is the argument for a shared helper the next time it comes up.
+
+**And protected reaches further than private does.** [class.access.base]/5 lets
+a derived class name a protected member of its base, and `insideAccessOf` asked
+only "are we inside that class" - so a protected static called unqualified from
+a derived member was refused. It takes the member's access now, because private
+and protected are different questions and answering them with one test made the
+stricter answer wrong. A private member of a base is still refused, which is the
+half worth testing.
+
 ## A base named with its namespace in a mem-initialiser list
 
 **`: cc::Lowering(module, l, d)`** is how a class writes a base that is not in

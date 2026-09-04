@@ -978,8 +978,9 @@ ExprPtr Parser::primary(Program *program) {
             // this call never goes through them.
             if (sig.access != Access::Public) {
                 const Type *ownerType = findTypedef(sig.owner);
-                if (ownerType == nullptr || (!insideAccessOf(ownerType) &&
-                                             !isFriendOf(ownerType))) {
+                if (ownerType == nullptr ||
+                    (!insideAccessOf(ownerType, sig.access) &&
+                     !isFriendOf(ownerType))) {
                     const char *how = sig.access == Access::Private
                                           ? "private" : "protected";
                     src_.fail(qpos, "'" + key + "' is " + how + " in '" +
@@ -994,6 +995,77 @@ ExprPtr Parser::primary(Program *program) {
             return completeCall(key, sig.symbol, nullptr, sig.returns,
                                 sig.params, sig.variadic, qpos, std::move(args),
                                 false);
+        }
+    }
+
+    // **The injected class name of a base**, which is how a derived class
+    // usually spells it: `Base::f(...)` for a `cc::Base`. It is not in the type
+    // table - the tag there is qualified - so the bases are walked and their
+    // `localName()` compared, that being exactly what the injected name is.
+    // The same half the mem-initialiser list needed.
+    // (Declared here rather than as a member: it reads only the type graph.)
+    struct FindBase {
+        static const Type *named(const Type *cls, const std::string &name) {
+            if (cls == nullptr) return nullptr;
+            const std::vector<Type::BaseSpec> &bs = cls->unqualified()->bases();
+            for (std::size_t i = 0; i < bs.size(); i++) {
+                if (bs[i].type->localName() == name ||
+                    bs[i].type->tag() == name) return bs[i].type;
+                if (const Type *deeper = named(bs[i].type, name)) return deeper;
+            }
+            return nullptr;
+        }
+    };
+
+    // **`Base::f(...)` inside a member - the version this class replaced.**
+    // [expr.call]/1: naming the function with a qualified-id suppresses the
+    // dispatch, which is the whole reason an override writes it. The static
+    // branch above claims the name only where the set holds a static, so what
+    // arrives here is a non-static member reached through the implicit `this`.
+    if (currentClass_ != nullptr && !inStaticMember_ &&
+        peek().kind == TokenKind::Ident && peekAt(1).is("::")) {
+        std::string q = peek().text;
+        const Type *owner = nullptr;
+        std::string member;
+        std::size_t consumed = 0;
+        for (std::size_t k = 1; peekAt(k).is("::") &&
+                                peekAt(k + 1).kind == TokenKind::Ident; k += 2) {
+            const std::string component = peekAt(k + 1).text;
+            if (peekAt(k + 2).is("(")) {
+                const Type *cls = findTypedef(q);
+                if (cls == nullptr) cls = FindBase::named(currentClass_, q);
+                if (cls != nullptr && cls->isStructOrUnion() &&
+                    overloadsOf(cls->tag() + "::" + component) != nullptr) {
+                    owner = cls;
+                    member = component;
+                    consumed = k + 2;
+                }
+            }
+            q += "::" + component;
+        }
+        // Only a class this one *is* - itself or a base of it. Anything else is
+        // some other class's member and has no object here to be called on.
+        if (owner != nullptr &&
+            currentClass_->unqualified() != owner->unqualified() &&
+            publicBaseOffset(currentClass_, owner->unqualified()) < 0)
+            owner = nullptr;
+        if (owner != nullptr) {
+            const std::size_t qpos = peek().pos;
+            at_ += consumed;
+            expect("(");
+            std::vector<ExprPtr> args;
+            parseArguments(args);
+            const Local *held = findLocal("this");
+            ExprPtr self(Var::local("this", held != nullptr ? held->offset
+                                                            : thisOffset_));
+            const Type *selfType = held != nullptr
+                                       ? held->type
+                                       : types_.pointerTo(currentClass_);
+            self->setType(selfType);
+            ExprPtr obj(new Unary('*', std::move(self)));
+            obj->setType(selfType->pointee());
+            return memberCallWith(std::move(obj), selfType->pointee(), member,
+                                  qpos, std::move(args), owner);
         }
     }
 
@@ -1065,8 +1137,9 @@ ExprPtr Parser::primary(Program *program) {
                 // this call never goes through them.
                 if (sig.access != Access::Public) {
                     const Type *ownerType = findTypedef(sig.owner);
-                    if (ownerType == nullptr || (!insideAccessOf(ownerType) &&
-                                                         !isFriendOf(ownerType))) {
+                    if (ownerType == nullptr ||
+                        (!insideAccessOf(ownerType, sig.access) &&
+                         !isFriendOf(ownerType))) {
                         const char *how = sig.access == Access::Private
                                                       ? "private" : "protected";
                         src_.fail(pos, "'" + key + "' is " + how + " in '" +

@@ -483,13 +483,17 @@ ExprPtr Parser::memberCall(ExprPtr object, const Type *cls,
 // knows there is a call here, so the arguments cannot come off the token stream.
 ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
                                const std::string &name, std::size_t pos,
-                               std::vector<ExprPtr> args) {
+                               std::vector<ExprPtr> args,
+                               const Type *forceOwner) {
     const Type *plain = cls->unqualified();
 
     // **A member function is looked for up the base chain**, unlike a data member,
     // which the layout copied down: a member lives at an offset and a function
     // under a name. The first class with the name wins - [class.member.lookup].
-    const Type *owner = findMemberOwner(plain, name);
+    // A qualified call says which class's version it means, so the walk up the
+    // bases does not happen and the answer is the class that was named.
+    const Type *owner = forceOwner != nullptr ? forceOwner->unqualified()
+                                              : findMemberOwner(plain, name);
     if (owner == nullptr) owner = plain;
     std::string key = owner->tag() + "::" + name;
 
@@ -498,8 +502,9 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
 
     // Now there IS an inside, and this is where it starts to mean something:
     // a private member is reachable from another member of the same class.
-    if (sig.access != Access::Public && !insideAccessOf(plain) &&
-        !insideAccessOf(owner) && !isFriendOf(plain) && !isFriendOf(owner)) {
+    if (sig.access != Access::Public && !insideAccessOf(plain, sig.access) &&
+        !insideAccessOf(owner, sig.access) && !isFriendOf(plain) &&
+        !isFriendOf(owner)) {
         const char *how = sig.access == Access::Private ? "private" : "protected";
         src_.fail(pos, "'" + name + "' is " + how + " in '" + plain->describe() +
                        "' - it can be called only from inside the class");
@@ -550,7 +555,9 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
     // class of the chain; below the load it is an ordinary indirect call.
     ExprPtr callee;
     ExprPtr keepAddress;
-    if (sig.isVirtual) {
+    // **A qualified call is never dispatched** - [expr.call]/1 - which is the
+    // whole reason an override writes `Base::f(...)` to reach what it replaced.
+    if (sig.isVirtual && forceOwner == nullptr) {
         int index = -1;
         const std::vector<VSlot> &slots = vtables_[plain->tag()];
         for (std::size_t i = 0; i < slots.size(); i++) {
@@ -637,10 +644,25 @@ bool Parser::isFriendOf(const Type *cls) const {
 // **A lambda has the access of the function it was written in** -
 // [expr.prim.lambda]/7. Inside one `currentClass_` is the closure, and both access
 // checks ask this rather than comparing it themselves, having drifted apart once.
-bool Parser::insideAccessOf(const Type *cls) const {
+// Is `want` a base of `cls`, at any depth? The derivation's own access is not
+// asked: a private base still lets the derived class reach what the base made
+// protected - what private derivation limits is who may go on through it.
+static bool derivesFrom(const Type *cls, const Type *want) {
+    if (cls == nullptr) return false;
+    const std::vector<Type::BaseSpec> &bs = cls->unqualified()->bases();
+    for (std::size_t i = 0; i < bs.size(); i++) {
+        if (bs[i].type->unqualified() == want) return true;
+        if (derivesFrom(bs[i].type, want)) return true;
+    }
+    return false;
+}
+
+bool Parser::insideAccessOf(const Type *cls, Access access) const {
     if (cls == nullptr || currentClass_ == nullptr) return false;
     const Type *want = cls->unqualified();
     if (currentClass_ == want) return true;
+    if (access == Access::Protected && derivesFrom(currentClass_, want))
+        return true;
     std::map<std::string, const Type *>::const_iterator outer =
         closureOuter_.find(currentClass_->unqualified()->tag());
     return outer != closureOuter_.end() && outer->second == want;
