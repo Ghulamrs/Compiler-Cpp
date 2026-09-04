@@ -202,6 +202,10 @@ public:
     // A class made by instantiating a class template. The name and arguments
     // are kept because the tag - "Box<int,3>" - is the parser's key and not
     // anything a linker has ever seen.
+    // The enumeration's qualified name, empty for every other type. Read by
+    // the manglers and by `describe`, and by nothing that decides behaviour.
+    const std::string &enumTag() const { return tag_; }
+    bool isEnumeration() const { return kind_ == Kind::Int && !tag_.empty(); }
     bool isSpecialization() const { return !cls().templateName_.empty(); }
     const std::string &templateName() const { return cls().templateName_; }
     const std::vector<TemplateArg> &templateArgs() const { return cls().templateArgs_; }
@@ -405,6 +409,14 @@ public:
     const Type *packExpansion(const Type *of);
 
     Type *structType(Kind kind, const std::string &tag);
+    // **An enumeration, which is an `int` that remembers its name.** The
+    // standard makes it a distinct type; here it is `Kind::Int` in every
+    // respect that matters to code generation - size, alignment, the
+    // conversions, the arithmetic - and carries its tag so the *manglers* can
+    // spell it. `void f(Colour)` is `_Z1f6Colour`, not `_Z1fi`, and without
+    // that no cxx1 object can link against one from another compiler.
+    // docs/CONFORMANCE.md records what is still missing: the type checking.
+    Type *enumType(const std::string &tag);
     Type *anonymousStruct(Kind kind);
 
     const Type *voidType() const   { return get(Kind::Void); }

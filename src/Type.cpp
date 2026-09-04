@@ -280,6 +280,15 @@ Type *TypeTable::structType(Kind kind, const std::string &tag) {
     return t;
 }
 
+Type *TypeTable::enumType(const std::string &tag) {
+    for (Type *d : derived_)
+        if (!d->isConst() && d->kind() == Kind::Int && d->tag_ == tag) return d;
+    Type *t = new Type(Kind::Int);
+    t->tag_ = tag;
+    derived_.push_back(t);
+    return t;
+}
+
 Type *TypeTable::anonymousStruct(Kind kind) {
     Type *t = new Type(kind);
     derived_.push_back(t);

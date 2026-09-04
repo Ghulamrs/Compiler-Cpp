@@ -429,6 +429,21 @@ private:
         out += 'E';
     }
 
+    // **An enumeration is spelled exactly as a class is** - measured:
+    // `void a(Colour)` is `_Z1a6Colour`, `void b(cc::BinaryOp)` is
+    // `_Z1bN2cc8BinaryOpE` with the `N...E` for the same reason, and the whole
+    // name is a substitution candidate so `d(Colour, Colour)` is `6ColourS_`.
+    void enumeration(const Type *t) {
+        const std::vector<std::string> parts = scopeComponents(t->enumTag());
+        const bool nested = parts.size() > 1;
+        if (nested) out += 'N';
+        namespacesOf(t->enumTag());
+        out += std::to_string(parts.back().size());
+        out += parts.back();
+        if (nested) out += 'E';
+        subs_.push_back(Sub{ t, std::string() });
+    }
+
     void type(const Type *t) {
         if (!ok) return;
         if (substituted(t)) return;
@@ -476,6 +491,10 @@ private:
             subs_.push_back(Sub{ t, std::string() });
             return;
         }
+        // **Before the builtin code**, because an enumeration *is* `Kind::Int`
+        // here and would otherwise come out `i`. Asked here rather than in the
+        // chain below, which the builtin return never reaches.
+        if (t->isEnumeration()) { enumeration(t); return; }
         if (const char *b = itaniumBuiltin(t->kind())) { out += b; return; }
 
         if (t->isPointer())        { out += 'P'; type(t->pointee()); }
@@ -896,7 +915,10 @@ private:
     // and only arguments go in that table - a return type of the same type is
     // spelled out in full.
     void argument(const Type *t) {
-        if (microsoftBuiltin(t->kind()) == nullptr) {
+        // **An enumeration takes a slot though its kind is `Kind::Int`** - it
+        // is spelled `W4Colour@@` rather than `H`, and a repeat is the digit:
+        // `d(Colour, Colour)` is `W4Colour@@0@Z`, measured.
+        if (microsoftBuiltin(t->kind()) == nullptr || t->isEnumeration()) {
             for (std::size_t i = 0; i < args_.size(); i++)
                 if (args_[i] == t) { out += static_cast<char>('0' + i); return; }
             // **A type takes its slot after it is spelled, not before.** With a
@@ -991,6 +1013,15 @@ private:
             // than by qualifying the array, which has no qualifier of its own.
             if (elem->isConst()) out += "$$CB";
             type(elem->unqualified());
+            return;
+        }
+        // **`W4` and then the name, exactly where a class writes its letter** -
+        // measured: `void a(Colour)` is `?a@@YAXW4Colour@@@Z` and
+        // `void b(cc::BinaryOp)` is `?b@@YAXW4BinaryOp@cc@@@Z`. Asked before
+        // the builtin code, an enumeration being `Kind::Int` here.
+        if (t->isEnumeration()) {
+            out += "W4";
+            scopeOf(nullptr, t->enumTag());
             return;
         }
         if (const char *b = microsoftBuiltin(t->kind())) { out += b; return; }

@@ -9,31 +9,43 @@ the ladder in `CLAUDE.md`, and it is refused by name when a program reaches
 for it. This page is only for things that compile and are wrong, or compile
 and are right by accident.
 
-## An enumeration is not a distinct type
+## An enumeration has its own name but not its own value set
 
-`enum Colour { Red, Green, Blue };` makes `Colour` a type name, and it names
-`int`. The standard makes it a distinct type with its own values.
+**The half that is fixed is the ABI.** `enum Colour { Red, Green, Blue };`
+makes `Colour` a distinct `Type` carrying its qualified name, and the manglers
+spell it — measured against clang, four shapes on both ABIs:
 
-What that costs, concretely:
+```
+void a(Colour)               _Z1a6Colour              ?a@@YAXW4Colour@@@Z
+void b(cc::BinaryOp)         _Z1bN2cc8BinaryOpE       ?b@@YAXW4BinaryOp@cc@@@Z
+void d(Colour, Colour)       _Z1d6ColourS_            ?d@@YAXW4Colour@@0@Z
+```
+
+Before that, every one of them came out `i` and `H`, so no cxx1 object naming
+an enumeration could link against one from another compiler. It is also what
+made a file-by-file differential against a clang build possible at all.
+
+**The half that is missing is the checking.** Underneath it is still
+`Kind::Int`, so every conversion path sees an integer:
 
 ```cpp
 enum Colour { Red, Green, Blue };
 int n = 1;
 Colour c = n;        // cxx1 accepts. C++ requires a cast.
-int m = Green;       // both accept: an enum converts to int
 c = 47;              // cxx1 accepts. C++ does not.
+int m = Green;       // both accept: an enum converts to int
 sizeof(Colour)       // 4 here; implementation-defined but need not be int's size
 ```
 
 So a program that treats an enumeration as a small set of named integers
-compiles and behaves correctly. A program that relies on the compiler
-*refusing* a wrong assignment gets no help.
+compiles, links and behaves correctly, and its symbols are right. A program
+that relies on the compiler *refusing* a wrong assignment still gets no help.
 
-Fixing it means a `Kind::Enum` carrying its enumerators, a conversion rule in
-both directions, and overload resolution eventually having to rank those
-conversions — so it is held until the type system needs to be opened anyway,
-rather than done twice. Inherited from Compiler-C, where C's own rules made it
-very nearly correct.
+Finishing it means a `Kind::Enum` carrying its enumerators, a conversion rule
+in both directions, and overload resolution ranking those conversions. That was
+held back deliberately rather than done half-way under time pressure: the ABI
+was what blocked a differential build, and opening the type system is its own
+round with its own risk to the suite.
 
 ## `wchar_t` is not a distinct type
 
@@ -450,21 +462,3 @@ nearer one. Reversing the order changes how every unqualified name inside a
 namespace resolves, which wants a round of its own rather than a line in a
 change about something else.
 
-## A `std::` template specialization is mangled without the `St`
-
-`std::string` is `St6string` now, which is what the Itanium ABI's predefined
-substitution for `::std::` asks for. A *specialization* of a template declared
-in `std` is not: `std::vector<int>` comes out `3vectorIiE` where clang writes
-`St6vectorIiE`.
-
-The cause is one level down and is the same one that let an unqualified `count`
-find `std::count`: **`findTemplate` keys every template by its bare name**, on
-purpose, so `std::vector` finds `vector`. A specialization built from it carries
-that bare name, and so does not know which namespace it came from. Giving a
-template its namespace is the repair, and it is a large one - the key is read by
-the type path, the expression path, the instantiation record and both manglers.
-
-It is invisible in a single-file program and invisible in an all-cxx1 link, both
-being self-consistent. It shows the moment a cxx1 object meets a clang one, and
-it is the reason `tools/mangled-names` skips a case that includes a C++ library
-header - which is exactly where it would have been caught.

@@ -4019,6 +4019,40 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## An enumeration keeps its name, which is half of being a type
+
+**`void f(Colour)` was `_Z1fi`**, so no cxx1 object naming an enumeration could
+link against one from another compiler - and that is what blocked a
+file-by-file differential against a clang build of the same sources, which is
+the tool that then found a miscompilation in one file out of sixteen.
+
+**An enumeration is now a distinct `Type` that is an `int` in every respect
+except its name.** `Kind::Int`, the same size and alignment and conversions and
+arithmetic, interned per tag, carrying the qualified name that only the
+manglers read. Both spellings measured, four shapes each:
+
+    void a(Colour)          _Z1a6Colour           ?a@@YAXW4Colour@@@Z
+    void b(cc::BinaryOp)    _Z1bN2cc8BinaryOpE    ?b@@YAXW4BinaryOp@cc@@@Z
+    void d(Colour, Colour)  _Z1d6ColourS_         ?d@@YAXW4Colour@@0@Z
+
+Two details neither ABI makes obvious. Itanium spells an enumeration *exactly*
+as it spells a class - the `N...E` appears for a namespaced one for the same
+reason, and the whole name is a substitution candidate, which is what makes the
+repeat `S_`. Microsoft writes `W4` where a class writes its `U` or `V`, and the
+repeat is the argument table's digit - so an enumeration has to **take a slot in
+that table**, which it did not, its kind being `Kind::Int` and the gate asking
+`microsoftBuiltin`.
+
+**What this is not is a type.** Underneath it is still an integer, so
+`Colour c = n;` for an `int n` is still accepted where C++ requires a cast.
+`docs/CONFORMANCE.md` says so plainly and says what finishing it costs: a
+`Kind::Enum` carrying its enumerators, conversions in both directions, and
+overload resolution ranking them. Held back deliberately - the ABI was what
+blocked the differential, and opening the type system is its own round.
+
+`nested-enum` lost its `.nonames` and `.nocl` with this: it had recorded the
+old divergence on all three targets and now agrees name for name.
+
 ## A base's members were built twice, and the second time was wrong
 
 **The layout copies a base's data members down into the derived class's list** -

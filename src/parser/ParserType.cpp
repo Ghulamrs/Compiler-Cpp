@@ -862,7 +862,10 @@ const Type *Parser::enumSpecifier() {
     // The tag names a type, as a class tag does. What it does not yet name is
     // a *distinct* type: an enumeration is still int here, so the conversions
     // C++ refuses in both directions are accepted. docs/CONFORMANCE.md has it.
-    if (!tag.empty()) declareTypeName(prefix + tag, types_.intType());
+    // **The name is an `int` that remembers it** - see TypeTable::enumType.
+    // An anonymous enumeration has nothing to remember and stays plain `int`.
+    if (!tag.empty())
+        declareTypeName(prefix + tag, types_.enumType(prefix + tag));
 
     if (!peek().is("{")) return types_.intType();
     at_++;

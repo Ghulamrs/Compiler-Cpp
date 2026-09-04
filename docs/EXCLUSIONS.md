@@ -195,9 +195,9 @@ SFINAE and variadic packs. What is left:
   this file exists for. `src/parser/ParserType.cpp:320`. The conversion function
   itself works, in both directions and on all three targets.
 - **`operator new` / `operator delete`** as user functions —
-  `src/parser/ParserType.cpp:1243`
-- **`operator->*`** — `src/parser/ParserType.cpp:1248`
-- **a user-defined literal** — `src/parser/ParserType.cpp:1250`
+  `src/parser/ParserType.cpp:1246`
+- **`operator->*`** — `src/parser/ParserType.cpp:1251`
+- **a user-defined literal** — `src/parser/ParserType.cpp:1253`
 - **`operator&&`, `operator||`, `operator,` and `operator->*`** — the four that
   still fall into the generic refusal below, **named** rather than left to it.
   The ten compound assignments used to be here too and are reachable now; a
@@ -217,7 +217,7 @@ SFINAE and variadic packs. What is left:
   Every other overloadable operator resolves from an expression, asked of a
   one-line program each: `+ - * / % & | ^ << >> == != < <= > >=` binary,
   `+ - * & ! ~ ++ --` unary, and `() [] = ->`.
-  `src/parser/ParserType.cpp:1364`
+  `src/parser/ParserType.cpp:1367`
 
 ## Initialisation, and braces
 
@@ -266,7 +266,7 @@ it is written:
 - **a pointer to a *virtual* member function** — it holds a vtable index where
   this holds an address. `src/parser/ParserExpr.cpp:1792`
 - **a pointer to a *const* member function** — the constness of `this` is not
-  part of a function type here. `src/parser/ParserType.cpp:1445`
+  part of a function type here. `src/parser/ParserType.cpp:1448`
 - **postfix `++` / `--` on a bit-field** — the prefix form works.
   `src/parser/ParserOperator.cpp:489`
 - **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:676`
@@ -356,7 +356,7 @@ beside it goes in the same commit.
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:642`, `src/parser/ParserStmt.cpp:163`, `src/parser/ParserTopLevel.cpp:271` |
 | `static_assert` with no message | C++17 | `src/parser/ParserConst.cpp:31` |
 | `namespace N::M { }` | C++17 | `src/parser/ParserTopLevel.cpp:92` |
-| an attribute, `[[noreturn]]` | none parse | `src/parser/ParserType.cpp:1154` |
+| an attribute, `[[noreturn]]` | none parse | `src/parser/ParserType.cpp:1157` |
 
 ## Keywords the parser has no rule for
 
@@ -364,7 +364,7 @@ Twenty, from `pending[]` in `src/parser/Parser.cpp`. Each is refused **by
 name** at the three doors a keyword can arrive at — an expression, a member
 declaration, and a name — rather than as a parse error further along:
 `src/parser/Parser.cpp:99`, `src/parser/ParserExpr.cpp:613`,
-`src/parser/ParserType.cpp:1158`.
+`src/parser/ParserType.cpp:1161`.
 
     alignas   alignof   and       and_eq    asm
     bitand    bitor     char16_t  char32_t  compl
@@ -403,7 +403,7 @@ judgement in a program. They are named here instead:
 - `src/parser/ParserType.cpp:168` — a base class that is not yet defined. An
   ordinary error: a derived object contains its base, so the base has to be
   complete.
-- `src/Mangle.cpp:547`, `src/Mangle.cpp:1021` — a type with no Itanium or
+- `src/Mangle.cpp:566`, `src/Mangle.cpp:1052` — a type with no Itanium or
   Microsoft linkage name. Internal: reaching either means a type was built that
   the mangler was never taught, which is a bug in this compiler and not a
   statement about the language.
