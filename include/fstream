@@ -37,9 +37,9 @@ static const char *_cxx1_mode(int flags, bool reading) {
 
 class ofstream : public ostream {
 public:
-    ofstream() { fp_ = 0; which_ = 0; state_ = 1; buf_ = 0; }
-    ofstream(const char *path) { fp_ = 0; buf_ = 0; open(path, ios::out); }
-    ofstream(const char *path, int flags) { fp_ = 0; buf_ = 0; open(path, flags); }
+    ofstream() { fp_ = 0; which_ = 0; state_ = 1; buf_ = 0; base_ = 10; }
+    ofstream(const char *path) { fp_ = 0; buf_ = 0; base_ = 10; open(path, ios::out); }
+    ofstream(const char *path, int flags) { fp_ = 0; buf_ = 0; base_ = 10; open(path, flags); }
     ~ofstream() { close(); }
 
     void open(const char *path) { open(path, ios::out); }

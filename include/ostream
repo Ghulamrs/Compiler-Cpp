@@ -42,6 +42,15 @@ public:
     // A virtual would have been the other way to do it, and a virtual is what
     // `cout` cannot have: it would need a vptr, and a vptr needs a constructor.
     string *buf_;
+    // **The conversion base, as `std::hex` and its two neighbours set it.**
+    // Zero and ten both mean decimal, so a stream built by the aggregate
+    // initialisers in <iostream> - which name four members and leave this one
+    // value-initialised - starts in decimal without naming it.
+    //
+    // This is the whole of the formatting state. The standard's `ios_base` has
+    // width, fill, precision and a dozen flags beside it; none of them is here,
+    // and a program that reaches for one gets a diagnostic rather than silence.
+    int base_;
 
     // **A file stream that is not open writes nowhere**, and getting this
     // wrong is worse than it sounds: falling through to `stdout` meant an
@@ -106,17 +115,42 @@ public:
     // other way.
     ostream &operator<<(bool b) { return *this << (b ? "1" : "0"); }
 
-    ostream &operator<<(int v) { return number("%d", (long)v); }
-    ostream &operator<<(unsigned int v) { return unumber("%u", (unsigned long)v); }
-    ostream &operator<<(long v) { return number("%ld", v); }
-    ostream &operator<<(unsigned long v) { return unumber("%lu", v); }
+    // **In hexadecimal and octal a signed value prints its unsigned
+    // reinterpretation** - [ostream.inserters.arithmetic] converts through the
+    // corresponding unsigned type - so -1 is `ffffffff` and not `-1`.
+    ostream &operator<<(int v) {
+        if (base_ == 16) return unumber("%x", (unsigned long)(unsigned int)v);
+        if (base_ == 8) return unumber("%o", (unsigned long)(unsigned int)v);
+        return number("%d", (long)v);
+    }
+    ostream &operator<<(unsigned int v) {
+        if (base_ == 16) return unumber("%x", (unsigned long)v);
+        if (base_ == 8) return unumber("%o", (unsigned long)v);
+        return unumber("%u", (unsigned long)v);
+    }
+    ostream &operator<<(long v) {
+        if (base_ == 16) return unumber("%lx", (unsigned long)v);
+        if (base_ == 8) return unumber("%lo", (unsigned long)v);
+        return number("%ld", v);
+    }
+    ostream &operator<<(unsigned long v) {
+        if (base_ == 16) return unumber("%lx", v);
+        if (base_ == 8) return unumber("%lo", v);
+        return unumber("%lu", v);
+    }
     // **`long long` is a type of its own, not a spelling of `long`.** Without
     // these two, a 64-bit value written through `<<` reached every arithmetic
     // overload by a conversion and none of them better than the rest, so the
     // call was ambiguous - which is what a program that pins its own integer
     // width, as one compiling for a virtual machine does, writes all day.
-    ostream &operator<<(long long v) { return llnumber("%lld", v); }
+    ostream &operator<<(long long v) {
+        if (base_ == 16) return ullnumber("%llx", (unsigned long long)v);
+        if (base_ == 8) return ullnumber("%llo", (unsigned long long)v);
+        return llnumber("%lld", v);
+    }
     ostream &operator<<(unsigned long long v) {
+        if (base_ == 16) return ullnumber("%llx", v);
+        if (base_ == 8) return ullnumber("%llo", v);
         return ullnumber("%llu", v);
     }
 
@@ -174,6 +208,15 @@ public:
 static ostream &endl(ostream &o) { return o.put('\n').flush(); }
 static ostream &flush(ostream &o) { return o.flush(); }
 static ostream &ends(ostream &o) { return o.put('\0'); }
+
+// **The base manipulators**, which the `operator<<` taking a function pointer
+// already knew how to apply - `ss << std::hex << n` is that overload calling
+// this. The base is sticky, as the standard makes it: it holds until `dec` or
+// `oct` says otherwise, which is why a program that writes one usually writes
+// its partner afterwards.
+static ostream &hex(ostream &o) { o.base_ = 16; return o; }
+static ostream &dec(ostream &o) { o.base_ = 10; return o; }
+static ostream &oct(ostream &o) { o.base_ = 8; return o; }
 
 }  // namespace std
 

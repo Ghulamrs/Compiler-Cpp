@@ -32,6 +32,7 @@ public:
         which_ = 0;
         state_ = 0;
         buf_ = &s_;
+        base_ = 10;
     }
 
     string str() const { return s_; }
