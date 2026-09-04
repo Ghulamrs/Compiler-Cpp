@@ -294,7 +294,7 @@ it is written:
 - **a local with a destructor and a `try` in one function** — each is a range
   in the call-site table and one would have to split the other.
   `src/parser/ParserStmt.cpp:707`, `src/parser/ParserStmt.cpp:941`,
-  `src/parser/ParserStmt.cpp:1437`
+  `src/parser/ParserStmt.cpp:1451`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and

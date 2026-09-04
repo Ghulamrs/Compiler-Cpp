@@ -1250,6 +1250,23 @@ StmtPtr Parser::statementBody() {
         // pointer and the caller owns them. Copying it as well built a second
         // object and left the first undestroyed, which is where
         // `return Owner(n);` leaked one per call.
+        // **The conversion happens before the full expression ends**, and it
+        // used to happen after. `userConversion` makes a temporary, so a
+        // `return "<type>";` from a function returning `std::string` pushed one
+        // onto a list `endFullExpression` had already emptied - and it stayed
+        // there, through the end of the function, into the *next* function
+        // parsed, which then emitted a guarded destructor for a slot in a frame
+        // that no longer existed. Semantic.cpp's `describe` ends with exactly
+        // that line and `countText` follows it; on x86_64-linux the stale guard
+        // held whatever the frame did and `free` was handed a pointer into the
+        // source text about a quarter of the time.
+        //
+        // Converting first also puts the temporary where the two lines below
+        // can see it: it *is* the returned object, so releasing it is what
+        // hands its bytes to the caller rather than destroying them here.
+        if (!returnType_->isReference())
+            if (ExprPtr made = userConversion(returnType_, returned, pos))
+                returned = std::move(made);
         bool ownedTemporary = false;
         if (!returnType_->isReference() && returnType_->isStructOrUnion())
             ownedTemporary = releaseTemporary(*returned);
@@ -1263,13 +1280,10 @@ StmtPtr Parser::statementBody() {
                                "this function, which is gone by the time the "
                                "caller could read it");
         } else {
-            // **[stmt.return]/2 copy-initialises the returned object**, and a
+            // [stmt.return]/2 copy-initialises the returned object, and a
             // converting constructor is part of that: `return "v";` from a
-            // function returning `std::string` is `string("v")`. The machinery
-            // is `userConversion`, which a by-value argument already used -
-            // what was missing was this second door to it.
-            if (ExprPtr made = userConversion(returnType_, value, pos))
-                value = std::move(made);
+            // function returning `std::string` is `string("v")`. It is applied
+            // above, before the full expression ends.
             checkAssignable(*value, returnType_, pos, "this function's return type");
             // Does the operand name a by-value parameter of this function? One that
             // arrived by address was lowered to a reference and reads back as `*slot`;

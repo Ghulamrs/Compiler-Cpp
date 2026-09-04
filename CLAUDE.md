@@ -4586,6 +4586,66 @@ slot of whatever consumes it and those slots are guarded, so
 same expression does not. `docs/CONFORMANCE.md` records it, and the fix is a
 field on `Call` plus a line in each code generator.
 
+## A temporary made after the full expression ended, and the function it leaked into
+
+**`endFullExpression` empties `pendingTemps_`, and the return path pushed onto
+it afterwards.** [stmt.return]/2 copy-initialises the returned object, so
+`return "<type>";` from a function returning a class calls a converting
+constructor - and `userConversion` was applied *below* the flush. The temporary
+it made was registered for destruction on a list nothing would empty again: it
+survived the end of the function and was still there when the **next function**
+was parsed, which duly emitted a guarded destructor call for a frame slot of a
+frame that no longer existed.
+
+**Compiler++ has that pair verbatim.** `Semantic.cpp`'s `describe` ends
+`return "<type>";` and `countText` is the next function in the file, so
+`countText` began with
+
+    call _ZNSt13ostringstreamC2Ev     ; construct ss
+    lea  -0x414(%rbp),%rax            ; a guard belonging to describe
+    movslq (%rax),%rax
+    cmp  $0x0,%rax
+    je   ...                          ; skip if it happens to be clear
+    lea  -0x410(%rbp),%rax
+    call _ZNSt6stringD2Ev             ; ~string on whatever is there
+
+- and on x86_64-linux `free` was handed a pointer into the source text about a
+quarter of the time. `rdi` at the fault read `0x2c32202c31286464`, which is the
+ASCII of `dd(1, 2,` - the giveaway that the address was text rather than an
+object.
+
+**The fix is an ordering, not a mechanism**: convert before the full expression
+ends. That also puts the temporary where `releaseTemporary` can see it, which
+is what it wants - the converted object *is* what the caller receives, so its
+bytes are handed over rather than destroyed here, which is the same rule
+`return f();` needed.
+
+**The two boxes disagreed about how bad it was, and that is the lesson.** On
+macOS the stale guard reads a clean zero, the destructor is skipped, and the
+only symptom is one leaked object - `tests/cases/return-conversion-leaks-temporary.cpp`
+prints `live 2` where clang prints `live 1`. On x86_64-linux the same slot holds
+whatever the frame held and it segfaults, intermittently, 8 runs in 30. Four
+green suites and 200 of 200 Compiler++ comparisons on the Mac did not see it;
+building Compiler++ on the Linux box is what did. **The case dirties the frame
+before calling** for exactly this reason - on a clean stack the wrong code
+passes.
+
+**How it was found**: `coredumpctl debug` for a backtrace with line numbers,
+because gdb disables ASLR and the bug then never fires under it - 25 runs under
+gdb, no crash, then a core from an ordinary run named `Semantic.cpp:244` at
+once. `set disable-randomization off` is the other way in. Then disassembling
+the named line turned "corruption somewhere" into a guard test the source has
+no `?:` and no `&&` to explain, which is what said the entry came from another
+function.
+
+**Recorded rather than fixed, and beside this because it was found here:**
+`bindReference` materialises a const-reference temporary with a bytewise
+`Assign` rather than the copy constructor, so a class prvalue bound to
+`const T &` is shallow-copied into a slot that is then never destroyed. It is a
+wasted slot today rather than a fault - the source temporary is still destroyed
+exactly once - but it is the wrong lowering, and [dcl.init.ref]/5 asks for no
+copy at all: the prvalue is materialised and the reference binds to *it*.
+
 ## The operand `&&` skipped, and the destructor it was owed anyway
 
 **A temporary built in the right operand of `&&` or `||` was destroyed even
