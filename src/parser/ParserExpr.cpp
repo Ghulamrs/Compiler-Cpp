@@ -868,7 +868,7 @@ ExprPtr Parser::primary(Program *program) {
         // it unchanged. Asked before the name is read as a plain identifier,
         // which would look it up as an ordinary function and report that a
         // prototype must come first.
-        if (peek().kind == TokenKind::Ident && isTemplateName(peek().text))
+        if (peek().kind == TokenKind::Ident && isTemplateName(peek().text, true))
             return templateCall(program);
 
         const std::string full = scope + "::" + expectIdent("a name");

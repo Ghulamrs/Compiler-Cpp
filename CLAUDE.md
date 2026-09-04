@@ -4019,6 +4019,32 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## A local named `count` lost to `std::count`
+
+**`findTemplate` keys every template by its bare name on purpose**, so that
+`std::vector` finds `vector`; the note there says two namespaces cannot each
+have a template of one name anyway, and that widening what can be *named* does
+not widen what can be *declared*. True, and it had a second effect nobody
+looked for: an **unqualified** `count` found `std::count` from anywhere, with
+no using-directive in sight.
+
+So including `<algorithm>` broke any program with a local called `count`,
+`find`, `swap`, `min`, `max`, `sort`, `fill`, `copy`, `equal`, `merge` or a
+dozen more - a wide class of ordinary programs, and one of Compiler++'s sixteen
+sources stops on `count = pop().i;`.
+
+**The fix is one condition and not a re-keying.** [basic.lookup.unqual] gives
+the nearest declaration, so a name declared as an object is not a template
+name. Re-keying every template by its namespace is the other repair and a much
+larger one; this is the rule the standard states, and a program with both a
+template and an object of one name in one scope is ill-formed anyway.
+
+**Only unqualified lookup gets the test, and the first attempt got that
+wrong.** The namespace branch consumes `std::` and then asks about the bare
+name, so testing there killed `std::count(...)` beside a local `count` - which
+is exactly what a program writes, and what the case now pins. A qualified name
+has said which namespace it means and nothing local can be intended.
+
 ## Two declarators, one declaration, and a `continue` in a `do`/`while`
 
 **`std::string a, b;` was refused** with `expected ';'` pointing at the second

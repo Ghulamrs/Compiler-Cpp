@@ -460,8 +460,25 @@ private:
                            std::vector<long long> *values,
                            std::vector<TemplateArg> *args,
                            std::vector<std::vector<const Type *> > *packs = nullptr);
-    bool isTemplateName(const std::string &name) const {
-        return templates_.find(name) != templates_.end();
+    // **A name declared as an object is not a template name.**
+    // [basic.lookup.unqual] gives the nearest declaration, and `findTemplate`
+    // above deliberately keys every template by its bare name so that
+    // `std::vector` finds `vector` - which means an *unqualified* `count`
+    // found `std::count` from anywhere, with no using-directive in sight.
+    // Including <algorithm> then broke any program with a local called
+    // `count`, `find`, `swap`, `min`, `sort`, `fill`, `copy` or a dozen more.
+    //
+    // Asking whether the name is a variable in scope is the whole fix: a
+    // declaration that near always wins, and a program that has both a
+    // template and an object of one name in one scope is ill-formed anyway.
+    // `qualified` where a `N::` was consumed before the name: there the
+    // namespace was named outright and nothing local can be meant, so the
+    // shadow test would be wrong - `std::count(...)` beside a local `count`
+    // is exactly what a program writes.
+    bool isTemplateName(const std::string &name, bool qualified = false) const {
+        if (templates_.find(name) == templates_.end()) return false;
+        if (qualified) return true;
+        return findLocal(name) == nullptr && findGlobal(name) == nullptr;
     }
     bool templateDeclaration();
     void templateParameters(std::vector<TemplateParam> &params);
