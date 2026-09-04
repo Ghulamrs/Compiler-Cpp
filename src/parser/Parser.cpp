@@ -405,6 +405,20 @@ std::size_t Parser::qualifiedTypeEnd() const {
     return typeEnd;
 }
 
+std::size_t Parser::qualifiedTypeEndPastArgs() const {
+    std::size_t after = qualifiedTypeEnd();
+    if (after == 0 || !peekAt(after).is("<")) return after;
+    // By depth, counting a `>>` as two - which is how the lexer hands it over.
+    int depth = 0;
+    for (;; after++) {
+        const Token &t = peekAt(after);
+        if (t.kind == TokenKind::End) return 0;
+        if (t.is("<")) depth++;
+        else if (t.is(">")) { if (--depth == 0) return after + 1; }
+        else if (t.is(">>")) { depth -= 2; if (depth <= 0) return after + 1; }
+    }
+}
+
 bool Parser::atDeclarationStart() const {
     // **`Counter::total = 1;` is a statement, not a declaration**, though it opens
     // with a name that names a type: a declaration spelled `C::something` needs a
@@ -420,9 +434,27 @@ bool Parser::atDeclarationStart() const {
             // where the name *stops* at one. `Outer::Inner x;` declares an x;
             // `Outer::Inner::shared = 1;` goes on past the type and assigns.
             const std::size_t typeEnd = qualifiedTypeEnd();
-            return typeEnd != 0 && !peekAt(typeEnd).is("::");
+            if (typeEnd == 0 || peekAt(typeEnd).is("::")) return false;
+            // **`std::vector<int>().swap(v);` is a statement**, and an empty
+            // pair after the type is what says so: a declaration needs a name
+            // between the type and the `(`, so `T ();` could only be a function
+            // declaration with no name, which is not a thing. `int (*p)();`
+            // has a `*` there and is unaffected.
+            //
+            // The walk above stops at the `<` of a template-id, so the
+            // argument list is stepped over first - by depth, and counting a
+            // `>>` as two, which is how the lexer hands it over.
+            const std::size_t after = qualifiedTypeEndPastArgs();
+            if (after == 0) return true;
+            return !(peekAt(after).is("(") && peekAt(after + 1).is(")"));
         }
     }
+
+    // The same empty pair, for a type named without a qualifier: `P().get();`
+    // is the temporary and not a declaration of anything.
+    if (peek().kind == TokenKind::Ident && peekAt(1).is("(") &&
+        peekAt(2).is(")") && findTypedef(peek().text) != nullptr)
+        return false;
 
     // `constexpr` beside the storage classes, and here rather than in atTypeName:
     // it is a decl-specifier that names no type, so a statement starting with it

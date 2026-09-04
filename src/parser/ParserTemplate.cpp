@@ -1467,7 +1467,25 @@ ExprPtr Parser::templateCall(Program *program) {
     const std::string name = peek().text;
     const std::size_t pos = peek().pos;
     const TemplateDecl decl = templates_[name];
-    if (decl.isClass) refuseTemplateId();
+    if (decl.isClass) {
+        // **`vector<int>()` is a temporary, not an instantiation this cannot
+        // do.** The type is made perfectly well; what was missing is reading a
+        // template-id where a plain class name already reaches
+        // `classTemporary`. `std::vector<IRInstr>().swap(v)` is the idiom that
+        // wants it - the shortest way to empty a vector and give its buffer
+        // back.
+        const std::size_t save = at_;
+        at_++;
+        if (peek().is("<")) {
+            const Type *cls = instantiateClass(decl, pos);
+            if (cls != nullptr && cls->isStructOrUnion() && peek().is("(")) {
+                at_++;
+                return classTemporary(cls, pos);
+            }
+        }
+        at_ = save;
+        refuseTemplateId();
+    }
     at_++;
 
     // **No argument list, so they come from the call.** The arguments are parsed

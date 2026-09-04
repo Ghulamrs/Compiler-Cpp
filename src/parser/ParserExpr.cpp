@@ -853,7 +853,11 @@ ExprPtr Parser::primary(Program *program) {
     // before the namespace is eaten, since eating it loses the start of the name.
     if (peek().kind == TokenKind::Ident && peekAt(1).is("::") &&
         namespaces_.find(peek().text) != namespaces_.end() &&
-        qualifiedTypeEnd() == 0) {
+        // **...unless what follows the type is a `(`**, which makes it a
+        // temporary rather than the qualifier of a member: `std::vector<T>()`
+        // belongs to this branch, `std::vector<T>::size_type` does not.
+        (qualifiedTypeEnd() == 0 ||
+         peekAt(qualifiedTypeEndPastArgs()).is("("))) {
         const std::size_t qpos = peek().pos;
         std::string scope = peek().text;
         at_ += 2;

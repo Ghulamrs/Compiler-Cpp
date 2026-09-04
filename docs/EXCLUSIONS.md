@@ -159,14 +159,14 @@ SFINAE and variadic packs. What is left:
 - **a constructor or destructor of a class template written outside the class**
   — `src/parser/ParserTemplate.cpp:325`
 - **naming a function template without calling it** —
-  `src/parser/ParserTemplate.cpp:1478`, `src/parser/ParserTemplate.cpp:1534`
+  `src/parser/ParserTemplate.cpp:1496`, `src/parser/ParserTemplate.cpp:1552`
 - **naming a member through a template's argument list**, `A<int>::n` — a
   `typedef` for the instantiation reaches it.
-  `src/parser/ParserTemplate.cpp:1568`
+  `src/parser/ParserTemplate.cpp:1586`
 - **instantiating a template that was only declared** —
-  `src/parser/ParserTemplate.cpp:1572`
+  `src/parser/ParserTemplate.cpp:1590`
 - **`sizeof` of a template parameter in a signature** — the linker name would
-  have to spell the expression. `src/parser/ParserExpr.cpp:1916`
+  have to spell the expression. `src/parser/ParserExpr.cpp:1920`
 
 ## Classes, members and friends
 
@@ -174,7 +174,7 @@ SFINAE and variadic packs. What is left:
 - **one name holding both a static and a non-static member**, where overload
   resolution picks the non-static one — the arguments have been read by then,
   and there is no honest way back to the call that takes an object.
-  `src/parser/ParserExpr.cpp:1154`. A static member function on its own works.
+  `src/parser/ParserExpr.cpp:1158`. A static member function on its own works.
 - **a member function of a union** — `src/parser/ParserClass.cpp:1914`
 - **`friend class X;`** — one named function can be befriended.
   `src/parser/ParserType.cpp:381`
@@ -264,7 +264,7 @@ it is written:
 - **choosing an overload by the type it is assigned to** —
   `src/parser/ParserExpr.cpp:499`
 - **a pointer to a *virtual* member function** — it holds a vtable index where
-  this holds an address. `src/parser/ParserExpr.cpp:1788`
+  this holds an address. `src/parser/ParserExpr.cpp:1792`
 - **a pointer to a *const* member function** — the constness of `this` is not
   part of a function type here. `src/parser/ParserType.cpp:1444`
 - **postfix `++` / `--` on a bit-field** — the prefix form works.
@@ -348,7 +348,7 @@ beside it goes in the same commit.
 | --- | --- | --- |
 | `1'000`, a digit separator | C++14 | `src/Lexer.cpp:146` |
 | `0b101`, a binary literal | C++14 | `src/Lexer.cpp:250` |
-| `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1315` |
+| `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1319` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:184` |
 | `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2480`, `src/parser/ParserTopLevel.cpp:474` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:406` |

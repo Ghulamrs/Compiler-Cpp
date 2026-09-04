@@ -966,6 +966,12 @@ private:
     int thisOffset_ = 0;
     const Type *enumSpecifier();
     bool atDeclarationStart() const;
+    // Where a written qualified type name ends, **past a template argument
+    // list**: `qualifiedTypeEnd` stops at the `<`, because for its own purpose
+    // the name is what matters. Both callers here want the token *after* the
+    // whole type - `std::vector<int>()` is a temporary and
+    // `std::vector<int>::size_type` is a member.
+    std::size_t qualifiedTypeEndPastArgs() const;
     const Type *specifiers(StorageClass *storage, Qualifiers *quals = nullptr);
     const Type *unqualifiedSpecifiers(StorageClass *storage, Qualifiers *quals);
 

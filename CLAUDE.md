@@ -4019,6 +4019,55 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## All sixteen of Compiler++ compile, and the link is a different question
+
+**16 of 16 sources compile and assemble** as of 2026-09-04. That is worth
+stating precisely, because it is not the same as "cxx1 compiles Compiler++":
+the objects do not yet link, and nothing has been run.
+
+The last source wanted three things, and only the first is about templates.
+
+**A statement may begin with a type.** `std::vector<T>().swap(v);` -
+`atDeclarationStart` saw a type name and claimed the line, so the declarator
+path wanted a name where the `(` was. An **empty pair** after the type is what
+says otherwise: a declaration needs a name between the type and the `(`, so
+`T ();` could only be a function declaration with no name. `int (*p)();` has a
+`*` there and is untouched.
+
+**The walk over a qualified name stops at the `<`**, because for its own purpose
+the name is what matters - so the empty pair was looked for at the wrong token.
+`qualifiedTypeEndPastArgs` steps over the argument list by depth, counting a
+`>>` as two, and both callers ask it.
+
+**And a class template-id is a temporary where a plain class name already was.**
+`refuseTemplateId` answered for every template in an expression; a class
+template followed by `(` reaches `classTemporary`, the same function `P(1)` has
+always used.
+
+### What the link found, which no single-file case could
+
+**A base's implicit default constructor was never defined.** `struct Decl :
+Node { virtual ~Decl() {} };` has no constructor of its own, so the implicit one
+runs and it is not trivial - something stores the vptr. A user-written derived
+constructor that names no base calls it, and that path took the signature **by
+value** where the branch beside it goes through `resolveOverload`, which marks
+the table's entry used. The copy was marked; the table's entry was not; and
+`defineImplicitFunctions` never gave it a body. It compiles, it assembles, and
+the linker says `Undefined symbols: cc::Decl::Decl()`.
+
+**It links until something derives from a class with a vptr and no constructor
+of its own**, which is why a suite of single-file cases never saw it - every
+case that could have was written with a constructor. This is the argument for
+linking as an oracle rather than compiling: `tests/emit.sh` stops at assembly by
+design, and an undefined symbol is invisible to it.
+
+**And what stops the link now is recorded rather than new**: 781 duplicate
+symbols, every inline member of every header in every translation unit.
+`docs/CONFORMANCE.md` has had "an inline member function is a strong symbol"
+since inline members landed - cxx1 has no COMDAT and no way to say a definition
+is mergeable. A single-file program never meets it. Sixteen that share headers
+meet it 781 times.
+
 ## `Base::f(...)` - the version an override replaced, and who may call it
 
 **[expr.call]/1: naming a function with a qualified-id suppresses the

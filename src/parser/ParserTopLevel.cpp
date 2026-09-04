@@ -990,12 +990,22 @@ void Parser::topLevel(Program &program) {
                 // - the one overload resolution with no arguments would
                 // pick, which `S(int a = 1)` is as much as `S()` is.
                 if (const Signature *dc = defaultConstructorOf(base)) {
+                    // **Marked used, because a copy is what is kept.** The
+                    // branch above goes through `resolveOverload`, which marks
+                    // the entry in the table; here the signature is taken by
+                    // value and the table's own copy stayed unused - so a
+                    // base's *implicit* default constructor, called by every
+                    // derived constructor, was never defined. It links until
+                    // something derives from a class with a vptr and no
+                    // constructor of its own, and then does not.
+                    markUsed(dc);
                     chosen = *dc;
                     found = true;
                 }
             } else {
                 for (std::size_t k = 0; k < set->size(); k++)
                     if (functions_[(*set)[k]].params.empty()) {
+                        markUsed(&functions_[(*set)[k]]);
                         chosen = functions_[(*set)[k]];
                         found = true;
                     }
