@@ -174,7 +174,7 @@ equivalent of.</p>
       <div class="row"><span class="rlab">cxx1 &minus;j1</span>
         <div class="track"><div class="bar c" style="width:27.4%"></div></div><span class="rval">2.19</span></div>
       <div class="row"><span class="rlab">cxx1 &minus;j12</span>
-        <div class="track"><div class="bar c" style="width:25.3%"></div></div><span class="rval">2.02</span></div>
+        <div class="track"><div class="bar c" style="width:24.8%"></div></div><span class="rval">1.98</span></div>
       <div class="row"><span class="rlab">clang&#43;&#43; &minus;j1</span>
         <div class="track"><div class="bar n" style="width:48.9%"></div></div><span class="rval">3.91</span></div>
       <div class="row"><span class="rlab">clang&#43;&#43; &minus;j12</span>
@@ -190,9 +190,9 @@ equivalent of.</p>
     </div>
     <div class="rows">
       <div class="row"><span class="rlab">cxx1 &minus;j1</span>
-        <div class="track"><div class="bar c" style="width:17.1%"></div></div><span class="rval">1.37</span></div>
+        <div class="track"><div class="bar c" style="width:17.0%"></div></div><span class="rval">1.36</span></div>
       <div class="row"><span class="rlab">cxx1 &minus;j2</span>
-        <div class="track"><div class="bar c" style="width:16.0%"></div></div><span class="rval">1.28</span></div>
+        <div class="track"><div class="bar c" style="width:15.0%"></div></div><span class="rval">1.20</span></div>
       <div class="row"><span class="rlab">g&#43;&#43; &minus;j1</span>
         <div class="track"><div class="bar n" style="width:97.4%"></div></div><span class="rval">7.79</span></div>
       <div class="row"><span class="rlab">g&#43;&#43; &minus;j2</span>
@@ -208,13 +208,13 @@ equivalent of.</p>
     </div>
     <div class="rows">
       <div class="row"><span class="rlab">cxx1 &minus;j1</span>
-        <div class="track"><div class="bar c" style="width:14.1%"></div></div><span class="rval">1.13</span></div>
+        <div class="track"><div class="bar c" style="width:14.5%"></div></div><span class="rval">1.16</span></div>
       <div class="row"><span class="rlab">cxx1 &minus;j8</span>
-        <div class="track"><div class="bar c" style="width:9.4%"></div></div><span class="rval">0.75</span></div>
+        <div class="track"><div class="bar c" style="width:3.6%"></div></div><span class="rval">0.29</span></div>
       <div class="row"><span class="rlab">cl &minus;j1</span>
-        <div class="track"><div class="bar n" style="width:72.3%"></div></div><span class="rval">5.78</span></div>
+        <div class="track"><div class="bar n" style="width:73.9%"></div></div><span class="rval">5.91</span></div>
       <div class="row"><span class="rlab">cl /MP8</span>
-        <div class="track"><div class="bar n" style="width:12.0%"></div></div><span class="rval">0.96</span></div>
+        <div class="track"><div class="bar n" style="width:11.8%"></div></div><span class="rval">0.94</span></div>
     </div>
     <div class="scale"><span>0s</span><span>4s</span><span>8s</span></div>
   </div>
@@ -234,14 +234,15 @@ equivalent of.</p>
     <div class="rwhat">faster than g&#43;&#43;<br>serial, source &rarr; object</div></div>
   <div class="rcard"><div class="rnum">5.1&times;</div>
     <div class="rwhat">faster than cl<br>serial, source &rarr; object</div></div>
-  <div class="rcard" style="border-left-color:var(--native)"><div class="rnum">2.5&times;</div>
-    <div class="rwhat"><em>slower</em> than clang&#43;&#43;<br>parallel, on the Mac</div></div>
+  <div class="rcard" style="border-left-color:var(--flag)"><div class="rnum">2.4&times;</div>
+    <div class="rwhat"><em>slower</em> than clang&#43;&#43;<br>parallel, on the Mac alone</div></div>
 </div>
 
 <div class="col">
-<p>The last card is the interesting one. cxx1 wins every serial comparison and loses the
-parallel one on the machine with the most cores &mdash; which says the parallelism, not the
-compiler, is what runs out.</p>
+<p>The last card is the interesting one, and it is now true of one machine rather than all
+three. cxx1 wins every serial comparison; in parallel it is <span class="n">3.2&times;</span>
+faster than cl on Windows and <span class="n">2.4&times;</span> slower than clang on the Mac.
+The next two sections are why.</p>
 </div>
 
 <h2>Where cxx1&#39;s time goes</h2>
@@ -253,26 +254,27 @@ cxx1 writes assembly itself and then shells out to the platform assembler once p
     <span class="slab">M4 Pro, &minus;j12</span>
     <div class="sbar">
       <div class="seg compile" style="width:4%">0.08</div>
-      <div class="seg assemble" style="width:96%">1.94s assembling &mdash; serial</div>
+      <div class="seg assemble" style="width:96%">1.90s assembling &mdash; still serial, see below</div>
     </div>
   </div>
   <div class="srow">
     <span class="slab">Xeon, &minus;j2</span>
     <div class="sbar">
-      <div class="seg compile" style="width:52%">0.67 compiling</div>
-      <div class="seg assemble" style="width:48%">0.61s assembling</div>
+      <div class="seg compile" style="width:54%">0.65 compiling</div>
+      <div class="seg assemble" style="width:46%">0.55s assembling</div>
     </div>
   </div>
   <div class="srow">
     <span class="slab">i7-12700, &minus;j8</span>
     <div class="sbar">
-      <div class="seg compile" style="width:21%">0.16</div>
-      <div class="seg assemble" style="width:79%">0.59s assembling &mdash; serial</div>
+      <div class="seg compile" style="width:52%">0.15 compiling</div>
+      <div class="seg would" style="width:48%">0.14s assembling</div>
     </div>
   </div>
   <div class="legend" style="margin-top:16px">
     <span class="key"><span class="sw" style="background:var(--cxx1)"></span> cxx1 compiling, threaded</span>
-    <span class="key"><span class="sw" style="background:var(--flag)"></span> the assembler, one file at a time</span>
+    <span class="key"><span class="sw" style="background:var(--flag)"></span> the assembler, serialised</span>
+    <span class="key"><span class="sw" style="background:var(--flag-dim)"></span> the assembler, on the pool</span>
   </div>
 </div>
 
@@ -288,56 +290,77 @@ produced take 1.94 seconds to assemble, whatever <code>-j</code> says.</p>
 1.5 seconds is the assembler doing real work on real input.</p>
 </div>
 
-<h2>What fixing it would buy &mdash; and what blocks it</h2>
-<p class="deck col">Measured rather than projected: the same sixteen <code>.s</code> files, handed
-to the same assembler through <code>xargs -P12</code>.</p>
+<h2>What the fix bought, and where it did not</h2>
+<p class="deck col">The assembler runs on the same work-stealing pool the compiling does.
+Two of the three machines took it; the third could not, for a reason outside the compiler.</p>
 
 <div class="split">
   <div class="srow">
-    <span class="slab">today</span>
+    <span class="slab">i7-12700</span>
     <div class="sbar">
-      <div class="seg compile" style="width:4%">.08</div>
-      <div class="seg assemble" style="width:96%">1.94 &mdash; serial assemble &mdash; total 2.02s</div>
+      <div class="seg compile" style="width:8%">0.29</div>
+      <div class="seg" style="width:12%; background:var(--rule); color:var(--ink-soft)">was 0.75</div>
+      <div class="seg" style="width:26%; background:var(--native); color:#fff">cl 0.94</div>
     </div>
   </div>
   <div class="srow">
-    <span class="slab">parallel</span>
+    <span class="slab">Xeon</span>
     <div class="sbar">
-      <div class="seg compile" style="width:4%">.08</div>
-      <div class="seg would" style="width:22%">0.45 &mdash; total 0.53s</div>
+      <div class="seg compile" style="width:33%">1.20</div>
+      <div class="seg" style="width:2%; background:var(--rule)"></div>
+      <div class="seg" style="width:65%; background:var(--native); color:#fff">g&#43;&#43; 6.69</div>
     </div>
   </div>
   <div class="srow">
-    <span class="slab">clang&#43;&#43; &minus;j12</span>
+    <span class="slab">M4 Pro</span>
     <div class="sbar">
-      <div class="seg" style="width:40%; background:var(--native); color:#fff">0.81s</div>
+      <div class="seg assemble" style="width:55%">1.98 &mdash; unchanged</div>
+      <div class="seg" style="width:22%; background:var(--native); color:#fff">clang 0.81</div>
     </div>
   </div>
 </div>
 
 <div class="col">
-<p>A parallel assemble step would put cxx1 at roughly <span class="n">0.53s</span> against
-clang&#39;s <span class="n">0.81s</span> &mdash; turning the one comparison it loses into one it
-wins, on the machine where it loses it worst.</p>
+<p><strong>Windows took it whole.</strong> <code>cxx1 -c</code> at eight threads fell from
+<span class="n">0.75s</span> to <span class="n">0.29s</span> &mdash; the assemble phase from
+<span class="n">0.59s</span> to <span class="n">0.14s</span> &mdash; which turns a
+<span class="n">1.3&times;</span> lead over cl into a <span class="n">3.2&times;</span> one.</p>
 
-<p><strong>The pool was written and it bought nothing, for a reason worth recording.</strong>
-<code>assembleObjects</code> now runs its invocations on the same work-stealing pool
-<code>runJobs</code> uses, and <code>-time</code> confirms &ldquo;16 tool runs on 12
-threads&rdquo; &mdash; yet <code>cxx1 -c -j12</code> stayed at <span class="n">1.98s</span>.
-The wall is <code>std::system</code>: Apple&#39;s libc holds a global lock for the duration of
-the child, so concurrent calls serialise completely.</p>
+<p><strong>The Xeon took what it had.</strong> <span class="n">1.28s</span> to
+<span class="n">1.20s</span>, because its two vCPUs are hyperthread siblings of one physical
+core: g&#43;&#43; itself gets only <span class="n">1.16&times;</span> from the second. The pool
+delivers the machine&#39;s ceiling, which happens to be low.</p>
 
-<p class="note flagnote">Sixteen <code>sleep 0.25</code> calls issued from eight threads through
-<code>std::system</code> take <span class="n">4.26s</span> on this Mac, where true parallelism
-would be about <span class="n">0.5s</span>. The same sixteen assembler runs through
-<code>xargs</code> &mdash; separate processes, no shared lock &mdash; take
-<span class="n">0.45s</span>.</p>
+<p><strong>The Mac did not move at all</strong>, and that is the finding worth keeping.
+<code>-time</code> reports &ldquo;16 tool runs on 12 threads&rdquo; and the wall clock stays
+at <span class="n">1.98s</span>. The wall is <code>std::system</code>: Apple&#39;s libc holds a
+global lock for the duration of the child, so concurrent calls serialise completely. The same
+sixteen assembler runs through <code>xargs</code> &mdash; separate processes, no shared lock
+&mdash; take <span class="n">0.45s</span>.</p>
+</div>
 
-<p>So the remaining work is not scheduling but process creation: <code>posix_spawn</code> in
-place of <code>std::system</code>, and <code>CreateProcess</code> on Windows. The pool is the
-half that had to come first, and it also closes a data race &mdash; the command named in an
-assembler error was a single file-scope string that several threads would have written at
-once.</p>
+<div class="tw">
+<table>
+<thead><tr><th>sixteen equal sleeps issued from eight threads</th><th style="text-align:right">measured</th><th style="text-align:right">parallel floor</th><th>verdict</th></tr></thead>
+<tbody>
+<tr><td>macOS &middot; Apple libc</td><td class="num">4260 ms</td><td class="num">~500</td><td>serialised &mdash; global lock</td></tr>
+<tr><td>Linux &middot; glibc 2.34</td><td class="num">530 ms</td><td class="num">~500</td><td>parallel</td></tr>
+<tr><td>Windows &middot; MSVC CRT</td><td class="num">2105 ms</td><td class="num">~2000</td><td>parallel</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="col">
+<p class="note flagnote">All three were asked, and it is as well they were: the first machine
+measured was the one that behaves differently, and testing it alone would have concluded that
+parallel assembly does not help. What remains is one platform&#39;s process creation &mdash;
+<code>posix_spawn</code> in place of <code>std::system</code> &mdash; and on that Mac it is
+worth about <span class="n">1.45s</span> of the <span class="n">1.98s</span>.</p>
+
+<p>The pool also closed a data race it would otherwise have opened: the command named in an
+assembler error was one file-scope string that several threads would have written at once. It
+is per-thread now, and the <em>first</em> failure by index is reported rather than whichever
+thread lost the race, so a rerun blames the same file.</p>
 </div>
 
 <h2>The compiler proper</h2>
@@ -377,6 +400,10 @@ result &mdash; g&#43;&#43; will not fit twice in that box.</p>
 <p><strong>Not a quality comparison.</strong> The native compilers produce optimisable IR,
 full debug information and far better diagnostics. cxx1 produces working code for one program.</p>
 
+<p><strong>Not one snapshot.</strong> The source-to-object figures are cxx1 as it stands after
+the parallel assemble step; the &ldquo;was&rdquo; markers show where each machine started. The
+<code>std::system</code> table is a property of each platform&#39;s C library, not of cxx1.</p>
+
 <p><strong>Not the whole build.</strong> Linking is excluded, and on Windows cxx1 cannot link
 Compiler&#43;&#43; at all yet &mdash; ml64 has no COMDAT directive, so every inline and template
 member collides. Compilation and assembly are what is measured here, and both succeed on all
@@ -385,7 +412,8 @@ three.</p>
 
 <footer>
   Measured 2026-09-05 on the three boxes <code>tools/verify-three</code> uses.<br>
-  Sources: Compiler&#43;&#43; at commit 5056bba, unmodified. cxx1 at 701d9a7.<br>
+  Sources: Compiler&#43;&#43; at commit 5056bba, unmodified. cxx1 at 7c248df,
+  with the assemble step on the pool.<br>
   Method: best of two or three runs, warm page cache, otherwise idle machines.<br>
   Native compilers at <code>-O0</code> / <code>/Od</code>; cxx1 has no optimiser to disable.
 </footer>
