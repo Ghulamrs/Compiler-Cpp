@@ -223,16 +223,16 @@ SFINAE and variadic packs. What is left:
 
 - **list-initialisation calling a constructor**, `P p{1, 2}` — write the
   arguments in parentheses. The *empty* pair is read: `{}` is
-  value-initialisation. `src/parser/ParserStmt.cpp:157`,
+  value-initialisation. `src/parser/ParserStmt.cpp:167`,
   `src/parser/ParserInit.cpp:38`
 - **a braced default argument** — `src/parser/ParserClass.cpp:2444`,
   `src/parser/ParserTopLevel.cpp:520`
 - **a braced member initialiser** — `src/parser/ParserType.cpp:734`
 - **an initialiser for an array of a class** —
-  `src/parser/ParserStmt.cpp:101`, `src/parser/ParserTopLevel.cpp:714`
+  `src/parser/ParserStmt.cpp:111`, `src/parser/ParserTopLevel.cpp:714`
 - **an array of a class with a destructor** — the elements would have to be
   destroyed in reverse; an array of a class with only constructors works.
-  `src/parser/ParserStmt.cpp:109`
+  `src/parser/ParserStmt.cpp:119`
 - **a bit-field initialised at file scope** — `src/parser/ParserInit.cpp:605`
 
 ## Objects that would run code before `main`
@@ -240,14 +240,14 @@ SFINAE and variadic packs. What is left:
 Nothing runs before `main`, so every shape that would need to is refused where
 it is written:
 
-- **a static local with a constructor** — `src/parser/ParserStmt.cpp:127`
+- **a static local with a constructor** — `src/parser/ParserStmt.cpp:137`
 - **a static local array whose elements have a constructor** —
-  `src/parser/ParserStmt.cpp:97`
+  `src/parser/ParserStmt.cpp:107`
 - **a file-scope object with a constructor** —
   `src/parser/ParserTopLevel.cpp:271`
 - **a static data member of a class with a constructor** —
   `src/parser/ParserClass.cpp:1799`
-- **a static reference** — `src/parser/ParserStmt.cpp:300`
+- **a static reference** — `src/parser/ParserStmt.cpp:310`
 - **a reference at file scope** — `src/parser/ParserTopLevel.cpp:254`
 
 ## Expressions
@@ -290,18 +290,24 @@ it is written:
 
 - **a local with a destructor and a `try` in one function** — each is a range
   in the call-site table and one would have to split the other.
-  `src/parser/ParserStmt.cpp:601`, `src/parser/ParserStmt.cpp:813`
-- **a `try` inside another** — `src/parser/ParserStmt.cpp:851`
+  `src/parser/ParserStmt.cpp:691`, `src/parser/ParserStmt.cpp:903`,
+  `src/parser/ParserStmt.cpp:1384`
+- **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
+  afresh on every turn and destroys it at the end of each one, and the
+  construction would have to be written where the test is. A scalar works, and
+  so does a class in the condition of an `if`, where the object is built once.
+  `src/parser/ParserStmt.cpp:631`
+- **a `try` inside another** — `src/parser/ParserStmt.cpp:941`
 - **catching by reference** — catch by value.
-  `src/parser/ParserStmt.cpp:902`
+  `src/parser/ParserStmt.cpp:992`
 - **a rethrow**, `throw;` with nothing after it —
-  `src/parser/ParserStmt.cpp:1075`
+  `src/parser/ParserStmt.cpp:1165`
 - **a dynamic exception specification**, `throw(T)` — `throw()` with nothing in
   it is `noexcept` and works. `src/parser/ParserConst.cpp:71`
 - **a range-based `for` over anything but an array** — a class would need its
-  `begin()` and `end()` found and called. `src/parser/ParserStmt.cpp:452`
+  `begin()` and `end()` found and called. `src/parser/ParserStmt.cpp:471`
 - **a reference loop variable in a range-based `for`** —
-  `src/parser/ParserStmt.cpp:460`
+  `src/parser/ParserStmt.cpp:479`
 - **a trailing return type**, `auto f(int) -> int` — C++11, and refused as the
   C++11 feature it is rather than as `auto` deduction.
   `src/parser/ParserTopLevel.cpp:391`
@@ -315,7 +321,7 @@ it is written:
   class's overload set. `src/parser/ParserType.cpp:265`
 - **a using-declaration inside a block** — it would declare a name for the rest
   of the block and rank against the locals beside it.
-  `src/parser/ParserStmt.cpp:1059`. The one at namespace scope,
+  `src/parser/ParserStmt.cpp:1149`. The one at namespace scope,
   `using N::f;`, works, and so does `using namespace N;` here.
 
 ## Lambdas
@@ -344,7 +350,7 @@ beside it goes in the same commit.
 | `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2432`, `src/parser/ParserTopLevel.cpp:464` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:396` |
 | a variable template | C++14 | `src/parser/ParserTemplate.cpp:309` |
-| `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:642`, `src/parser/ParserStmt.cpp:150`, `src/parser/ParserTopLevel.cpp:265` |
+| `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:642`, `src/parser/ParserStmt.cpp:160`, `src/parser/ParserTopLevel.cpp:265` |
 | `static_assert` with no message | C++17 | `src/parser/ParserConst.cpp:31` |
 | `namespace N::M { }` | C++17 | `src/parser/ParserTopLevel.cpp:92` |
 | an attribute, `[[noreturn]]` | none parse | `src/parser/ParserType.cpp:1128` |
@@ -376,7 +382,7 @@ guessed wrong twice.
 
 - **`return` inside a `catch` on x86_64-windows** — a handler is a funclet
   there, so leaving one early is a return of the address to carry on at.
-  `src/parser/ParserStmt.cpp:1084`
+  `src/parser/ParserStmt.cpp:1174`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation

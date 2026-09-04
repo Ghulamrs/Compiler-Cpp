@@ -1358,6 +1358,15 @@ private:
     StmtPtr caseLabel();
     StmtPtr gotoLabel();
     StmtPtr declaration();
+    // **A declaration in a condition** - [stmt.select]/2 and [stmt.iter]/2.
+    // It has one declarator and an initialiser, and a `)` where a declaration
+    // has its `;`, so the tail of declarationBody is told to stop rather than
+    // a second declaration parser being written.
+    bool conditionDecl_ = false;
+    std::string conditionName_;
+    bool atConditionDeclaration() const;
+    ExprPtr ifConditionDeclaration(std::vector<StmtPtr> &setup);
+    ExprPtr whileConditionDeclaration();
     void resolveGotos();
 
     bool staticAssertion();

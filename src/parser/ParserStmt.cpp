@@ -72,6 +72,16 @@ StmtPtr Parser::declarationBody() {
     std::vector<StmtPtr> inits;
     do {
         Declared d = declarator(base);
+        // **A condition declares one name and must initialise it**, and both
+        // are settled here: the loop below leaves by more than one path, so
+        // asking at the end would mean asking in several places.
+        if (conditionDecl_) {
+            conditionName_ = d.name;
+            if (peek().is(")"))
+                src_.fail(d.pos, "'" + d.name + "' is declared in a condition "
+                                 "and has no initialiser - there would be "
+                                 "nothing to test");
+        }
         if (mentionsDeduced(d.type)) d.type = deduceAuto(d.type, d.name, d.pos);
 
         // **A const object has to be initialised where it is declared**, and this
@@ -402,8 +412,17 @@ StmtPtr Parser::declarationBody() {
             emitInit(d.name, path, d.type, in, inits);
         }
         flushTemporaries(inits);
-    } while (consume(","));
+    } while (!conditionDecl_ && consume(","));
 
+    // A condition ends at the caller's `)` rather than at a `;`, and it
+    // declares one name - [stmt.select]/2 allows a single declarator.
+    if (conditionDecl_) {
+        if (peek().is(","))
+            src_.fail(peek().pos, "a condition declares one name - "
+                                  "[stmt.select] allows a single declarator "
+                                  "here");
+        return StmtPtr(new Block(std::move(inits)));
+    }
     expect(";");
     return StmtPtr(new Block(std::move(inits)));
 }
@@ -549,6 +568,77 @@ StmtPtr Parser::rangeForStatement(int scope) {
     Block *whole = new Block(std::move(setup));
     whole->setScope(-1);
     return StmtPtr(whole);
+}
+
+namespace {
+// The flag has to come back off however the declaration ends, because a
+// diagnostic raised inside a Trial is a substitution failure and unwinds.
+struct ConditionFlag {
+    bool &f;
+    explicit ConditionFlag(bool &b) : f(b) { f = true; }
+    ~ConditionFlag() { f = false; }
+};
+}
+
+// **[stmt.select]/2: an `if` may declare a name in its condition**, and that
+// name is in scope in both arms. It is evaluated once, before the branch, so
+// the declaration is hoisted in front of the `If` and the two wrapped in a
+// block - which is what gives the object its scope and its destructor at the
+// end of the whole statement rather than at the end of an arm.
+ExprPtr Parser::ifConditionDeclaration(std::vector<StmtPtr> &setup) {
+    std::string name;
+    {
+        ConditionFlag guard(conditionDecl_);
+        conditionName_.clear();
+        setup.push_back(declaration());
+        name = conditionName_;
+    }
+    ExprPtr v = objectRef(name);
+    if (v == nullptr)
+        src_.fail(peek().pos, "'" + name + "' was declared in this condition "
+                              "and cannot be read back");
+    return v;
+}
+
+// **[stmt.iter]/2 creates and destroys the variable on every turn**, which is
+// the whole difference from the `if` form: hoisting the initialiser out would
+// evaluate it once and then loop for ever on the value it got. The slot is
+// declared once - it is one object as far as the frame is concerned - and the
+// initialisation moves into the condition, which is exactly what the standard
+// asks for as long as there is no constructor or destructor to run.
+ExprPtr Parser::whileConditionDeclaration() {
+    StorageClass sc;
+    Qualifiers quals;
+    const Type *base = specifiers(&sc, &quals);
+    if (sc != StorageNone)
+        src_.fail(peek().pos, "a condition declares an ordinary object, so it "
+                              "may not have a storage class");
+    Declared d = declarator(base);
+    if (d.name.empty())
+        src_.fail(d.pos, "a condition declares a name and this declares none");
+    if (!consume("="))
+        src_.fail(peek().pos, "'" + d.name + "' is declared in a condition and "
+                              "has no initialiser - there would be nothing "
+                              "to test");
+    ExprPtr init = decay(assign());
+    if (mentionsDeduced(d.type))
+        d.type = deduceAutoFrom(d.type, init->type(), d.name, d.pos);
+    // A class would have to be constructed and destroyed once per turn, and
+    // the construction is written where the test is - so it is refused here
+    // and not in an `if`, where the object is built once and the ordinary
+    // declaration path does all of it.
+    if (d.type->isStructOrUnion() || d.type->isReference() || d.type->isArray())
+        src_.fail(d.pos, "a '" + d.type->describe() + "' declared in the "
+                         "condition of a loop is not supported yet - "
+                         "[stmt.iter] builds it afresh on every turn, and only "
+                         "a scalar can be written where the test is");
+    const int slot = declare(d.name, d.type, d.pos);
+    locals_.back().isConst = d.type->isConst();
+    ExprPtr x(Var::local(d.name, slot));
+    x->setType(d.type);
+    ExprPtr set(new Assign(std::move(x), convert(std::move(init), d.type)));
+    set->setType(d.type);
+    return set;
 }
 
 StmtPtr Parser::forStatement() {
@@ -1247,20 +1337,82 @@ StmtPtr Parser::statementBody() {
         }
         return StmtPtr(new Return(std::move(value)));
     }
-    if (consume("if")) {
+    if (peek().is("if")) {
+        const std::size_t pos = peek().pos;
+        at_++;
         expect("(");
-        ExprPtr cond = contextualScalar(endFullExpression(decay(expr())), peek().pos,
-                                   "this condition");
+        // **A declaration here is a scope that wraps both arms**, so the whole
+        // statement goes inside a block of its own rather than the condition
+        // being a bigger expression. Nothing changes for an ordinary
+        // condition, which is what the `declares` test is guarding.
+        const bool declares = atDeclarationStart();
+        std::vector<StmtPtr> setup;
+        int scope = -1;
+        std::size_t aliveAtEntry = alive_.size();
+        if (declares) {
+            enterScope();
+            scope = enterBlock();
+            aliveAtEntry = alive_.size();
+        }
+        ExprPtr cond = declares
+            ? contextualScalar(ifConditionDeclaration(setup), peek().pos,
+                               "this condition")
+            : contextualScalar(endFullExpression(decay(expr())), peek().pos,
+                               "this condition");
+        // **Where the condition's object became alive**, in the shape a
+        // cleanup region wants: a statement index and how many were alive
+        // after it. Without this an exception passing through the arms would
+        // leave the object undestroyed - the normal path below is not the
+        // only way out of the statement.
+        std::vector<std::pair<std::size_t, std::size_t> > built;
+        if (declares && alive_.size() != aliveAtEntry)
+            built.push_back(std::make_pair(setup.size(), alive_.size()));
         expect(")");
         StmtPtr thenArm = statement();
         StmtPtr elseArm;
         if (consume("else")) elseArm = statement();
-        return StmtPtr(new If(std::move(cond), std::move(thenArm), std::move(elseArm)));
+        StmtPtr made(new If(std::move(cond), std::move(thenArm),
+                            std::move(elseArm)));
+        if (!declares) return made;
+        leaveBlock();
+        leaveScope();
+        setup.push_back(std::move(made));
+        // What the condition built is destroyed at the end of the statement,
+        // the way a block destroys what it built at its '}'.
+        if (alive_.size() != aliveAtEntry) {
+            if (functionHasTry_ || inTryBody_)
+                src_.fail(pos, "a local with a destructor and a 'try' in one "
+                               "function is not supported yet - each is a "
+                               "range in the call-site table and one would "
+                               "have to split the other");
+            emitDestructors(setup, aliveAtEntry, pos);
+            setup = target_.microsoftNames()
+                        ? wrapMsCleanups(std::move(setup), built,
+                                         aliveAtEntry, pos)
+                        : wrapCleanups(std::move(setup), built,
+                                       aliveAtEntry, pos);
+            alive_.resize(aliveAtEntry);
+        }
+        Block *b = new Block(std::move(setup));
+        b->setScope(scope);
+        b->setPos(pos);
+        return StmtPtr(b);
     }
-    if (consume("while")) {
+    if (peek().is("while")) {
+        const std::size_t pos = peek().pos;
+        at_++;
         expect("(");
-        ExprPtr cond = contextualScalar(endFullExpression(decay(expr())), peek().pos,
-                                   "this condition");
+        // The declared object is one slot for the whole loop and is written
+        // afresh each turn - see whileConditionDeclaration. It still needs a
+        // scope of its own, or the name would outlive the loop.
+        const bool declares = atDeclarationStart();
+        int scope = -1;
+        if (declares) { enterScope(); scope = enterBlock(); }
+        ExprPtr cond = declares
+            ? contextualScalar(endFullExpression(whileConditionDeclaration()),
+                               peek().pos, "this condition")
+            : contextualScalar(endFullExpression(decay(expr())), peek().pos,
+                               "this condition");
         expect(")");
         loopDepth_++;
         loopMarks_.push_back(alive_.size());
@@ -1269,7 +1421,16 @@ StmtPtr Parser::statementBody() {
         breakMarks_.pop_back();
         loopMarks_.pop_back();
         loopDepth_--;
-        return StmtPtr(new While(std::move(cond), std::move(body)));
+        StmtPtr made(new While(std::move(cond), std::move(body)));
+        if (!declares) return made;
+        leaveBlock();
+        leaveScope();
+        std::vector<StmtPtr> wrap;
+        wrap.push_back(std::move(made));
+        Block *b = new Block(std::move(wrap));
+        b->setScope(scope);
+        b->setPos(pos);
+        return StmtPtr(b);
     }
 
     if (peek().is("for")) return forStatement();

@@ -537,7 +537,9 @@ such pointer in the file read-only.
 
 **Not in rung 1, and deliberately**: a declaration in an `if` or `while`
 condition. It needs the condition's scope to wrap both branches, which is a
-change to how `If` is built rather than an addition to it.
+change to how `If` is built rather than an addition to it. **Landed
+2026-09-04**, and that description held - see "A declaration in a condition,
+and the two rules that are not one rule".
 
 **Rung 3 is done in dependency order too, and `class` with access control
 comes first**, for the same reason `const` did: the member table has to carry
@@ -4016,6 +4018,60 @@ initialiser at all.
 `tests/cases/value-init-empty-braces.cpp` runs twenty of them,
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
+
+## A declaration in a condition, and the two rules that are not one rule
+
+**`if (T x = e)` was deferred at rung 1** with the note that it "needs the
+condition's scope to wrap both branches, which is a change to how `If` is built
+rather than an addition to it". That was the right description and it is what
+the fix turned out to be: the statement goes inside a `Block` of its own -
+which already carries a scope - with the declaration hoisted in front of the
+`If` and the destructors after it. Three of Compiler++'s sixteen sources were
+stopped by it, all writing the same line: `if (cc::ArrayType *at =
+dynamic_cast<cc::ArrayType*>(t))`.
+
+**The `if` form and the `while` form are different rules, and reading them as
+one is how to get this silently wrong.** [stmt.select]/2 evaluates the
+condition of an `if` once, so hoisting is exact. [stmt.iter]/2 creates and
+destroys the loop variable **on every turn** - so hoisting a `while`'s
+initialiser would evaluate it once and then loop for ever on the value it got.
+`while (int *p = pull())` is the shape that shows it, and it is an infinite
+loop rather than a wrong number.
+
+So the `while` form declares the slot once - it is one object as far as the
+frame is concerned - and **moves the initialisation into the condition**,
+`(x = e)`, which is what the standard asks for as long as there is no
+constructor or destructor to run. A class there is refused by name, and that
+refusal is the honest edge of this: it would need its constructor written where
+the test is.
+
+**The `if` form gets full generality for free**, because it goes through
+`declarationBody` rather than through a second declaration parser. One flag
+tells that function's tail that the `)` is the caller's and that a condition
+declares one name; everything above the tail - `auto`, a class with a
+constructor, the copy elision, the `alive_` bookkeeping - is the path an
+ordinary declaration already took. **The tail is one place and the loop is
+not**: the class branch leaves the declarator loop by `break` rather than by
+falling out of it, so the check that was first written inside the loop was
+skipped by exactly the declarations that needed it most.
+
+**And the names suite found the half that was missing.** `tests/names.sh`
+reported that clang emitted `_Unwind_Resume` for a function with a
+condition-declared object and cxx1 did not - which reads as a naming difference
+and was a missing cleanup region. The normal-path destructors run where the
+statement ends, and unwinding does not go that way: an exception through either
+arm would have left the object undestroyed. The condition's object needs the
+same `built` record a block keeps for what it constructs, in the same shape -
+a statement index and how many were alive after it.
+`tests/cases/condition-declaration-unwind.cpp` runs it and the destructor
+fires.
+
+**Found on the way, and not fixed here: `Guard g = Guard(5);` destroys twice.**
+One construction, two destructions - the temporary is elided into `g`'s storage
+and then both are on `alive_`. It has nothing to do with conditions; it is an
+ordinary declaration initialised by a class temporary, and for a class that
+owns anything it is a double free. Recorded rather than mended in the same
+change, because it is a different subject and wants a case family of its own.
 
 ## `mutable`, three lines and one exception that was already there
 
