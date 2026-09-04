@@ -116,10 +116,14 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         type->setLocalName(local);
         type->setEnclosing(within);
     }
-    // Only a definition decides this. `class X;` followed by `struct X { };` is one
-    // type written two ways - the standard makes the keywords interchangeable here -
-    // so the body is what sets it and a mere mention never unsets it.
+    // A definition decides this, and a declaration answers when no definition
+    // has. `class X;` followed by `struct X { };` is one type written two ways -
+    // the standard makes the keywords interchangeable here - so the body still
+    // wins and a later mention never unsets it. But a unit that sees only the
+    // declaration has to spell the name the same way as one that sees the body,
+    // or the two do not link: Microsoft writes V for a class and U for a struct.
     if (peek().is("{") || peek().is(":")) type->setDeclaredClass(isClass);
+    else                                  type->noteClassKey(isClass);
     if (!localOwner.empty()) {
         // The single component is what both ABIs spell inside the wrapper, and the
         // written name is what resolves inside this function - which also shadows a

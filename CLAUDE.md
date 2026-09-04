@@ -4586,6 +4586,77 @@ slot of whatever consumes it and those slots are guarded, so
 same expression does not. `docs/CONFORMANCE.md` records it, and the fix is a
 field on `Call` plus a line in each code generator.
 
+## Compiler++ on Windows: three faults found, and the one wall left
+
+**The Mac writes the MASM and the box only assembles it.** There is no cxx1 on
+the Windows machine for this: the front end is shared and the code generator is
+reachable from anywhere with `-arch`, so sixteen `.asm` files go over and ml64
+and link do the rest. That is `tools/windows/asm-run.cmd`'s trade at sixteen
+files instead of one, and it turns a twenty-minute round into a two-minute one.
+
+**A symbol named by data is a use, and MASM needs it declared.** `referenced_`
+was filled from the two *operand* paths, so an EXTERN was written for everything
+a call mentions and for nothing a `DQ` does. A vtable slot holding a function
+defined in another translation unit reached ml64 undeclared - `error A2006:
+undefined symbol` - on ten of Compiler++'s sixteen and on nothing in the suite,
+where every class is defined where it is used. It is the mirror of A-02: there a
+vtable slot was a use nothing emitted, here a use nothing declared.
+
+**And then the same thing from the other side.** With data recording a
+reference, the four RTTI objects a vtable names - the locator, the hierarchy,
+the base array, the base descriptor - were declared EXTERN *and* defined a few
+lines below, which ml64 calls a symbol redefinition. `MasmCodeGen::run`
+predefined the descriptor alone, that being the only one a `lea` had ever
+mentioned. All five now.
+
+**A forward declaration carries its class key, and cxx1 dropped it.**
+[dcl.type.elab] lets `class D;` and `struct D;` declare one entity and lets a
+program mix them; the Microsoft ABI writes **V** for a class and **U** for a
+struct, so the two spellings are two symbols. cxx1 recorded the keyword only at
+the *definition* - right for a diagnostic, wrong for a name - so a unit seeing
+only `class Diagnostics;` wrote U where the defining unit wrote V, and they did
+not link. A declaration records it now when no definition has, and a definition
+still wins, which is what keeps `class X;` and `struct X { }` one type.
+
+**No single-file suite could have found it.** Every case compiles alone, where
+both spellings agree with themselves; it takes two translation units of one
+program. `tests/cases/forward-declared-class-key.cpp` is the case, and what
+holds it is `names.sh` comparing `?f@@YAHAEAVD@@@Z` against clang.
+
+**The scrape had to stop reading an EXTERN as a symbol.** MASM needs every name
+a `DQ` mentions declared and the GNU spelling needs nothing, and
+`tools/mangled-names` has no rule for a `.quad` operand - so `_purecall` in a
+vtable became a name on one side and nothing on the other. Call targets are
+still compared, from the `call` lines, on both sides.
+
+### The wall: ml64 cannot say COMDAT
+
+**All sixteen assemble and the link is the only thing left.** What collides is
+every inline and template member: `vector<unsigned char>::push_back`,
+`ostringstream::~ostringstream`, and so on, each emitted in every translation
+unit that uses it. [dcl.inline]/6 allows exactly that and leaves the linker to
+fold the copies - `.weak` on ELF, `.weak_def_can_be_hidden` on Mach-O, and on
+Windows a COMDAT section, which **ml64 has no directive for at all**. cl's own
+listing marks these `; COMDAT`, which is its object writer talking rather than
+anything assemblable.
+
+**Both pure answers were tried and both fail.** Keeping every copy PUBLIC is
+what happens today: `LNK2005`, six of them. Withdrawing the PUBLIC so each
+object keeps its own copy - the only thing MASM *can* express - links those and
+then leaves **19 unresolved `??_G` deleting destructors**, because a unit that
+emits a vtable naming one does not always emit the function. So the two
+requirements are "define it everywhere" and "export it nowhere", and cxx1
+satisfies neither completely.
+
+**What would settle it**, in the order they are worth trying: a COFF-capable
+assembler on the box, since cxx1 already has `-masm=gnu` and clang writes
+`.section .text,"xr",discard,"<symbol>"` for exactly this - measured, and the
+box has no clang today; or emitting every vtable slot's function in every unit
+that emits the table, which makes "define everywhere" true and lets the PUBLIC
+be withdrawn; or a key-function scheme, which is a design this compiler does not
+have. `/FORCE:MULTIPLE` links and runs and is a diagnostic, not a fix - it says
+the COMDAT is the only wall left, and it was used to establish exactly that.
+
 ## A temporary made after the full expression ended, and the function it leaked into
 
 **`endFullExpression` empties `pendingTemps_`, and the return path pushed onto

@@ -177,7 +177,14 @@ public:
     // default access - and in what a diagnostic should call it. "struct Account"
     // for something written as a class sends the reader after a missing line.
     bool declaredClass() const { return cls().isClass_; }
-    void setDeclaredClass(bool c) { isClass_ = c; }
+    void setDeclaredClass(bool c) { isClass_ = c; classKeySet_ = true; }
+    // **A declaration records the keyword too, where no definition has.**
+    // Microsoft spells V for a class and U for a struct, so a translation unit
+    // that sees only `class D;` must still say V - it wrote U, and two units of
+    // one correct program then asked the linker for two different symbols.
+    // A definition still wins, which is what lets `class X;` and `struct X { }`
+    // be the one type the standard says they are.
+    void noteClassKey(bool c) { if (!classKeySet_) { isClass_ = c; } }
 
     // **A class written inside another one.** `tag()` is the qualified name, every
     // table being keyed by it; `localName()` is the component both ABIs spell, and
@@ -368,6 +375,7 @@ private:
     const Type *enclosing_ = nullptr;
     Access nestedAccess_ = Access::Public;
     bool isClass_ = false;
+    bool classKeySet_ = false;
     bool memberFn_ = false;
     int dataSize_ = 0;
     bool polymorphic_ = false;

@@ -380,6 +380,7 @@ void MasmSpelling::functionEnd(const std::string &name) {
 
 void MasmSpelling::globl(const std::string &name) { exported_.insert(name); }
 
+
 void MasmSpelling::textSection() {
     flushPending();
     if (seg_ != Code) { o_ += "\n.CODE\n"; seg_ = Code; }
@@ -421,6 +422,14 @@ void MasmSpelling::dataInt(int size, long long v) {
 }
 
 void MasmSpelling::dataSym(const std::string &sym, long long off) {
+    // **A symbol named by data is a use, and MASM needs it declared.** The two
+    // operand paths record one; this did not, so a vtable slot holding a
+    // function defined in another translation unit reached ml64 undeclared -
+    // `error A2006: undefined symbol`, on ten of Compiler++'s sixteen and on
+    // nothing in the suite, where every class is defined where it is used.
+    // The mirror of A-02: there a vtable slot was a use nothing emitted, here
+    // it is a use nothing declared.
+    referenced_.insert(sym);
     std::string t = mangle(sym);
     if (off > 0) t += "+" + std::to_string(off);
     else if (off < 0) t += "-" + std::to_string(-off);
@@ -880,7 +889,18 @@ void MasmCodeGen::run(const Program &program) {
             MicrosoftRtti n;
             std::string why;
             if (!microsoftClassRttiNames(k, &n, &why)) break;
+            // **All five, not the descriptor alone.** The descriptor is the one
+            // a `lea` mentions, so it was the only one that had to be here while
+            // only instructions recorded a reference. Data records one now, and
+            // a vtable's first word is the locator - so the locator, the
+            // hierarchy, the base array and the base descriptor are named by
+            // data laid down in this very file and would otherwise be declared
+            // EXTERN and defined, which ml64 calls a symbol redefinition.
             mine.push_back(n.descriptor);
+            mine.push_back(n.baseDescriptor);
+            mine.push_back(n.array);
+            mine.push_back(n.hierarchy);
+            mine.push_back(n.locator);
         }
     masm_.predefine(mine);
     // **Before the code, not after it.** The base run() flushes what it has built
