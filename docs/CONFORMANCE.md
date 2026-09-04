@@ -403,4 +403,28 @@ and a line in each of the three code generators - and it was deliberately not
 folded into the change that guarded the other two, which touched the exception
 tables on every target and wanted its own verification.
 
-`tests/cases/temporary-unwind.cpp` pins the five shapes that do balance.
+`tests/cases/temporary-unwind.cpp` pins the four shapes that do balance.
+
+### And on x86_64-windows, a copy made for a call that is never entered
+
+The Microsoft ABI puts the destruction of a by-value class parameter on the
+**callee**, where Itanium puts it on the caller. So where an argument's
+constructor throws after an earlier argument was already copied into its
+parameter, nobody destroys that copy on this target: the caller does not own
+it, and the callee is never reached.
+
+```cpp
+int two(A p, A q);
+two(A(1), A(99));       // A(99)'s constructor throws; A(1)'s copy leaks
+```
+
+Measured on the Windows box: `live 1` there against `live 0` on both Itanium
+targets and on clang. Telling "the callee was entered" from "it was not" is a
+state change at the call instruction itself, and cxx1's cleanup regions are
+statement-granular - so this is the one place the guard flag cannot answer.
+Clearing the guard after the call over-destroys instead, which was measured
+too: the callee's own regions destroy the parameter on the way out, and the
+caller's pad then destroys it again.
+
+The shape is named in `temporary-unwind.cpp` and left out of it rather than
+skipped, so that the case says the same thing on all three targets.

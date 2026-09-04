@@ -873,6 +873,7 @@ void Parser::topLevel(Program &program) {
     const std::size_t paramsFrom = alive_.size() - aliveParams;
 
     atFunctionBody_ = true;
+    bodyCleanupFrom_ = paramsFrom;
     StmtPtr body = block();
     resolveGotos();
     variadicBody_ = false;

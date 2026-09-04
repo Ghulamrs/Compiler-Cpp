@@ -290,18 +290,18 @@ it is written:
 
 - **a local with a destructor and a `try` in one function** — each is a range
   in the call-site table and one would have to split the other.
-  `src/parser/ParserStmt.cpp:698`, `src/parser/ParserStmt.cpp:926`,
-  `src/parser/ParserStmt.cpp:1415`
+  `src/parser/ParserStmt.cpp:698`, `src/parser/ParserStmt.cpp:932`,
+  `src/parser/ParserStmt.cpp:1421`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and
   so does a class in the condition of an `if`, where the object is built once.
   `src/parser/ParserStmt.cpp:638`
-- **a `try` inside another** — `src/parser/ParserStmt.cpp:966`
+- **a `try` inside another** — `src/parser/ParserStmt.cpp:972`
 - **catching by reference** — catch by value.
-  `src/parser/ParserStmt.cpp:1017`
+  `src/parser/ParserStmt.cpp:1023`
 - **a rethrow**, `throw;` with nothing after it —
-  `src/parser/ParserStmt.cpp:1190`
+  `src/parser/ParserStmt.cpp:1196`
 - **a dynamic exception specification**, `throw(T)` — `throw()` with nothing in
   it is `noexcept` and works. `src/parser/ParserConst.cpp:71`
 - **a range-based `for` over anything but an array** — a class would need its
@@ -321,7 +321,7 @@ it is written:
   class's overload set. `src/parser/ParserType.cpp:265`
 - **a using-declaration inside a block** — it would declare a name for the rest
   of the block and rank against the locals beside it.
-  `src/parser/ParserStmt.cpp:1174`. The one at namespace scope,
+  `src/parser/ParserStmt.cpp:1180`. The one at namespace scope,
   `using N::f;`, works, and so does `using namespace N;` here.
 
 ## Lambdas
@@ -382,7 +382,7 @@ guessed wrong twice.
 
 - **`return` inside a `catch` on x86_64-windows** — a handler is a funclet
   there, so leaving one early is a return of the address to carry on at.
-  `src/parser/ParserStmt.cpp:1199`
+  `src/parser/ParserStmt.cpp:1205`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation

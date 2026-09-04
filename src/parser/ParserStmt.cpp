@@ -885,6 +885,11 @@ StmtPtr Parser::block() {
     const std::size_t aliveAtEntry = alive_.size();
     bool isBody = atFunctionBody_;
     atFunctionBody_ = false;
+    // The regions of a function body reach back to its by-value parameters
+    // on the target whose callee destroys them; every other block's start at
+    // what was alive when it opened.
+    const std::size_t regionFrom = isBody && bodyCleanupFrom_ < aliveAtEntry
+                                 ? bodyCleanupFrom_ : aliveAtEntry;
     int scope = isBody ? 0 : enterBlock();
     // **Where each object became alive**, as a statement index and how many were alive
     // after it. A cleanup region runs from one of these to the next and destroys
@@ -913,7 +918,8 @@ StmtPtr Parser::block() {
     // A region has to cover the statements that made them, and the first may
     // be before anything was alive - so the regions start at the top of the
     // block rather than at the first construction.
-    if (!temps.empty() && (built.empty() || built[0].first != 0))
+    if ((!temps.empty() || regionFrom != aliveAtEntry) &&
+        (built.empty() || built[0].first != 0))
         built.insert(built.begin(), std::make_pair(std::size_t(0), aliveAtEntry));
 
     // Everything this block constructed is destroyed here, last first. The
@@ -928,9 +934,9 @@ StmtPtr Parser::block() {
                            "the call-site table and one would have to split "
                            "the other");
         body = target_.microsoftNames()
-                   ? wrapMsCleanups(std::move(body), built, aliveAtEntry, pos,
+                   ? wrapMsCleanups(std::move(body), built, regionFrom, pos,
                                     temps)
-                   : wrapCleanups(std::move(body), built, aliveAtEntry, pos,
+                   : wrapCleanups(std::move(body), built, regionFrom, pos,
                                   temps);
     }
     alive_.resize(aliveAtEntry);

@@ -1141,6 +1141,11 @@ private:
     // The temporaries each statement of the block being parsed made, so that
     // the cleanup regions can name them. Emptied by whoever opens the regions.
     std::vector<Temporary> statementTemps_;
+    // **Where a function body's cleanup regions start**, which on Windows is
+    // before its by-value parameters: the callee destroys those there, and an
+    // exception leaving the body has to reach them. The normal path is not
+    // moved - a `return` and falling off the end already unwind them.
+    std::size_t bodyCleanupFrom_ = 0;
     int guardFlag();
     ExprPtr setGuard(int flag, int value);
     // **Taking over a call's result slot takes over its destruction too.** The

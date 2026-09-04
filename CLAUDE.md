@@ -4063,6 +4063,30 @@ live at the point the exception left, so listing one that is not costs a test
 and no more. Deciding *which* pad should carry which temporary would be the
 statement-splitting this design exists to avoid.
 
+**And a function body's regions reach back to its own by-value parameters.**
+On Microsoft the callee destroys those, and `block()` bounded its regions at
+what was alive when the body opened - which is *after* them. So an exception
+leaving such a function destroyed everything but its parameters, on the one
+target that owns them. `bodyCleanupFrom_` carries the earlier bound and only
+the regions use it: the normal path already unwound them, through the `return`
+and through the append that catches falling off the end.
+
+**The one shape that stays broken is a Windows ABI question, not a design
+gap.** Where an argument's constructor throws after an earlier argument was
+copied into its parameter, nobody destroys that copy there: the caller does not
+own it and the callee is never entered. Clearing the guard after the call
+over-destroys instead - measured, because the callee's own regions destroy the
+parameter on the way out and the caller's pad then does it again. Telling
+"entered" from "not entered" is a state change at the call instruction, which
+statement-granular regions cannot express. `docs/CONFORMANCE.md` records it and
+the case names the shape rather than skipping it.
+
+**The Windows answers here were measured in about fifteen seconds each**, not
+by `verify-three`: the assembly is generated on the Mac, `scp`-ed to the box,
+and assembled, linked and run there by a four-line `.cmd`. A full three-box run
+rebuilds the compiler twice and answers one question in twenty minutes. Build
+the short loop before the third question, not after the tenth.
+
 **What is not covered is the object a call returns**, and the reason is
 mechanical: setting a flag after the call means wrapping the `Call` node, and
 both elision paths find their candidate by `dynamic_cast`-ing to it, so
@@ -4333,6 +4357,7 @@ since the fork.
 | `cl-measure` | asks cl on the Windows box about the Microsoft ABI |
 | `unwind-check` | rung 6's tables |
 | `windows/` | the Windows half of `verify-three`, kept in the repo on purpose |
+| `windows/asm-run.cmd` | one `.asm` assembled, linked and run on the box - seconds, not a rebuild |
 | `backend-overlap` | python3; how much of the two code generators is the same algorithm twice. Still works, mentioned nowhere until now |
 | `gen-corpus` | python3; generates a corpus of a given size. Still works; its comments cite a `tests/challenge.sh` that did not come across |
 
