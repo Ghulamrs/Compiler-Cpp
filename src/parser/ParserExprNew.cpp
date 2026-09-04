@@ -704,6 +704,7 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     // The initialiser, and only the forms that need no constructor; anything else
     // is refused by name rather than half-built. A class with constructors is
     // built by calling one, here as much as on the stack.
+    checkNotAbstract(made, pos, "the object 'new' would make");
     const bool constructed = made->isStructOrUnion() && !made->tag().empty() &&
                              overloadsOf(constructorKey(made->tag())) != nullptr;
     std::vector<ExprPtr> ctorArgs;

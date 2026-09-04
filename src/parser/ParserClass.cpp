@@ -12,6 +12,7 @@
 StmtPtr Parser::constructLocal(const Declared &d, int offset,
                                std::vector<ExprPtr> args, bool copyInit,
                                bool valueInit) {
+    checkNotAbstract(d.type, d.pos, "'" + d.name + "'");
     const std::string key = constructorKey(d.type->tag());
     const Signature &ctor = resolveOverload(key, args, d.pos);
     applyDefaults(ctor, args, d.pos);
@@ -1837,9 +1838,30 @@ ExprPtr Parser::staticMemberRef(const Type *owner, const Type::StaticMember &s,
 // A member function declaration, keyed under "Class::name" in the one table every
 // function lives in. Nothing about overload resolution had to be told that members
 // exist: two members with different parameters are two entries under that key.
+// An abstract class has a slot holding the runtime's trap rather than a
+// function, so an object of one could be asked for something that is not
+// there. Refused where the object would be made - the array case included,
+// since every element would be one.
+void Parser::checkNotAbstract(const Type *t, std::size_t pos,
+                              const std::string &what) {
+    const Type *c = t;
+    while (c != nullptr && c->isArray()) c = c->pointee();
+    if (c == nullptr || !c->isStructOrUnion() || !c->abstract()) return;
+    std::string why = what + " is '" + c->describe() + "', which is abstract - ";
+    const std::vector<VSlot> &slots = vtables_[c->tag()];
+    for (std::size_t i = 0; i < slots.size(); i++)
+        if (slots[i].pure) {
+            why += "'" + slots[i].name + "' is pure and nothing has overridden "
+                   "it, so an object of this class would have a slot with no "
+                   "function in it";
+            src_.fail(pos, why);
+        }
+    src_.fail(pos, why + "it has a pure virtual nothing has overridden");
+}
+
 void Parser::declareMember(const std::string &cls, const Declared &d,
                            bool constThis, Access access, bool inUnion,
-                           bool isVirtual, bool isStatic) {
+                           bool isVirtual, bool isStatic, bool isPure) {
     if (inUnion)
         src_.fail(d.pos, "a member function of a union is not supported yet");
 
@@ -1921,8 +1943,19 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
     pendingNoexcept_ = false;
 
     if (!isVirtual) return;
-    if (slot < slots.size()) { slots[slot].symbol = symbol; return; }
-    slots.push_back(VSlot{ d.name, symbol, params, constThis });
+
+    // **A pure virtual's slot holds the runtime's trap, not this function.**
+    // The declaration may still have a body - C++ allows one, and a derived
+    // class can call it explicitly - so the symbol is unchanged and only the
+    // table entry differs. An override coming later replaces the entry and
+    // clears `pure`, which is what makes the derived class concrete.
+    const std::string entry = isPure ? pureVirtualSymbol() : symbol;
+    if (slot < slots.size()) {
+        slots[slot].symbol = entry;
+        slots[slot].pure = isPure;
+        return;
+    }
+    slots.push_back(VSlot{ d.name, entry, params, constThis, isPure });
 }
 
 // A member function's linkage name. Never plain, and never affected by
@@ -1977,7 +2010,14 @@ std::string Parser::dataSymbol(const std::string &name, const Type *type,
     // Microsoft mangles a variable only where something outside could name
     // it. An internal one keeps what it was written with - measured against
     // clang, which spells it the same way.
-    if (isStatic) return name;
+    //
+    // **But only one at file scope with no namespace around it.** A static
+    // *in* a namespace is mangled all the same - cl writes `?obj@n@@3US@1@A`
+    // for one, measured - and it has to be: the name it was written with is
+    // `n::obj`, and MASM cannot hold a label with a `::` in it. That is what
+    // `std::cout` in <iostream> found, as an assembler syntax error rather
+    // than as anything a reader would recognise.
+    if (isStatic && name.find("::") == std::string::npos) return name;
     std::string out, why;
     if (!microsoftDataName(name, type, &out, &why))
         src_.fail(pos, "'" + name + "' cannot be given a name the linker can "

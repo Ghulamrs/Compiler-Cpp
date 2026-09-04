@@ -116,6 +116,11 @@ private:
         std::string symbol;
         std::vector<const Type *> params;
         bool constThis;
+        // **A pure virtual holds a slot it has no function for.** The entry is
+        // the runtime's own trap, and a class with one of these still in its
+        // table is abstract. An override replaces the entry and clears this,
+        // which is what makes the derived class concrete.
+        bool pure = false;
     };
     std::map<std::string, std::vector<VSlot> > vtables_;
     // Whether a slot is the one a member with this name and parameter list overrides.
@@ -856,7 +861,17 @@ private:
                             const std::string &cls, std::size_t pos);
     void declareMember(const std::string &cls, const Declared &d, bool constThis,
                        Access access, bool inUnion, bool isVirtual,
-                       bool isStatic = false);
+                       bool isStatic = false, bool isPure = false);
+    // The entry a pure virtual's slot holds: the runtime routine that reports a
+    // call reaching a function the class never defined. Both measured -
+    // `__cxa_pure_virtual` from clang, `_purecall` from cl.
+    // **An object of an abstract class cannot exist**, so this is asked
+    // wherever one would be made rather than where a pure virtual would be
+    // called. `what` names the thing being declared.
+    void checkNotAbstract(const Type *t, std::size_t pos, const std::string &what);
+    const char *pureVirtualSymbol() const {
+        return target_.microsoftNames() ? "_purecall" : "__cxa_pure_virtual";
+    }
     std::string memberSymbol(const std::string &cls, const std::string &name,
                              const Type *fn, Access access, bool constThis,
                              std::size_t pos, bool isVirtual = false,

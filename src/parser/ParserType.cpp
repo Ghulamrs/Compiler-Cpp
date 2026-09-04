@@ -632,6 +632,26 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 // C++14 removed the rule, so a compiler pinned to C++11 keeps it.
                 if (mquals.isConstexpr) constThis = true;
 
+                // **`= 0` is the pure-specifier**, and it is spelled with a
+                // zero that is not an initialiser: the function has no body
+                // here and the class's slot holds the runtime's trap instead.
+                // Only a virtual may carry it, which is what makes an abstract
+                // class abstract.
+                bool isPure = false;
+                if (peek().is("=") && peekAt(1).kind == TokenKind::Num &&
+                    !peekAt(1).isFloat && peekAt(1).value == 0) {
+                    if (!isVirtual)
+                        src_.fail(peek().pos, "'= 0' makes a function pure, and "
+                                              "only a virtual one can be - '" +
+                                              d.name + "' is not declared "
+                                              "'virtual'");
+                    if (memberIsStatic)
+                        src_.fail(peek().pos, "'" + d.name + "' cannot be both "
+                                              "'static' and pure");
+                    at_ += 2;
+                    isPure = true;
+                }
+
                 // **The body is held, not parsed.** It has to be able to see members
                 // declared after it, so nothing in it can be read until the class is
                 // closed - which is why this is a delayed parse and not a recursion.
@@ -640,7 +660,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                         src_.fail(d.pos, "a member function needs a class with "
                                          "a name - this one is anonymous");
                     declareMember(tag, d, constThis, access,
-                                  kind == Kind::Union, isVirtual, memberIsStatic);
+                                  kind == Kind::Union, isVirtual, memberIsStatic,
+                                  isPure);
                     pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
                                                           tag + "::" + d.name });
                     skipBracedBlock();
@@ -651,7 +672,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     src_.fail(d.pos, "a member function needs a class with a "
                                      "name - this one is anonymous");
                 declareMember(tag, d, constThis, access, kind == Kind::Union,
-                              isVirtual, memberIsStatic);
+                              isVirtual, memberIsStatic, isPure);
                 if (!consume(",")) break;
                 continue;
             }
@@ -662,6 +683,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
             if (!d.type->isComplete())
                 src_.fail(d.pos, "'" + d.name + "' has an incomplete type");
+            checkNotAbstract(d.type, d.pos, "the member '" + d.name + "'");
             // **What a reference member occupies is a pointer**, and asking the type
             // is the wrong question: `sizeof` a reference is its referent's size. The
             // declared type stays the reference, which makes every read dereference.
@@ -763,6 +785,14 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     if (copyConstructorOf(type) != nullptr || moveConstructorOf(type) != nullptr)
         type->setNonTrivialCopy(true);
     if (destructorOf(type) != nullptr) type->setHasDestructor(true);
+    // **Abstract is a question about the finished table**, not about what this
+    // class declared: a derived class that overrides every pure virtual has
+    // replaced those entries and is concrete, and one that leaves any is not.
+    if (!tag.empty()) {
+        const std::vector<VSlot> &slots = vtables_[tag];
+        for (std::size_t i = 0; i < slots.size(); i++)
+            if (slots[i].pure) { type->setAbstract(true); break; }
+    }
     if (type->polymorphic()) emitVtable(type, tag, pos);
     // **A specialization's member bodies are not replayed here.** This is in the
     // middle of whatever asked for the class, and a replay goes through topLevel,

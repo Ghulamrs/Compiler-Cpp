@@ -811,6 +811,35 @@ built by hand is not the parser's pointer arithmetic: `+ 2` added two bytes
 rather than two entries, so the vptr pointed two bytes into the table's first
 word. Both places compute bytes explicitly now and say why.
 
+**A pure virtual holds a slot it has no function for**, and what goes in it is
+the runtime's own trap — `__cxa_pure_virtual` on Itanium, `_purecall` on
+Microsoft, both measured. The vtable is still emitted and the constructor still
+stores it, because an abstract class is built as a base subobject every time a
+derived one is.
+
+**`= 0` is a specifier and not an initialiser**, so it is read where the
+exception specification is read rather than anywhere a value would be. The
+function may still have a body — C++ allows one and a derived class can call it
+explicitly — so the *symbol* is unchanged and only the table entry differs.
+
+**Abstract is a question about the finished table, not about what the class
+declared.** A derived class that overrides every pure entry has replaced them
+and is concrete; one that leaves any is abstract in its turn, even though it
+declared no pure virtual of its own. `VSlot::pure` carries it and an override
+clears it, which is the same machinery that already replaced the symbol.
+
+**The refusal is where an object would be made, not where the call would
+happen** — a local, a member, a `new` — because by the time the call is reached
+there is nothing left to say about it. It names the function that has no
+implementation, which is the thing the reader has to write.
+
+Worth knowing about how this was found: pure virtuals were missing and
+`docs/EXCLUSIONS.md` did **not** list them, because the refusal was a bare
+`expected ';'` rather than a message naming the feature. That is the same
+defect the exclusions document exists to catch, one level down, and it is why
+the rule there is that a refusal says "is not supported yet" or names a
+standard version.
+
 **A virtual destructor puts a function in the vtable that no program writes.**
 `delete p` through a base pointer has to reach the right destructor and then
 free, so one slot does both and holds a *deleting* destructor. cxx1

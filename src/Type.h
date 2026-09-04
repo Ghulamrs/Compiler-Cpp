@@ -222,6 +222,13 @@ public:
     bool polymorphic() const { return cls().polymorphic_; }
     void setPolymorphic(bool p) { polymorphic_ = p; }
 
+    // **A class with a pure virtual its own table has not filled in.** No
+    // object of one may exist - the slot holds the runtime's trap, so a call
+    // through it would find nothing - which is why this is refused where an
+    // object would be made rather than where the call would happen.
+    bool abstract() const { return cls().abstract_; }
+    void setAbstract(bool a) { abstract_ = a; }
+
     // **Whether copying this class is a function call rather than a move of bytes**,
     // which both platform ABIs make a question about how it is *passed*. Measured
     // with cl and clang; on the type, because the backends must agree with the parser.
@@ -344,6 +351,7 @@ private:
     bool memberFn_ = false;
     int dataSize_ = 0;
     bool polymorphic_ = false;
+    bool abstract_ = false;
     bool nonTrivialCopy_ = false;
     bool hasDestructor_ = false;
     std::vector<BaseSpec> bases_;

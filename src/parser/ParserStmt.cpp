@@ -324,6 +324,7 @@ StmtPtr Parser::declarationBody() {
                                   peek().is("=");
         if (!d.type->isComplete() && !sizedByInitialiser)
             src_.fail(d.pos, "'" + d.name + "' has an incomplete type");
+        checkNotAbstract(d.type, d.pos, "'" + d.name + "'");
 
         if (sc == StorageStatic) {
             std::string symbol = functionName_ + "." + d.name;

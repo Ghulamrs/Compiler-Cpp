@@ -663,15 +663,30 @@ void Parser::topLevel(Program &program) {
             std::vector<ExprPtr> args;
             parseArguments(args);
 
+            // **The name written is not always the base's tag.** A class in a
+            // namespace has a qualified tag - `n::Base` - and the list names it
+            // the way the source can see it, `Base`. So the written name is
+            // resolved as a type and the *types* are compared; the string
+            // comparison stays for the case where there is no type to find.
+            // What goes in the map is the tag either way, because that is what
+            // the walk over the bases looks it up by.
             bool isBase = false;
+            std::string baseKey = entry;
+            const Type *namedBase = findTypedef(entry);
             const std::vector<Type::BaseSpec> &bs = memberOf->bases();
             for (std::size_t i = 0; i < bs.size(); i++)
-                if (bs[i].type->tag() == entry) { isBase = true; break; }
+                if (bs[i].type->tag() == entry ||
+                    (namedBase != nullptr &&
+                     namedBase->unqualified() == bs[i].type->unqualified())) {
+                    isBase = true;
+                    baseKey = bs[i].type->tag();
+                    break;
+                }
 
             if (isBase) {
-                if (baseArgs.count(entry))
+                if (baseArgs.count(baseKey))
                     src_.fail(epos, "'" + entry + "' is initialised twice");
-                baseArgs[entry] = std::move(args);
+                baseArgs[baseKey] = std::move(args);
             } else if (const Member *m = memberOf->findMember(entry)) {
                 if (memberExprs.count(entry))
                     src_.fail(epos, "'" + entry + "' is initialised twice");

@@ -1291,10 +1291,16 @@ std::string itaniumDataName(const std::string &name, bool internal) {
     const std::vector<std::string> parts = scopeComponents(name);
     if (parts.size() > 1) {
         std::string out = "_ZN";
-        for (std::size_t i = 0; i < parts.size(); i++) {
+        for (std::size_t i = 0; i + 1 < parts.size(); i++) {
             out += std::to_string(parts[i].size());
             out += parts[i];
         }
+        // **The L for internal linkage goes before the unqualified name**, not
+        // after the `_ZN` where a file-scope static puts it - `_ZN1nL3objE`,
+        // measured. Getting it wrong gives a name nothing else spells.
+        if (internal) out += "L";
+        out += std::to_string(parts.back().size());
+        out += parts.back();
         return out + "E";
     }
     if (!internal) return name;
