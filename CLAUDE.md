@@ -4019,6 +4019,28 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## A private nested type as a member's own return type
+
+**[class.access]/6: a member's definition may name its class's private types**,
+and the return type is written before the `C::` that says whose member it is.
+`VM::Value VM::pop()` reads the type first, when nothing yet says this is a
+member of VM - so `insideClass` answered no and the class was refused a
+definition it had every right to write.
+
+**The declarator ahead is asked instead**, which is the only thing that knows.
+The scan stops at the first `(`, `;`, `{` or `=` at depth zero, so it cannot
+wander past this declaration, and it takes the **longest run of `A::B::` that
+names a type** - `Outer::Inner::f` asks about `Outer::Inner` rather than
+stopping at `Outer`, which is the same longest-prefix rule `specifiers` already
+follows. A class nested inside the owner counts, because its members reach the
+owner's private names exactly as the owner's own do.
+
+**What it must not do is let anyone else in**, and that is the half worth
+testing: `VM::Value v;` in a function, `VM::Value other();` at file scope and
+`sizeof(VM::Value)` are each still refused, and clang refuses all three too.
+The look-ahead answers "is this the definition of a member of that class", not
+"is that class mentioned nearby".
+
 ## `?:` as an lvalue, which was a missing shape rather than a missing rule
 
 **[expr.cond]/4: a `?:` whose arms are glvalues of one type is a glvalue.** So

@@ -139,6 +139,34 @@ bool Parser::insideClass(const Type *cls) const {
     return false;
 }
 
+// **Does the declarator after `from` define a member of `cls`?** The scan stops
+// at the first `(` or `;` at depth zero, which bounds it to this declaration,
+// and takes the longest prefix of `A::B::` names that is a type - so
+// `Outer::Inner::f` asks about `Outer::Inner` rather than about `Outer`. A
+// class nested inside `cls` counts, because its members reach `cls`'s private
+// names exactly as `cls`'s own do.
+bool Parser::definesMemberOf(const Type *cls, std::size_t from) const {
+    if (cls == nullptr) return false;
+    for (std::size_t k = from; ; k++) {
+        const Token &t = peekAt(k);
+        if (t.kind == TokenKind::End) return false;
+        if (t.is("(") || t.is(";") || t.is("{") || t.is("=")) return false;
+        if (t.kind != TokenKind::Ident || !peekAt(k + 1).is("::")) continue;
+
+        // The longest run of `Ident ::` starting here that names a type.
+        std::string name = t.text;
+        const Type *best = nullptr;
+        for (std::size_t j = k; peekAt(j).kind == TokenKind::Ident &&
+                                peekAt(j + 1).is("::"); j += 2) {
+            if (j != k) name += "::" + peekAt(j).text;
+            if (const Type *found = findTypedef(name)) best = found;
+        }
+        if (best != nullptr)
+            for (const Type *c = best; c != nullptr; c = c->enclosing())
+                if (c == cls) return true;
+    }
+}
+
 const std::string *Parser::localOwnerOf(const std::string &tag) const {
     auto it = localClassOwner_.find(tag);
     return it == localClassOwner_.end() ? nullptr : &it->second;

@@ -921,6 +921,12 @@ private:
     // Whether the class being parsed, or the one whose member function is
     // being parsed, is this class or something derived from it.
     bool insideClass(const Type *cls) const;
+    // **[class.access]/6: a member's own definition may name its class's
+    // private types, and the return type is written before the `C::` that
+    // says whose member it is.** `VM::Value VM::pop()` reads the type first,
+    // when nothing yet says this is a member of VM - so the declarator ahead
+    // is asked instead.
+    bool definesMemberOf(const Type *cls, std::size_t from) const;
     // `Point::Point(` and `Outer::Inner::~Inner(` have no type before the
     // name and the name IS a type, so the specifier list has to decline them.
     bool atUntypedMemberDefinition() const;

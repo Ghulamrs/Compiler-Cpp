@@ -1023,7 +1023,8 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
                 // A nested class is a member, and `private:` reaches it.
                 if (found->enclosing() != nullptr &&
                     found->nestedAccess() != Access::Public &&
-                    !insideClass(found->enclosing()))
+                    !insideClass(found->enclosing()) &&
+                    !definesMemberOf(found->enclosing(), consumed))
                     src_.fail(peek().pos, "'" + found->localName() + "' is " +
                                           (found->nestedAccess() == Access::Private
                                                ? "private" : "protected") +
