@@ -1,0 +1,12 @@
+discarded    live 0  balanced 1
+one member   live 0  balanced 1
+init         live 0  balanced 1
+direct       live 0  balanced 1
+argument     live 0  balanced 1
+arg value    live 0  balanced 1
+from lvalue  live 0  balanced 1
+from temp    live 0  balanced 1
+nested       live 0  balanced 1
+assigned     live 0  balanced 1
+trivial cp   live 0  balanced 1
+trivial in   live 0  balanced 1

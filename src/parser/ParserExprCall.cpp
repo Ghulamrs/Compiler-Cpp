@@ -83,7 +83,7 @@ void Parser::flushTemporaries(std::vector<StmtPtr> &into) {
 // receives, so destroying it at the end of this full expression would release
 // what the caller is about to be given. A constructed temporary is
 // `Comma(build, slot)`, so the slot is found by walking to the right.
-void Parser::releaseTemporary(const Expr &value) {
+bool Parser::releaseTemporary(const Expr &value) {
     const Expr *at = &value;
     for (;;) {
         if (const Comma *c = dynamic_cast<const Comma *>(at)) { at = &c->right(); continue; }
@@ -95,12 +95,13 @@ void Parser::releaseTemporary(const Expr &value) {
         break;
     }
     const Var *v = dynamic_cast<const Var *>(at);
-    if (v == nullptr || !v->isLocal()) return;
+    if (v == nullptr || !v->isLocal()) return false;
     for (std::size_t i = 0; i < pendingTemps_.size(); i++)
         if (pendingTemps_[i].first == v->offset()) {
             pendingTemps_.erase(pendingTemps_.begin() + i);
-            return;
+            return true;
         }
+    return false;
 }
 
 ExprPtr Parser::endFullExpression(ExprPtr e) {
@@ -217,7 +218,7 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
     // argument needs, so no copy constructor runs - as clang does at -O0.
     if (Call *made = dynamic_cast<Call *>(arg.get())) {
         if (made->type() == cls && returnsIndirectly(cls, made->hasThis())) {
-            made->setResultSlot(tmp);
+            claimCallResult(*made, tmp);
             ExprPtr built(Var::local("$copy", tmp));
             built->setType(cls);
             ExprPtr at(new Unary('&', std::move(built)));
@@ -328,10 +329,31 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
         for (std::size_t k = 0; k < destroy.size(); k++)
             pendingTemps_.push_back(destroy[k]);
 
+    // **And the object the call returns is a temporary like any other.** The
+    // slot above is where the callee builds its result, and nothing was
+    // destroying it: `make();` on its own, `make().v`, and an argument built
+    // from one all left the object alive for the rest of the function. It is
+    // the caller's on every ABI - what Microsoft moves to the callee is the
+    // by-value *parameter* above, not the return.
+    if (slot != 0 && destructorOf(returns) != nullptr)
+        pendingTemps_.push_back(std::make_pair(slot, returns->unqualified()));
+
     // A call that returns a reference is an lvalue, and useReference is what
     // makes it one: the address comes back in a register and the dereference
     // around it is what the caller actually named.
     return useReference(std::move(n));
+}
+
+void Parser::claimCallResult(Call &c, int slot) {
+    const int had = c.resultSlot();
+    if (had != 0)
+        for (std::size_t i = 0; i < pendingTemps_.size(); i++)
+            if (pendingTemps_[i].first == had) {
+                pendingTemps_.erase(pendingTemps_.begin() +
+                                    static_cast<long>(i));
+                break;
+            }
+    c.setResultSlot(slot);
 }
 
 // A call through an object: `p.move(1, 2)`. The object's address goes in front of

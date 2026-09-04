@@ -4019,6 +4019,61 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## A class returned by value was never destroyed, and the two halves that hid it
+
+**One object leaked per call**, in every shape a call's result can appear in:
+`make();` discarded, `make().v`, `T b = make();`, `T b(make())`, and
+`take(make())`. It was reported as a double destroy and measured as the
+opposite - which is the whole reason to count live objects rather than read
+printed lines. `Guard g = Guard(5);` printing two destructors for one
+constructor is **not** a fault: it is the legal non-eliding option, and
+`clang -fno-elide-constructors` prints exactly what cxx1 prints. The fault was
+next door and had the other sign.
+
+**The caller never owned the result slot.** `completeCall` allocates a frame
+slot for a class return - it is where the callee builds through the hidden
+pointer - and nothing was destroying it. It goes on `pendingTemps_` now like
+any other temporary, so the full expression ends it. What that needs beside it
+is a way to *give it up*: `claimCallResult` takes the entry back off wherever
+something redirects the result into storage of its own - the copy elision in a
+declaration, and the argument-copy elision in `materialiseCopy`. Without that
+the destructor would run on a slot nothing ever built, which is worse than
+the leak.
+
+**And the callee copied what it had already given away.** `return Owner(n);`
+releases the temporary rather than destroying it - correctly, because its bytes
+travel out through the hidden pointer and the caller owns them from that
+moment. But the branch below it, which exists so that returning a glvalue this
+function does not own calls the copy constructor, could not tell that case from
+a released temporary: it built a second object and left the first undestroyed.
+`releaseTemporary` answers whether it found one now, and a released temporary
+*is* the object going out.
+
+**The elision had to widen, and the reason is the point.** The gate asked
+`nonTrivialCopy()`, so a class of plain members with a `~T` - trivial to copy,
+observable to destroy - was copied rather than elided. Once the result slot was
+being destroyed properly that showed up as two destructions where clang has
+one, in three existing cases. Both readings are legal; matching the oracle is
+worth more. **A destructor makes the copy observable even where the copy
+itself is trivial**, and that is what the gate asks now.
+
+**Found beside it and not fixed: a temporary is not destroyed when an
+exception passes through.** Cleanup regions are built from `alive_`, which
+holds named objects; `pendingTemps_` has no region of its own, so an argument
+copy or a class temporary is destroyed on the normal path and leaked on the
+unwind. Measured with a throw through `take(Owner(6))` - clang balances,
+cxx1 leaves two alive - and it is pre-existing rather than opened by this
+change: it needs cleanup regions built from the temporaries list, which is
+real machinery and its own step. `docs/CONFORMANCE.md` records it.
+
+**`return-by-value-balance.cpp` counts live objects and whether constructions
+balance destructions, and never the number of constructor calls.** Elision is
+permitted rather than required in C++11 and the two oracles take different
+options, so a constructor count has no single right answer - while a leak or a
+double destroy moves those two numbers and nothing else does. That is the
+shape CLAUDE.md already prescribed for `return-copy-balance` and `move-only`,
+and this is the case family it said was missing.
+
 ## A declaration in a condition, and the two rules that are not one rule
 
 **`if (T x = e)` was deferred at rung 1** with the note that it "needs the

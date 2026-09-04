@@ -373,3 +373,32 @@ with refusals of correct code.
 unwinding - which is a program relying on it to crash - keeps running instead.
 Nothing that relies on the *promise* being true is affected, because a program
 that keeps its promise cannot tell the difference.
+
+## A temporary is not destroyed when an exception passes through
+
+[class.temporary]/4 destroys a temporary at the end of the full expression it
+was made in, and [except.ctor]/1 destroys it during unwinding if the full
+expression does not finish. cxx1 does the first and not the second.
+
+Cleanup regions are built from `alive_`, which holds objects with names - a
+local, a by-value class parameter on Windows. `pendingTemps_` has no region of
+its own, so an argument copy and a class temporary are destroyed on the normal
+path and leaked on the unwind.
+
+```cpp
+int take(Owner o) { if (o.v == 6) throw 1; return o.v; }
+int through() { return take(Owner(6)); }
+// through() copies Owner(6) into the parameter; the throw leaves through()
+// without destroying either the temporary or the copy.
+```
+
+Measured against clang with objects counted rather than constructor calls: for
+a throw through `take(Owner(6))` clang ends with none alive and cxx1 with two;
+for `Owner t(6); take(t);` cxx1 leaves the argument copy alive, `t` itself
+being a named local and so covered. `tests/cases/return-by-value-balance.cpp`
+pins the normal path, where the two numbers agree for every shape.
+
+It is a leak rather than a wrong answer, and it is bounded by the function: an
+exception that unwinds a frame loses whatever temporaries that expression had
+made. Fixing it means giving `pendingTemps_` cleanup regions of the kind
+`block()` already builds for `alive_`, which is its own step.

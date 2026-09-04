@@ -1124,10 +1124,17 @@ private:
     // destroyed at the end of the full expression and not when the call they were made
     // for returns** - [class.temporary], visible in `printf("%d", useD(d))`.
     std::vector<std::pair<int, const Type *> > pendingTemps_;
+    // **Taking over a call's result slot takes over its destruction too.** The
+    // call registered the slot it allocated as a temporary; whoever redirects
+    // the result into storage of its own owns the object from then on, so the
+    // old entry has to go or a destructor runs on a slot nothing built.
+    void claimCallResult(Call &c, int slot);
     ExprPtr endFullExpression(ExprPtr e);
     // Drop the temporary this expression yields from the pending list, because
     // its ownership is leaving the frame. `return` is the only caller.
-    void releaseTemporary(const Expr &value);
+    // Answers whether it found one, which is what tells `return` that the
+    // operand *is* the object going out rather than something to copy from.
+    bool releaseTemporary(const Expr &value);
     void flushTemporaries(std::vector<StmtPtr> &into);
     ExprPtr completeCall(const std::string &name, const std::string &symbol,
                          ExprPtr callee, const Type *returns,

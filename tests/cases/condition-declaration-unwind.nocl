@@ -1,0 +1,12 @@
+cl emits the four objects a Microsoft throw is identified by - ??_R0H@8, the
+type descriptor for int; _CT??_R0H@84, its catchable type; _CTA1H, the array
+of those; and _TI1H, the ThrowInfo - as public COMDATs, and cxx1 emits the
+same four as file-local symbols, so they do not appear in its symbol table.
+
+That is deliberate and measured: a public copy collides with cl's at the link
+with LNK2005, and the runtime matches a type descriptor by its name string
+rather than by its address - which is the same rule that lets a throw cross a
+DLL boundary. CLAUDE.md records it under "6.5a as it actually landed".
+
+Every other name in this case agrees with cl, and tests/names.sh compares the
+whole case against clang for all three targets with no difference at all.

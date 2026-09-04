@@ -247,7 +247,7 @@ it is written:
   `src/parser/ParserTopLevel.cpp:271`
 - **a static data member of a class with a constructor** —
   `src/parser/ParserClass.cpp:1799`
-- **a static reference** — `src/parser/ParserStmt.cpp:310`
+- **a static reference** — `src/parser/ParserStmt.cpp:317`
 - **a reference at file scope** — `src/parser/ParserTopLevel.cpp:254`
 
 ## Expressions
@@ -290,24 +290,24 @@ it is written:
 
 - **a local with a destructor and a `try` in one function** — each is a range
   in the call-site table and one would have to split the other.
-  `src/parser/ParserStmt.cpp:691`, `src/parser/ParserStmt.cpp:903`,
-  `src/parser/ParserStmt.cpp:1384`
+  `src/parser/ParserStmt.cpp:698`, `src/parser/ParserStmt.cpp:910`,
+  `src/parser/ParserStmt.cpp:1397`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and
   so does a class in the condition of an `if`, where the object is built once.
-  `src/parser/ParserStmt.cpp:631`
-- **a `try` inside another** — `src/parser/ParserStmt.cpp:941`
+  `src/parser/ParserStmt.cpp:638`
+- **a `try` inside another** — `src/parser/ParserStmt.cpp:948`
 - **catching by reference** — catch by value.
-  `src/parser/ParserStmt.cpp:992`
+  `src/parser/ParserStmt.cpp:999`
 - **a rethrow**, `throw;` with nothing after it —
-  `src/parser/ParserStmt.cpp:1165`
+  `src/parser/ParserStmt.cpp:1172`
 - **a dynamic exception specification**, `throw(T)` — `throw()` with nothing in
   it is `noexcept` and works. `src/parser/ParserConst.cpp:71`
 - **a range-based `for` over anything but an array** — a class would need its
-  `begin()` and `end()` found and called. `src/parser/ParserStmt.cpp:471`
+  `begin()` and `end()` found and called. `src/parser/ParserStmt.cpp:478`
 - **a reference loop variable in a range-based `for`** —
-  `src/parser/ParserStmt.cpp:479`
+  `src/parser/ParserStmt.cpp:486`
 - **a trailing return type**, `auto f(int) -> int` — C++11, and refused as the
   C++11 feature it is rather than as `auto` deduction.
   `src/parser/ParserTopLevel.cpp:391`
@@ -321,7 +321,7 @@ it is written:
   class's overload set. `src/parser/ParserType.cpp:265`
 - **a using-declaration inside a block** — it would declare a name for the rest
   of the block and rank against the locals beside it.
-  `src/parser/ParserStmt.cpp:1149`. The one at namespace scope,
+  `src/parser/ParserStmt.cpp:1156`. The one at namespace scope,
   `using N::f;`, works, and so does `using namespace N;` here.
 
 ## Lambdas
@@ -382,7 +382,7 @@ guessed wrong twice.
 
 - **`return` inside a `catch` on x86_64-windows** — a handler is a funclet
   there, so leaving one early is a return of the address to carry on at.
-  `src/parser/ParserStmt.cpp:1174`
+  `src/parser/ParserStmt.cpp:1181`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation

@@ -218,7 +218,14 @@ StmtPtr Parser::declarationBody() {
             // **Copy elision, in the one case worth having it**: where the initialiser
             // is a call already returning through a hidden pointer, the object is built
             // straight into this variable. clang does it at -O0, cl does not; both may.
-            Call *made = args.size() == 1 && d.type->nonTrivialCopy()
+            // **A destructor makes the copy observable even where it is
+            // trivial**, which is why this asks about more than the copy: a
+            // class of plain members with a `~T` is copied by bytes and then
+            // destroyed twice, once per object. clang elides it at -O0 and so
+            // does this now.
+            Call *made = args.size() == 1 &&
+                         (d.type->nonTrivialCopy() ||
+                          destructorOf(d.type) != nullptr)
                        ? dynamic_cast<Call *>(args[0].get()) : nullptr;
 
             // **A trivial copy, in a class that does have constructors** - none was
@@ -246,7 +253,7 @@ StmtPtr Parser::declarationBody() {
 
             if (made != nullptr && made->type() == d.type &&
                 returnsIndirectly(d.type, made->hasThis())) {
-                made->setResultSlot(off);
+                claimCallResult(*made, off);
                 inits.push_back(StmtPtr(new ExprStmt(std::move(args[0]))));
             } else if (trivialCopy) {
                 ExprPtr target(Var::local(d.name, off));
@@ -1205,8 +1212,14 @@ StmtPtr Parser::statementBody() {
         // value means. The caller then copy-constructs from those bytes and the
         // hidden temporary is not destroyed there either - that leak is a
         // separate open finding, and a leak is not a wrong answer.
+        // **A temporary released here is the returned object itself**, not a
+        // source to copy from - its bytes travel out through the hidden
+        // pointer and the caller owns them. Copying it as well built a second
+        // object and left the first undestroyed, which is where
+        // `return Owner(n);` leaked one per call.
+        bool ownedTemporary = false;
         if (!returnType_->isReference() && returnType_->isStructOrUnion())
-            releaseTemporary(*returned);
+            ownedTemporary = releaseTemporary(*returned);
         ExprPtr value = endFullExpression(std::move(returned));
         bool returnedParameter = false;
         if (returnType_->isReference()) {
@@ -1279,7 +1292,7 @@ StmtPtr Parser::statementBody() {
         // constructor**, and nothing did: the byte move let the destructor's elision
         // stand in. The copy is built into a slot of this frame, and that is elided.
         std::vector<StmtPtr> before;
-        if (returnType_->isStructOrUnion() && !elidable &&
+        if (returnType_->isStructOrUnion() && !elidable && !ownedTemporary &&
             value->type() != nullptr &&
             value->type()->unqualified() == returnType_->unqualified() &&
             isGlvalue(*value) &&
