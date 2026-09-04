@@ -42,6 +42,9 @@ public:
     size_type size() const { return items_.size(); }
     bool empty() const { return items_.empty(); }
     void clear() { items_.clear(); }
+    // The two maps exchange their insides rather than their entries, so
+    // neither copies anything and a reference into either follows its own.
+    void swap(map &other) { items_.swap(other.items_); }
 
     iterator begin() { return items_.begin(); }
     iterator end() { return items_.end(); }

@@ -189,8 +189,14 @@ void Parser::topLevel(Program &program) {
                                       "and not to the same type: it was '" +
                                       had->describe() + "' and is now '" +
                                       td.type->describe() + "'");
-            typedefIndex_[td.name] = typedefs_.size();
-            typedefs_.push_back(TypedefName{ td.name, td.type });
+            // **A typedef at namespace scope is keyed by its qualified name**,
+            // the way a class declared there already was through its tag. Left
+            // unqualified it could be found from inside the namespace, by the
+            // walk in findTypedef, and never as `std::streamsize` written out -
+            // which is how a program outside the namespace names it.
+            const std::string key = namespacePrefix() + td.name;
+            typedefIndex_[key] = typedefs_.size();
+            typedefs_.push_back(TypedefName{ key, td.type });
         } while (consume(","));
         expect(";");
         return;
@@ -308,7 +314,14 @@ void Parser::topLevel(Program &program) {
                                  "to take one from");
             }
 
-            if (GlobalSym *prev = findGlobalToUpdate(d.name)) {
+            // **Redeclaration is asked about under the key the definition will
+            // use.** Asked under the written name, a `cc::shared` found the
+            // global `shared` and reported it declared twice - the lookup and
+            // the registration below disagreeing about what the name is.
+            const std::string gname =
+                (namespaceStack_.empty() || cLinkage_ > 0)
+                    ? d.name : namespacePrefix() + d.name;
+            if (GlobalSym *prev = findGlobalToUpdate(gname)) {
                 const Type *both = composite(prev->type, d.type);
                 if (both == nullptr)
                     src_.fail(d.pos, "'" + d.name + "' was already declared as '" +
@@ -344,10 +357,7 @@ void Parser::topLevel(Program &program) {
 
             // A variable declared in a namespace is keyed and mangled by its qualified
             // name, the same as a function. `extern "C"` does not reach into one, so a
-            // name with C linkage keeps what it was written with.
-            const std::string gname =
-                (namespaceStack_.empty() || cLinkage_ > 0)
-                    ? d.name : namespacePrefix() + d.name;
+            // name with C linkage keeps what it was written with - `gname` above.
             globalIndex_[gname] = globals_.size();
             bool objectIsConst = d.type->isConst();
             // A const object at namespace scope has internal linkage of its own -

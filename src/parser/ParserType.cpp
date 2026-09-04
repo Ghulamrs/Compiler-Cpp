@@ -1039,6 +1039,18 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         }
     }
 
+    // **A leading `::` names the global scope and nothing nearer**, which is
+    // what a class writes when a member, a local or a namespace has taken the
+    // name it wants - `::Lexer *lexer;` inside a `cc::Parser` that also knows
+    // a `Lexer`. The token says where to look; everything after it is the
+    // ordinary path.
+    if (peek().is("::") && peekAt(1).kind == TokenKind::Ident) {
+        if (const Type *t = findGlobalTypedef(peekAt(1).text)) {
+            at_ += 2;
+            return memberTypeWalk(t);
+        }
+    }
+
     int isVoid = 0, isBool = 0, isChar = 0, isShort = 0, isInt = 0, isLong = 0;
     int isSigned = 0, isUnsigned = 0, isFloat = 0, isDouble = 0;
 

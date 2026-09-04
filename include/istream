@@ -20,6 +20,20 @@
 
 namespace std {
 
+// **`ss << in.rdbuf()` is how a whole stream is read in one line**, and it is
+// the only thing most programs ask a streambuf for. The standard makes it a
+// class of its own with the buffering underneath; here the streams buffer
+// through `FILE *` already, so what `rdbuf()` hands back is a token naming the
+// stream it came from and the `operator<<` for it copies whatever is left.
+//
+// Deliberately not called `streambuf`: nothing else here takes one, and a class
+// with that name would promise the rest of the standard's interface.
+class istream;
+
+struct streamsource {
+    istream *from;
+};
+
 class istream {
 public:
     FILE *fp_;
@@ -90,6 +104,8 @@ public:
         return *this;
     }
 
+    streamsource rdbuf() { streamsource s; s.from = this; return s; }
+
     // Unformatted input: no whitespace is skipped and nothing is converted.
     int get() {
         if (src_ != 0) {
@@ -154,6 +170,19 @@ static istream &getline(istream &in, string &s, char delim) {
 }
 
 static istream &getline(istream &in, string &s) { return getline(in, s, '\n'); }
+
+// Everything left in the source, copied a byte at a time. `<ostream>` is
+// already included above, so both sides of this are complete here.
+static ostream &operator<<(ostream &out, streamsource src) {
+    if (src.from == 0) return out;
+    int c = src.from->get();
+    while (c >= 0) {
+        out.put((char)c);
+        c = src.from->get();
+    }
+    return out;
+}
+
 
 }  // namespace std
 

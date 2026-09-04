@@ -15,6 +15,7 @@ namespace std {
 
 using ::abort;
 using ::abs;
+using ::atof;
 using ::atoi;
 using ::atol;
 using ::bsearch;
@@ -28,6 +29,8 @@ using ::rand;
 using ::realloc;
 using ::srand;
 using ::strtod;
+using ::strtol;
+using ::strtoul;
 
 }  // namespace std
 

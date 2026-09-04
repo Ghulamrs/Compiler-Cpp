@@ -4019,6 +4019,66 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## Five walls out of Compiler++, and the shape they had in common
+
+**macOS first, then Linux, then Windows** - and the reason that order costs
+nothing is that every wall here was in `src/parser/`, which does not know what
+machine it is compiling for. A front-end fix lands on all three at once; only
+the ABI and the code generators differ, and 510 emit cases already walk those.
+
+**A typedef at namespace scope was keyed by its bare name.** A class declared
+there carried its namespace in its tag and was findable as `n::S`; a typedef
+was registered as `sz` and so could be reached from inside the namespace, by
+the walk in `findTypedef`, and never as `std::streamsize` written out - which
+is how a program outside the namespace names it. Keyed by the qualified name
+now, as everything else at that scope already was.
+
+**A leading `::` works as a type and is still refused in an expression**, and
+the split is not arbitrary. A type is one look in one table, and that table is
+exactly the global scope by construction: a class at file scope is keyed by its
+bare name, one in a namespace by its qualified name, one local to a function
+lives in `localTypes_`. So `findGlobalTypedef` reaches the first and neither of
+the others, and `::Lexer *lexer;` is that plus a token. A name in an expression
+goes through `qualifyForLookup`, where a namespace and a using-directive get
+their say - restricting that for one name means a flag put down again before
+the call's arguments are parsed, and the half-built version *silently found
+`cc::f` where the program asked for `::f`*. Measured, not guessed, which is why
+it is refused rather than shipped.
+
+**A redeclaration was looked up under a different key than the definition
+registered.** `findGlobalToUpdate(d.name)` took the written name while the
+registration below took `namespacePrefix() + d.name`, so a `cc::shared` beside
+a global `shared` was reported as declared twice. One key, computed once.
+
+**A `const T &` parameter took a user-defined conversion and not a standard
+one.** [dcl.init.ref]/5 binds a const lvalue reference to a temporary
+initialised by *any* implicit conversion sequence, and the reference binding's
+rank is that sequence's rank. Only the user-defined half was here, so
+`v.push_back(new Derived)` into a `vector<Base *>` and `v.assign(8, 0)` into a
+`vector<unsigned char>` were both refused as no viable function - one a
+pointer conversion, the other an integral one, neither of them exotic.
+
+**And the library gaps were the rest**: `assign` and `swap` on `vector`, `swap`
+on `map`, `strtol`, `strtoul`, `atof`, the one-character `find_first_of` and
+`find_last_of` (the `const char *` forms were there and a `char` reaches them
+through no conversion C++ has), and `rdbuf`.
+
+**`ss << in.rdbuf()` is the whole reason a streambuf exists in most
+programs**, and it is the one thing this library did not have a shape for. The
+standard makes it a class with the buffering underneath; here the streams
+buffer through `FILE *` already, so `rdbuf()` hands back a token naming the
+stream it came from and the `operator<<` for it copies whatever is left. It is
+deliberately not called `streambuf`: nothing else here takes one, and a class
+with that name would promise the rest of the standard's interface.
+
+**Found on the way and not fixed: inside a namespace, an unqualified name
+finds the global one first.** `findTypedef` looks in the flat table before it
+tries `qualifyForLookup`, so inside `namespace cc` a written `Lexer` is the
+global `::Lexer` rather than `cc::Lexer` - the nearer scope should win. It is
+recorded in `docs/CONFORMANCE.md` rather than mended here, because reversing
+that order changes how every unqualified name in a namespace resolves and
+wants a round of its own.
+
 ## A temporary during unwinding, and why the obvious fix is a regression
 
 **Cleanup regions were built from `alive_`**, which is the list of objects with

@@ -267,6 +267,17 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
                 rankingConversion_--;
                 if (usable) return Rank::UserDefined;
             }
+            // **And a standard conversion makes that temporary too.**
+            // [dcl.init.ref]/5 binds a const lvalue reference to a temporary
+            // initialised by *any* implicit conversion sequence, and the
+            // sequence's rank is the reference binding's rank. Only the
+            // user-defined half was here, so `v.push_back(new Derived)` into a
+            // `vector<Base *>` and `v.assign(8, 0)` into a
+            // `vector<unsigned char>` were both refused as no viable function.
+            if (want->isConst()) {
+                const Rank direct = rankArgument(arg, want->unqualified());
+                if (direct != Rank::None) return direct;
+            }
             return Rank::None;
         }
         if (!want->isConst() && given->isConst()) return Rank::None;

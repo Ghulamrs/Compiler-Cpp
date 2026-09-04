@@ -428,3 +428,24 @@ caller's pad then destroys it again.
 
 The shape is named in `temporary-unwind.cpp` and left out of it rather than
 skipped, so that the case says the same thing on all three targets.
+## Inside a namespace, an unqualified name finds the global one first
+
+[basic.lookup.unqual] searches the nearest enclosing scope first, so inside
+`namespace cc` a written `Lexer` should be `cc::Lexer` where one exists, and
+only otherwise the global `::Lexer`. `findTypedef` looks in the flat type table
+before it tries `qualifyForLookup`, so the global wins.
+
+```cpp
+struct Lexer { int k; };
+namespace cc {
+    struct Lexer { int other; };
+    struct Parser { Lexer *p; };   // cxx1: ::Lexer. clang: cc::Lexer
+}
+```
+
+It makes `::` redundant here rather than wrong - a program that writes
+`::Lexer` gets what it asked for - and it is why
+`tests/cases/global-scope-qualifier.cpp` writes `cc::Lexer` where it means the
+nearer one. Reversing the order changes how every unqualified name inside a
+namespace resolves, which wants a round of its own rather than a line in a
+change about something else.

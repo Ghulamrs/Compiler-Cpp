@@ -725,6 +725,13 @@ private:
 
     bool atTypeName() const;
     const Type *findTypedef(const std::string &name) const;
+    // **`::Lexer` - the global scope and nothing nearer**, which is the whole
+    // of what a leading `::` asks for. A direct look in the one table is
+    // exactly that: a class or typedef at file scope is keyed by its bare
+    // name, one in a namespace by its qualified name, and a class local to a
+    // function lives in `localTypes_` - so this reaches the first and neither
+    // of the others.
+    const Type *findGlobalTypedef(const std::string &name) const;
     void declareTypeName(const std::string &name, const Type *type);
     const EnumConst *findEnum(const std::string &name) const;
     const Type *memberTypeWalk(const Type *t);

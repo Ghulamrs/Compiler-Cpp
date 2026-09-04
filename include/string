@@ -150,6 +150,11 @@ public:
             if (std::strchr(wanted, buf_[i]) != 0 && buf_[i] != 0) return i;
         return npos;
     }
+    // **The one-character forms**, which is how a path is usually split -
+    // `path.find_last_of('/')`. A `char` reaches the `const char *` overload
+    // through no conversion C++ has, so without these the call is refused.
+    size_type find_first_of(char c) const { return find(c, 0); }
+    size_type find_last_of(char c) const { return rfind(c); }
 
     string &insert(size_type pos, const char *s) {
         size_type n = s == 0 ? 0 : std::strlen(s);

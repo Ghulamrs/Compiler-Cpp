@@ -202,6 +202,11 @@ std::string Parser::qualifyForLookup(const std::string &name,
     return name;
 }
 
+const Type *Parser::findGlobalTypedef(const std::string &name) const {
+    auto it = typedefIndex_.find(name);
+    return it == typedefIndex_.end() ? nullptr : typedefs_[it->second].type;
+}
+
 const Type *Parser::findTypedef(const std::string &name) const {
     // **A class local to this function is found first, and that is what makes it
     // shadow a global of the same name** - [basic.scope.local], and the reason the
@@ -331,6 +336,10 @@ bool Parser::atTypeName() const {
                                      "decltype" };
     for (const char *k : t)
         if (peek().is(k)) return true;
+    // `::Lexer *p;` declares a p - the leading `::` says where to look and
+    // nothing else, so the question is about the name after it.
+    if (peek().is("::") && peekAt(1).kind == TokenKind::Ident)
+        return findGlobalTypedef(peekAt(1).text) != nullptr;
     if (peek().kind != TokenKind::Ident) return false;
     // `Box<int> b;` declares a variable, so the name has to answer yes here -
     // but only with a `<` after it, since the bare name is not a type.

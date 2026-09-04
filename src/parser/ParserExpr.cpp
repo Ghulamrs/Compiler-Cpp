@@ -835,11 +835,18 @@ ExprPtr Parser::primary(Program *program) {
     // **`::f()` - a name asked for at global scope explicitly.** Refused by name
     // rather than left to "expected an expression", which points at a '::' and says
     // nothing. It matters only where a nearer name hides the global one.
+    // **`::f()` in an expression is still refused, and `::Lexer` as a type is
+    // not.** The type form is a lookup in one table and reaches only the
+    // global scope by construction. An expression's name goes through
+    // `qualifyForLookup`, which is where a namespace or a using-directive gets
+    // its say - restricting *that* for one name means a flag it would have to
+    // put down again before the call's arguments are parsed, and half of it
+    // silently finds `cc::f` where the program asked for `::f`.
     if (peek().is("::"))
-        src_.fail(peek().pos, "a name qualified with '::' alone - the global "
-                              "scope - is not supported yet; write the name "
-                              "without it, which finds the same thing while "
-                              "nothing shadows it");
+        src_.fail(peek().pos, "a name qualified with '::' alone is not "
+                              "supported yet in an expression - as a type, "
+                              "'::Lexer *p;' works. Write the name without it "
+                              "where nothing shadows it");
 
     // ...and `N::S::n` is not this: the chain reaches a *class*, and what follows a
     // class is a member, which the branch below already knows how to find. Asked

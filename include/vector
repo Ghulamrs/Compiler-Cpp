@@ -65,6 +65,20 @@ public:
     bool empty() const { return size_ == 0; }
     void clear() { size_ = 0; }
 
+    // **`assign(n, v)` is clear-then-fill**, which is what the standard says it
+    // is for the count-and-value form, and `swap` exchanges the two vectors'
+    // insides rather than their elements - so an iterator into either follows
+    // its own elements, and neither copies anything.
+    void assign(size_type n, const T &v) {
+        clear();
+        for (size_type i = 0; i < n; i++) push_back(v);
+    }
+    void swap(vector &other) {
+        T *d = items_; items_ = other.items_; other.items_ = d;
+        size_type s = size_; size_ = other.size_; other.size_ = s;
+        size_type c = cap_; cap_ = other.cap_; other.cap_ = c;
+    }
+
     T &operator[](size_type i) { return items_[i]; }
     const T &operator[](size_type i) const { return items_[i]; }
     T &at(size_type i) { return items_[i]; }
