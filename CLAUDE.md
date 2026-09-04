@@ -4040,11 +4040,27 @@ result would go; it now names the rule and suggests an `if`. Compiling and
 crashing is worse than refusing, and this is the one place today where the
 difference between the two was a single `else` branch.
 
-What the lowering will need is the machinery class temporaries and by-value
-arguments already have: a frame slot for the result, each arm building into it,
-and the expression answering with that slot - the shape `*(build, &tmp)` that
-`classTemporary` produces. It is a contained piece of work and it is worth
-three sources.
+**The lowering was written and it is not the hard part.** A frame slot for the
+result, each arm building into it through a `buildInto` helper, the conditional
+itself becoming the `int` the arms answer with, and the expression wearing the
+`*(build, &tmp)` shape `classTemporary` already produces - that much works.
+
+**What stops it is one level down, and it is a bug of its own.** An arm's
+temporaries are not that arm's alone: `b ? take(T(5)) : take(T(9))` destroys
+both arms' temporaries though only one was built, and `int r = ...` of that
+form ends with two destructor calls on frame slots nothing ever wrote. It is
+pre-existing - measured against the commit before this one - and
+`docs/CONFORMANCE.md` records it with the diagnosis: the guard flags these
+temporaries already carry are cleared in front of the full expression only by
+`endFullExpression`, and a declaration flushes through `flushTemporaries`,
+which emits the destructors and never the clears. Making the destructors ask
+the guard there is not enough on its own; the clears have to be placed in front
+of the statements the declaration contributed, which is what `flushTemporaries`
+cannot do from where it runs.
+
+So the order is: give a declaration's full expression its clears, then an arm's
+temporaries become its own, and then the lowering above is simply correct. The
+refusal stays until then, because compiling and crashing is worse.
 
 ## Five walls out of Compiler++, and the shape they had in common
 
