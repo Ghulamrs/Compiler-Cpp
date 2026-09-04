@@ -209,6 +209,17 @@ public:
         templateName_ = std::move(name);
         templateArgs_ = std::move(args);
     }
+    // **The namespace the template was declared in**, kept beside the bare
+    // name rather than folded into it: `templateName_` is also the key
+    // `templates_` is looked up by, and that map is keyed unqualified on
+    // purpose so `std::vector` finds `vector`. Only the manglers read this -
+    // `std::vector<int>` is `St6vectorIiE` and not `3vectorIiE`.
+    const std::string &templateNamespace() const {
+        return cls().templateNamespace_;
+    }
+    void setTemplateNamespace(std::string ns) {
+        templateNamespace_ = std::move(ns);
+    }
     const Type *enclosing() const {
         return cls().enclosing_;
     }
@@ -348,6 +359,7 @@ private:
     // "Box<int,3>" there, which no ABI writes: Itanium wants `3BoxIiLi3EE`
     // and Microsoft `?$Box@H$02@`, both built from these two.
     std::string templateName_;
+    std::string templateNamespace_;
     std::vector<TemplateArg> templateArgs_;
     const Type *enclosing_ = nullptr;
     Access nestedAccess_ = Access::Public;

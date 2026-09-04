@@ -102,6 +102,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     if (!specializationOf.empty()) {
         type->setLocalName(tag);
         type->setSpecialization(specializationOf, instantiatingArgs_);
+        type->setTemplateNamespace(instantiatingNamespace_);
         // **The injected class name.** Inside `Holder`'s own body the word `Holder`
         // means this specialization and not the template, which is what makes
         // `const Holder &` a legal parameter there. Registered as a member type.

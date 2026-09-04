@@ -374,6 +374,8 @@ bool Parser::templateDeclaration() {
 
     std::string qualifier;
     decl.name = templatedName(decl.params, &decl.isClass, &qualifier);
+    // Where it was written, for the manglers - the table's key stays bare.
+    decl.ns = namespacePrefix();
     at_ = decl.afterParams;
     const bool defined = skipTemplatedDefinition();
 
@@ -471,6 +473,7 @@ bool Parser::explicitSpecialization() {
     classInstantiationTag_ = tag;
     classInstantiationOf_ = name;
     instantiatingArgs_ = args;
+    instantiatingNamespace_ = primary->second.ns;
     const Type *made = structOrUnionSpecifier(kind, isClass);
     classInstantiationTag_.clear();
     classInstantiationOf_.clear();
@@ -1359,8 +1362,10 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     // out: both read only the template's name and its argument list.
     if (patternOnly_) {
         Type *shallow = types_.structType(Kind::Struct, tag);
-        if (!shallow->isSpecialization())
+        if (!shallow->isSpecialization()) {
             shallow->setSpecialization(decl.name, args);
+            shallow->setTemplateNamespace(decl.ns);
+        }
         // Registered so that `Box<T>::get` reads: the declarator's qualified
         // path looks the class up by name, and this is the only name it has.
         // The tag holds a `$` and so cannot collide with anything written.
@@ -1418,6 +1423,7 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     classInstantiationTag_ = tag;
     if (partial) classInstantiationOf_ = decl.name;
     instantiatingArgs_ = args;
+    instantiatingNamespace_ = decl.ns;
     heldForSpecialization_.clear();
     const bool wasDeferring = deferSpecializationBodies_;
     deferSpecializationBodies_ = true;

@@ -185,6 +185,9 @@ private:
     // tokens, so where they begin is the thing worth keeping.
     struct TemplateDecl {
         std::string name;
+        // The namespace it was declared in, `std::` included. Carried to the
+        // specialization for the manglers alone - see Type::templateNamespace.
+        std::string ns;
         std::vector<TemplateParam> params;
         bool isClass = false;
         bool defined = false;
@@ -333,6 +336,9 @@ private:
     // Both are handed between instantiateClass and the one call to
     // structOrUnionSpecifier it makes, everything in between being the class path.
     std::vector<TemplateArg> instantiatingArgs_;
+    // The template's namespace, travelling the same short distance for the
+    // same reason - the manglers want it and nothing else does.
+    std::string instantiatingNamespace_;
     std::vector<PendingBody> heldForSpecialization_;
     // Set while a template's declaration is read as a *pattern*, with
     // Kind::TemplateParam in place of the arguments. A class template met there must

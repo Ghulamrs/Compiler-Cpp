@@ -407,6 +407,15 @@ private:
     // candidates come out of it and in this order: the name, then the whole thing.
     // Measured on _Z6nested6HolderIS_IiEE.
     void templateId(const Type *t) {
+        // **The namespace the template was declared in**, which the bare name
+        // does not carry: `std::vector<int>` is `St6vectorIiE`. Written before
+        // the name and by the same rules a class's scope follows - `St` for
+        // std, length-and-letters for anything else.
+        if (!t->templateNamespace().empty()) {
+            const std::string qualified =
+                t->templateNamespace() + t->templateName();
+            namespacesOf(qualified);
+        }
         if (!substitutedName(t->templateName())) {
             out += std::to_string(t->templateName().size());
             out += t->templateName();
