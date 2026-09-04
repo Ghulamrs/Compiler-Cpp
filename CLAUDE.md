@@ -4019,6 +4019,46 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## A base's members were built twice, and the second time was wrong
+
+**The layout copies a base's data members down into the derived class's list** -
+that flattening *is* the layout - and the base's own constructor has already
+built them by the time the derived constructor's body runs. Both constructor
+walks built them again, default-constructing over whatever the base had set.
+
+So a base whose constructor does work through a member that has a constructor
+was correct alone and wrong the moment anything derived from it:
+
+    Base b;      // cur holds what Base's constructor put there
+    Derived d;   // cur holds its default-constructed state
+
+**A plain `int` member hid it for a long time**: there is nothing to rebuild, so
+the second walk writes nothing and the bug is invisible. It needs a member with
+a constructor of its own to show at all.
+
+**The destructor walk has skipped base members since implicit destructors
+landed.** `memberFromBase` is that test and the comment beside it says why - a
+base's own destructor deals with what it brought. Neither constructor walk asked,
+and there are two: the one that synthesises an implicit default constructor, and
+the one that fills in what a user-written constructor's initialiser list left
+out. Both ask now.
+
+**This is what made cxx1's build of Compiler++ reject every program.** Its
+parser derives from a base whose constructor reads the first token into a
+member, and that member was default-constructed again straight afterwards - so
+the parser always saw `TOK_UNKNOWN` at line 0, whatever the input, including an
+empty file.
+
+**How it was found is the part worth keeping.** Seven probes of the shape had
+already come back correct, each a guess about a program of sixteen files. What
+found it was building the *same sources* with clang and cxx1 and diffing the
+behaviour, then narrowing by writing a harness that called Compiler++'s lexer
+directly - which proved the lexer right and moved the search to the parser.
+The differential is the oracle; the probes were only ever hypotheses.
+
+    128 of Compiler++'s own 129 test cases now behave identically under both
+    builds. The remaining one aborts, and is its own finding.
+
 ## Weak definitions, and the link that follows from them
 
 **781 duplicate symbols became none**, and Compiler++'s sixteen objects became

@@ -785,6 +785,9 @@ void Parser::topLevel(Program &program) {
             std::map<std::string, std::vector<ExprPtr> >::iterator found =
                 memberExprs.find(m->name);
             if (found == memberExprs.end()) {
+                // A base's members are in this class's list too - see the walk
+                // in synthesizeDefaultCtor. The base's constructor built them.
+                if (memberFromBase(memberOf, *m)) continue;
                 StmtPtr one = memberInitialiser(d.qualifier, memberOf, *m,
                                                 thisOffset_, d.pos);
                 std::vector<ExprPtr> none;

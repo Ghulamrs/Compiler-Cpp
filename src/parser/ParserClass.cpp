@@ -1467,6 +1467,13 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
     // walk, not two** - `M m = M(2);` used to be stored and then built over.
     const std::vector<Member> &ms = type->members();
     for (std::size_t i = 0; i < ms.size(); i++) {
+        // **A base's members are this class's list too**, the layout having
+        // copied them down - and the base's own constructor has already built
+        // them by the time this body runs. Building them again default-
+        // constructs over what the base set, which is why `Base` alone worked
+        // and `Derived : Base` did not: the destructor walk has skipped them
+        // since implicit destructors landed and this one never did.
+        if (memberFromBase(type, ms[i])) continue;
         StmtPtr one = memberInitialiser(cls, type, ms[i], thisSlot, pos);
         std::vector<ExprPtr> none;
         if (one == nullptr && type->kind() != Kind::Union)
