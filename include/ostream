@@ -43,9 +43,16 @@ public:
     // `cout` cannot have: it would need a vptr, and a vptr needs a constructor.
     string *buf_;
 
+    // **A file stream that is not open writes nowhere**, and getting this
+    // wrong is worse than it sounds: falling through to `stdout` meant an
+    // `ofstream` whose `fopen` failed quietly printed the program's file to
+    // the console. `which_` is what tells the two apart - 1 and 2 are the
+    // standard streams, 0 is a file, and a file with no `FILE *` is shut.
     FILE *target() {
         if (fp_ != 0) return fp_;
-        return which_ == 2 ? stderr : stdout;
+        if (which_ == 1) return stdout;
+        if (which_ == 2) return stderr;
+        return 0;
     }
 
     bool good() const { return state_ == 0; }
@@ -59,7 +66,8 @@ public:
 
     ostream &put(char c) {
         if (buf_ != 0) { *buf_ += c; return *this; }
-        if (std::fputc(c, target()) < 0) state_ = 1;
+        FILE *f = target();
+        if (f == 0 || std::fputc(c, f) < 0) state_ = 1;
         return *this;
     }
 
@@ -68,21 +76,25 @@ public:
             for (streamsize i = 0; i < n; i++) *buf_ += s[i];
             return *this;
         }
+        FILE *f = target();
+        if (f == 0) { state_ = 1; return *this; }
         if (n > 0)
-            if (std::fwrite(s, 1, (std::size_t)n, target()) != (std::size_t)n)
+            if (std::fwrite(s, 1, (std::size_t)n, f) != (std::size_t)n)
                 state_ = 1;
         return *this;
     }
 
     ostream &flush() {
-        if (buf_ == 0) std::fflush(target());
+        FILE *f = buf_ == 0 ? target() : 0;
+        if (f != 0) std::fflush(f);
         return *this;
     }
 
     ostream &operator<<(const char *s) {
         if (s == 0) s = "(null)";
         if (buf_ != 0) { *buf_ += s; return *this; }
-        if (std::fputs(s, target()) < 0) state_ = 1;
+        FILE *f = target();
+        if (f == 0 || std::fputs(s, f) < 0) state_ = 1;
         return *this;
     }
 

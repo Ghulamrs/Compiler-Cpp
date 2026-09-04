@@ -890,6 +890,17 @@ void MasmCodeGen::run(const Program &program) {
     // and ml64 wants it declared once however many ask for it.
     if (!program.thrown.empty() || !program.rtti.empty())
         out_ += "\nEXTRN ??_7type_info@@6B@:QWORD\n";
+    // **A pure virtual's slot names a routine no object file here defines.**
+    // GNU as takes an undeclared symbol and leaves it to the linker; ml64 will
+    // not, and answers `A2006: undefined symbol : _purecall`. Declared once
+    // however many slots hold it, and only when one does.
+    for (std::size_t g = 0; g < program.globals.size(); g++) {
+        bool found = false;
+        const std::vector<GlobalPiece> &pieces = program.globals[g].init;
+        for (std::size_t i = 0; i < pieces.size(); i++)
+            if (pieces[i].symbol == "_purecall") { found = true; break; }
+        if (found) { out_ += "\nEXTRN _purecall:PROC\n"; break; }
+    }
     emitClassRtti(program);
     emitThrowInfo(program);
     X86_64Linux::run(program);

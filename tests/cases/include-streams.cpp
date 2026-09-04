@@ -54,17 +54,22 @@ int main() {
     while (std::getline(lines, line)) std::cout << "[" << line << "]";
     std::cout << std::endl;
 
-    // A file written and read back.
+    // A file written and read back. **A relative name, not an absolute one**:
+    // this case runs on three machines and `/tmp` is not a path on all of
+    // them. A stream that fails to open writes nowhere - which is worth
+    // stating, because falling through to `stdout` is what it used to do, and
+    // that printed the file's contents to the console on the one box where
+    // the path did not exist.
     {
-        std::ofstream out("/tmp/_cxx1_include_streams.txt");
+        std::ofstream out("_cxx1_streams_case.txt");
         out << "first" << std::endl << 99 << std::endl;
     }
-    std::ifstream back("/tmp/_cxx1_include_streams.txt");
+    std::ifstream back("_cxx1_streams_case.txt");
     while (std::getline(back, line)) std::cout << "<" << line << ">";
     std::cout << std::endl;
 
     // A file that is not there fails to open rather than crashing.
-    std::ifstream missing("/tmp/_cxx1_no_such_file_here");
+    std::ifstream missing("_cxx1_no_such_file_here");
     std::cout << (missing.is_open() ? "opened" : "not open") << std::endl;
     return 0;
 }

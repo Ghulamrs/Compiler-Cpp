@@ -27,7 +27,7 @@ static ostream cerr = { 0, 2, 0, 0 };
 // clog is cerr without the flush the standard does not promise either way.
 static ostream clog = { 0, 2, 0, 0 };
 
-static istream cin = { 0, 0, 0, 0, 0 };
+static istream cin = { 0, 1, 0, 0, 0 };
 
 }  // namespace std
 

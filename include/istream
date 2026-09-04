@@ -31,7 +31,12 @@ public:
     const string *src_;
     std::size_t pos_;
 
-    FILE *target() { return fp_ != 0 ? fp_ : stdin; }
+    // The same rule as <ostream>: 1 is stdin, 0 is a file, and a file with no
+    // `FILE *` is shut and reads nothing.
+    FILE *target() {
+        if (fp_ != 0) return fp_;
+        return which_ == 1 ? stdin : 0;
+    }
 
     bool good() const { return state_ == 0; }
     bool fail() const { return state_ == 1; }
@@ -50,7 +55,9 @@ public:
             if (std::sscanf(w.c_str(), how, where) != 1) state_ = 1;
             return *this;
         }
-        int got = std::fscanf(target(), how, where);
+        FILE *f = target();
+        if (f == 0) { state_ = 1; return *this; }
+        int got = std::fscanf(f, how, where);
         if (got == 1) return *this;
         state_ = got == 0 ? 1 : 2;
         return *this;
@@ -91,7 +98,8 @@ public:
             pos_++;
             return (int)(unsigned char)c;
         }
-        return std::fgetc(target());
+        FILE *f = target();
+        return f == 0 ? -1 : std::fgetc(f);
     }
     istream &get(char &c) {
         int v = std::fgetc(target());
@@ -101,7 +109,8 @@ public:
     }
     istream &unget(char c) {
         if (src_ != 0) { if (pos_ > 0) pos_--; return *this; }
-        std::ungetc((int)c, target());
+        FILE *f = target();
+        if (f != 0) std::ungetc((int)c, f);
         return *this;
     }
 
