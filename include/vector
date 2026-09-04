@@ -119,10 +119,41 @@ public:
         size_++;
         return items_ + where;
     }
+    // **The range forms.** `v.insert(v.end(), o.begin(), o.end())` is how one
+    // vector is appended to another without a loop at the call site, and it is
+    // what a program reaches for often enough that leaving it out shows.
+    //
+    // `at` is taken as an offset before anything grows, because `reserve` moves
+    // the buffer and would leave the caller's pointer behind. `first` and
+    // `last` must not point into this vector - [sequence.reqmts] says so, and
+    // the reallocation here is exactly why.
+    iterator insert(iterator at, const_iterator first, const_iterator last) {
+        const size_type where = (size_type)(at - items_);
+        size_type n = 0;
+        for (const_iterator p = first; p != last; p++) n++;
+        if (n == 0) return items_ + where;
+        reserve(size_ + n);
+        // Backwards, so a move within one buffer cannot overwrite what it has
+        // not read yet - the same reason `string::insert` walks backwards.
+        for (size_type i = size_; i-- > where; ) items_[i + n] = items_[i];
+        size_type k = 0;
+        for (const_iterator p = first; p != last; p++) items_[where + k++] = *p;
+        size_ += n;
+        return items_ + where;
+    }
+
     iterator erase(iterator at) {
         const size_type where = (size_type)(at - items_);
         for (size_type i = where; i + 1 < size_; i++) items_[i] = items_[i + 1];
         if (size_ != 0) size_--;
+        return items_ + where;
+    }
+    iterator erase(iterator first, iterator last) {
+        const size_type where = (size_type)(first - items_);
+        const size_type n = (size_type)(last - first);
+        if (n == 0) return items_ + where;
+        for (size_type i = where; i + n < size_; i++) items_[i] = items_[i + n];
+        size_ -= n;
         return items_ + where;
     }
 
