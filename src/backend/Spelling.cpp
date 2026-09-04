@@ -72,6 +72,12 @@ void GnuSpelling::globl(const std::string &name) {
     o_ += "  .globl "; o_ += name; o_ += '\n';
 }
 
+// Measured from clang: `.weak` beside the `.globl`, which is what makes the
+// linker fold the copies of an inline function rather than reject them.
+void GnuSpelling::weakDefinition(const std::string &name) {
+    o_ += "  .weak "; o_ += name; o_ += '\n';
+}
+
 void GnuSpelling::fileEntry(int n, const std::string &name) {
     o_ += "  .file ";
     appendNum(o_, n);

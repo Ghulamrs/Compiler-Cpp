@@ -131,12 +131,30 @@ public:
             break;
         }
         for (std::size_t i = start; i < reach.size(); i++) {
+            // **`std` is written `St`** - [mangle.substitution] gives it one of
+            // the predefined abbreviations, so `std::string` is `St6string` and
+            // not `N3std6stringE`. Measured against clang, which also shows
+            // that `St` takes no numbered slot: two `std::string` parameters
+            // are `St6stringS_`, so the *whole* `St6string` is candidate zero
+            // and the namespace alone is not a candidate at all.
+            if (i == 0 && parts[i] == "std") {
+                out += "St";
+                continue;
+            }
             out += std::to_string(parts[i].size());
             out += parts[i];
             Sub s;
             s.name = reach[i];
             subs_.push_back(s);
         }
+    }
+
+    // Is this qualified name exactly `std::X`? Then it needs no `N...E` around
+    // it: the abbreviation is a prefix in its own right, and clang writes
+    // `St6string` where `std::deep::inner` is `NSt4deep5innerE`.
+    static bool isDirectlyInStd(const std::string &qualified) {
+        const std::vector<std::string> parts = scopeComponents(qualified);
+        return parts.size() == 2 && parts[0] == "std";
     }
 
     // The enclosing function as it goes inside `Z...E`: the mangled name with its
@@ -486,9 +504,12 @@ private:
             // is what consults the substitution table on the way down.
             if (t->enclosing() != nullptr || t->inNamespace()) {
                 if (tagOf(t) == nullptr) return;
-                out += 'N';
+                // `std::X` is `StX` with no wrapper - see isDirectlyInStd.
+                const bool bare = t->enclosing() == nullptr &&
+                                  isDirectlyInStd(t->tag());
+                if (!bare) out += 'N';
                 prefix(t, std::string());
-                out += 'E';
+                if (!bare) out += 'E';
                 return;                       // prefix() pushed it already
             }
             if (t->isSpecialization()) {

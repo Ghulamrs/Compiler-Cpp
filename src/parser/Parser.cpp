@@ -490,6 +490,11 @@ void Parser::skipBracedBlock() {
 void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     if (mine.empty()) return;
     const std::size_t resume = at_;
+    // Everything replayed here was written inside a class body, so every
+    // definition it produces is implicitly inline - restored rather than
+    // cleared, because a replay can happen inside another one.
+    const bool outerInline = replayingInline_;
+    replayingInline_ = true;
     // **A replay is a nested parse of a different function**, in the middle of
     // whatever asked for the class. Everything `topLevel` sets up per function goes
     // back afterwards - the enclosing locals, parameters and frame size included.
@@ -538,6 +543,7 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     lambdaCount_ = outerLambdaCount;
     functionName_ = outerName;
     atFunctionBody_ = outerAtBody;
+    replayingInline_ = outerInline;
     at_ = resume;
 }
 

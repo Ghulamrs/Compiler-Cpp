@@ -449,3 +449,22 @@ It makes `::` redundant here rather than wrong - a program that writes
 nearer one. Reversing the order changes how every unqualified name inside a
 namespace resolves, which wants a round of its own rather than a line in a
 change about something else.
+
+## A `std::` template specialization is mangled without the `St`
+
+`std::string` is `St6string` now, which is what the Itanium ABI's predefined
+substitution for `::std::` asks for. A *specialization* of a template declared
+in `std` is not: `std::vector<int>` comes out `3vectorIiE` where clang writes
+`St6vectorIiE`.
+
+The cause is one level down and is the same one that let an unqualified `count`
+find `std::count`: **`findTemplate` keys every template by its bare name**, on
+purpose, so `std::vector` finds `vector`. A specialization built from it carries
+that bare name, and so does not know which namespace it came from. Giving a
+template its namespace is the repair, and it is a large one - the key is read by
+the type path, the expression path, the instantiation record and both manglers.
+
+It is invisible in a single-file program and invisible in an all-cxx1 link, both
+being self-consistent. It shows the moment a cxx1 object meets a clang one, and
+it is the reason `tools/mangled-names` skips a case that includes a C++ library
+header - which is exactly where it would have been caught.

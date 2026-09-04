@@ -305,6 +305,11 @@ void Parser::synthesizeDeleting(const std::string &cls, const Type *type,
                                            false, 0, pos,
                                            std::vector<::Local>()));
     current_->functions.back().setSymbol(symbol);
+    // **A compiler-written special member is inline** - [class.copy] and its
+    // neighbours say the implicit definition is - so several translation
+    // units may each hold one and the linker folds them. Without this, two
+    // units that include one class collided on its implicit destructor.
+    current_->functions.back().setInline(true);
     frameSize_ = savedFrame;
 }
 
@@ -575,6 +580,7 @@ std::string Parser::synthesizeThunk(const std::string &cls, const Type *type,
                                            alignTo(frameSize_, 16), false, 0,
                                            false, 0, pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(name);
+    current_->functions.back().setInline(true);
     frameSize_ = savedFrame;
     return name;
 }
@@ -709,8 +715,12 @@ std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
                                        std::string() });
     const Type *chars = types_.arrayOf(types_.get(Kind::Char),
                                        static_cast<long long>(text.size() + 1));
+    // **Weak**: every translation unit that sees the class emits these three,
+    // and the linker folds them rather than rejecting them - which is what
+    // clang does and what a program of more than one file needs.
     current_->globals.push_back(Global{ ts, ts, chars, std::move(letters),
-                                        true, false, true });
+                                        true, false, true,
+                                        std::string(), true });
 
     std::vector<GlobalPiece> pieces;
     pieces.push_back(GlobalPiece{
@@ -725,7 +735,8 @@ std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
     const Type *object = types_.arrayOf(word,
                                         static_cast<long long>(pieces.size()));
     current_->globals.push_back(Global{ ti, ti, object, std::move(pieces),
-                                        true, false, true });
+                                        true, false, true,
+                                        std::string(), true });
     return ti;
 }
 
@@ -837,7 +848,7 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
     const Type *entry = types_.pointerTo(types_.get(Kind::Void));
     const Type *table = types_.arrayOf(entry, static_cast<long long>(pieces.size()));
     current_->globals.push_back(Global{ symbol, symbol, table, std::move(pieces),
-                                        true, false, true, locatorWord });
+                                        true, false, true, locatorWord, true });
 }
 
 // A constructor, read at the point its '(' was seen: a member function whose name is
@@ -1243,6 +1254,7 @@ void Parser::synthesizeDestructor(std::size_t which) {
                                            alignTo(frameSize_, 16), false, 0,
                                            false, 0, pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(symbol);
+    current_->functions.back().setInline(true);
     if (!target_.microsoftNames()) {
         std::string d2;
         itaniumDestructorName(cls, type, false, &d2);
@@ -1468,6 +1480,7 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
                                            alignTo(frameSize_, 16), false, 0,
                                            false, 0, pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(symbol);
+    current_->functions.back().setInline(true);
     // The same two names a written constructor is emitted under: C1 for a
     // complete object and C2 for a base subobject, the second a label in front
     // of the first. Microsoft has one name and wants no alias.
@@ -1725,6 +1738,7 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
                                            alignTo(frameSize_, 16), false, 0,
                                            false, 0, pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(symbol);
+    current_->functions.back().setInline(true);
     // A constructor is emitted under both of Itanium's names; an operator has
     // one name in either ABI.
     if (!assigning && !target_.microsoftNames()) {

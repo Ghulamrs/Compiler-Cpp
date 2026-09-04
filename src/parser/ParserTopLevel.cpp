@@ -1113,6 +1113,10 @@ void Parser::topLevel(Program &program) {
     // pointer has to come *after*.
     program.functions.back().setHasThis(!d.qualifier.empty());
     program.functions.back().setHasLandingPads(functionHasPads_);
+    // Everything replayed from inside a class body - and every member of a
+    // template specialization, which is replayed the same way - is implicitly
+    // inline, so its definition may appear in several translation units.
+    program.functions.back().setInline(replayingInline_ && !internal);
     functionHasPads_ = false;
     functionTypeIndex_ = 0;
     functionHasTry_ = false;

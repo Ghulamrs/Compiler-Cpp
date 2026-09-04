@@ -1,0 +1,92 @@
+  .globl _Z1aSt6string
+  .text
+_Z1aSt6string:
+  .cfi_startproc
+  push %rbp
+  .cfi_def_cfa_offset 16
+  .cfi_offset %rbp, -16
+  mov %rsp, %rbp
+  .cfi_def_cfa_register %rbp
+  sub $16, %rsp
+  mov %rdi, %rax
+  movl %eax, -4(%rbp)
+  mov $0, %rax
+.L.return._Z1aSt6string:
+  mov %rbp, %rsp
+  pop %rbp
+  ret
+  .cfi_endproc
+  .globl _Z1bRKSt6string
+  .text
+_Z1bRKSt6string:
+  .cfi_startproc
+  push %rbp
+  .cfi_def_cfa_offset 16
+  .cfi_offset %rbp, -16
+  mov %rsp, %rbp
+  .cfi_def_cfa_register %rbp
+  sub $16, %rsp
+  mov %rdi, %rax
+  movq %rax, -8(%rbp)
+  mov $0, %rax
+.L.return._Z1bRKSt6string:
+  mov %rbp, %rsp
+  pop %rbp
+  ret
+  .cfi_endproc
+  .globl _Z1c3vecIiE
+  .text
+_Z1c3vecIiE:
+  .cfi_startproc
+  push %rbp
+  .cfi_def_cfa_offset 16
+  .cfi_offset %rbp, -16
+  mov %rsp, %rbp
+  .cfi_def_cfa_register %rbp
+  sub $16, %rsp
+  mov %rdi, %rax
+  movl %eax, -4(%rbp)
+  mov $0, %rax
+.L.return._Z1c3vecIiE:
+  mov %rbp, %rsp
+  pop %rbp
+  ret
+  .cfi_endproc
+  .globl _Z1dN2nn5thingE
+  .text
+_Z1dN2nn5thingE:
+  .cfi_startproc
+  push %rbp
+  .cfi_def_cfa_offset 16
+  .cfi_offset %rbp, -16
+  mov %rsp, %rbp
+  .cfi_def_cfa_register %rbp
+  sub $16, %rsp
+  mov %rdi, %rax
+  movl %eax, -4(%rbp)
+  mov $0, %rax
+.L.return._Z1dN2nn5thingE:
+  mov %rbp, %rsp
+  pop %rbp
+  ret
+  .cfi_endproc
+  .globl _Z1fSt6stringS_
+  .text
+_Z1fSt6stringS_:
+  .cfi_startproc
+  push %rbp
+  .cfi_def_cfa_offset 16
+  .cfi_offset %rbp, -16
+  mov %rsp, %rbp
+  .cfi_def_cfa_register %rbp
+  sub $16, %rsp
+  mov %rdi, %rax
+  movl %eax, -4(%rbp)
+  mov %rsi, %rax
+  movl %eax, -8(%rbp)
+  mov $0, %rax
+.L.return._Z1fSt6stringS_:
+  mov %rbp, %rsp
+  pop %rbp
+  ret
+  .cfi_endproc

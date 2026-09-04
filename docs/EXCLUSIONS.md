@@ -175,7 +175,7 @@ SFINAE and variadic packs. What is left:
   resolution picks the non-static one — the arguments have been read by then,
   and there is no honest way back to the call that takes an object.
   `src/parser/ParserExpr.cpp:1158`. A static member function on its own works.
-- **a member function of a union** — `src/parser/ParserClass.cpp:1914`
+- **a member function of a union** — `src/parser/ParserClass.cpp:1928`
 - **`friend class X;`** — one named function can be befriended.
   `src/parser/ParserType.cpp:381`
 - **befriending one member function of another class** —
@@ -225,7 +225,7 @@ SFINAE and variadic packs. What is left:
   arguments in parentheses. The *empty* pair is read: `{}` is
   value-initialisation. `src/parser/ParserStmt.cpp:170`,
   `src/parser/ParserInit.cpp:38`
-- **a braced default argument** — `src/parser/ParserClass.cpp:2492`,
+- **a braced default argument** — `src/parser/ParserClass.cpp:2506`,
   `src/parser/ParserTopLevel.cpp:530`
 - **a braced member initialiser** — `src/parser/ParserType.cpp:746`
 - **an initialiser for an array of a class** —
@@ -246,7 +246,7 @@ it is written:
 - **a file-scope object with a constructor** —
   `src/parser/ParserTopLevel.cpp:277`
 - **a static data member of a class with a constructor** —
-  `src/parser/ParserClass.cpp:1847`
+  `src/parser/ParserClass.cpp:1861`
 - **a static reference** — `src/parser/ParserStmt.cpp:326`
 - **a reference at file scope** — `src/parser/ParserTopLevel.cpp:260`
 
@@ -350,7 +350,7 @@ beside it goes in the same commit.
 | `0b101`, a binary literal | C++14 | `src/Lexer.cpp:250` |
 | `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1319` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:184` |
-| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2480`, `src/parser/ParserTopLevel.cpp:474` |
+| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2494`, `src/parser/ParserTopLevel.cpp:474` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:406` |
 | a variable template | C++14 | `src/parser/ParserTemplate.cpp:309` |
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:642`, `src/parser/ParserStmt.cpp:163`, `src/parser/ParserTopLevel.cpp:271` |
@@ -389,7 +389,7 @@ guessed wrong twice.
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation
-  rather than in naming. `src/parser/ParserClass.cpp:787`
+  rather than in naming. `src/parser/ParserClass.cpp:798`
 
 A case that cannot be compiled for a target names it in `<case>.notarget` with
 the reason on the line, which is printed on every run.
@@ -403,7 +403,7 @@ judgement in a program. They are named here instead:
 - `src/parser/ParserType.cpp:167` — a base class that is not yet defined. An
   ordinary error: a derived object contains its base, so the base has to be
   complete.
-- `src/Mangle.cpp:517`, `src/Mangle.cpp:991` — a type with no Itanium or
+- `src/Mangle.cpp:538`, `src/Mangle.cpp:1012` — a type with no Itanium or
   Microsoft linkage name. Internal: reaching either means a type was built that
   the mangler was never taught, which is a bug in this compiler and not a
   statement about the language.

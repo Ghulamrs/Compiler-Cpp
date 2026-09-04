@@ -1412,11 +1412,13 @@ void X86_64Linux::emit(const Function &fn) {
     returnLabel_ = ".L.return." + fn.symbol();
 
     a_->functionBegin(fn.symbol(), !fn.isStatic());
+    if (fn.isInline()) a_->weakDefinition(fn.symbol());
     // A second name for the same code - see Function::alias. Emitted as a
     // label at the same address, which is what makes it the same function
     // rather than a second copy of it.
     if (!fn.alias().empty()) {
         if (!fn.isStatic()) a_->globl(fn.alias());
+        if (fn.isInline()) a_->weakDefinition(fn.alias());
         a_->defLabel(fn.alias());
     }
     if (const Source *src = lineSource()) {
@@ -1593,6 +1595,7 @@ void X86_64Linux::emit(const Function &fn) {
 void X86_64Linux::emitGlobal(const Global &g, Segment seg) {
     int size = g.type->size(target_);
     if (!g.isStatic) a_->globl(g.symbol);
+    if (g.isInline) a_->weakDefinition(g.symbol);
 
     if (abi_.elfSymbolAttributes) {
         a_->objectType(g.symbol);

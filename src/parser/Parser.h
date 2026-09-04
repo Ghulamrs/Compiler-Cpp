@@ -160,6 +160,13 @@ private:
     };
     std::vector<PendingBody> pendingBodies_;
     void replayInlineBodies(std::vector<PendingBody> mine);
+    // **[dcl.inline]/6: a member defined inside its class is implicitly
+    // inline**, and so is every member of a template specialization - which is
+    // to say, everything that reaches `topLevel` through a *replay*. An inline
+    // definition may appear in several translation units, so the linker has to
+    // fold the copies rather than reject them, and this is what tells the
+    // backends to say so.
+    bool replayingInline_ = false;
     void skipBracedBlock();
 
     // ---- Rung 5.1: the template table, and nothing instantiated ----

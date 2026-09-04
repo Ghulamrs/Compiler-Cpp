@@ -114,6 +114,11 @@ public:
     virtual void postamble(std::ostream &) {}
 
     virtual void globl(const std::string &name) = 0;
+    // **A definition the linker must fold rather than reject** - an inline
+    // function, which may appear in several translation units. Each assembler
+    // spells it differently and the default does nothing, so a target that has
+    // not been measured says nothing rather than something wrong.
+    virtual void weakDefinition(const std::string &name) { (void)name; }
     virtual void textSection() = 0;
     virtual void rodataSection() = 0;
     virtual void dataSection() = 0;
@@ -143,6 +148,7 @@ public:
     void prologue(int frameSize, const std::string &lsda) override;
     void functionEnd(const std::string &name) override;
     void globl(const std::string &name) override;
+    void weakDefinition(const std::string &name) override;
     void textSection() override;
     void rodataSection() override;
     void dataSection() override;

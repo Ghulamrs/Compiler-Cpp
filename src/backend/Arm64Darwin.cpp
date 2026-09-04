@@ -925,6 +925,7 @@ void Arm64Darwin::emitGlobal(const Global &g, Segment seg) {
     int size = g.type->size(target_);
     int p2 = p2AlignOf(objectAlign(g.type, target_));
     if (!g.isStatic) out_ << "  .globl _" << g.symbol << "\n";
+    if (g.isInline) out_ << "  .weak_def_can_be_hidden _" << g.symbol << "\n";
 
     if (seg == Segment::Bss) {
         out_ << "  .zerofill __DATA,__bss,_" << g.symbol << ","
@@ -1019,12 +1020,19 @@ void Arm64Darwin::emitFunction(const Function &fn) {
 
     out_ << "  .section __TEXT,__text,regular,pure_instructions\n";
     if (!fn.isStatic()) out_ << "  .globl _" << fn.symbol() << "\n";
+    // **An inline definition may appear in several translation units**, so the
+    // linker folds the copies rather than rejecting them. Mach-O's spelling,
+    // measured from clang, keeps the `.globl` beside it.
+    if (fn.isInline())
+        out_ << "  .weak_def_can_be_hidden _" << fn.symbol() << "\n";
     out_ << "  .p2align 2\n";
     out_ << "_" << fn.symbol() << ":\n";
     // A second name for the same code - see Function::alias. It is a label at
     // the same address rather than a copy of the body.
     if (!fn.alias().empty()) {
         if (!fn.isStatic()) out_ << "  .globl _" << fn.alias() << "\n";
+        if (fn.isInline())
+            out_ << "  .weak_def_can_be_hidden _" << fn.alias() << "\n";
         out_ << "_" << fn.alias() << ":\n";
     }
     if (const Source *src = lineSource()) {

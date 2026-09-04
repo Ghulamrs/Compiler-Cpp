@@ -4019,6 +4019,57 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## Weak definitions, and the link that follows from them
+
+**781 duplicate symbols became none**, and Compiler++'s sixteen objects became
+a program. Three kinds needed the marker, and finding them was a matter of
+running the linker three times.
+
+**An inline function.** [dcl.inline]/6 makes a member defined inside its class
+implicitly inline, and an inline definition may appear in several translation
+units - so the linker folds the copies rather than rejecting them. Everything
+that reaches `topLevel` through a *replay* is one, which is exactly the set:
+a member written inside a class body, and every member of a template
+specialization, are replayed the same way. `replayingInline_` is that flag.
+
+**A compiler-written special member.** [class.copy] and its neighbours make the
+implicit definition inline too, and those never go through `topLevel` at all -
+they are built directly, at five sites in `ParserClass.cpp`.
+
+**And the three objects a polymorphic class emits**: its vtable, its typeinfo
+and the typeinfo's name string. Those are data rather than code, so the flag
+went on `Global` beside `prefixWord` and the globals path emits the same marker.
+
+The spellings were already written down, measured from clang, in
+`docs/CONFORMANCE.md` - `.weak` on ELF, `.weak_def_can_be_hidden` on Mach-O,
+both beside the `.globl` rather than instead of it. The Spelling base class
+answers with nothing by default, so a target that has not been measured says
+nothing rather than something wrong: **Windows is that target today.**
+
+### `std` is written `St`, and the bug was invisible twice over
+
+**`std::string` is `St6string`, not `N3std6stringE`** - the Itanium ABI gives
+`::std::` one of its predefined abbreviations. Every cxx1 object that named a
+type from its own headers had the wrong symbol.
+
+It was invisible in a single-file program, and invisible in an all-cxx1 link,
+both being self-consistent. It shows the moment a cxx1 object meets a clang one
+- and `tools/mangled-names` skips exactly the cases that would have caught it,
+because a case including a C++ library header is compiled by clang against
+*clang's* library and the two symbol lists have nothing in common. A `.nonames`
+that says "there is nothing to compare here" is right about the library and was
+hiding a fact about the ABI.
+
+Two of the four measured rules are not guessable: `std::deep::inner` is
+`NSt4deep5innerE`, the wrapper coming back once the name is deeper than one
+component; and `f(std::string, std::string)` is `St6stringS_`, which says `St`
+takes **no numbered slot** - the whole of `St6string` is candidate zero.
+
+**A specialization is still spelled without it**, and `docs/CONFORMANCE.md`
+records why: templates are keyed by their bare name, so `std::vector<int>` does
+not know which namespace it came from. That is the same root as the local
+`count` that lost to `std::count`, met from the other side.
+
 ## All sixteen of Compiler++ compile, and the link is a different question
 
 **16 of 16 sources compile and assemble** as of 2026-09-04. That is worth
