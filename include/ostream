@@ -110,6 +110,15 @@ public:
     ostream &operator<<(unsigned int v) { return unumber("%u", (unsigned long)v); }
     ostream &operator<<(long v) { return number("%ld", v); }
     ostream &operator<<(unsigned long v) { return unumber("%lu", v); }
+    // **`long long` is a type of its own, not a spelling of `long`.** Without
+    // these two, a 64-bit value written through `<<` reached every arithmetic
+    // overload by a conversion and none of them better than the rest, so the
+    // call was ambiguous - which is what a program that pins its own integer
+    // width, as one compiling for a virtual machine does, writes all day.
+    ostream &operator<<(long long v) { return llnumber("%lld", v); }
+    ostream &operator<<(unsigned long long v) {
+        return ullnumber("%llu", v);
+    }
 
     ostream &operator<<(double v) {
         char buf[64];
@@ -139,6 +148,16 @@ public:
         return *this << buf;
     }
     ostream &unumber(const char *how, unsigned long v) {
+        char buf[32];
+        std::sprintf(buf, how, v);
+        return *this << buf;
+    }
+    ostream &llnumber(const char *how, long long v) {
+        char buf[32];
+        std::sprintf(buf, how, v);
+        return *this << buf;
+    }
+    ostream &ullnumber(const char *how, unsigned long long v) {
         char buf[32];
         std::sprintf(buf, how, v);
         return *this << buf;

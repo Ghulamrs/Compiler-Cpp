@@ -4019,6 +4019,30 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## `long long` is a type of its own, and the streams had never heard of it
+
+**`<ostream>` had insertions down to `unsigned long` and no further**, so a
+64-bit value written through `<<` reached every arithmetic overload by a
+conversion and none of them better than the rest. The call was ambiguous, and
+the diagnostic listed seven candidates without naming the one that was
+missing - which is the shape to remember, because a list of candidates answers
+"which of these" when the question was "why is none of them right".
+
+**On both Itanium targets `long` and `long long` are the same width**, which is
+exactly why this was easy to miss: every value round-trips, every `sizeof`
+agrees, and nothing looks wrong until overload resolution has to choose. They
+are still distinct types, and [over.ics.scs] ranks a conversion between them
+like any other.
+
+A program that pins its own integer width writes this all day. Three of
+Compiler++'s sixteen sources stopped here, all printing a `vmword` - which is
+`long long` on everything but MSVC, where the same header spells it `__int64`.
+
+The extraction pair went in with it, for the same reason: `in >> x` for a
+`long long` lvalue had the same seven-way tie. `stream-long-long.cpp` runs a
+value no `double` holds exactly and no 32-bit type holds at all, so a
+conversion to any other overload would show.
+
 ## A converting constructor on `return`, and the `?:` that looked like its twin
 
 **[stmt.return]/2 copy-initialises the returned object**, and a converting

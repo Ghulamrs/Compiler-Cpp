@@ -81,6 +81,11 @@ public:
     istream &operator>>(unsigned int &v)  { return scan("%u", &v); }
     istream &operator>>(long &v)          { return scan("%ld", &v); }
     istream &operator>>(unsigned long &v) { return scan("%lu", &v); }
+    // The pair `<ostream>` gained for the same reason: `long long` is a type
+    // of its own, and without these a 64-bit lvalue matched every overload
+    // equally badly.
+    istream &operator>>(long long &v)          { return scan("%lld", &v); }
+    istream &operator>>(unsigned long long &v) { return scan("%llu", &v); }
     istream &operator>>(double &v)        { return scan("%lf", &v); }
     istream &operator>>(float &v)         { return scan("%f", &v); }
 
