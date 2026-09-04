@@ -416,6 +416,13 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
         StorageClass msc;
         Qualifiers mquals;
+        const bool wasEnum = peek().is("enum");
+        // **`mutable` is a decl-specifier on a non-static data member**, and
+        // read here rather than in `specifiers` because it names no type and
+        // nothing outside a class body may write it. Written after the type -
+        // `int mutable x;`, which is legal and nobody writes - it is refused
+        // by the keyword table with the message that keyword already has.
+        const bool isMutable = consume("mutable");
         const Type *base = specifiers(&msc, &mquals);
 
         // **A typedef inside a class names a type and declares no member.** It is
@@ -444,6 +451,11 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // takes no room in the enclosing object, so there is nothing to lay out and
         // nothing to name - the specifier was the whole declaration.
         if (peek().is(";")) {
+            // An `enum Kind { ... };` in a class body declares a type and no
+            // member, exactly as a nested class does - and it is told apart by
+            // the keyword, because the type it answers with is `int` and there
+            // is nothing in that to recognise.
+            if (wasEnum) { at_++; continue; }
             if (!base->isStructOrUnion() || base->tag().empty())
                 src_.fail(peek().pos, "this declares nothing - a member needs a "
                                       "name");
@@ -518,6 +530,20 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             // member at all**: `int &get()` is a function and d.type is its return.
             const bool memberIsFunction = peek().is("(") || d.paramsAt != 0 ||
                                           d.type->isFunction();
+
+            // **[dcl.stc]/9 names what `mutable` may not be applied to**, and
+            // each of the four would be a contradiction rather than a gap: a
+            // static member is not part of any object, a const one is what the
+            // keyword exists to undo, a reference cannot be rebound whatever
+            // is said about it, and a function is not a member that is written.
+            if (isMutable) {
+                if (msc == StorageStatic || memberIsFunction ||
+                    d.type->isReference() || d.type->isConst())
+                    src_.fail(d.pos, "'mutable' may not be applied to '" +
+                                     d.name + "' - [dcl.stc] allows it on a "
+                                     "non-static data member that is neither "
+                                     "const nor a reference");
+            }
 
             // **`constexpr` on a member function, taken off the return type here as
             // well.** The out-of-line path does the same, and a member declared here
@@ -598,7 +624,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 }
                 members.push_back(Member{ d.name, d.type, static_cast<int>(at),
                                           static_cast<int>(w),
-                                          static_cast<int>(bitOff), access });
+                                          static_cast<int>(bitOff), access,
+                                          isMutable });
                 if (!consume(",")) break;
                 continue;
             }
@@ -697,7 +724,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 ((bitCursor > openEnd ? bitCursor : openEnd) + 7) / 8;
             long long at = (kind == Kind::Union) ? 0 : alignTo(byteCursor, a);
             members.push_back(Member{ d.name, d.type, static_cast<int>(at), 0, 0,
-                                      access });
+                                      access, isMutable });
             // `int x = 5;` - C++11's initialiser on the member itself. The tokens stay
             // where they are and their place is recorded; every constructor that does
             // not name this member in its own list reads them again.
@@ -809,10 +836,20 @@ const Type *Parser::enumSpecifier() {
     std::string tag;
     if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
 
+    // **An enum is named through what encloses it**, the same way a class is:
+    // `C::Kind` inside a class and `n::Kind` inside a namespace. The lookups
+    // walk the scope, so `Kind` still means this one from inside, and the
+    // qualified spelling now finds it from outside - which it did not before,
+    // for a namespace either.
+    const Type *within = classStack_.empty() ? nullptr : classStack_.back();
+    std::string prefix;
+    if (within != nullptr) prefix = within->tag() + "::";
+    else if (!namespaceStack_.empty()) prefix = namespacePrefix();
+
     // The tag names a type, as a class tag does. What it does not yet name is
     // a *distinct* type: an enumeration is still int here, so the conversions
     // C++ refuses in both directions are accepted. docs/CONFORMANCE.md has it.
-    if (!tag.empty()) declareTypeName(tag, types_.intType());
+    if (!tag.empty()) declareTypeName(prefix + tag, types_.intType());
 
     if (!peek().is("{")) return types_.intType();
     at_++;
@@ -821,11 +858,12 @@ const Type *Parser::enumSpecifier() {
     while (!peek().is("}")) {
         std::size_t npos = peek().pos;
         std::string name = expectIdent("an enumerator");
-        if (findEnum(name)) src_.fail(npos, "'" + name + "' is declared twice");
+        if (findEnum(prefix + name))
+            src_.fail(npos, "'" + name + "' is declared twice");
         if (consume("="))
             next = narrowTo(constantExpression("a constant"), types_.intType());
-        enumIndex_[name] = enums_.size();
-        enums_.push_back(EnumConst{ name, next });
+        enumIndex_[prefix + name] = enums_.size();
+        enums_.push_back(EnumConst{ prefix + name, next });
         next = next + 1;
         if (!consume(",")) break;
     }

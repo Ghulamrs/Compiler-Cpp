@@ -4017,6 +4017,90 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## `mutable`, three lines and one exception that was already there
+
+**[dcl.stc]/9 makes a `mutable` member writable through a const object**, which
+is what a class reaches for when something it caches or counts is not part of
+the value it presents. It was refused with "'mutable' is implemented, but not
+where a type was wanted" - implemented on a lambda, and nowhere else - and one
+`mutable bool` in one header stopped five of Compiler++'s sixteen sources.
+
+**The propagation was already in one shape at each of the three places a member
+is reached**, which is why the fix is three lines rather than a design. `.`,
+`->`, and the implicit `this->name` inside a member function each ask whether
+the object is const and qualify the member's type if it is - and each already
+carried one exception, the reference member whose referent [dcl.ref] does not
+reach. A mutable member is the second exception in the same condition.
+
+**It is a property of the member and not of its type**, so the flag sits on
+`Member` beside the access and the bit-field width, not in the qualifiers.
+Putting it in the type would have made `mutable int` a type distinct from
+`int`, which would reach the mangler - and neither ABI spells it, because the
+keyword changes no name and no layout.
+
+**The four things it may not be applied to are refused by name**, and each is a
+contradiction rather than a gap: a static member is not part of any object, a
+const one is what the keyword exists to undo, a reference cannot be rebound
+whatever is said about it, and a function is not a member that is written.
+clang refuses all four and so does this.
+
+**Written after the type - `int mutable x;`, which is legal and nobody writes -
+it is still refused**, by the keyword table with the message that keyword
+already had. The specifier is read before `specifiers()` in the member loop,
+which is one place rather than a fifth spelling inside a function that answers
+about types.
+
+## An enumeration inside a class or a namespace, and the three things it wanted
+
+**`enum Kind { Red, Green };` written in a class body was refused with "this
+declares nothing - a member needs a name"**, which is a message about a member
+declaration answering a question about a type declaration. It is the ordinary
+way C++ spells a small set of named constants, so this shut a door most
+programs go through - five of Compiler++'s sixteen sources among them - and it
+was not on any refusal list, because nothing refused it *by name*.
+
+**Three things were missing at once and each was in a different file**, which
+is why it read as one wall rather than three.
+
+**The declaration.** In a class body `enum Kind { ... };` declares a type and
+no member, exactly as a nested class does - and it is told apart by the
+**keyword**, not by what the specifier answers with. A nested class is
+recognised at the semicolon by the type being a struct with a tag; an
+enumeration answers `int`, and there is nothing in an `int` to recognise. So
+the member loop records whether the specifier started at `enum` before it
+reads one.
+
+**The name.** The tag and every enumerator take the enclosing class's tag or
+the namespace prefix - `C::Kind`, `C::Red`, `n::Level`, `n::Low` - which is the
+same qualified-string key a nested class already uses. Without it two classes
+could not each write `Red`, and a class's enumerator collided with a global of
+that name.
+
+**And the lookup, which is a walk rather than one flat map.** `enums_` was
+keyed by the written name and read by one `find`, so a prefixed enumerator was
+findable only by its full name. `findEnum` now tries the flat map, then
+`qualifyForLookup` for the namespaces, then `classStack_`, `currentClass_` and
+`inlineOwner_` - which is the order every other name in this parser is looked
+up in, and it is what makes `Green` mean `C::Green` inside a member of C and
+nowhere else. `enumInClass` is the per-class half, written to mirror
+`lookupInClass` so the two cannot drift.
+
+**A qualified enumerator needed a fourth place, and it is not where the
+namespace one lives.** `n::Low` is read by the namespace branch of `primary`,
+which is guarded on `namespaces_` and never sees a class. `C::Red` goes to the
+branch below it - the one that finds a static data member by the longest
+prefix that names a class and has such a member - and it now makes the same
+walk one step over for an enumerator. A value and not an object, so there is
+nothing to take the address of and the number is the whole of it.
+
+**An enumeration is still `int`, and this did not change that.**
+`docs/CONFORMANCE.md` records it, and it is visible in the mangling: cxx1
+spells `n::twice(Level)` as `_ZN1n5twiceEi` where clang writes
+`_ZN1n5twiceENS_5LevelE`, and `?twice@n@@YAHH@Z` against `?twice@n@@YAHW4Level@1@@Z`.
+`tests/cases/nested-enum.nonames` records that for all three targets. Giving an
+enumeration a type of its own is a separate step, and it changes the name of
+every function that takes one.
+
 ## Ordinary C++ this refuses, and none of it is on the ladder
 
 **The gap this section exists to close.** `docs/CONFORMANCE.md` holds what
@@ -4035,15 +4119,24 @@ Found 2026-08-30 and each checked against clang, which accepts all three.
 | --- | --- |
 | `P a(1), b(2);` | `expected ';'` — only the first declarator of a declaration may have constructor arguments |
 | `return P(1);` | `'P(...)' makes a temporary of type 'struct P'` — a class temporary written as a functional cast |
-| `int f(int) { … }` | `a parameter of a definition needs a name` |
+| `int f(int) { … }` | `a parameter of a definition needs a name` - **fixed 2026-09-04** |
 
-**The third has a sharper edge than it looks.** The postfix increment is
-declared `operator++(int)` and *nobody names that parameter* - it exists only
-to tell the two forms apart, so every real program writing one hits this. The
-prototype form is accepted and only the definition is refused, which is the
-inherited C rule: a body needs a name to refer to the parameter by. C++ does
-not require one, and a compiler that means to run other people's code has to
-take it.
+**The third had a sharper edge than it looks, and it is mended.** The postfix
+increment is declared `operator++(int)` and *nobody names that parameter* - it
+exists only to tell the two forms apart, so every real program writing one hit
+this. The prototype form was accepted and only the definition refused, which
+is the inherited C rule: a body needs a name to refer to the parameter by. C++
+does not require one, and a compiler that means to run other people's code has
+to take it.
+
+**An unnamed parameter still occupies a slot and a place in the calling
+convention**, which is why skipping it was not an option and giving it `off =
+0` would have put it on top of the frame's first word. It is declared under a
+name no program can write - `$unnamed<n>` - and everything below that point is
+the named path unchanged: the frame slot, the calling convention, and on
+Windows the `alive_` entry that destroys a by-value class parameter. The same
+device the lambda return typedef and a pack's members already used. Four of
+Compiler++'s sixteen sources were stopped by it.
 
 **The second is what a constructor is usually written through**, so it is the
 one most likely to stop a real program: `return P(1);`, `f(P(1))` and

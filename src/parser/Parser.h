@@ -1193,6 +1193,10 @@ private:
     bool hasFunctionNamed(const std::string &key) const;
     bool hasGlobalNamed(const std::string &key) const;
     bool hasTypeNamed(const std::string &key) const;
+    bool hasEnumNamed(const std::string &key) const;
+    // An enumerator named through the class it was written in, and through
+    // that class's bases - the mirror of lookupInClass for the enum table.
+    const EnumConst *enumInClass(const Type *cls, const std::string &name) const;
     std::size_t qualifiedTypeEnd() const;
     std::vector<std::string> lookupKeys(const std::string &name,
                                         const Type *left,

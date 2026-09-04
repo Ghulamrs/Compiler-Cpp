@@ -406,8 +406,6 @@ void Parser::topLevel(Program &program) {
     std::vector<const Type *> params;
     std::vector<Param> paramSlots;
     bool variadic = false;
-    std::size_t unnamedParam = 0;
-    bool sawUnnamed = false;
     std::size_t aliveParams = 0;
 
     // **`this` is parameter zero, and it is declared before any written one so that it
@@ -476,13 +474,21 @@ void Parser::topLevel(Program &program) {
                 const Type *held = byAddress ? types_.referenceTo(pd.type)
                                              : pd.type;
                 int off;
-                if (pd.name.empty()) {
-                    if (pd.type->isVoid())
-                        src_.fail(pd.pos, "'void' is only a parameter list on its own");
-                    unnamedParam = pd.pos;
-                    sawUnnamed = true;
-                    off = 0;
-                } else {
+                {
+                    // **A definition may leave a parameter unnamed** - C++ does
+                    // not require one where C did, and `operator++(int)` is
+                    // written that way by everybody: the parameter exists only
+                    // to tell the postfix form from the prefix one. It still
+                    // occupies a slot and a place in the calling convention, so
+                    // it is declared under a name no program can write rather
+                    // than skipped - the same device the lambda return typedef
+                    // and a pack's members use.
+                    if (pd.name.empty()) {
+                        if (pd.type->isVoid())
+                            src_.fail(pd.pos,
+                                      "'void' is only a parameter list on its own");
+                        pd.name = "$unnamed" + std::to_string(params.size());
+                    }
                     inParams_ = true;
                     off = declare(pd.name, held, pd.pos);
                     inParams_ = false;
@@ -567,10 +573,6 @@ void Parser::topLevel(Program &program) {
                         sc == StorageStatic);
         return;
     }
-    if (sawUnnamed)
-        src_.fail(unnamedParam, "a parameter of a definition needs a name - "
-                                "a prototype may leave it out, a body cannot");
-
     const Signature *member = nullptr;
     if (memberOf != nullptr) {
         std::string key = d.qualifier + "::" + d.name;   // "Point::~Point" too

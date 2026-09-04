@@ -912,6 +912,32 @@ ExprPtr Parser::primary(Program *program) {
             return staticMemberRef(owner, *owner->findStaticMember(member),
                                    owner->tag(), qpos);
         }
+
+        // **`C::StepBase` - an enumerator named through its class**, which is
+        // the same walk one step over: the longest prefix that names a class
+        // and has an enumerator of that name. It is a value and not an object,
+        // so there is nothing to take an address of and the number is the whole
+        // of it.
+        std::string e = peek().text;
+        const EnumConst *found = nullptr;
+        std::size_t took = 0;
+        for (std::size_t k = 1; peekAt(k).is("::") &&
+                                peekAt(k + 1).kind == TokenKind::Ident; k += 2) {
+            const std::string component = peekAt(k + 1).text;
+            if (const Type *cls = findTypedef(e))
+                if (cls->isStructOrUnion())
+                    if (const EnumConst *c = enumInClass(cls, component)) {
+                        found = c;
+                        took = k + 2;
+                    }
+            e += "::" + component;
+        }
+        if (found != nullptr) {
+            at_ += took;
+            ExprPtr n(new Num(found->value));
+            n->setType(types_.intType());
+            return n;
+        }
     }
 
     // **`S::f(...)` - a static member function, called with no object.** The
@@ -1143,7 +1169,8 @@ ExprPtr Parser::primary(Program *program) {
                 // The same two rules as the `.` and `->` paths: a const
                 // object does not reach through a reference member, and a
                 // reference member is read by dereferencing what it holds.
-                acc->setType(held->isConst() && !m->type->isReference()
+                acc->setType(held->isConst() && !m->type->isReference() &&
+                             !m->isMutable
                                  ? types_.withConst(m->type) : m->type);
                 return useReference(std::move(acc));
             }
@@ -1527,7 +1554,8 @@ ExprPtr Parser::postfix() {
             // A member reached through a const object is itself const - [expr.ref]
             // gives it the object's qualification. **But not a reference member's
             // referent**: [dcl.ref] stops the const at the reference itself.
-            acc->setType(obj->isConst() && !m->type->isReference()
+            acc->setType(obj->isConst() && !m->type->isReference() &&
+                         !m->isMutable
                              ? types_.withConst(m->type) : m->type);
             // A reference member holds an address, so reading one is a
             // dereference - the same `useReference` every mention of a
@@ -1577,7 +1605,8 @@ ExprPtr Parser::postfix() {
             // A member reached through a const object is itself const - [expr.ref]
             // gives it the object's qualification. **But not a reference member's
             // referent**: [dcl.ref] stops the const at the reference itself.
-            acc->setType(obj->isConst() && !m->type->isReference()
+            acc->setType(obj->isConst() && !m->type->isReference() &&
+                         !m->isMutable
                              ? types_.withConst(m->type) : m->type);
             // A reference member holds an address, so reading one is a
             // dereference - the same `useReference` every mention of a

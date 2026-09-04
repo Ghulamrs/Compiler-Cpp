@@ -89,6 +89,10 @@ struct Member {
     int width = 0;
     int bitOffset = 0;
     Access access = Access::Public;
+    // **[dcl.stc]/9: a `mutable` member is writable through a const object.**
+    // It is a property of the member and not of its type, which is why it sits
+    // here rather than in the qualifiers.
+    bool isMutable = false;
 
     bool isBitField() const { return width != 0; }
 };

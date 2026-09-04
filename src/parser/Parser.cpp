@@ -251,9 +251,47 @@ void Parser::declareTypeName(const std::string &name, const Type *type) {
     typedefs_.push_back(TypedefName{ name, type });
 }
 
+bool Parser::hasEnumNamed(const std::string &key) const {
+    return enumIndex_.find(key) != enumIndex_.end();
+}
+
+const Parser::EnumConst *Parser::enumInClass(const Type *cls,
+                                             const std::string &name) const {
+    for (const Type *c = cls; c != nullptr; c = c->enclosing()) {
+        auto it = enumIndex_.find(c->tag() + "::" + name);
+        if (it != enumIndex_.end()) return &enums_[it->second];
+        for (const Type::BaseSpec &b : c->bases())
+            if (const EnumConst *e = enumInClass(b.type, name)) return e;
+    }
+    return nullptr;
+}
+
+// **An enumerator is named through what encloses it**, the same as a class -
+// `Layout::StepBase`, `n::Red` - so the scopes findTypedef walks are walked
+// here too. Without this an enum in a class or a namespace was findable only
+// by the bare name it was written with, and `n::Kind` found nothing at all.
 const Parser::EnumConst *Parser::findEnum(const std::string &name) const {
     auto it = enumIndex_.find(name);
-    return it == enumIndex_.end() ? nullptr : &enums_[it->second];
+    if (it != enumIndex_.end()) return &enums_[it->second];
+
+    const std::string key = qualifyForLookup(name, &Parser::hasEnumNamed);
+    if (key != name) {
+        auto q = enumIndex_.find(key);
+        if (q != enumIndex_.end()) return &enums_[q->second];
+    }
+
+    for (std::size_t i = classStack_.size(); i-- > 0; )
+        if (const EnumConst *e = enumInClass(classStack_[i], name)) return e;
+    if (currentClass_ != nullptr)
+        if (const EnumConst *e = enumInClass(currentClass_, name)) return e;
+    if (!inlineOwner_.empty()) {
+        auto owner = typedefIndex_.find(inlineOwner_);
+        if (owner != typedefIndex_.end())
+            if (const EnumConst *e =
+                    enumInClass(typedefs_[owner->second].type, name))
+                return e;
+    }
+    return nullptr;
 }
 
 // `Point::Point(`, `Outer::Inner::Inner(` and `Outer::Inner::~Inner(` - a

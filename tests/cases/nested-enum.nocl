@@ -1,0 +1,9 @@
+An enumeration is still `int` here, which `docs/CONFORMANCE.md` records: the
+enumerators are constants of type int and there is no distinct enumeration
+type behind them. So `n::twice(Level)` is spelled with the parameter as int -
+`_ZN1n5twiceEi`, `?twice@n@@YAHH@Z` - where clang writes the enumeration,
+`NS_5LevelE` and `W4Level@1@`. Every other name in the case agrees.
+
+This case is about where an enumeration may be *written* and how its names are
+found, which is what the fix was. Giving an enumeration a type of its own is a
+separate step and it changes the mangling of every function that takes one.

@@ -28,6 +28,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <cstdio>
 
 int main() {
     // Output, chained, with every built-in the header formats.
@@ -64,9 +65,15 @@ int main() {
         std::ofstream out("_cxx1_streams_case.txt");
         out << "first" << std::endl << 99 << std::endl;
     }
-    std::ifstream back("_cxx1_streams_case.txt");
-    while (std::getline(back, line)) std::cout << "<" << line << ">";
-    std::cout << std::endl;
+    {
+        std::ifstream back("_cxx1_streams_case.txt");
+        while (std::getline(back, line)) std::cout << "<" << line << ">";
+        std::cout << std::endl;
+    }
+    // The suite runs from the tree's own directory, so a case that writes a
+    // file and leaves it there puts one in `git status` after every run.
+    // Closed first - the read stream above is scoped for that reason.
+    std::remove("_cxx1_streams_case.txt");
 
     // A file that is not there fails to open rather than crashing.
     std::ifstream missing("_cxx1_no_such_file_here");
