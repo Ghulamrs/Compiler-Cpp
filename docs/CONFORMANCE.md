@@ -374,31 +374,33 @@ unwinding - which is a program relying on it to crash - keeps running instead.
 Nothing that relies on the *promise* being true is affected, because a program
 that keeps its promise cannot tell the difference.
 
-## A temporary is not destroyed when an exception passes through
+## An un-elided call result is not destroyed when an exception passes through
 
 [class.temporary]/4 destroys a temporary at the end of the full expression it
 was made in, and [except.ctor]/1 destroys it during unwinding if the full
-expression does not finish. cxx1 does the first and not the second.
+expression does not finish. cxx1 does both now for a class temporary and for a
+by-value argument copy: each carries a guard flag the cleanup pad reads, so one
+region can cover a whole statement and still destroy exactly what exists at the
+point the exception left it.
 
-Cleanup regions are built from `alive_`, which holds objects with names - a
-local, a by-value class parameter on Windows. `pendingTemps_` has no region of
-its own, so an argument copy and a class temporary are destroyed on the normal
-path and leaked on the unwind.
+**The object a call returns is the exception, and it is marked unguarded.**
+Setting a flag after the call means wrapping the `Call` node, and the two
+elision paths find their candidate by `dynamic_cast`-ing to it - so wrapping
+would silently turn the elision off, which is a worse trade. In practice
+elision routes that object into the slot of whatever consumes it, and those
+slots are guarded, so `two(make(7), make(2))` balances. What is left uncovered
+is an un-elided result temporary with a throw later in the same full
+expression:
 
 ```cpp
-int take(Owner o) { if (o.v == 6) throw 1; return o.v; }
-int through() { return take(Owner(6)); }
-// through() copies Owner(6) into the parameter; the throw leaves through()
-// without destroying either the temporary or the copy.
+int f(A a, int n);
+f(make(1), boom());     // make(1)'s result leaks if boom() throws
 ```
 
-Measured against clang with objects counted rather than constructor calls: for
-a throw through `take(Owner(6))` clang ends with none alive and cxx1 with two;
-for `Owner t(6); take(t);` cxx1 leaves the argument copy alive, `t` itself
-being a named local and so covered. `tests/cases/return-by-value-balance.cpp`
-pins the normal path, where the two numbers agree for every shape.
+It is a leak rather than a wrong answer, and bounded by the frame. Fixing it
+means letting a `Call` carry the flag to set on return - a field on the node
+and a line in each of the three code generators - and it was deliberately not
+folded into the change that guarded the other two, which touched the exception
+tables on every target and wanted its own verification.
 
-It is a leak rather than a wrong answer, and it is bounded by the function: an
-exception that unwinds a frame loses whatever temporaries that expression had
-made. Fixing it means giving `pendingTemps_` cleanup regions of the kind
-`block()` already builds for `alive_`, which is its own step.
+`tests/cases/temporary-unwind.cpp` pins the five shapes that do balance.

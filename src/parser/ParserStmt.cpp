@@ -891,14 +891,30 @@ StmtPtr Parser::block() {
     // exactly what was built by then, so an exception cannot destroy what is not.
     std::vector<std::pair<std::size_t, std::size_t> > built;
     std::vector<StmtPtr> body;
+    // **What this block's statements made and destroyed within themselves.**
+    // A temporary lives inside one full expression, so it is never in
+    // `alive_` and the regions below would not know about it - but an
+    // exception can still leave the statement in the middle of one.
+    std::vector<Temporary> temps;
+    std::vector<Temporary> outer;
+    outer.swap(statementTemps_);
     while (!peek().is("}")) {
         if (peek().kind == TokenKind::End)
             src_.fail(peek().pos, "unclosed '{'");
         const std::size_t aliveBefore = alive_.size();
         body.push_back(atDeclarationStart() ? declaration() : statement());
+        for (std::size_t k = 0; k < statementTemps_.size(); k++)
+            temps.push_back(statementTemps_[k]);
+        statementTemps_.clear();
         if (alive_.size() > aliveBefore)
             built.push_back(std::make_pair(body.size(), alive_.size()));
     }
+    statementTemps_.swap(outer);
+    // A region has to cover the statements that made them, and the first may
+    // be before anything was alive - so the regions start at the top of the
+    // block rather than at the first construction.
+    if (!temps.empty() && (built.empty() || built[0].first != 0))
+        built.insert(built.begin(), std::make_pair(std::size_t(0), aliveAtEntry));
 
     // Everything this block constructed is destroyed here, last first. The
     // objects are found by where they are in `alive_` rather than by walking
@@ -912,8 +928,10 @@ StmtPtr Parser::block() {
                            "the call-site table and one would have to split "
                            "the other");
         body = target_.microsoftNames()
-                   ? wrapMsCleanups(std::move(body), built, aliveAtEntry, pos)
-                   : wrapCleanups(std::move(body), built, aliveAtEntry, pos);
+                   ? wrapMsCleanups(std::move(body), built, aliveAtEntry, pos,
+                                    temps)
+                   : wrapCleanups(std::move(body), built, aliveAtEntry, pos,
+                                  temps);
     }
     alive_.resize(aliveAtEntry);
     usingNamespaces_.resize(usingAtEntry);

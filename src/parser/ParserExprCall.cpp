@@ -63,15 +63,15 @@ ExprPtr Parser::finishCall(const std::string &name, const std::string &symbol,
 // expression, where those temporaries are destroyed in the reverse of their order.
 void Parser::flushTemporaries(std::vector<StmtPtr> &into) {
     if (pendingTemps_.empty()) return;
-    std::vector<std::pair<int, const Type *> > mine;
+    std::vector<Temporary> mine;
     mine.swap(pendingTemps_);
     for (std::size_t k = mine.size(); k-- > 0; ) {
-        const Signature *dtor = destructorOf(mine[k].second);
+        const Signature *dtor = destructorOf(mine[k].type);
         if (dtor == nullptr) continue;
-        ExprPtr what(Var::local("$copy", mine[k].first));
-        what->setType(mine[k].second);
+        ExprPtr what(Var::local("$copy", mine[k].slot));
+        what->setType(mine[k].type);
         ExprPtr at(new Unary('&', std::move(what)));
-        at->setType(types_.pointerTo(mine[k].second));
+        at->setType(types_.pointerTo(mine[k].type));
         into.push_back(StmtPtr(new ExprStmt(
             destructorCall(std::move(at), *dtor, 0))));
     }
@@ -83,6 +83,22 @@ void Parser::flushTemporaries(std::vector<StmtPtr> &into) {
 // receives, so destroying it at the end of this full expression would release
 // what the caller is about to be given. A constructed temporary is
 // `Comma(build, slot)`, so the slot is found by walking to the right.
+// **A temporary's guard flag**, an int in the frame: 0 while the object does
+// not exist and 1 once its constructor has returned. A cleanup pad reads it,
+// which is what lets one region cover a whole statement without destroying
+// something the statement had not yet built.
+int Parser::guardFlag() { return allocateFrameSlot(types_.intType()); }
+
+ExprPtr Parser::setGuard(int flag, int value) {
+    ExprPtr f(Var::local("$guard", flag));
+    f->setType(types_.intType());
+    ExprPtr n(new Num(static_cast<long long>(value)));
+    n->setType(types_.intType());
+    ExprPtr set(new Assign(std::move(f), std::move(n)));
+    set->setType(types_.intType());
+    return set;
+}
+
 bool Parser::releaseTemporary(const Expr &value) {
     const Expr *at = &value;
     for (;;) {
@@ -97,7 +113,7 @@ bool Parser::releaseTemporary(const Expr &value) {
     const Var *v = dynamic_cast<const Var *>(at);
     if (v == nullptr || !v->isLocal()) return false;
     for (std::size_t i = 0; i < pendingTemps_.size(); i++)
-        if (pendingTemps_[i].first == v->offset()) {
+        if (pendingTemps_[i].slot == v->offset()) {
             pendingTemps_.erase(pendingTemps_.begin() + i);
             return true;
         }
@@ -106,8 +122,19 @@ bool Parser::releaseTemporary(const Expr &value) {
 
 ExprPtr Parser::endFullExpression(ExprPtr e) {
     if (pendingTemps_.empty()) return e;
-    std::vector<std::pair<int, const Type *> > mine;
+    std::vector<Temporary> mine;
     mine.swap(pendingTemps_);
+
+    // **Every guard starts clear, in front of the whole expression.** A
+    // statement inside a loop runs again, and a flag left set from the turn
+    // before would have the pad destroy an object this turn never built.
+    for (std::size_t k = 0; k < mine.size(); k++) {
+        if (mine[k].flag == 0) continue;
+        const Type *et = e->type();
+        ExprPtr seq(new Comma(setGuard(mine[k].flag, 0), std::move(e)));
+        seq->setType(et);
+        e = std::move(seq);
+    }
 
     const Type *t = e->type();
     const bool hasValue = t != nullptr && !t->isVoid() && !t->isFunction();
@@ -121,13 +148,20 @@ ExprPtr Parser::endFullExpression(ExprPtr e) {
         e = std::move(save);
     }
     for (std::size_t k = mine.size(); k-- > 0; ) {
-        const Signature *dtor = destructorOf(mine[k].second);
+        const Signature *dtor = destructorOf(mine[k].type);
         if (dtor == nullptr) continue;
-        ExprPtr what(Var::local("$copy", mine[k].first));
-        what->setType(mine[k].second);
+        ExprPtr what(Var::local("$copy", mine[k].slot));
+        what->setType(mine[k].type);
         ExprPtr at(new Unary('&', std::move(what)));
-        at->setType(types_.pointerTo(mine[k].second));
+        at->setType(types_.pointerTo(mine[k].type));
         ExprPtr gone = destructorCall(std::move(at), *dtor, 0);
+        // Clear the guard with the destruction, so that a pad later in the
+        // same block does not destroy what this statement already has.
+        if (mine[k].flag != 0) {
+            ExprPtr clear(new Comma(std::move(gone), setGuard(mine[k].flag, 0)));
+            clear->setType(types_.intType());
+            gone = std::move(clear);
+        }
         ExprPtr seq(new Comma(std::move(e), std::move(gone)));
         seq->setType(t);
         e = std::move(seq);
@@ -139,12 +173,15 @@ ExprPtr Parser::endFullExpression(ExprPtr e) {
         seq->setType(t);
         e = std::move(seq);
     }
+    // What this statement made, for whoever opens the cleanup regions.
+    for (std::size_t k = 0; k < mine.size(); k++)
+        if (mine[k].flag != 0) statementTemps_.push_back(mine[k]);
     return e;
 }
 
 ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
                                 const std::string &what,
-                                std::vector<std::pair<int, const Type *> > &destroy) {
+                                std::vector<Temporary> &destroy) {
     const Type *cls = type->unqualified();
     // **A by-value parameter is initialised from the argument, so anything that is
     // not an lvalue moves into it.** This path predates rvalue references and
@@ -185,13 +222,22 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
         checkAssignable(*arg, cls, pos, what);
         const int plain = allocateFrameSlot(cls);
         const Type *to = types_.pointerTo(cls);
-        if (destructorOf(cls) != nullptr)
-            destroy.push_back(std::make_pair(plain, cls));
+        int guard = 0;
+        if (destructorOf(cls) != nullptr) {
+            guard = guardFlag();
+            destroy.push_back(Temporary{ plain, cls, guard });
+        }
 
         ExprPtr slot(Var::local("$copy", plain));
         slot->setType(cls);
         ExprPtr store(new Assign(std::move(slot), std::move(arg)));
         store->setType(cls);
+        // The copy exists from here, and the pad may run from here on.
+        if (guard != 0) {
+            ExprPtr mark(new Comma(std::move(store), setGuard(guard, 1)));
+            mark->setType(types_.intType());
+            store = std::move(mark);
+        }
 
         ExprPtr again(Var::local("$copy", plain));
         again->setType(cls);
@@ -210,8 +256,11 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
 
     const int tmp = allocateFrameSlot(cls);
     const Type *ptr = types_.pointerTo(cls);
-    if (destructorOf(cls) != nullptr)
-        destroy.push_back(std::make_pair(tmp, cls));
+    int guard = 0;
+    if (destructorOf(cls) != nullptr) {
+        guard = guardFlag();
+        destroy.push_back(Temporary{ tmp, cls, guard });
+    }
 
     // **Elision, where the argument is already one of these coming back through a
     // hidden pointer.** The call builds its result straight into the temporary this
@@ -223,6 +272,11 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
             built->setType(cls);
             ExprPtr at(new Unary('&', std::move(built)));
             at->setType(ptr);
+            if (guard != 0) {
+                ExprPtr mark(new Comma(std::move(arg), setGuard(guard, 1)));
+                mark->setType(types_.intType());
+                arg = std::move(mark);
+            }
             ExprPtr node(new Comma(std::move(arg), std::move(at)));
             node->setType(ptr);
             return node;
@@ -245,6 +299,12 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
     ExprPtr build = completeCall(cls->tag(), cc->symbol, nullptr,
                                  types_.get(Kind::Void), ps, false, pos,
                                  std::move(ctorArgs));
+
+    if (guard != 0) {
+        ExprPtr mark(new Comma(std::move(build), setGuard(guard, 1)));
+        mark->setType(types_.intType());
+        build = std::move(mark);
+    }
 
     ExprPtr again(Var::local("$copy", tmp));
     again->setType(cls);
@@ -273,7 +333,7 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
 
     // Temporaries this call makes for its by-value class arguments, and which
     // this call therefore has to destroy once it returns.
-    std::vector<std::pair<int, const Type *> > destroy;
+    std::vector<Temporary> destroy;
 
     for (std::size_t i = 0; i < args.size(); i++) {
         if (i >= params.size()) {
@@ -336,7 +396,7 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
     // the caller's on every ABI - what Microsoft moves to the callee is the
     // by-value *parameter* above, not the return.
     if (slot != 0 && destructorOf(returns) != nullptr)
-        pendingTemps_.push_back(std::make_pair(slot, returns->unqualified()));
+        pendingTemps_.push_back(Temporary{ slot, returns->unqualified(), 0 });
 
     // A call that returns a reference is an lvalue, and useReference is what
     // makes it one: the address comes back in a register and the dereference
@@ -348,7 +408,7 @@ void Parser::claimCallResult(Call &c, int slot) {
     const int had = c.resultSlot();
     if (had != 0)
         for (std::size_t i = 0; i < pendingTemps_.size(); i++)
-            if (pendingTemps_[i].first == had) {
+            if (pendingTemps_[i].slot == had) {
                 pendingTemps_.erase(pendingTemps_.begin() +
                                     static_cast<long>(i));
                 break;

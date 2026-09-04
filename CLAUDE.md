@@ -4019,6 +4019,59 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## A temporary during unwinding, and why the obvious fix is a regression
+
+**Cleanup regions were built from `alive_`**, which is the list of objects with
+names, and a temporary lives inside one full expression and is never in it. So
+an argument copy and a class temporary were destroyed on the normal path and
+leaked on the unwind - measured against clang with a throw through
+`take(Owner(6))`, which ends with none alive there and two here.
+
+**A pad covering the statement would have destroyed what the statement had not
+built yet.** In `two(A(1), A(99))`, where the second constructor throws, it
+would run `~A` on storage nothing constructed - a corruption in place of a
+leak, which is the trade this tree refuses everywhere else. And the region
+cannot begin after each construction instead: a `Try` wraps statements, and
+that boundary is inside one.
+
+**So each temporary carries a guard flag in the frame**, an int that is cleared
+in front of the full expression, set the moment its constructor returns, and
+cleared again as the object is destroyed - on the normal path and in the pad
+alike. The pad destroys each temporary under its own flag, so one region covers
+a whole statement and still destroys exactly what exists. It is MSVC's unwind
+state variable written out by hand, and it needed nothing the AST did not
+already have: `If`, `Assign` and `Comma`.
+
+**Cleared in front of the expression, not once.** A statement inside a loop
+runs again, and a flag left set from the turn before would have the pad destroy
+an object this turn never built. `inLoop` in the case is there for that and
+nothing else.
+
+**And the pad clears as it destroys.** `_Unwind_Resume` carries on through the
+enclosing regions of the same function, so a pad that destroyed without
+clearing would be followed by one that destroyed the same object again - a
+double free reached only by an exception, which no normal-path test could see.
+The Windows funclets chain for the same reason and got the same treatment.
+
+**The regions start at the top of the block now** rather than at the first
+construction, because the first temporary can come before anything is alive and
+would otherwise sit outside every region.
+
+**Every temporary of the block is listed in every pad of it.** That reads
+wasteful and is what makes it correct: the flag is what says which of them are
+live at the point the exception left, so listing one that is not costs a test
+and no more. Deciding *which* pad should carry which temporary would be the
+statement-splitting this design exists to avoid.
+
+**What is not covered is the object a call returns**, and the reason is
+mechanical: setting a flag after the call means wrapping the `Call` node, and
+both elision paths find their candidate by `dynamic_cast`-ing to it, so
+wrapping would silently turn elision off. Elision routes that object into the
+slot of whatever consumes it and those slots are guarded, so
+`two(make(7), make(2))` balances; an un-elided result with a throw later in the
+same expression does not. `docs/CONFORMANCE.md` records it, and the fix is a
+field on `Call` plus a line in each code generator.
+
 ## A class returned by value was never destroyed, and the two halves that hid it
 
 **One object leaked per call**, in every shape a call's result can appear in:

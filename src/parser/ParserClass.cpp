@@ -337,7 +337,8 @@ ExprPtr Parser::destructorCall(ExprPtr address, const Signature &dtor,
 std::vector<StmtPtr> Parser::wrapMsCleanups(
     std::vector<StmtPtr> body,
     const std::vector<std::pair<std::size_t, std::size_t> > &built,
-    std::size_t aliveAtEntry, std::size_t pos) {
+    std::size_t aliveAtEntry, std::size_t pos,
+    const std::vector<Temporary> &temps) {
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     const int pointerSlot = allocateFrameSlot(voidPtr);
     const int selectorSlot = allocateFrameSlot(types_.intType());
@@ -357,6 +358,26 @@ std::vector<StmtPtr> Parser::wrapMsCleanups(
         if (guarded.empty()) continue;
 
         std::vector<StmtPtr> steps;
+        // The block's temporaries, each under its guard - see cleanupPad. The
+        // funclets chain, so clearing as it destroys is what stops the next
+        // one in the chain destroying the same object again.
+        for (std::size_t j = temps.size(); j-- > 0; ) {
+            const Signature *dtor = destructorOf(temps[j].type);
+            if (dtor == nullptr || temps[j].flag == 0) continue;
+            ExprPtr what(Var::local("$copy", temps[j].slot));
+            what->setType(temps[j].type);
+            ExprPtr at(new Unary('&', std::move(what)));
+            at->setType(types_.pointerTo(temps[j].type));
+            ExprPtr live(Var::local("$guard", temps[j].flag));
+            live->setType(types_.intType());
+            std::vector<StmtPtr> both;
+            both.push_back(StmtPtr(new ExprStmt(
+                destructorCall(std::move(at), *dtor, 0))));
+            both.push_back(StmtPtr(new ExprStmt(setGuard(temps[j].flag, 0))));
+            steps.push_back(StmtPtr(new If(std::move(live),
+                                           StmtPtr(new Block(std::move(both))),
+                                           StmtPtr())));
+        }
         emitDestructors(steps, k == 0 ? aliveAtEntry : built[k - 1].second,
                         pos, -1, built[k].second);
         Block *b = new Block(std::move(steps));
@@ -374,7 +395,8 @@ std::vector<StmtPtr> Parser::wrapMsCleanups(
 std::vector<StmtPtr> Parser::wrapCleanups(
     std::vector<StmtPtr> body,
     const std::vector<std::pair<std::size_t, std::size_t> > &built,
-    std::size_t aliveAtEntry, std::size_t pos) {
+    std::size_t aliveAtEntry, std::size_t pos,
+    const std::vector<Temporary> &temps) {
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     const int pointerSlot = allocateFrameSlot(voidPtr);
     const int selectorSlot = allocateFrameSlot(types_.intType());
@@ -393,7 +415,7 @@ std::vector<StmtPtr> Parser::wrapCleanups(
         if (guarded.empty()) continue;
         out.push_back(StmtPtr(new Try(
             std::move(guarded),
-            cleanupPad(aliveAtEntry, built[k].second, pointerSlot, pos),
+            cleanupPad(aliveAtEntry, built[k].second, pointerSlot, temps, pos),
             pointerSlot, selectorSlot, std::vector<std::string>())));
     }
     return out;
@@ -403,11 +425,37 @@ std::vector<StmtPtr> Parser::wrapCleanups(
 // a `return` unwinds - `alive_` holds them and nothing new had to track them - and
 // the difference is where the code runs from: a pad, ending in _Unwind_Resume.
 StmtPtr Parser::cleanupPad(std::size_t from, std::size_t to, int pointerSlot,
+                           const std::vector<Temporary> &temps,
                            std::size_t pos) {
     // **Bounded rather than truncated.** Resizing `alive_` down and back up would
     // default-construct what it had thrown away, and the second pad would then
     // destroy an object with no class - silently one destructor short.
     std::vector<StmtPtr> steps;
+    // **The temporaries of this block go first**, being the most recently
+    // built - and each under its own guard, because the pad may be reached
+    // from a point in the statement where this one does not exist yet. Every
+    // temporary of the block is listed in every pad: the flag is what says
+    // which of them are live, so listing one that is not costs a test.
+    for (std::size_t k = temps.size(); k-- > 0; ) {
+        const Signature *dtor = destructorOf(temps[k].type);
+        if (dtor == nullptr || temps[k].flag == 0) continue;
+        ExprPtr what(Var::local("$copy", temps[k].slot));
+        what->setType(temps[k].type);
+        ExprPtr at(new Unary('&', std::move(what)));
+        at->setType(types_.pointerTo(temps[k].type));
+        ExprPtr live(Var::local("$guard", temps[k].flag));
+        live->setType(types_.intType());
+        // **Cleared as it is destroyed.** `_Unwind_Resume` carries on through
+        // the enclosing regions of the same function, so a pad that destroyed
+        // without clearing would be followed by one that destroyed again.
+        std::vector<StmtPtr> both;
+        both.push_back(StmtPtr(new ExprStmt(
+            destructorCall(std::move(at), *dtor, 0))));
+        both.push_back(StmtPtr(new ExprStmt(setGuard(temps[k].flag, 0))));
+        steps.push_back(StmtPtr(new If(std::move(live),
+                                       StmtPtr(new Block(std::move(both))),
+                                       StmtPtr())));
+    }
     emitDestructors(steps, from, pos, -1, to);
 
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));

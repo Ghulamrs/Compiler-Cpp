@@ -111,7 +111,7 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
                            std::to_string(args.size()) + " arguments");
         const int slot = allocateFrameSlot(plain);
         if (destructorOf(plain) != nullptr)
-            pendingTemps_.push_back(std::make_pair(slot, plain));
+            pendingTemps_.push_back(Temporary{ slot, plain, 0 });
         ExprPtr obj(Var::local("$tmp", slot));
         obj->setType(plain);
         // Expiring, whichever of the three shapes below answers - the same
@@ -315,8 +315,11 @@ ExprPtr Parser::constructTemporary(const Type *plain, const Signature &ctor,
                                    std::vector<ExprPtr> args, bool zeroFirst,
                                    std::size_t pos) {
     const int slot = allocateFrameSlot(plain);
-    if (destructorOf(plain) != nullptr)
-        pendingTemps_.push_back(std::make_pair(slot, plain));
+    int guard = 0;
+    if (destructorOf(plain) != nullptr) {
+        guard = guardFlag();
+        pendingTemps_.push_back(Temporary{ slot, plain, guard });
+    }
 
     const Type *ptr = types_.pointerTo(plain);
     ExprPtr obj(Var::local("$tmp", slot));
@@ -342,6 +345,15 @@ ExprPtr Parser::constructTemporary(const Type *plain, const Signature &ctor,
             seq->setType(types_.get(Kind::Void));
             call = std::move(seq);
         }
+    }
+
+    // The object exists from the moment its constructor returns, and a cleanup
+    // pad may run at any point after that - so the flag is set here rather
+    // than the pad assuming the whole statement built everything it will.
+    if (guard != 0) {
+        ExprPtr mark(new Comma(std::move(call), setGuard(guard, 1)));
+        mark->setType(types_.intType());
+        call = std::move(mark);
     }
 
     // **A dereference of a pointer, not the object beside a comma.** `isGlvalue`

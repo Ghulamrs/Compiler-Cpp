@@ -808,21 +808,38 @@ private:
     // this list read backwards at the right moments. The struct itself is defined beside
     // the jump records above, which keep copies of it.
     std::vector<Alive> alive_;
+    // Temporaries this full expression has made for by-value class arguments. **They are
+    // destroyed at the end of the full expression and not when the call they were made
+    // for returns** - [class.temporary], visible in `printf("%d", useD(d))`.
+    // **A temporary, and the flag that says whether it exists yet.** A cleanup
+    // pad may run at any point inside the full expression - including before
+    // this temporary was built, which is why the pad cannot simply destroy
+    // everything the statement will eventually make. The flag is set the
+    // moment the constructor returns and cleared where the object is
+    // destroyed, so the pad asks rather than assumes.
+    struct Temporary {
+        int slot;
+        const Type *type;
+        int flag;
+    };
     // `except` is the frame offset of an object not to destroy - the one being returned,
     // which the caller destroys instead. And a cleanup region's landing pad: destroy
     // alive_[from..to), last first, and hand the exception back to the unwinder.
     StmtPtr cleanupPad(std::size_t from, std::size_t to, int pointerSlot,
+                       const std::vector<Temporary> &temps,
                        std::size_t pos);
     // The block's statements with each stretch that has objects alive turned
     // into a cleanup region of its own.
     std::vector<StmtPtr> wrapMsCleanups(
         std::vector<StmtPtr> body,
         const std::vector<std::pair<std::size_t, std::size_t> > &built,
-        std::size_t aliveAtEntry, std::size_t pos);
+        std::size_t aliveAtEntry, std::size_t pos,
+        const std::vector<Temporary> &temps = std::vector<Temporary>());
     std::vector<StmtPtr> wrapCleanups(
         std::vector<StmtPtr> body,
         const std::vector<std::pair<std::size_t, std::size_t> > &built,
-        std::size_t aliveAtEntry, std::size_t pos);
+        std::size_t aliveAtEntry, std::size_t pos,
+        const std::vector<Temporary> &temps = std::vector<Temporary>());
     // `to` bounds the top of the range, for a cleanup pad that must destroy
     // only what existed at its point in the block.
     void emitDestructors(std::vector<StmtPtr> &into, std::size_t from,
@@ -1119,11 +1136,13 @@ private:
                              const Type *ptr, ExprPtr body);
     ExprPtr materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
                             const std::string &what,
-                            std::vector<std::pair<int, const Type *> > &destroy);
-    // Temporaries this full expression has made for by-value class arguments. **They are
-    // destroyed at the end of the full expression and not when the call they were made
-    // for returns** - [class.temporary], visible in `printf("%d", useD(d))`.
-    std::vector<std::pair<int, const Type *> > pendingTemps_;
+                            std::vector<Temporary> &destroy);
+    std::vector<Temporary> pendingTemps_;
+    // The temporaries each statement of the block being parsed made, so that
+    // the cleanup regions can name them. Emptied by whoever opens the regions.
+    std::vector<Temporary> statementTemps_;
+    int guardFlag();
+    ExprPtr setGuard(int flag, int value);
     // **Taking over a call's result slot takes over its destruction too.** The
     // call registered the slot it allocated as a temporary; whoever redirects
     // the result into storage of its own owns the object from then on, so the
