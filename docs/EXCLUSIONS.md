@@ -183,8 +183,8 @@ SFINAE and variadic packs. What is left:
 - **a friend function defined inside the class body** —
   `src/parser/ParserType.cpp:410`
 - **a const member named in a mem-initialiser list** —
-  `src/parser/ParserTopLevel.cpp:706`
-- **a delegating constructor** — `src/parser/ParserTopLevel.cpp:752`
+  `src/parser/ParserTopLevel.cpp:720`
+- **a delegating constructor** — `src/parser/ParserTopLevel.cpp:766`
 
 ## Conversion functions and operators
 
@@ -229,7 +229,7 @@ SFINAE and variadic packs. What is left:
   `src/parser/ParserTopLevel.cpp:530`
 - **a braced member initialiser** — `src/parser/ParserType.cpp:746`
 - **an initialiser for an array of a class** —
-  `src/parser/ParserStmt.cpp:111`, `src/parser/ParserTopLevel.cpp:724`
+  `src/parser/ParserStmt.cpp:111`, `src/parser/ParserTopLevel.cpp:738`
 - **an array of a class with a destructor** — the elements would have to be
   destroyed in reverse; an array of a class with only constructors works.
   `src/parser/ParserStmt.cpp:119`

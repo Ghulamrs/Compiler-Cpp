@@ -671,6 +671,15 @@ void Parser::topLevel(Program &program) {
         for (;;) {
             std::size_t epos = peek().pos;
             std::string entry = expectIdent("a member or base to initialise");
+            // **A base may be named with its namespace** - `: cc::Lowering(...)`
+            // is how a class writes it when the base is not in scope
+            // unqualified. Read as one name here; `findTypedef` below resolves
+            // it and the *types* are compared, so either spelling arrives at
+            // the same base.
+            while (peek().is("::") && peekAt(1).kind == TokenKind::Ident) {
+                at_++;
+                entry += "::" + expectIdent("a name after '::'");
+            }
             expect("(");
             std::vector<ExprPtr> args;
             parseArguments(args);
@@ -687,7 +696,12 @@ void Parser::topLevel(Program &program) {
             const Type *namedBase = findTypedef(entry);
             const std::vector<Type::BaseSpec> &bs = memberOf->bases();
             for (std::size_t i = 0; i < bs.size(); i++)
+                // **And the injected class name**: inside a derived class the
+                // base is `Base`, whatever namespace it was declared in, so
+                // `: Base(v)` for a `cc::Base` is the ordinary spelling and was
+                // refused as neither a member nor a base.
                 if (bs[i].type->tag() == entry ||
+                    bs[i].type->localName() == entry ||
                     (namedBase != nullptr &&
                      namedBase->unqualified() == bs[i].type->unqualified())) {
                     isBase = true;

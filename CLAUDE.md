@@ -4019,6 +4019,26 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## A base named with its namespace in a mem-initialiser list
+
+**`: cc::Lowering(module, l, d)`** is how a class writes a base that is not in
+scope unqualified, and both spellings were refused. The qualified one read a
+single identifier and then wanted a `(`, finding `::`. The unqualified one -
+`: Base(v)` for a `cc::Base` - resolved nothing, because the base's tag is
+`cc::Base` and the entry was compared against it as a string.
+
+**The comparison by type was already there and could not answer.** It was added
+when a base in a namespace first appeared, and it needs `findTypedef(entry)` to
+resolve the written name - but inside the derived class `Base` alone is the
+**injected class name**, which is not something the type table holds. So the
+base's `localName()` is compared as well, that being exactly what the injected
+name is.
+
+The list reads a qualified name now, and either spelling arrives at the same
+base. What goes in the map is the tag either way, because that is what the walk
+over the bases looks it up by - the string is the key, and the matching is the
+part that had to stop being a string comparison.
+
 ## A local named `count` lost to `std::count`
 
 **`findTemplate` keys every template by its bare name on purpose**, so that
