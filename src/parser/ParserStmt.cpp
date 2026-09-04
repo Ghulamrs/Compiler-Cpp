@@ -126,7 +126,10 @@ StmtPtr Parser::declarationBody() {
                 locals_.back().guardsJump = true;
                 int indexSlot = allocateFrameSlot(types_.intType());
                 inits.push_back(constructLocalArray(d, off, indexSlot));
-                if (!consume(",")) break;
+                // **The comma belongs to the loop condition.** `continue` in
+                // a do/while jumps to that condition, which consumes one - so
+                // taking it here as well ate two and left the next declarator
+                // unread: `std::string a, b;` came back as `expected ';'`.
                 continue;
             }
         }
@@ -268,7 +271,10 @@ StmtPtr Parser::declarationBody() {
             flushTemporaries(inits);
             if (destructorOf(d.type) != nullptr)
                 alive_.push_back(Alive{ d.name, off, d.type->unqualified() });
-            if (!consume(",")) break;
+            // **The comma belongs to the loop condition.** `continue` in a
+            // do/while jumps to that condition, which consumes one - so taking
+            // it here as well ate two and left the next declarator unread:
+            // `std::string a, b;` came back as `expected ';'`.
             continue;
         }
 
@@ -298,7 +304,10 @@ StmtPtr Parser::declarationBody() {
                 inits.push_back(StmtPtr(new ExprStmt(std::move(store))));
                 if (destructorOf(d.type) != nullptr)
                     alive_.push_back(Alive{ d.name, off, d.type->unqualified() });
-                if (!consume(",")) break;
+                // **The comma belongs to the loop condition.** `continue` in
+                // a do/while jumps to that condition, which consumes one - so
+                // taking it here as well ate two and left the next declarator
+                // unread: `std::string a, b;` came back as `expected ';'`.
                 continue;
             }
             at_ = save;

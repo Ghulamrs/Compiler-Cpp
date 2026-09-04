@@ -4019,6 +4019,31 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## Two declarators, one declaration, and a `continue` in a `do`/`while`
+
+**`std::string a, b;` was refused** with `expected ';'` pointing at the second
+name - as ordinary a line of C++ as there is. The entry in the table above
+blamed the constructor *arguments*, because `P a(1), b(2);` is the shape it was
+first written down in. It was never about the arguments: `P a, b;` failed the
+same way, and so did every class with a constructor.
+
+The declarator loop is a `do` / `while (consume(","))`, and the three branches
+that build a class ended with
+
+    if (!consume(",")) break;
+    continue;
+
+**`continue` in a `do`/`while` jumps to the condition**, which consumes a comma
+of its own. So the comma was taken twice, the loop ended, and the second
+declarator was left for `expect(";")` to trip over. The comma belongs to the
+condition; the branches just `continue`.
+
+Worth the section for the shape rather than the size. A `continue` that means
+"next iteration" in a `for` or a `while` means "test the condition now" in a
+`do`, and where the condition has a side effect the two are different
+programs - which is why the fault reached three branches written at three
+different times and none of them looked wrong on its own.
+
 ## A class template's member is instantiated only where it is called
 
 **[temp.inst]/2: instantiating a class template instantiates the declarations
@@ -4521,7 +4546,7 @@ Found 2026-08-30 and each checked against clang, which accepts all three.
 
 | written | what comes back |
 | --- | --- |
-| `P a(1), b(2);` | `expected ';'` — only the first declarator of a declaration may have constructor arguments |
+| `P a(1), b(2);` | `expected ';'` — **fixed 2026-09-04**, and it was never about the arguments: see below |
 | `return P(1);` | `'P(...)' makes a temporary of type 'struct P'` — a class temporary written as a functional cast |
 | `int f(int) { … }` | `a parameter of a definition needs a name` - **fixed 2026-09-04** |
 
