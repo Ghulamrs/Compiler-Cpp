@@ -528,6 +528,20 @@ ExprPtr Parser::conditional() {
         result = tb;
         a = convert(std::move(a), result);
     } else {
+        // **A class-typed `?:` works only where both arms are lvalues of one
+        // type**, which is what `b ? s : t` is. Anything else - an arm that is
+        // a temporary, or two qualifications of one class - needs the result
+        // built into storage of its own, and a `Conditional` yields a value
+        // the backends move as a scalar. Converting the arms here and leaving
+        // that alone compiled and then aborted at run time, which is worse
+        // than the refusal, so the refusal stays until the lowering exists.
+        if (ta->unqualified()->isStructOrUnion() ||
+            tb->unqualified()->isStructOrUnion())
+            src_.fail(pos, "the arms of '?:' are '" + ta->describe() +
+                           "' and '" + tb->describe() + "', and a class-typed "
+                           "'?:' is not supported yet unless both arms name "
+                           "the same object type - the result would have to be "
+                           "built into storage of its own. Write an 'if'");
         src_.fail(pos, "the arms of '?:' have incompatible types '" +
                        ta->describe() + "' and '" + tb->describe() + "'");
     }

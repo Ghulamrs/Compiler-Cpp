@@ -4019,6 +4019,33 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## A converting constructor on `return`, and the `?:` that looked like its twin
+
+**[stmt.return]/2 copy-initialises the returned object**, and a converting
+constructor is part of that: `return "v";` from a function returning
+`std::string` is `string("v")`. `userConversion` had done this for a by-value
+argument since conversion functions landed, and `return` simply never reached
+it - one call, two of Compiler++'s sixteen sources.
+
+**`?:` looked like the same fix and is not.** Converting the arms the same way
+made `c ? "_" : name` compile and then **abort at run time**, on three more
+sources. A class-typed `?:` works here only where both arms are lvalues of one
+type - `b ? s : t` - because `Conditional` yields a value the backends move as
+a scalar, and a class needs storage of its own to be built into. Give either
+arm a temporary and there is nowhere for the answer to live.
+
+**So it is refused, and the refusal was made to say that.** It read
+"incompatible types", which points at the arms when the problem is where the
+result would go; it now names the rule and suggests an `if`. Compiling and
+crashing is worse than refusing, and this is the one place today where the
+difference between the two was a single `else` branch.
+
+What the lowering will need is the machinery class temporaries and by-value
+arguments already have: a frame slot for the result, each arm building into it,
+and the expression answering with that slot - the shape `*(build, &tmp)` that
+`classTemporary` produces. It is a contained piece of work and it is worth
+three sources.
+
 ## Five walls out of Compiler++, and the shape they had in common
 
 **macOS first, then Linux, then Windows** - and the reason that order costs

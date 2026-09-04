@@ -1254,6 +1254,13 @@ StmtPtr Parser::statementBody() {
                                "this function, which is gone by the time the "
                                "caller could read it");
         } else {
+            // **[stmt.return]/2 copy-initialises the returned object**, and a
+            // converting constructor is part of that: `return "v";` from a
+            // function returning `std::string` is `string("v")`. The machinery
+            // is `userConversion`, which a by-value argument already used -
+            // what was missing was this second door to it.
+            if (ExprPtr made = userConversion(returnType_, value, pos))
+                value = std::move(made);
             checkAssignable(*value, returnType_, pos, "this function's return type");
             // Does the operand name a by-value parameter of this function? One that
             // arrived by address was lowered to a reference and reads back as `*slot`;

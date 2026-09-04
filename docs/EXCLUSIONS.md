@@ -296,12 +296,16 @@ it is written:
 - **a local with a destructor and a `try` in one function** — each is a range
   in the call-site table and one would have to split the other.
   `src/parser/ParserStmt.cpp:698`, `src/parser/ParserStmt.cpp:932`,
-  `src/parser/ParserStmt.cpp:1421`
+  `src/parser/ParserStmt.cpp:1428`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and
   so does a class in the condition of an `if`, where the object is built once.
   `src/parser/ParserStmt.cpp:638`
+- **a class-typed `?:` whose arms are not both lvalues of one type** — the
+  result would have to be built into storage of its own, and a `Conditional`
+  yields a value the backends move as a scalar. `b ? s : t` for two `string`
+  lvalues works. `src/parser/ParserOperator.cpp:540`
 - **a `try` inside another** — `src/parser/ParserStmt.cpp:972`
 - **catching by reference** — catch by value.
   `src/parser/ParserStmt.cpp:1023`
