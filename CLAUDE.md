@@ -4019,6 +4019,32 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## `?:` as an lvalue, which was a missing shape rather than a missing rule
+
+**[expr.cond]/4: a `?:` whose arms are glvalues of one type is a glvalue.** So
+`int &r = p ? a : b;` is an ordinary reference binding, `(p ? a : b) = 20` an
+ordinary assignment, and `&(p ? a : b)` an ordinary address. All three were
+refused here from rung 2 on, and the refusal said the compiler could not build
+one - which was true and unhelpful.
+
+**The shape is the addresses.** `*(c ? &a : &b)` puts two pointers where the
+arms were, which every backend already moves, and the dereference around them
+is an lvalue: assignable, addressable, bindable. Nothing was added to any code
+generator, which is the trade this file keeps recommending - where C++ adds a
+*category*, look for an existing operation to lower it to.
+
+**It is asked before the class lowering**, and that order is the whole of the
+correctness. The class path copies both arms into a slot of its own; for two
+lvalues of one type there is nothing to copy, and copying would take the
+binding away again - `p ? x : y` would name a temporary rather than `x`, and
+writing through the reference would reach nothing at all.
+
+The types have to match exactly, cv-qualification included: a difference there
+makes them different types, and [expr.cond]/5 sends those to the prvalue answer
+the class lowering gives. What is left reaching the reference-binding path has
+arms that are not both lvalues of one type, so its message says which of the
+two rules applies rather than what the compiler cannot do.
+
 ## `long long` is a type of its own, and the streams had never heard of it
 
 **`<ostream>` had insertions down to `unsigned long` and no further**, so a

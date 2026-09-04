@@ -166,7 +166,7 @@ SFINAE and variadic packs. What is left:
 - **instantiating a template that was only declared** —
   `src/parser/ParserTemplate.cpp:1564`
 - **`sizeof` of a template parameter in a signature** — the linker name would
-  have to spell the expression. `src/parser/ParserExpr.cpp:1839`
+  have to spell the expression. `src/parser/ParserExpr.cpp:1843`
 
 ## Classes, members and friends
 
@@ -252,8 +252,6 @@ it is written:
 
 ## Expressions
 
-- **`?:` as an lvalue** — real C++ when both arms are lvalues; bind the
-  reference in an `if`/`else`. `src/parser/ParserExpr.cpp:1364`
 - **`static_cast` of a reference to a different type** —
   `src/parser/ParserExpr.cpp:268`
 - **a name qualified with `::` alone in an *expression*** — as a *type* it
@@ -266,7 +264,7 @@ it is written:
 - **choosing an overload by the type it is assigned to** —
   `src/parser/ParserExpr.cpp:499`
 - **a pointer to a *virtual* member function** — it holds a vtable index where
-  this holds an address. `src/parser/ParserExpr.cpp:1711`
+  this holds an address. `src/parser/ParserExpr.cpp:1715`
 - **a pointer to a *const* member function** — the constness of `this` is not
   part of a function type here. `src/parser/ParserType.cpp:1431`
 - **postfix `++` / `--` on a bit-field** — the prefix form works.

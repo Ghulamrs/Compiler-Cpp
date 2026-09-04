@@ -1357,13 +1357,17 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
                            ", and has no address for a reference to hold - a "
                            "'const " + referent->unqualified()->describe() +
                            " &' would take a copy of it instead");
-        // In C++ a '?:' whose arms are lvalues of one type is itself an lvalue, so
-        // this is a reference binding the standard allows and this compiler cannot
-        // make yet. Say that, rather than complain of a value with no address.
+        // **A `?:` whose arms are lvalues of one type is an lvalue and binds**
+        // - [expr.cond]/4, and it is lowered to `*(c ? &a : &b)`, which reaches
+        // here as a dereference rather than a `Conditional`. What is left in
+        // this shape has arms that are not both lvalues of one type, so the
+        // standard makes it a prvalue: say which of the two rules applies
+        // rather than that the compiler cannot.
         if (dynamic_cast<const Conditional *>(init.get()) != nullptr)
-            src_.fail(pos, "a '?:' is an lvalue in C++ when both arms are, and "
-                           "this compiler does not build one yet - bind the "
-                           "reference in an if/else instead");
+            src_.fail(pos, "the arms of this '?:' are not both lvalues of one "
+                           "type, so [expr.cond] makes it a value rather than "
+                           "an object - and a value has no address for a "
+                           "reference to bind to");
         if (isLvalue(*init))
             src_.fail(pos, what + " is '" + ref->describe() + "' and this is '" +
                            it->describe() + "' - a reference binds to the type "

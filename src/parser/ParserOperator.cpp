@@ -520,6 +520,32 @@ ExprPtr Parser::conditional() {
     const Type *tb = b->type();
     const Type *result = nullptr;
 
+    // **[expr.cond]/4: both arms glvalues of one type, and the `?:` is one
+    // too.** `IRReg &r = pl ? b : a;` is an ordinary reference binding in C++
+    // and was refused here for want of a shape - so the shape is the addresses:
+    // `*(c ? &a : &b)` puts two pointers where the arms were, which every
+    // backend already moves, and the dereference around them is an lvalue that
+    // can be assigned to, taken the address of, or bound to a reference.
+    //
+    // **Asked before the class path below**, which copies into a slot of its
+    // own: for two lvalues of one type there is nothing to copy, and copying
+    // would take the reference binding away again. The types have to match
+    // exactly, cv-qualification included - a difference there makes them
+    // different types, and [expr.cond]/5 sends those to the prvalue answer.
+    if (ta == tb && isLvalue(*a) && isLvalue(*b)) {
+        const Type *ptr = types_.pointerTo(ta);
+        ExprPtr at(new Unary('&', std::move(a)));
+        at->setType(ptr);
+        ExprPtr bt(new Unary('&', std::move(b)));
+        bt->setType(ptr);
+        ExprPtr which(new Conditional(std::move(cond), std::move(at),
+                                      std::move(bt)));
+        which->setType(ptr);
+        ExprPtr n(new Unary('*', std::move(which)));
+        n->setType(ta);
+        return n;
+    }
+
     if (ta->isArithmetic() && tb->isArithmetic()) {
         result = usualArithmetic(ta, tb);
         a = convert(std::move(a), result);
