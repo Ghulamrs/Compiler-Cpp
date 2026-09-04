@@ -4019,6 +4019,35 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## A class template's member is instantiated only where it is called
+
+**[temp.inst]/2: instantiating a class template instantiates the declarations
+of its members, not the definitions.** A body is compiled only where something
+calls it - which is exactly what lets `std::vector<T>` hold a `T` with no
+default constructor while still *declaring* `vector(size_type)`, whose body
+says `T()`.
+
+cxx1 gated a replayed body on the member's **name**, and every constructor of a
+class shares one key. So `Box<NoDefault> b;` marked that key used and replayed
+*every* constructor's body with it - the one nothing called was compiled for a
+`T` it cannot be compiled for, and the class would not instantiate at all.
+
+**It was invisible until a second constructor existed.** Every class template in
+the tree had one, so name and overload were the same question; adding
+`vector(size_type n)` to `include/vector` broke four of Compiler++'s sixteen
+sources at a stroke, none of them naming a constructor. The gate is the
+overload now: each body carries the index of the signature its declaration
+added, and falls back to the key where the declaration added none - a lambda's
+call operator, which is recorded without one.
+
+**And the element storage is raw**, which is a constraint rather than a
+shortcut: placement new is refused by this compiler, so `vector` has no way to
+construct an element in place and assigns into `calloc`'d memory instead. A
+zeroed slot is therefore a real state for a `string` - null buffer, zero length,
+zero capacity - and `reserve(0)` did nothing for one, leaving the
+`buf_[len_] = 0` that follows every write to go to a null pointer.
+`std::vector<std::string> s(2);` crashed for that and nothing else.
+
 ## A private nested type as a member's own return type
 
 **[class.access]/6: a member's definition may name its class's private types**,

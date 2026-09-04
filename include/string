@@ -90,7 +90,14 @@ public:
     }
     string &append(const char *s, size_type n) { return appendBytes(s, n); }
 
-    void reserve(size_type n) { if (n > cap_) reserveExactly(n); }
+    // **`buf_ == 0` is a real state here, and not only before construction.**
+    // This library's `vector` assigns into raw `calloc`'d storage - placement
+    // new is refused by this compiler, so there is no way to construct an
+    // element in place - and a zeroed slot is a `string` with a null buffer,
+    // zero length and zero capacity. Without the second test, `reserve(0)` on
+    // one did nothing and the `buf_[len_] = 0` that follows every write went to
+    // a null pointer: `std::vector<std::string> s(2);` crashed.
+    void reserve(size_type n) { if (n > cap_ || buf_ == 0) reserveExactly(n); }
 
     void resize(size_type n, char c) {
         if (n > len_) {

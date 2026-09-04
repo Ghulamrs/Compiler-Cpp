@@ -110,7 +110,7 @@ that was not written. This is a library sized to what has been asked of it
 rather than to the standard, and the distance between those two is not small.
 It is also why a *language* feature is refused in one place: `auto` from a
 braced initialiser deduces an `initializer_list`, which there is no library for
-— `src/parser/ParserTemplate.cpp:866`.
+— `src/parser/ParserTemplate.cpp:874`.
 
 A conforming C++ implementation is a compiler **and** a library. cxx1 is a
 language translator with three code generators. Read every claim about C++11
@@ -159,12 +159,12 @@ SFINAE and variadic packs. What is left:
 - **a constructor or destructor of a class template written outside the class**
   — `src/parser/ParserTemplate.cpp:325`
 - **naming a function template without calling it** —
-  `src/parser/ParserTemplate.cpp:1470`, `src/parser/ParserTemplate.cpp:1526`
+  `src/parser/ParserTemplate.cpp:1478`, `src/parser/ParserTemplate.cpp:1534`
 - **naming a member through a template's argument list**, `A<int>::n` — a
   `typedef` for the instantiation reaches it.
-  `src/parser/ParserTemplate.cpp:1560`
+  `src/parser/ParserTemplate.cpp:1568`
 - **instantiating a template that was only declared** —
-  `src/parser/ParserTemplate.cpp:1564`
+  `src/parser/ParserTemplate.cpp:1572`
 - **`sizeof` of a template parameter in a signature** — the linker name would
   have to spell the expression. `src/parser/ParserExpr.cpp:1843`
 
@@ -177,11 +177,11 @@ SFINAE and variadic packs. What is left:
   `src/parser/ParserExpr.cpp:1081`. A static member function on its own works.
 - **a member function of a union** — `src/parser/ParserClass.cpp:1914`
 - **`friend class X;`** — one named function can be befriended.
-  `src/parser/ParserType.cpp:373`
+  `src/parser/ParserType.cpp:381`
 - **befriending one member function of another class** —
-  `src/parser/ParserType.cpp:385`
+  `src/parser/ParserType.cpp:393`
 - **a friend function defined inside the class body** —
-  `src/parser/ParserType.cpp:402`
+  `src/parser/ParserType.cpp:410`
 - **a const member named in a mem-initialiser list** —
   `src/parser/ParserTopLevel.cpp:706`
 - **a delegating constructor** — `src/parser/ParserTopLevel.cpp:752`
@@ -192,12 +192,12 @@ SFINAE and variadic packs. What is left:
   of one that is missing: an explicit conversion has to be refused everywhere
   except a `static_cast` and a condition, and accepting the keyword while
   ignoring that rule is a claim the compiler cannot support, which is the defect
-  this file exists for. `src/parser/ParserType.cpp:315`. The conversion function
+  this file exists for. `src/parser/ParserType.cpp:319`. The conversion function
   itself works, in both directions and on all three targets.
 - **`operator new` / `operator delete`** as user functions —
-  `src/parser/ParserType.cpp:1230`
-- **`operator->*`** — `src/parser/ParserType.cpp:1235`
-- **a user-defined literal** — `src/parser/ParserType.cpp:1237`
+  `src/parser/ParserType.cpp:1242`
+- **`operator->*`** — `src/parser/ParserType.cpp:1247`
+- **a user-defined literal** — `src/parser/ParserType.cpp:1249`
 - **`operator&&`, `operator||`, `operator,` and `operator->*`** — the four that
   still fall into the generic refusal below, **named** rather than left to it.
   The ten compound assignments used to be here too and are reachable now; a
@@ -217,7 +217,7 @@ SFINAE and variadic packs. What is left:
   Every other overloadable operator resolves from an expression, asked of a
   one-line program each: `+ - * / % & | ^ << >> == != < <= > >=` binary,
   `+ - * & ! ~ ++ --` unary, and `() [] = ->`.
-  `src/parser/ParserType.cpp:1351`
+  `src/parser/ParserType.cpp:1363`
 
 ## Initialisation, and braces
 
@@ -227,7 +227,7 @@ SFINAE and variadic packs. What is left:
   `src/parser/ParserInit.cpp:38`
 - **a braced default argument** — `src/parser/ParserClass.cpp:2492`,
   `src/parser/ParserTopLevel.cpp:530`
-- **a braced member initialiser** — `src/parser/ParserType.cpp:734`
+- **a braced member initialiser** — `src/parser/ParserType.cpp:746`
 - **an initialiser for an array of a class** —
   `src/parser/ParserStmt.cpp:111`, `src/parser/ParserTopLevel.cpp:724`
 - **an array of a class with a destructor** — the elements would have to be
@@ -266,7 +266,7 @@ it is written:
 - **a pointer to a *virtual* member function** — it holds a vtable index where
   this holds an address. `src/parser/ParserExpr.cpp:1715`
 - **a pointer to a *const* member function** — the constness of `this` is not
-  part of a function type here. `src/parser/ParserType.cpp:1432`
+  part of a function type here. `src/parser/ParserType.cpp:1444`
 - **postfix `++` / `--` on a bit-field** — the prefix form works.
   `src/parser/ParserOperator.cpp:489`
 - **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:676`
@@ -356,7 +356,7 @@ beside it goes in the same commit.
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:642`, `src/parser/ParserStmt.cpp:160`, `src/parser/ParserTopLevel.cpp:271` |
 | `static_assert` with no message | C++17 | `src/parser/ParserConst.cpp:31` |
 | `namespace N::M { }` | C++17 | `src/parser/ParserTopLevel.cpp:92` |
-| an attribute, `[[noreturn]]` | none parse | `src/parser/ParserType.cpp:1141` |
+| an attribute, `[[noreturn]]` | none parse | `src/parser/ParserType.cpp:1153` |
 
 ## Keywords the parser has no rule for
 
@@ -364,7 +364,7 @@ Twenty, from `pending[]` in `src/parser/Parser.cpp`. Each is refused **by
 name** at the three doors a keyword can arrive at — an expression, a member
 declaration, and a name — rather than as a parse error further along:
 `src/parser/Parser.cpp:99`, `src/parser/ParserExpr.cpp:613`,
-`src/parser/ParserType.cpp:1145`.
+`src/parser/ParserType.cpp:1157`.
 
     alignas   alignof   and       and_eq    asm
     bitand    bitor     char16_t  char32_t  compl

@@ -761,7 +761,15 @@ void Parser::instantiatePending() {
                 std::vector<PendingBody> later;
                 for (std::size_t b = 0; b < specializations_[i].bodies.size(); b++) {
                     const PendingBody &body = specializations_[i].bodies[b];
-                    (memberIsUsed(body.key) ? now : later).push_back(body);
+                    // **This overload, not this name.** Every constructor of
+                    // a class shares one key, so asking the key replays them
+                    // all as soon as any is called.
+                    const bool wanted =
+                        body.which != PendingBody::npos() &&
+                        body.which < functions_.size()
+                            ? functions_[body.which].used
+                            : memberIsUsed(body.key);
+                    (wanted ? now : later).push_back(body);
                 }
                 specializations_[i].bodies = later;
 

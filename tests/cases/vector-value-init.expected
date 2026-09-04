@@ -1,0 +1,6 @@
+ints 4: 0 0 0 0
+class 3 7 7
+strings 2 [] 0
+grow 3 0 0
+shrink 1
+zero 0

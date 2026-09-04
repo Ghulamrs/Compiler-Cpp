@@ -351,7 +351,8 @@ ExprPtr Parser::lambdaExpression() {
     t.kind = TokenKind::End;    t.text = "";           tokens_.push_back(t);
 
     std::vector<PendingBody> mine;
-    mine.push_back(PendingBody{ tag, start, local, tag + "::operator()" });
+    mine.push_back(PendingBody{ tag, start, local, tag + "::operator()",
+                                PendingBody::npos() });
     replayInlineBodies(std::move(mine));
 
     // The object itself: a slot in this frame, and the expression is its name.

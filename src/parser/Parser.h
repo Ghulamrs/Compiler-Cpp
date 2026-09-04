@@ -147,6 +147,16 @@ private:
         // specialization's bodies are gated on it: clang instantiates a member function
         // of a class template only where something calls one.
         std::string key;
+        // **And which overload under that key**, because a constructor shares
+        // its key with every other constructor of the class. Gated on the name
+        // alone, `vector<T> v;` marked the key used and every constructor's
+        // body was replayed with it - so `explicit vector(size_type n)`, whose
+        // body says `T()`, was compiled for a `T` that has no default
+        // constructor and the class would not instantiate at all.
+        // `npos` where the declaration added no signature, which falls back to
+        // the key.
+        std::size_t which;
+        static std::size_t npos() { return (std::size_t)-1; }
     };
     std::vector<PendingBody> pendingBodies_;
     void replayInlineBodies(std::vector<PendingBody> mine);

@@ -291,11 +291,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             peek().text == local && peekAt(1).is("(")) {
             std::size_t cpos = peek().pos;
             at_++;
+            const std::size_t sigAt = functions_.size();
             declareConstructor(tag, cpos, access, isExplicit);
             isExplicit = false;
             if (peek().is("{") || peek().is(":")) {
                 pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
-                                                      constructorKey(tag) });
+                                                      constructorKey(tag),
+                                                      functions_.size() > sigAt
+                                                          ? sigAt
+                                                          : PendingBody::npos() });
                 skipBracedBlock();
                 continue;
             }
@@ -338,10 +342,14 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             peekAt(1).text == local && peekAt(2).is("(")) {
             std::size_t dpos = peek().pos;
             at_ += 2;
+            const std::size_t sigAt = functions_.size();
             declareDestructor(tag, dpos, access, isVirtual);
             if (peek().is("{")) {
                 pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
-                                                      destructorKey(tag) });
+                                                      destructorKey(tag),
+                                                      functions_.size() > sigAt
+                                                          ? sigAt
+                                                          : PendingBody::npos() });
                 skipBracedBlock();
                 continue;
             }
@@ -686,11 +694,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     if (tag.empty())
                         src_.fail(d.pos, "a member function needs a class with "
                                          "a name - this one is anonymous");
+                    const std::size_t sigAt = functions_.size();
                     declareMember(tag, d, constThis, access,
                                   kind == Kind::Union, isVirtual, memberIsStatic,
                                   isPure);
                     pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
-                                                          tag + "::" + d.name });
+                                                          tag + "::" + d.name,
+                                                          functions_.size() > sigAt
+                                                              ? sigAt
+                                                              : PendingBody::npos() });
                     skipBracedBlock();
                     heldBody = true;
                     break;

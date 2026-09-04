@@ -41,6 +41,14 @@ public:
         reserve(n);
         for (size_type i = 0; i < n; i++) push_back(v);
     }
+    // **`vector<T> v(n)` is n value-initialised elements** - zero for a scalar,
+    // the default constructor for a class - and `explicit`, as the standard
+    // makes it, so `vector<int> v = 5;` is refused rather than being read as a
+    // vector of five.
+    explicit vector(size_type n) : items_(0), size_(0), cap_(0) {
+        reserve(n);
+        for (size_type i = 0; i < n; i++) push_back(T());
+    }
     ~vector() { std::free(items_); }
 
     vector &operator=(const vector &o) {
@@ -103,8 +111,17 @@ public:
         }
         size_ = n;
     }
+    // **Growing fills with `T()`**, which the one-argument form did not: it
+    // moved `size_` and left the new elements as whatever `calloc` gave, which
+    // is zero bytes rather than a constructed object. For a scalar the two are
+    // the same answer and for a class they are not - `resize(n)` on a
+    // `vector<string>` handed out strings nothing had built.
+    // Shrinking drops the tail by moving `size_`, as the note at the top says.
     void resize(size_type n) {
-        if (n > size_) reserve(n);
+        if (n > size_) {
+            reserve(n);
+            for (size_type i = size_; i < n; i++) items_[i] = T();
+        }
         size_ = n;
     }
 
