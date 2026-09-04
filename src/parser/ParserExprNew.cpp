@@ -306,6 +306,74 @@ ExprPtr Parser::userConversion(const Type *param, ExprPtr &arg, std::size_t pos)
     return constructTemporary(plain, *ctor, std::move(one), false, pos);
 }
 
+// **A temporary an arm of a `?:` made belongs to that arm.** The other arm did
+// not build it, so nothing may destroy it - and a guard set at the end of the
+// arm says so, being reached only if the arm ran. Most temporaries carry one
+// already, from their own construction; what this catches is the object a call
+// returns, which cannot be marked where it is built without wrapping the `Call`
+// node that the elision paths find by `dynamic_cast`.
+//
+// The arm's value is an int the conditional discards, so the mark can follow it.
+ExprPtr Parser::markArmTemporaries(ExprPtr arm, std::size_t from,
+                                   std::size_t to) {
+    for (std::size_t k = from; k < to && k < pendingTemps_.size(); k++) {
+        if (pendingTemps_[k].flag != 0) continue;
+        if (destructorOf(pendingTemps_[k].type) == nullptr) continue;
+        pendingTemps_[k].flag = guardFlag();
+        ExprPtr mark(new Comma(std::move(arm),
+                               setGuard(pendingTemps_[k].flag, 1)));
+        mark->setType(types_.intType());
+        arm = std::move(mark);
+    }
+    return arm;
+}
+
+// **Copy-initialise `cls` into a slot the caller owns**, as one expression of
+// type int - the copy constructor where there is one, the bytes where the copy
+// is trivial, which are the two answers a declaration gives. The guard is set
+// after, because from there the object exists.
+ExprPtr Parser::buildInto(const Type *cls, int slot, ExprPtr value, int guard,
+                          std::size_t pos) {
+    const Type *ptr = types_.pointerTo(cls);
+    if (ExprPtr made = userConversion(cls, value, pos)) value = std::move(made);
+
+    ExprPtr built;
+    const Signature *cc = copyConstructorOf(cls);
+    const Signature *mv = moveConstructorOf(cls);
+    const Signature *use = (!isLvalue(*value) && mv != nullptr) ? mv : cc;
+    if (use != nullptr) {
+        markUsed(use);
+        ExprPtr where(Var::local("$cond", slot));
+        where->setType(cls);
+        ExprPtr at(new Unary('&', std::move(where)));
+        at->setType(ptr);
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(at));
+        args.push_back(std::move(value));
+        std::vector<const Type *> params;
+        params.push_back(ptr);
+        params.push_back(use->params[0]);
+        built = completeCall(cls->tag(), use->symbol, nullptr,
+                             types_.get(Kind::Void), params, false, pos,
+                             std::move(args));
+    } else {
+        ExprPtr where(Var::local("$cond", slot));
+        where->setType(cls);
+        built.reset(new Assign(std::move(where), std::move(value)));
+        built->setType(cls);
+    }
+
+    ExprPtr mark;
+    if (guard != 0) mark.reset(new Comma(std::move(built), setGuard(guard, 1)));
+    else {
+        ExprPtr zero(new Num(0LL));
+        zero->setType(types_.intType());
+        mark.reset(new Comma(std::move(built), std::move(zero)));
+    }
+    mark->setType(types_.intType());
+    return mark;
+}
+
 // **A temporary of `plain`, built by `ctor`, from arguments already parsed.**
 // The tail of `T(...)` with the reading taken off the front, so that an implicit
 // conversion - which has an argument but no tokens - builds the same thing the

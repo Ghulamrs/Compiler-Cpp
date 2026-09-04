@@ -72,8 +72,22 @@ void Parser::flushTemporaries(std::vector<StmtPtr> &into) {
         what->setType(mine[k].type);
         ExprPtr at(new Unary('&', std::move(what)));
         at->setType(types_.pointerTo(mine[k].type));
-        into.push_back(StmtPtr(new ExprStmt(
-            destructorCall(std::move(at), *dtor, 0))));
+        StmtPtr call(new ExprStmt(destructorCall(std::move(at), *dtor, 0)));
+        // **Under its guard, and cleared with it.** One arm of a `?:` runs and
+        // the other's temporaries were never built, so a statement can end
+        // with one of them not existing - `b ? take(T(5)) : take(T(9))`
+        // destroyed both. The guard is false for the arm that did not run,
+        // having been cleared at the function's entry and never set.
+        if (mine[k].flag != 0) {
+            ExprPtr live(Var::local("$guard", mine[k].flag));
+            live->setType(types_.intType());
+            std::vector<StmtPtr> both;
+            both.push_back(std::move(call));
+            both.push_back(StmtPtr(new ExprStmt(setGuard(mine[k].flag, 0))));
+            call.reset(new If(std::move(live),
+                              StmtPtr(new Block(std::move(both))), StmtPtr()));
+        }
+        into.push_back(std::move(call));
     }
 }
 
@@ -87,7 +101,11 @@ void Parser::flushTemporaries(std::vector<StmtPtr> &into) {
 // not exist and 1 once its constructor has returned. A cleanup pad reads it,
 // which is what lets one region cover a whole statement without destroying
 // something the statement had not yet built.
-int Parser::guardFlag() { return allocateFrameSlot(types_.intType()); }
+int Parser::guardFlag() {
+    const int slot = allocateFrameSlot(types_.intType());
+    guardSlots_.push_back(slot);
+    return slot;
+}
 
 ExprPtr Parser::setGuard(int flag, int value) {
     ExprPtr f(Var::local("$guard", flag));
@@ -110,10 +128,24 @@ bool Parser::releaseTemporary(const Expr &value) {
             if (u->op() == '*' || u->op() == '&') { at = &u->operand(); continue; }
         break;
     }
-    const Var *v = dynamic_cast<const Var *>(at);
-    if (v == nullptr || !v->isLocal()) return false;
+    // **A call's result is a temporary too, and it is not a `Var`.** `return
+    // f();` hands the caller the bytes in the slot the callee built through,
+    // so destroying it at the end of this full expression releases what the
+    // caller is about to be given - for a class that owns anything, the caller
+    // receives freed memory. `std::string::substr(pos)`, which is one line
+    // returning `substr(pos, npos)`, came back empty for exactly this.
+    int slot = -1;
+    if (const Var *v = dynamic_cast<const Var *>(at)) {
+        if (!v->isLocal()) return false;
+        slot = v->offset();
+    } else if (const Call *c = dynamic_cast<const Call *>(at)) {
+        if (c->resultSlot() == 0) return false;
+        slot = c->resultSlot();
+    } else {
+        return false;
+    }
     for (std::size_t i = 0; i < pendingTemps_.size(); i++)
-        if (pendingTemps_[i].slot == v->offset()) {
+        if (pendingTemps_[i].slot == slot) {
             pendingTemps_.erase(pendingTemps_.begin() + i);
             return true;
         }
@@ -156,11 +188,20 @@ ExprPtr Parser::endFullExpression(ExprPtr e) {
         at->setType(types_.pointerTo(mine[k].type));
         ExprPtr gone = destructorCall(std::move(at), *dtor, 0);
         // Clear the guard with the destruction, so that a pad later in the
-        // same block does not destroy what this statement already has.
+        // same block does not destroy what this statement already has - and
+        // ask it first, for the same reason `flushTemporaries` does. Written
+        // as a conditional expression, which is the shape `delete p` uses.
         if (mine[k].flag != 0) {
             ExprPtr clear(new Comma(std::move(gone), setGuard(mine[k].flag, 0)));
             clear->setType(types_.intType());
-            gone = std::move(clear);
+            ExprPtr live(Var::local("$guard", mine[k].flag));
+            live->setType(types_.intType());
+            ExprPtr none(new Num(0LL));
+            none->setType(types_.intType());
+            ExprPtr asked(new Conditional(std::move(live), std::move(clear),
+                                          std::move(none)));
+            asked->setType(types_.intType());
+            gone = std::move(asked);
         }
         ExprPtr seq(new Comma(std::move(e), std::move(gone)));
         seq->setType(t);

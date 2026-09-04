@@ -4040,27 +4040,39 @@ result would go; it now names the rule and suggests an `if`. Compiling and
 crashing is worse than refusing, and this is the one place today where the
 difference between the two was a single `else` branch.
 
-**The lowering was written and it is not the hard part.** A frame slot for the
-result, each arm building into it through a `buildInto` helper, the conditional
-itself becoming the `int` the arms answer with, and the expression wearing the
-`*(build, &tmp)` shape `classTemporary` already produces - that much works.
+**It landed 2026-09-04, and it took three fixes in the order they had to
+come.** The lowering was never the hard part: a frame slot for the result, each
+arm building into it through `buildInto`, the conditional itself becoming the
+`int` the arms answer with, and the expression wearing the `*(build, &tmp)`
+shape `classTemporary` already produces.
 
-**What stops it is one level down, and it is a bug of its own.** An arm's
-temporaries are not that arm's alone: `b ? take(T(5)) : take(T(9))` destroys
-both arms' temporaries though only one was built, and `int r = ...` of that
-form ends with two destructor calls on frame slots nothing ever wrote. It is
-pre-existing - measured against the commit before this one - and
-`docs/CONFORMANCE.md` records it with the diagnosis: the guard flags these
-temporaries already carry are cleared in front of the full expression only by
-`endFullExpression`, and a declaration flushes through `flushTemporaries`,
-which emits the destructors and never the clears. Making the destructors ask
-the guard there is not enough on its own; the clears have to be placed in front
-of the statements the declaration contributed, which is what `flushTemporaries`
-cannot do from where it runs.
+**First, a guard is only as good as its initialisation.** The flags these
+temporaries carry are cleared in front of the full expression by
+`endFullExpression` - and a declaration never goes through it, flushing instead
+through `flushTemporaries`, which runs *after* the statements it is destroying
+for and cannot place anything in front of them. So on that path a guard held
+whatever the frame did. They are cleared at the **function's entry** now, which
+is the one place every path passes and which `flushTemporaries` does not need
+to reach: cleared there and again as each object is destroyed, a guard is false
+whenever its temporary does not exist.
 
-So the order is: give a declaration's full expression its clears, then an arm's
-temporaries become its own, and then the lowering above is simply correct. The
-refusal stays until then, because compiling and crashing is worse.
+**Then a temporary an arm made became that arm's alone.** One arm runs, so
+destroying the other's temporaries is destroying objects that were never built
+- `b ? take(T(5)) : take(T(9))` did, and `int r = ...` of that form ran two
+destructors on slots nothing had written. Most temporaries are marked where
+they are constructed; what needed `markArmTemporaries` is the object a *call*
+returns, which cannot be marked there without wrapping the `Call` node the
+elision paths find by `dynamic_cast`.
+
+**And that turned up a live one, which is the find of the round.** `return
+f();` for a class returned by value handed the caller the bytes in the result
+slot *and* destroyed that slot at the end of the full expression - so the
+caller received freed memory. `releaseTemporary` walks the expression to the
+slot and a bare `Call` is not a `Var`, so it released nothing. It was
+introduced by the commit that first registered a call's result as a temporary,
+and no case saw it: `std::string::substr(pos, n)` is called directly
+everywhere in the suite, and it is the one-argument `substr(pos)` - one line,
+`return substr(pos, npos);` - that came back empty.
 
 ## Five walls out of Compiler++, and the shape they had in common
 

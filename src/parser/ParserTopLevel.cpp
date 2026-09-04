@@ -884,7 +884,24 @@ void Parser::topLevel(Program &program) {
 
     atFunctionBody_ = true;
     bodyCleanupFrom_ = paramsFrom;
+    // A class can be defined inside a function and its members defined from
+    // there, so what this function allocates is what it added to the list.
+    const std::size_t guardsFrom = guardSlots_.size();
     StmtPtr body = block();
+
+    // **Every guard this function made is cleared at its entry.** A guard says
+    // whether its temporary exists, and the destructors ask it - so one that
+    // was never written holds whatever the frame did, and an arm of a `?:`
+    // that never ran would have its temporaries destroyed from garbage.
+    if (guardSlots_.size() > guardsFrom) {
+        std::vector<StmtPtr> withClears;
+        for (std::size_t i = guardsFrom; i < guardSlots_.size(); i++)
+            withClears.push_back(StmtPtr(new ExprStmt(
+                setGuard(guardSlots_[i], 0))));
+        withClears.push_back(std::move(body));
+        body = StmtPtr(new Block(std::move(withClears)));
+        guardSlots_.resize(guardsFrom);
+    }
     resolveGotos();
     variadicBody_ = false;
 

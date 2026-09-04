@@ -125,11 +125,11 @@ What is left of it:
 
 - **`dynamic_cast` to a reference** — it has no null to answer with, so a
   failure throws `std::bad_cast`, and there is no C++ standard library here to
-  throw it from. `src/parser/ParserExprNew.cpp:403`
+  throw it from. `src/parser/ParserExprNew.cpp:471`
 - **`dynamic_cast` naming a class with more than one base** — that wants
   `__vmi_class_type_info`, a third shape carrying the bases' offsets and flags.
   Such a class still compiles and its vtable still works; only the cast is
-  refused. `src/parser/ParserExprNew.cpp:468`
+  refused. `src/parser/ParserExprNew.cpp:536`
 - **`typeid`** — in the keyword table below. Nothing emits a `type_info` for a
   *fundamental* type either; a class's is what landed.
 
@@ -279,17 +279,17 @@ it is written:
 ## `new` and `delete`
 
 - **placement new**, and a parenthesised type-id after `new` —
-  `src/parser/ParserExprNew.cpp:676`
+  `src/parser/ParserExprNew.cpp:744`
 - **more than one value in a new-expression** —
-  `src/parser/ParserExprNew.cpp:756`
+  `src/parser/ParserExprNew.cpp:824`
 - **`new T[n]` of a class with a constructor** —
-  `src/parser/ParserExprNew.cpp:763`
+  `src/parser/ParserExprNew.cpp:831`
 - **`new T[n][m]`** — only the first dimension may be given.
-  `src/parser/ParserExprNew.cpp:704`
-- **`new T{...}`** — `src/parser/ParserExprNew.cpp:730`
-- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:965`
+  `src/parser/ParserExprNew.cpp:772`
+- **`new T{...}`** — `src/parser/ParserExprNew.cpp:798`
+- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:1033`
 - **`delete[]` of a type with a destructor** — the count `new[]` would have
-  recorded is not written. `src/parser/ParserExprNew.cpp:1033`
+  recorded is not written. `src/parser/ParserExprNew.cpp:1101`
 
 ## Statements, exceptions and control
 
@@ -302,10 +302,6 @@ it is written:
   construction would have to be written where the test is. A scalar works, and
   so does a class in the condition of an `if`, where the object is built once.
   `src/parser/ParserStmt.cpp:638`
-- **a class-typed `?:` whose arms are not both lvalues of one type** — the
-  result would have to be built into storage of its own, and a `Conditional`
-  yields a value the backends move as a scalar. `b ? s : t` for two `string`
-  lvalues works. `src/parser/ParserOperator.cpp:540`
 - **a `try` inside another** — `src/parser/ParserStmt.cpp:972`
 - **catching by reference** — catch by value.
   `src/parser/ParserStmt.cpp:1023`

@@ -1129,6 +1129,14 @@ private:
     int rankingConversion_ = 0;
     // The conversion itself, or null when none is needed or possible.
     ExprPtr userConversion(const Type *param, ExprPtr &arg, std::size_t pos);
+    // **Copy-initialise a class into a slot somebody else owns**, as one
+    // expression. `constructTemporary` and `materialiseCopy` each allocate a
+    // slot of their own, and both arms of a `?:` have to build into one.
+    ExprPtr buildInto(const Type *cls, int slot, ExprPtr value, int guard,
+                      std::size_t pos);
+    // Give every temporary an arm made a guard, set at the end of that arm, so
+    // the arm that did not run leaves them clear and nothing destroys them.
+    ExprPtr markArmTemporaries(ExprPtr arm, std::size_t from, std::size_t to);
     ExprPtr runtimeCall(const char *symbol, const Type *returns,
                         std::vector<ExprPtr> args);
     ExprPtr callAllocator(const char *itanium, const char *microsoft,
@@ -1154,6 +1162,14 @@ private:
     // moved - a `return` and falling off the end already unwind them.
     std::size_t bodyCleanupFrom_ = 0;
     int guardFlag();
+    // **Every guard starts clear, and the one place that is true of every path
+    // is the function's entry.** `endFullExpression` clears the guards in
+    // front of its own expression, but a declaration flushes through
+    // `flushTemporaries`, which runs *after* the statements it is destroying
+    // for and cannot place anything in front of them. Cleared once here and
+    // again as each object is destroyed, a guard is false whenever its
+    // temporary does not exist - including on the arm of a `?:` that never ran.
+    std::vector<int> guardSlots_;
     ExprPtr setGuard(int flag, int value);
     // **Taking over a call's result slot takes over its destruction too.** The
     // call registered the slot it allocated as a temporary; whoever redirects

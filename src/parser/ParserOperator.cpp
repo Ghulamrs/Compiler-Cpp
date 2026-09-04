@@ -507,9 +507,14 @@ ExprPtr Parser::conditional() {
     cond = decay(std::move(cond));
     cond = contextualScalar(std::move(cond), pos, "the condition of '?:'");
 
+    // **What each arm builds, only that arm may destroy.** The entries each
+    // one adds are noted so the class path below can guard them.
+    const std::size_t tempsBeforeA = pendingTemps_.size();
     ExprPtr a = decay(expr());
+    const std::size_t tempsAfterA = pendingTemps_.size();
     expect(":");
     ExprPtr b = decay(conditional());
+    const std::size_t tempsAfterB = pendingTemps_.size();
 
     const Type *ta = a->type();
     const Type *tb = b->type();
@@ -519,6 +524,64 @@ ExprPtr Parser::conditional() {
         result = usualArithmetic(ta, tb);
         a = convert(std::move(a), result);
         b = convert(std::move(b), result);
+    } else if (ta->unqualified()->isStructOrUnion() ||
+               tb->unqualified()->isStructOrUnion()) {
+        // **[expr.cond]/3: each arm is tried as the target for the other**, and
+        // exactly one must convert - asked before anything is built, because
+        // both directions have to be known before either is taken.
+        const Type *pa = ta->unqualified();
+        const Type *pb = tb->unqualified();
+        const Type *want = nullptr;
+        if (pa == pb) {
+            // One class, two qualifications: the result is a prvalue, so
+            // neither arm's constness reaches it.
+            want = pa;
+        } else {
+            const bool aToB = pb->isStructOrUnion() &&
+                              convertingConstructor(pb, *a) != nullptr;
+            const bool bToA = pa->isStructOrUnion() &&
+                              convertingConstructor(pa, *b) != nullptr;
+            if (aToB && !bToA) want = pb;
+            else if (bToA && !aToB) want = pa;
+            else
+                src_.fail(pos, std::string("the arms of '?:' are '") +
+                               ta->describe() + "' and '" + tb->describe() +
+                               (aToB ? "', and each converts to the other, so "
+                                       "neither is the answer"
+                                     : "', and neither converts to the other"));
+        }
+
+        // **The answer needs storage of its own**, which is the whole of why
+        // this was refused: a `Conditional` yields a value the backends move as
+        // a scalar and a class has nowhere to be moved to. Both arms build into
+        // one slot, the conditional becomes the `int` they answer with, and the
+        // expression wears the `*(build, &tmp)` shape a class temporary wears.
+        const int slot = allocateFrameSlot(want);
+        int guard = 0;
+        if (destructorOf(want) != nullptr) {
+            guard = guardFlag();
+            pendingTemps_.push_back(Temporary{ slot, want, guard });
+        }
+        ExprPtr armA = buildInto(want, slot, std::move(a), guard, pos);
+        armA = markArmTemporaries(std::move(armA), tempsBeforeA, tempsAfterA);
+        ExprPtr armB = buildInto(want, slot, std::move(b), guard, pos);
+        armB = markArmTemporaries(std::move(armB), tempsAfterA, tempsAfterB);
+        ExprPtr chosen(new Conditional(std::move(cond), std::move(armA),
+                                       std::move(armB)));
+        chosen->setType(types_.intType());
+
+        ExprPtr again(Var::local("$cond", slot));
+        again->setType(want);
+        ExprPtr at(new Unary('&', std::move(again)));
+        at->setType(types_.pointerTo(want));
+        ExprPtr both(new Comma(std::move(chosen), std::move(at)));
+        both->setType(types_.pointerTo(want));
+        ExprPtr made(new Unary('*', std::move(both)));
+        made->setType(want);
+        // About to expire, like any other temporary: without the mark, passing
+        // one by value would reach for the copy constructor.
+        made->setXvalue();
+        return made;
     } else if (ta == tb) {
         result = ta;
     } else if (ta->isPointer() && isNullConstant(*b)) {
@@ -528,20 +591,6 @@ ExprPtr Parser::conditional() {
         result = tb;
         a = convert(std::move(a), result);
     } else {
-        // **A class-typed `?:` works only where both arms are lvalues of one
-        // type**, which is what `b ? s : t` is. Anything else - an arm that is
-        // a temporary, or two qualifications of one class - needs the result
-        // built into storage of its own, and a `Conditional` yields a value
-        // the backends move as a scalar. Converting the arms here and leaving
-        // that alone compiled and then aborted at run time, which is worse
-        // than the refusal, so the refusal stays until the lowering exists.
-        if (ta->unqualified()->isStructOrUnion() ||
-            tb->unqualified()->isStructOrUnion())
-            src_.fail(pos, "the arms of '?:' are '" + ta->describe() +
-                           "' and '" + tb->describe() + "', and a class-typed "
-                           "'?:' is not supported yet unless both arms name "
-                           "the same object type - the result would have to be "
-                           "built into storage of its own. Write an 'if'");
         src_.fail(pos, "the arms of '?:' have incompatible types '" +
                        ta->describe() + "' and '" + tb->describe() + "'");
     }
