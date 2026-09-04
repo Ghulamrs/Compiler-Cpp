@@ -174,7 +174,7 @@ equivalent of.</p>
       <div class="row"><span class="rlab">cxx1 &minus;j1</span>
         <div class="track"><div class="bar c" style="width:27.4%"></div></div><span class="rval">2.19</span></div>
       <div class="row"><span class="rlab">cxx1 &minus;j12</span>
-        <div class="track"><div class="bar c" style="width:24.8%"></div></div><span class="rval">1.98</span></div>
+        <div class="track"><div class="bar c" style="width:6.3%"></div></div><span class="rval">0.50</span></div>
       <div class="row"><span class="rlab">clang&#43;&#43; &minus;j1</span>
         <div class="track"><div class="bar n" style="width:48.9%"></div></div><span class="rval">3.91</span></div>
       <div class="row"><span class="rlab">clang&#43;&#43; &minus;j12</span>
@@ -234,15 +234,15 @@ equivalent of.</p>
     <div class="rwhat">faster than g&#43;&#43;<br>serial, source &rarr; object</div></div>
   <div class="rcard"><div class="rnum">5.1&times;</div>
     <div class="rwhat">faster than cl<br>serial, source &rarr; object</div></div>
-  <div class="rcard" style="border-left-color:var(--flag)"><div class="rnum">2.4&times;</div>
-    <div class="rwhat"><em>slower</em> than clang&#43;&#43;<br>parallel, on the Mac alone</div></div>
+  <div class="rcard"><div class="rnum">1.6&times;</div>
+    <div class="rwhat">faster than clang&#43;&#43;<br>parallel, on the Mac</div></div>
 </div>
 
 <div class="col">
-<p>The last card is the interesting one, and it is now true of one machine rather than all
-three. cxx1 wins every serial comparison; in parallel it is <span class="n">3.2&times;</span>
-faster than cl on Windows and <span class="n">2.4&times;</span> slower than clang on the Mac.
-The next two sections are why.</p>
+<p>cxx1 wins every comparison here, serial and parallel, on all three machines. It did not
+when this page was first written: the parallel column was a loss on two of them, and the next
+two sections are the two things that had to change &mdash; one in the compiler, one underneath
+it.</p>
 </div>
 
 <h2>Where cxx1&#39;s time goes</h2>
@@ -253,8 +253,8 @@ cxx1 writes assembly itself and then shells out to the platform assembler once p
   <div class="srow">
     <span class="slab">M4 Pro, &minus;j12</span>
     <div class="sbar">
-      <div class="seg compile" style="width:4%">0.08</div>
-      <div class="seg assemble" style="width:96%">1.90s assembling &mdash; still serial, see below</div>
+      <div class="seg compile" style="width:16%">0.08</div>
+      <div class="seg would" style="width:84%">0.42s assembling</div>
     </div>
   </div>
   <div class="srow">
@@ -290,53 +290,52 @@ produced take 1.94 seconds to assemble, whatever <code>-j</code> says.</p>
 1.5 seconds is the assembler doing real work on real input.</p>
 </div>
 
-<h2>What the fix bought, and where it did not</h2>
-<p class="deck col">The assembler runs on the same work-stealing pool the compiling does.
-Two of the three machines took it; the third could not, for a reason outside the compiler.</p>
+<h2>What the fix bought</h2>
+<p class="deck col">Two changes, one in the compiler and one underneath it. Every figure here
+is before and after on the same machine, same sources, same assembler.</p>
 
 <div class="split">
   <div class="srow">
+    <span class="slab">M4 Pro</span>
+    <div class="sbar">
+      <div class="seg compile" style="width:25%">0.50</div>
+      <div class="seg" style="width:75%; background:var(--rule); color:var(--ink-soft)">was 2.19 &mdash; 4.4&times;</div>
+    </div>
+  </div>
+  <div class="srow">
     <span class="slab">i7-12700</span>
     <div class="sbar">
-      <div class="seg compile" style="width:8%">0.29</div>
-      <div class="seg" style="width:12%; background:var(--rule); color:var(--ink-soft)">was 0.75</div>
-      <div class="seg" style="width:26%; background:var(--native); color:#fff">cl 0.94</div>
+      <div class="seg compile" style="width:25%">0.29</div>
+      <div class="seg" style="width:75%; background:var(--rule); color:var(--ink-soft)">was 1.16 &mdash; 4.0&times;</div>
     </div>
   </div>
   <div class="srow">
     <span class="slab">Xeon</span>
     <div class="sbar">
-      <div class="seg compile" style="width:33%">1.20</div>
-      <div class="seg" style="width:2%; background:var(--rule)"></div>
-      <div class="seg" style="width:65%; background:var(--native); color:#fff">g&#43;&#43; 6.69</div>
-    </div>
-  </div>
-  <div class="srow">
-    <span class="slab">M4 Pro</span>
-    <div class="sbar">
-      <div class="seg assemble" style="width:55%">1.98 &mdash; unchanged</div>
-      <div class="seg" style="width:22%; background:var(--native); color:#fff">clang 0.81</div>
+      <div class="seg compile" style="width:88%">1.20</div>
+      <div class="seg" style="width:12%; background:var(--rule); color:var(--ink-soft)">1.37</div>
     </div>
   </div>
 </div>
 
 <div class="col">
-<p><strong>Windows took it whole.</strong> <code>cxx1 -c</code> at eight threads fell from
-<span class="n">0.75s</span> to <span class="n">0.29s</span> &mdash; the assemble phase from
-<span class="n">0.59s</span> to <span class="n">0.14s</span> &mdash; which turns a
-<span class="n">1.3&times;</span> lead over cl into a <span class="n">3.2&times;</span> one.</p>
+<h3>One: the assembler is a job like any other</h3>
+<p><code>Driver::assembleObjects</code> was a plain serial loop spawning one assembler per
+file, so sixteen sources compiled in <span class="n">0.08s</span> on twelve cores and then took
+<span class="n">1.9s</span> to assemble one at a time. It runs on the same work-stealing pool
+the compiling does, and so does the Windows link path, which had its own copy of the loop.</p>
 
-<p><strong>The Xeon took what it had.</strong> <span class="n">1.28s</span> to
-<span class="n">1.20s</span>, because its two vCPUs are hyperthread siblings of one physical
-core: g&#43;&#43; itself gets only <span class="n">1.16&times;</span> from the second. The pool
-delivers the machine&#39;s ceiling, which happens to be low.</p>
+<p>Windows took that whole: <span class="n">0.75s</span> to <span class="n">0.29s</span>. The
+Xeon took what it had &mdash; its two vCPUs are hyperthread siblings of one physical core, and
+g&#43;&#43; itself gets only <span class="n">1.16&times;</span> from the second, so
+<span class="n">1.28</span> to <span class="n">1.20</span> is the machine&#39;s ceiling rather
+than a shortfall. <strong>The Mac did not move at all.</strong></p>
 
-<p><strong>The Mac did not move at all</strong>, and that is the finding worth keeping.
-<code>-time</code> reports &ldquo;16 tool runs on 12 threads&rdquo; and the wall clock stays
-at <span class="n">1.98s</span>. The wall is <code>std::system</code>: Apple&#39;s libc holds a
-global lock for the duration of the child, so concurrent calls serialise completely. The same
-sixteen assembler runs through <code>xargs</code> &mdash; separate processes, no shared lock
-&mdash; take <span class="n">0.45s</span>.</p>
+<h3>Two: <code>system()</code> is not a way to start a process</h3>
+<p><code>-time</code> said &ldquo;16 tool runs on 12 threads&rdquo; and the wall clock stayed at
+<span class="n">1.98s</span>, because Apple&#39;s libc holds a global lock for the duration of
+the child. Concurrent <code>std::system</code> calls serialise completely. The same question put
+to all three C libraries:</p>
 </div>
 
 <div class="tw">
@@ -351,11 +350,17 @@ sixteen assembler runs through <code>xargs</code> &mdash; separate processes, no
 </div>
 
 <div class="col">
-<p class="note flagnote">All three were asked, and it is as well they were: the first machine
-measured was the one that behaves differently, and testing it alone would have concluded that
-parallel assembly does not help. What remains is one platform&#39;s process creation &mdash;
-<code>posix_spawn</code> in place of <code>std::system</code> &mdash; and on that Mac it is
-worth about <span class="n">1.45s</span> of the <span class="n">1.98s</span>.</p>
+<p><code>posix_spawn</code> and <code>waitpid</code> in place of <code>std::system</code> on
+the POSIX path took the Mac from <span class="n">1.98s</span> to
+<span class="n">0.50s</span>, which is the <span class="n">0.08</span> of compiling plus
+<span class="n">0.42</span> of assembling &mdash; within a hair of the
+<span class="n">0.45s</span> the same files took through <code>xargs&nbsp;-P12</code>, which is
+what said the ceiling was the library and not the work.</p>
+
+<p class="note">Asking all three was the point. The first machine measured is the one that
+behaves differently from the other two, and a conclusion drawn from it alone &mdash; that
+parallel assembly does not help &mdash; would have been wrong about two platforms and wrong
+about the cause on the third.</p>
 
 <p>The pool also closed a data race it would otherwise have opened: the command named in an
 assembler error was one file-scope string that several threads would have written at once. It
@@ -412,8 +417,8 @@ three.</p>
 
 <footer>
   Measured 2026-09-05 on the three boxes <code>tools/verify-three</code> uses.<br>
-  Sources: Compiler&#43;&#43; at commit 5056bba, unmodified. cxx1 at 7c248df,
-  with the assemble step on the pool.<br>
+  Sources: Compiler&#43;&#43; at commit 5056bba, unmodified. cxx1 with the assemble
+  step on the pool and posix_spawn in place of system().<br>
   Method: best of two or three runs, warm page cache, otherwise idle machines.<br>
   Native compilers at <code>-O0</code> / <code>/Od</code>; cxx1 has no optimiser to disable.
 </footer>

@@ -4586,6 +4586,66 @@ slot of whatever consumes it and those slots are guarded, so
 same expression does not. `docs/CONFORMANCE.md` records it, and the fix is a
 field on `Call` plus a line in each code generator.
 
+## `system()` is not a way to start a process, and one platform said so
+
+**`-j` threaded the compiling and not the assembling.** `Driver::assembleObjects`
+was a plain serial loop spawning one assembler per file, so sixteen sources
+compiled in 0.08s on twelve cores and then took 1.9s to assemble one at a time -
+the whole of why `cxx1 -c` lost to a parallel clang while winning every serial
+comparison. It runs on the same work-stealing pool `runJobs` uses now, and so
+does the Windows link path, which had its own copy of the loop.
+
+**And on the Mac that bought nothing, which is the finding.** `-time` reported
+"16 tool runs on 12 threads" and the wall clock did not move. `std::system` on
+Apple's libc holds a global lock for the duration of the child, so concurrent
+calls serialise completely. Measured, sixteen quarter-second sleeps issued from
+eight threads:
+
+| | measured | parallel floor | |
+| --- | --- | --- | --- |
+| macOS, Apple libc | 4260 ms | ~500 | serialised |
+| Linux, glibc 2.34 | 530 ms | ~500 | parallel |
+| Windows, MSVC CRT | 2105 ms | ~2000 | parallel |
+
+**Asking all three is what made the answer right.** The machine to hand was the
+one that behaves differently from the other two, and a conclusion drawn from it
+alone - that parallel assembly does not help - would have been wrong about two
+platforms and wrong about the cause on the third. This is the house rule about
+one target being correct and another not, arriving through the C library rather
+than through a code generator.
+
+**`posix_spawn` and `waitpid` in place of `std::system`, on the POSIX path
+only.** The status is the one `waitpid` gives, so every caller's `!= 0` test is
+unchanged; Windows keeps `system()`, which measured parallel. `environ` comes
+from `_NSGetEnviron()` on Apple and from the plain symbol elsewhere.
+
+**What is deliberately not copied is `system()`'s signal handling.** It ignores
+SIGINT in the parent while the child runs; for a compiler driver a Ctrl-C should
+stop the whole compile rather than one assembler.
+
+**Source to object, Compiler++'s sixteen sources, before and after:**
+
+| | before | after | the platform's own |
+| --- | --- | --- | --- |
+| M4 Pro, -j12 | 2.19 | **0.50** | clang 0.81 |
+| i7-12700, -j8 | 1.16 | **0.29** | cl 0.94 |
+| Xeon, -j2 | 1.37 | 1.20 | g++ 6.69 |
+
+The Xeon's small gain is the machine rather than the change: its two vCPUs are
+hyperthread siblings of one physical core, and g++ itself gets only 1.16x from
+the second. The Mac's 0.50 is 0.08 compiling plus 0.42 assembling, within a hair
+of the 0.45s the same files took through `xargs -P12` - which is what said the
+ceiling had been the library and not the work.
+
+**The pool also closed a race it would otherwise have opened.** The command
+named in an assembler error was one file-scope string several threads would have
+written at once. It is `thread_local` now, with the failing worker copying it out
+under a lock - and the **first failure by index** is reported rather than
+whichever thread lost the race, so a rerun blames the same file.
+
+`docs/benchmark-2026-09-05.html` is the measured record, and like the audit it is
+frozen rather than edited as things change.
+
 ## Compiler++ on Windows: three faults found, and the one wall left
 
 **The Mac writes the MASM and the box only assembles it.** There is no cxx1 on

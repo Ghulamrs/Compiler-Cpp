@@ -25,8 +25,27 @@
 
 #include <unistd.h>
 
+#ifndef _WIN32
+#include <cerrno>
+#include <spawn.h>
+#include <sys/wait.h>
+#endif
+
 #ifdef __linux__
 #include <sched.h>
+#endif
+
+// **The environment a spawned tool inherits.** Apple gives an executable its
+// `environ` through this accessor rather than as a symbol; everything else
+// declares the variable.
+#ifndef _WIN32
+#if defined(__APPLE__)
+#include <crt_externs.h>
+#define CXX1_ENVIRON (*_NSGetEnviron())
+#else
+extern char **environ;
+#define CXX1_ENVIRON environ
+#endif
 #endif
 
 namespace {
@@ -165,25 +184,50 @@ static thread_local std::string lastToolCommand;
 // Runs one tool, inside a developer environment where the machine needs one.
 // Through a batch file and not a /c string: cmd strips the outer quotes of a
 // command that has them, and a file with the command on its own line has none.
-static std::string forCmd(const std::string &command) {
 #ifdef _WIN32
+static std::string forCmd(const std::string &command) {
     return "\"" + command + "\"";
+}
+#endif
+
+// **posix_spawn rather than system(), because system() serialises on macOS.**
+// Apple's libc holds a global lock for the duration of the child, so sixteen
+// assembler runs on a pool of twelve threads took exactly as long as sixteen in
+// a loop - measured, 4260 ms for sixteen quarter-second sleeps on eight threads
+// where the floor is 500. glibc and the MSVC CRT do not, which is why this was
+// asked of all three machines and not the one to hand.
+//
+// The status is the one waitpid gives, so it compares against 0 exactly as
+// system()'s did. What is deliberately not copied is system()'s signal
+// handling: it ignores SIGINT in the parent while the child runs, and here a
+// Ctrl-C should stop the whole compile rather than one assembler.
+static int runShell(const std::string &command) {
+#ifdef _WIN32
+    return std::system(forCmd(command).c_str());
 #else
-    return command;
+    const char *argv[] = { "/bin/sh", "-c", command.c_str(), nullptr };
+    pid_t pid = 0;
+    if (posix_spawn(&pid, "/bin/sh", nullptr, nullptr,
+                    const_cast<char *const *>(argv), CXX1_ENVIRON) != 0)
+        return -1;
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0)
+        if (errno != EINTR) return -1;
+    return status;
 #endif
 }
 
 static int runTool(const std::string &command) {
     lastToolCommand = command;
     const std::string vcvars = developerShell();
-    if (vcvars.empty()) return std::system(forCmd(command).c_str());
+    if (vcvars.empty()) return runShell(command);
 
 #ifdef _WIN32
     char folder[MAX_PATH];
     char script[MAX_PATH];
-    if (GetTempPathA(MAX_PATH, folder) == 0) return std::system(forCmd(command).c_str());
+    if (GetTempPathA(MAX_PATH, folder) == 0) return runShell(command);
     if (GetTempFileNameA(folder, "cxx1", 0, script) == 0) {
-        return std::system(forCmd(command).c_str());
+        return runShell(command);
     }
     std::string batch = script;
     std::remove(batch.c_str());
@@ -191,7 +235,7 @@ static int runTool(const std::string &command) {
 
     {
         std::ofstream out(batch.c_str());
-        if (!out) return std::system(forCmd(command).c_str());
+        if (!out) return runShell(command);
         out << "@echo off\n";
         out << "call \"" << vcvars << "\" >nul 2>&1\n";
         out << command << "\n";
@@ -201,7 +245,7 @@ static int runTool(const std::string &command) {
     std::remove(batch.c_str());
     return rc;
 #else
-    return std::system(command.c_str());
+    return runShell(command);
 #endif
 }
 
