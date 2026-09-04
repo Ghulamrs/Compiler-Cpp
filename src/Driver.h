@@ -42,6 +42,10 @@ private:
 
     bool runJobs();
     unsigned threadCount() const;
+    unsigned threadCount(std::size_t items) const;
+    // Run a batch of tool invocations on that many threads, reporting the
+    // first failure with the command that produced it.
+    bool runCommands(const std::vector<std::string> &commands);
     bool link();
     bool assembleObjects();
     void removeTemporaries();

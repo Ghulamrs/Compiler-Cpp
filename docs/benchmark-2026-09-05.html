@@ -288,7 +288,7 @@ produced take 1.94 seconds to assemble, whatever <code>-j</code> says.</p>
 1.5 seconds is the assembler doing real work on real input.</p>
 </div>
 
-<h2>What fixing it would buy</h2>
+<h2>What fixing it would buy &mdash; and what blocks it</h2>
 <p class="deck col">Measured rather than projected: the same sixteen <code>.s</code> files, handed
 to the same assembler through <code>xargs -P12</code>.</p>
 
@@ -316,9 +316,28 @@ to the same assembler through <code>xargs -P12</code>.</p>
 </div>
 
 <div class="col">
-<p>A parallel assemble step puts cxx1 at roughly <span class="n">0.53s</span> against clang&#39;s
-<span class="n">0.81s</span> &mdash; turning the one comparison it loses into one it wins, on the
-machine where it loses it worst. The change is confined to one function.</p>
+<p>A parallel assemble step would put cxx1 at roughly <span class="n">0.53s</span> against
+clang&#39;s <span class="n">0.81s</span> &mdash; turning the one comparison it loses into one it
+wins, on the machine where it loses it worst.</p>
+
+<p><strong>The pool was written and it bought nothing, for a reason worth recording.</strong>
+<code>assembleObjects</code> now runs its invocations on the same work-stealing pool
+<code>runJobs</code> uses, and <code>-time</code> confirms &ldquo;16 tool runs on 12
+threads&rdquo; &mdash; yet <code>cxx1 -c -j12</code> stayed at <span class="n">1.98s</span>.
+The wall is <code>std::system</code>: Apple&#39;s libc holds a global lock for the duration of
+the child, so concurrent calls serialise completely.</p>
+
+<p class="note flagnote">Sixteen <code>sleep 0.25</code> calls issued from eight threads through
+<code>std::system</code> take <span class="n">4.26s</span> on this Mac, where true parallelism
+would be about <span class="n">0.5s</span>. The same sixteen assembler runs through
+<code>xargs</code> &mdash; separate processes, no shared lock &mdash; take
+<span class="n">0.45s</span>.</p>
+
+<p>So the remaining work is not scheduling but process creation: <code>posix_spawn</code> in
+place of <code>std::system</code>, and <code>CreateProcess</code> on Windows. The pool is the
+half that had to come first, and it also closes a data race &mdash; the command named in an
+assembler error was a single file-scope string that several threads would have written at
+once.</p>
 </div>
 
 <h2>The compiler proper</h2>

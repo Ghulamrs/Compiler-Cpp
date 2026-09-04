@@ -19,6 +19,7 @@
 #include <chrono>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <thread>
 #include <utility>
 
@@ -155,7 +156,11 @@ static std::string developerShell() {
 #endif
 }
 
-static std::string lastToolCommand;
+// **Per-thread, because the assembler runs on a pool now.** One string written
+// by several threads is a race, and the message would name a command other
+// than the one that failed. Each thread keeps its own; the worker that fails
+// copies it out under a lock.
+static thread_local std::string lastToolCommand;
 
 // Runs one tool, inside a developer environment where the machine needs one.
 // Through a batch file and not a /c string: cmd strips the outer quotes of a
@@ -290,6 +295,10 @@ std::vector<std::pair<std::string, std::string> > Driver::macrosFor() const {
 }
 
 bool Driver::assembleObjects() {
+    // Built first and run afterwards: composing a command touches this object's
+    // state, and only the running has to be concurrent.
+    std::vector<std::string> commands;
+    commands.reserve(temporaries_.size());
     for (std::size_t i = 0; i < temporaries_.size(); i++) {
         std::string command;
         if (hostIsWindows()) {
@@ -303,37 +312,33 @@ bool Driver::assembleObjects() {
             command += " -c " + shellQuote(temporaries_[i]);
             command += " -o " + shellQuote(objects_[i]);
         }
-        if (runTool(command) != 0) {
-            std::fprintf(stderr, "%s: the assembler failed - the command was:\n"
-                                 "  %s\n", program_.c_str(), lastToolCommand.c_str());
-            noteWindowsToolchain();
-            return false;
-        }
+        commands.push_back(command);
     }
-    return true;
+    return runCommands(commands);
 }
 
 bool Driver::link() {
     std::string command;
     if (hostIsWindows()) {
 
-        std::vector<std::string> objects;
+        // Windows assembles each file itself before linking, where the Unix
+        // path hands every .s to one `c++` invocation. Same batch, same pool.
+        std::vector<std::string> objects, steps;
+        objects.reserve(temporaries_.size());
+        steps.reserve(temporaries_.size());
         for (const std::string &t : temporaries_) {
             std::size_t dot = t.rfind('.');
             std::string obj = (dot == std::string::npos ? t : t.substr(0, dot))
                               + ".obj";
             std::string step = shellQuote(hostAssembler());
             step += " /nologo /c /Fo " + shellQuote(obj) + " " + shellQuote(t);
-            if (runTool(step) != 0) {
-                std::fprintf(stderr, "%s: the assembler failed - the command "
-                                     "was:\n  %s\n", program_.c_str(),
-                             lastToolCommand.c_str());
-                noteWindowsToolchain();
-                return false;
-            }
+            steps.push_back(step);
             objects.push_back(obj);
+            // Recorded before the run, so a failure still cleans up whatever
+            // the batch managed to write.
             temporaryNames().push_back(obj);
         }
+        if (!runCommands(steps)) return false;
 
         command = shellQuote(hostLinker());
         command += " /nologo /subsystem:console /out:" + shellQuote(linkTo_);
@@ -633,18 +638,75 @@ unsigned Driver::availableCores() {
     return n != 0 ? n : 1;
 }
 
-unsigned Driver::threadCount() const {
+unsigned Driver::threadCount(std::size_t items) const {
     if (threads_ == 1) return 1;
 
     unsigned want;
     if (threads_ != 0) {
         want = threads_;
     } else {
-        if (jobs_.size() < kThreadFrom) return 1;
+        if (items < kThreadFrom) return 1;
         want = availableCores();
     }
-    if (want > jobs_.size()) want = static_cast<unsigned>(jobs_.size());
+    if (want > items) want = static_cast<unsigned>(items);
     return want < 1 ? 1 : want;
+}
+
+unsigned Driver::threadCount() const { return threadCount(jobs_.size()); }
+
+// **The assembler is a job like any other, and it was the only serial phase
+// left.** `-j` threaded the compiling and not this, so sixteen sources
+// compiled in 0.08s on a twelve-core Mac and then took 1.94s to assemble one
+// file at a time - the whole of why `cxx1 -c` lost to a parallel clang while
+// winning every serial comparison. Same work-stealing shape `runJobs` uses.
+bool Driver::runCommands(const std::vector<std::string> &commands) {
+    if (commands.empty()) return true;
+    const unsigned n = threadCount(commands.size());
+
+    if (timing_)
+        std::fprintf(stderr, "%s: %zu tool run%s on %u thread%s\n",
+                     program_.c_str(), commands.size(),
+                     commands.size() == 1 ? "" : "s", n, n == 1 ? "" : "s");
+
+    std::mutex say;
+    std::string failed;
+    std::atomic<std::size_t> next{0};
+    std::atomic<bool> ok{true};
+
+    // **The first failure by index, not by arrival.** Threads finish in no
+    // fixed order, so reporting whichever lost the race would make the message
+    // depend on the scheduler - and a rerun would blame a different file.
+    std::size_t failedAt = commands.size();
+
+    auto work = [&] {
+        for (;;) {
+            std::size_t i = next.fetch_add(1);
+            if (i >= commands.size()) return;
+            if (!ok.load()) return;          // somebody failed; stop starting more
+            if (runTool(commands[i]) == 0) continue;
+            std::lock_guard<std::mutex> hold(say);
+            if (i < failedAt) { failedAt = i; failed = lastToolCommand; }
+            ok.store(false);
+            return;
+        }
+    };
+
+    if (n <= 1) {
+        work();
+    } else {
+        std::vector<std::thread> pool;
+        pool.reserve(n);
+        for (unsigned t = 0; t < n; t++) pool.emplace_back(work);
+        for (std::thread &t : pool) t.join();
+    }
+
+    if (!ok.load()) {
+        std::fprintf(stderr, "%s: the assembler failed - the command was:\n"
+                             "  %s\n", program_.c_str(), failed.c_str());
+        noteWindowsToolchain();
+        return false;
+    }
+    return true;
 }
 
 bool Driver::runJobs() {
