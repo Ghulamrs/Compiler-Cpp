@@ -125,11 +125,11 @@ What is left of it:
 
 - **`dynamic_cast` to a reference** — it has no null to answer with, so a
   failure throws `std::bad_cast`, and there is no C++ standard library here to
-  throw it from. `src/parser/ParserExprNew.cpp:471`
+  throw it from. `src/parser/ParserExprNew.cpp:504`
 - **`dynamic_cast` naming a class with more than one base** — that wants
   `__vmi_class_type_info`, a third shape carrying the bases' offsets and flags.
   Such a class still compiles and its vtable still works; only the cast is
-  refused. `src/parser/ParserExprNew.cpp:536`
+  refused. `src/parser/ParserExprNew.cpp:569`
 - **`typeid`** — in the keyword table below. Nothing emits a `type_info` for a
   *fundamental* type either; a class's is what landed.
 
@@ -268,7 +268,7 @@ it is written:
 - **a pointer to a *const* member function** — the constness of `this` is not
   part of a function type here. `src/parser/ParserType.cpp:1448`
 - **postfix `++` / `--` on a bit-field** — the prefix form works.
-  `src/parser/ParserOperator.cpp:489`
+  `src/parser/ParserOperator.cpp:495`
 - **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:676`
 - **a functional-cast temporary reached through overload ranking** — a
   converting constructor is not tried at a call.
@@ -277,17 +277,17 @@ it is written:
 ## `new` and `delete`
 
 - **placement new**, and a parenthesised type-id after `new` —
-  `src/parser/ParserExprNew.cpp:744`
+  `src/parser/ParserExprNew.cpp:777`
 - **more than one value in a new-expression** —
-  `src/parser/ParserExprNew.cpp:824`
+  `src/parser/ParserExprNew.cpp:864`
 - **`new T[n]` of a class with a constructor** —
   `src/parser/ParserExprNew.cpp:831`
 - **`new T[n][m]`** — only the first dimension may be given.
-  `src/parser/ParserExprNew.cpp:772`
-- **`new T{...}`** — `src/parser/ParserExprNew.cpp:798`
-- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:1033`
+  `src/parser/ParserExprNew.cpp:805`
+- **`new T{...}`** — `src/parser/ParserExprNew.cpp:857`
+- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:1066`
 - **`delete[]` of a type with a destructor** — the count `new[]` would have
-  recorded is not written. `src/parser/ParserExprNew.cpp:1101`
+  recorded is not written. `src/parser/ParserExprNew.cpp:1134`
 
 ## Statements, exceptions and control
 

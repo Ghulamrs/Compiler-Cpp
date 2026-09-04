@@ -237,10 +237,13 @@ ExprPtr Parser::logicalAnd() {
     while (peek().is("&&")) {
         std::size_t pos = peek().pos;
         at_++;
+        const std::size_t before = pendingTemps_.size();
         ExprPtr r = decay(bitOr());
         n = decay(std::move(n));
         n = contextualScalar(std::move(n), pos, "'&&'");
         r = contextualScalar(std::move(r), pos, "'&&'");
+        r = markSkippableTemporaries(std::move(r), before,
+                                     pendingTemps_.size());
         ExprPtr node(new Binary(BinOp::LAnd, std::move(n), std::move(r)));
         node->setType(types_.get(Kind::Bool));   // [expr.log.and]/1
         n = std::move(node);
@@ -253,10 +256,13 @@ ExprPtr Parser::logicalOr() {
     while (peek().is("||")) {
         std::size_t pos = peek().pos;
         at_++;
+        const std::size_t before = pendingTemps_.size();
         ExprPtr r = decay(logicalAnd());
         n = decay(std::move(n));
         n = contextualScalar(std::move(n), pos, "'||'");
         r = contextualScalar(std::move(r), pos, "'||'");
+        r = markSkippableTemporaries(std::move(r), before,
+                                     pendingTemps_.size());
         ExprPtr node(new Binary(BinOp::LOr, std::move(n), std::move(r)));
         node->setType(types_.get(Kind::Bool));   // [expr.log.or]/1
         n = std::move(node);

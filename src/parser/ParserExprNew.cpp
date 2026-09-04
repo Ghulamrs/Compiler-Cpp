@@ -328,6 +328,39 @@ ExprPtr Parser::markArmTemporaries(ExprPtr arm, std::size_t from,
     return arm;
 }
 
+// **The right operand of `&&` or `||` may not run at all**, and a temporary it
+// would have built must not be destroyed when it did not. Same guard a `?:` arm
+// takes - but this operand's *value* is what the comparison uses, so it is kept
+// in a slot of its own and handed back after the guards are set.
+ExprPtr Parser::markSkippableTemporaries(ExprPtr operand, std::size_t from,
+                                         std::size_t to) {
+    std::vector<std::size_t> needed;
+    for (std::size_t k = from; k < to && k < pendingTemps_.size(); k++)
+        if (pendingTemps_[k].flag == 0 &&
+            destructorOf(pendingTemps_[k].type) != nullptr)
+            needed.push_back(k);
+    if (needed.empty()) return operand;
+
+    const Type *vt = operand->type();
+    const int slot = allocateFrameSlot(vt);
+    ExprPtr into(Var::local("$sc", slot));
+    into->setType(vt);
+    ExprPtr chain(new Assign(std::move(into), std::move(operand)));
+    chain->setType(vt);
+    for (std::size_t i = 0; i < needed.size(); i++) {
+        pendingTemps_[needed[i]].flag = guardFlag();
+        ExprPtr mark(new Comma(std::move(chain),
+                               setGuard(pendingTemps_[needed[i]].flag, 1)));
+        mark->setType(types_.intType());
+        chain = std::move(mark);
+    }
+    ExprPtr back(Var::local("$sc", slot));
+    back->setType(vt);
+    ExprPtr all(new Comma(std::move(chain), std::move(back)));
+    all->setType(vt);
+    return all;
+}
+
 // **Copy-initialise `cls` into a slot the caller owns**, as one expression of
 // type int - the copy constructor where there is one, the bytes where the copy
 // is trivial, which are the two answers a declaration gives. The guard is set

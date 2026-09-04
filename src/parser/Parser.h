@@ -1199,6 +1199,10 @@ private:
     // Give every temporary an arm made a guard, set at the end of that arm, so
     // the arm that did not run leaves them clear and nothing destroys them.
     ExprPtr markArmTemporaries(ExprPtr arm, std::size_t from, std::size_t to);
+    // The same, for an operand `&&` or `||` may skip; the operand's value is
+    // kept and handed back, since the comparison is what reads it.
+    ExprPtr markSkippableTemporaries(ExprPtr operand, std::size_t from,
+                                     std::size_t to);
     ExprPtr runtimeCall(const char *symbol, const Type *returns,
                         std::vector<ExprPtr> args);
     ExprPtr callAllocator(const char *itanium, const char *microsoft,

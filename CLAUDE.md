@@ -4586,6 +4586,69 @@ slot of whatever consumes it and those slots are guarded, so
 same expression does not. `docs/CONFORMANCE.md` records it, and the fix is a
 field on `Call` plus a line in each code generator.
 
+## The operand `&&` skipped, and the destructor it was owed anyway
+
+**A temporary built in the right operand of `&&` or `||` was destroyed even
+when the operand never ran.** [expr.log.and]/1 evaluates the second operand
+only if the first is true, so an object it would have made was never made - and
+the destructor the full expression owes at its end is owed for nothing. cxx1
+ran it regardless, on a frame slot holding whatever the stack had left there:
+for `std::string` that is `free` of a stack address, which GuardMalloc reports
+and an ordinary run turns into a segfault three passes later.
+
+**This is what stood between cxx1 and Compiler++**, and it was one line of
+ordinary C++11:
+
+```cpp
+if (cl->vtable[s]->name == m->name &&
+    mangleSignature(cl->vtable[s]->params) == want) { ... }
+```
+
+The left half is false for most entries, so `mangleSignature` - which returns a
+`std::string` by value, into a slot of the caller's frame - is skipped, and the
+slot is destroyed all the same. It is reachable from three lines of C++:
+`class B : public A` with a virtual function each, and `b.g()` on a named
+object, which is the one path that asks for the final override by signature.
+
+**The guard a `?:` arm already carried is the whole fix**, and the machinery
+was there: a temporary with a destructor gets a flag in the frame, cleared in
+front of the full expression, set where the object comes into being, and read
+by the destruction at the end and by the pad alike. `markArmTemporaries` sets
+it at the end of an arm; `markSkippableTemporaries` does the same for an
+operand that may be jumped over.
+
+**One difference, and it decides the shape.** A `?:` arm's value is an int the
+conditional discards, so the guard can simply follow it - `Comma(arm, set)`
+answers with the guard. An `&&` operand's value is what the comparison reads,
+so the same shape would make every taken branch true. The operand is kept in a
+slot of its own, the guards are set, and the slot is handed back:
+`(($sc = r), $g1 = 1, ..., $sc)`.
+
+**How it was found, and what did not find it.** Four suites green on three
+boxes, and 128 of Compiler++'s 129 cases byte-identical to a clang build of the
+same sources. What found it was `DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib`
+- GuardMalloc turns the corruption into a report at the moment of the bad free
+rather than a fault somewhere else - plus `br set -n malloc_error_break` for the
+backtrace, which named `std::string::~string()` inside one function. Two
+`fprintf` calls added to that function made the bug vanish, which is what said
+it was heap corruption rather than a wrong pointer. Reading the emitted
+assembly for the named function is what turned "corruption somewhere" into the
+`beq` that skips a construction and the `bl __ZNSt6stringD1Ev` after it that
+does not skip the destruction.
+
+**The case counts live objects and whether the operand ran**, never
+constructor calls - CLAUDE.md's standing rule, and both halves matter here:
+elision may change how many copies happen and may not change how many objects
+exist, nor whether a skipped operand was evaluated.
+`tests/cases/temporary-in-short-circuit.cpp`, measured against clang for both
+operators, both outcomes, a nested `&&` inside a skipped operand, and an
+operand whose value decides the branch. Its members are defined **out of
+line**: written inside the class they are inline, clang emits none of them, and
+the names suite would then report a difference about emission rather than
+mangling - the trap this file already records twice. What is left is a
+`.nonames` for arm64-darwin alone, where cxx1 emits the `__Unwind_Resume` of a
+cleanup pad clang has no temporary to need.
+
 ## A class returned by value was never destroyed, and the two halves that hid it
 
 **One object leaked per call**, in every shape a call's result can appear in:
