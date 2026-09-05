@@ -6133,6 +6133,96 @@ the language being told the truth.
 of them `x86_64-windows`, each by exactly one replaced line - checked, not
 assumed, which before the golden existed was not something anybody could say.
 
+## The object ledger, because printing cannot show a leak
+
+**Every suite here compares what a program prints, and three failures leave
+the output identical**: an object leaked, an object destroyed twice, and a
+destructor run on a slot nothing constructed. That is not a gap in the corpus,
+which can be widened. It is a gap in the *oracle*, and it ran the length of
+this project: **Compiler++ matched a clang build on all 200 comparisons under
+a compiler that leaks every data member of every class with a written
+destructor**, and it matched because a leak does not reach stdout. Four suites
+were green on three machines throughout.
+
+`tests/cases/lifetime.h` is the instrument. `lfBuilt(this, "C")` at the end of
+every constructor, `lfGone(this, "C")` at the start of every destructor,
+`lfWatch()` as the first statement of `main`, and one line at exit:
+
+    LEDGER built=9 gone=9 live=0 double=0 phantom=0 over=0 lost=0
+
+**live, double, phantom, over and lost must be zero for any conforming
+implementation**, whatever it chose to elide - each is an object leaked,
+destroyed twice, destroyed unbuilt, built over a live one, or past the table.
+`built` and `gone` are the weaker pair, because C++11 permits elision and the
+two oracles take different options; a case that leaves elision any freedom
+must not have its `built` count read as a fact. That is the rule
+`return-copy-balance.cpp` and `move-only.cpp` already followed by hand, and
+this generalises it rather than inventing it.
+
+**A sanitizer is not the same instrument and would not have found this.** The
+invariant is [basic.life]'s - one construction and one destruction per object
+- not the heap's. A member destructor that never runs allocates nothing, so
+there is nothing for ASan or `leaks` to report; only the program's own
+bookkeeping can see it.
+
+**Two things the ledger got wrong on its first run, both worth keeping.**
+
+*An address does not identify an object.* A member at offset 0 shares the
+address of the class holding it, and so does a base subobject - so keying a
+slot by address alone made `struct D { P x; }` look like one object built
+twice, and the ledger reported `over=1` on a **correct** program compiled by
+clang. A slot is keyed by address *and* class name. The instrument had to be
+calibrated against the oracle before it could be pointed at the compiler.
+
+*The report has to come from `atexit`, not from the end of `main`.* An object
+destroyed on the way out of `main` - including one that should never have been
+destroyed - goes after `main`'s last statement and before the `atexit`
+handlers, so an inline report prints too early and misses exactly the window
+the phantom lives in. Measured: both compilers run `atexit` after the locals.
+
+**What it catches, measured the day it was written.** A user-written
+destructor that never destroys its member reports `gone=1 live=1` where clang
+reports `gone=2 live=0`; a lambda's return-type deduction leaking `alive_`
+reports `phantom=1`; a class captured by value reports one construction where
+two happened. All three printed identical output before.
+
+**Six correct lifetime shapes were put under it and five agree** - a scope,
+two objects in one scope, a member reached through an *implicit* destructor, a
+by-value parameter, a copy, and a temporary bound to a const reference. Those
+five are `tests/cases/lifetime-ledger.cpp`. The sixth is a class whose
+*written* destructor has a member or base to destroy, which cxx1 does not run;
+its case belongs with the fix rather than beside the instrument.
+
+**The rule going forward: a case about object lifetime uses the ledger.** A
+case that prints constructor traces and nothing else is checking that the
+right words appear in the right order, which is worth having and is not the
+same as checking that the objects balance.
+
+### And the names suite could not see a whole class of symbol
+
+**Wiring the ledger in found a blind spot in `tools/mangled-names`, not in the
+compiler.** The case has file-scope `static` counters, and the suite reported
+`_ZL7counter` and `_ZL5table` as cxx1-only names. They are not: **clang
+spells them identically**. What differed was the *directive* - clang defines a
+zero-initialised internal object with `.comm` on ELF and `.lcomm` for the
+Microsoft target, cxx1 writes a label in `.bss` or a MASM `DB n DUP (?)`, and
+the scrape read labels and `DB` and neither `comm` form.
+
+So every zero-initialised internal-linkage object in the corpus had been
+**invisible on both sides** rather than agreed, and the suite said nothing
+because nothing was compared. Two `-e` patterns fixed it, and the first thing
+the sharper scrape did was surface a real recorded divergence on a target that
+had been silently passing: `value-init-empty-braces` names a static local
+differently from clang on x86_64-windows exactly as its x86_64-linux line
+already recorded, and that half had never been checked.
+
+**The lesson is the one this file already draws about the Windows runner**:
+a scrape that reads one spelling will quietly check one spelling, and the
+count is the only place it shows. `_ZL` is also on the scrape's exclusion
+list for *labels*, which is right - an `L` label is a local temporary - and
+was hiding nothing here only because the name reached the list by another
+route.
+
 ## How correctness is established
 
 Differential testing against gcc, clang and cl over a growing corpus. That is

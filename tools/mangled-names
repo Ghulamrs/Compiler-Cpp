@@ -76,6 +76,7 @@ names() {
         -e 's/^\([^[:space:]]*\)[[:space:]][[:space:]]*PROC.*/\1/p' \
         -e 's/^\([^[:space:]:]*\):.*/\1/p' \
         -e 's/^\([A-Za-z_$?][A-Za-z0-9_$?@]*\)[[:space:]][[:space:]]*D[BWDQ][[:space:]].*/\1/p' \
+        -e 's/^[[:space:]]*\.l\{0,1\}comm[[:space:]][[:space:]]*//p' \
         -e 's/^[[:space:]]*call[[:space:]][[:space:]]*\([^*][^[:space:]]*\).*/\1/p' \
         -e 's/^[[:space:]]*callq[[:space:]][[:space:]]*\([^*][^[:space:]]*\).*/\1/p' \
         -e 's/^[[:space:]]*bl[[:space:]][[:space:]]*//p' "$1" |
