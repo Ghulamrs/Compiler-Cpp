@@ -31,9 +31,18 @@ STATUS=0
 # then hands those to cl - which reports `unknown character '0x5'` in a file
 # nobody wrote. Same shape as the duplicate-file trap the Makefiles guard
 # against with a $(wildcard) filter.
+#
+# **And that same duplicate trap, excluded here rather than swept.** iCloud
+# Drive copies a file it is syncing to `name 2.ext`, and it does so whenever it
+# likes - a sweep before the tar is not enough, because the copies reappear
+# between the sweep and the tar. Shipped, `tests/cases/foo 2.cpp` is a case with
+# no `.expected` of its own name and the far side reports it as "did not run":
+# a red run that says nothing about the compiler. One three-box round was spent
+# on exactly that.
 COPYFILE_DISABLE=1 tar -C "$ROOT" --no-xattrs -czf "$TAR" \
     --exclude .git --exclude obj --exclude obj-msvc --exclude winout \
     --exclude 'tests/out-*' --exclude '*.exe' --exclude .DS_Store \
+    --exclude '* [0-9]' --exclude '* [0-9].*' \
     src tests lib include tools docs msvc ide Makefile CLAUDE.md README.md build \
     2>/dev/null
 
@@ -193,18 +202,12 @@ double 2.5" ]; then
     ssh -o BatchMode=yes "$WINDOWS" "$REMOTE\\tools\\windows\\names-vs-cl.cmd $REMOTE" >/dev/null || STATUS=1
     NOUT=$(mktemp -d)
     scp -q -r -o BatchMode=yes "$WINDOWS:C:/cxx1/verify/winnames" "$NOUT" 2>/dev/null
-    nagree=0; ndiffer=0; nskip=0
+    nagree=0; ndiffer=0
     for mine in "$NOUT"/winnames/*.mine.txt; do
         [ -f "$mine" ] || continue
         n=$(basename "$mine" .mine.txt)
         theirs="$NOUT/winnames/$n.cl.txt"
         [ -f "$theirs" ] || continue
-        # A case may record a difference in <case>.nocl, the counterpart of
-        # .nonames. The reason is printed, not swallowed.
-        if [ -f "$ROOT/tests/cases/$n.nocl" ]; then
-            nskip=$((nskip + 1))
-            continue
-        fi
         # Temp files and not process substitution: this script is /bin/sh.
         clsyms "$mine"   > "$NOUT/a.$$"
         clsyms "$theirs" > "$NOUT/b.$$"
@@ -217,12 +220,33 @@ double 2.5" ]; then
             STATUS=1
         fi
     done
+    # What was not compared, by kind. A .nocl records a difference against cl
+    # and its first sentence is printed for the reason a .notarget's is: an
+    # exclusion nobody sees is an exclusion nobody removes.
+    nnocl=0; nnotarget=0; nrefused=0; nclrefused=0
     for k in "$NOUT"/winnames/*.skip; do
         [ -f "$k" ] || continue
-        nskip=$((nskip + 1))
+        n=$(basename "$k" .skip)
+        kind=$(tr -d '\r\n' < "$k")
+        if [ -f "$ROOT/tests/cases/$n.nocl" ]; then
+            nnocl=$((nnocl + 1))
+            echo "  nocl $n: $(tr '\n' ' ' < "$ROOT/tests/cases/$n.nocl" | tr -s ' ' | cut -c1-96)"
+        elif [ "$kind" = cxx1-refused ]; then
+            # No exclusion file covers this one, so it is a case that quietly
+            # left the comparison. run-cases.cmd owns the verdict; this names it.
+            nrefused=$((nrefused + 1))
+            echo "  cxx1 refused $n - not compared, and no exclusion file says so"
+        elif [ "$kind" = cl-refused ]; then
+            nclrefused=$((nclrefused + 1))
+        else
+            nnotarget=$((nnotarget + 1))
+        fi
     done
+    nskip=$((nnocl + nnotarget + nrefused + nclrefused))
     rm -rf "$NOUT"
-    echo "windows names vs cl: $nagree agreed, $ndiffer differed, $nskip skipped"
+    echo "windows names vs cl: $nagree agreed, $ndiffer differed, $nskip skipped" \
+         "($nnocl recorded, $nnotarget not for this target," \
+         "$nrefused cxx1-refused, $nclrefused cl-refused)"
     [ "$fail" -eq 0 ] || STATUS=1
     rm -rf "$OUT"
 fi

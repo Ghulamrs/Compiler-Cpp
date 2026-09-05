@@ -6128,6 +6128,42 @@ The lesson is worth more than the fix: **a runner that iterates one kind of
 file will quietly check one kind of thing**, and the count is the only place
 it shows.
 
+**And the same lesson one file over: 53 `.nocl` records, and no run printed
+one of them.** `.notarget` reasons are printed on every run - deliberately,
+because an exclusion nobody sees is an exclusion nobody removes - and `.nocl`
+had drifted out of that rule without anybody deciding it should. The box wrote
+a bare `.skip` marker, the Mac never saw the case, and the branch in
+`verify-three` whose comment said "the reason is printed, not swallowed" was
+unreachable: a `.nocl` case has no `.mine.txt` for the comparison loop to walk.
+
+**One number was covering four different things**, which is what made it
+invisible. A `.skip` is written for a `.notarget`, for a `.nocl`, for a case
+cxx1 refused and for one cl refused - and three of those four are expected,
+cl having no C++11 mode. The summary breaks them out now, prints each `.nocl`'s
+first ninety-six characters, and **names any case cxx1 refused that no
+exclusion file covers**, which was the one genuinely silent kind: a case that
+stops compiling leaves the comparison and the agreed count simply falls.
+
+A reason is joined onto one line before it is cut, because a `.nocl` may be
+wrapped - `head -1` of a wrapped one is a fragment ending mid-sentence.
+
+**Do not edit a shell script while a run of it is in flight.** `sh` seeks
+through the file as it executes, so an edit ahead of the point it has reached
+changes what it will parse. This edit landed under a `tools/verify-three
+windows` that was still running on the box; the run was killed and restarted
+rather than believed.
+
+**And the tar excludes iCloud's duplicates now, rather than a sweep hoping to
+have caught them.** iCloud Drive copies a file it is syncing to `name 2.ext`
+whenever it likes - including *between* a sweep and the tar a second later. A
+shipped `tests/cases/foo 2.cpp` is a case whose `.expected` does not carry its
+name, so the far side reports `foo 2: did not run` and the leg goes red saying
+nothing whatever about the compiler. One three-box round was spent on exactly
+that, on two case files created ten minutes earlier. `--exclude '* [0-9]'` and
+`--exclude '* [0-9].*'` are the fix; no file in this tree has a space in its
+name, so they cost nothing. The Makefiles already guard the same trap with a
+`$(wildcard)` filter, and this is that guard at the other end of the wire.
+
 ## namespace, and the fact that a namespace is not a type
 
 **A namespace has no `Type`, and everything else here follows from that.** A
