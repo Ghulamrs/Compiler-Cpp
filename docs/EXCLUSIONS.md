@@ -110,7 +110,7 @@ that was not written. This is a library sized to what has been asked of it
 rather than to the standard, and the distance between those two is not small.
 It is also why a *language* feature is refused in one place: `auto` from a
 braced initialiser deduces an `initializer_list`, which there is no library for
-— `src/parser/ParserTemplate.cpp:877`.
+— `src/parser/ParserTemplate.cpp:947`.
 
 A conforming C++ implementation is a compiler **and** a library. cxx1 is a
 language translator with three code generators. Read every claim about C++11
@@ -138,7 +138,6 @@ What is left of it:
 Rung 5 landed function and class templates, deduction, partial specialization,
 SFINAE and variadic packs. What is left:
 
-- **a default template argument** — `src/parser/ParserTemplate.cpp:81`
 - **a template template parameter** — `src/parser/ParserTemplate.cpp:43`
 - **a member template** — `src/parser/ParserType.cpp:263`
 - **an unnamed template parameter** — `src/parser/ParserTemplate.cpp:52`,
@@ -146,25 +145,25 @@ SFINAE and variadic packs. What is left:
 - **a non-type parameter pack** — a pack of types is supported.
   `src/parser/ParserTemplate.cpp:63`
 - **a non-type template parameter that is not an integer type** —
-  `src/parser/ParserTemplate.cpp:633`
+  `src/parser/ParserTemplate.cpp:703`
 - **two templates of one name** — the single feature between cxx1 and the
-  `enable_if` overload idiom. `src/parser/ParserTemplate.cpp:422`
+  `enable_if` overload idiom. `src/parser/ParserTemplate.cpp:439`
 - **an explicit specialization of a *function* template** — the class form
-  works. `src/parser/ParserTemplate.cpp:437`
+  works. `src/parser/ParserTemplate.cpp:454`
 - **`template <>` where a parameter list is expected** —
   `src/parser/ParserTemplate.cpp:38`
-- **explicit instantiation** — `src/parser/ParserTemplate.cpp:292`
+- **explicit instantiation** — `src/parser/ParserTemplate.cpp:326`
 - **a template that is neither a class nor a function** —
-  `src/parser/ParserTemplate.cpp:249`
+  `src/parser/ParserTemplate.cpp:266`
 - **a constructor or destructor of a class template written outside the class**
-  — `src/parser/ParserTemplate.cpp:325`
+  — `src/parser/ParserTemplate.cpp:342`
 - **naming a function template without calling it** —
-  `src/parser/ParserTemplate.cpp:1502`, `src/parser/ParserTemplate.cpp:1558`
+  `src/parser/ParserTemplate.cpp:1572`, `src/parser/ParserTemplate.cpp:1628`
 - **naming a member through a template's argument list**, `A<int>::n` — a
   `typedef` for the instantiation reaches it.
-  `src/parser/ParserTemplate.cpp:1592`
+  `src/parser/ParserTemplate.cpp:1662`
 - **instantiating a template that was only declared** —
-  `src/parser/ParserTemplate.cpp:1596`
+  `src/parser/ParserTemplate.cpp:1666`
 - **`sizeof` of a template parameter in a signature** — the linker name would
   have to spell the expression. `src/parser/ParserExpr.cpp:1920`
 

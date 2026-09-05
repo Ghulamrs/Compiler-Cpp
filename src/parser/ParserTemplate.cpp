@@ -77,9 +77,26 @@ void Parser::templateParameters(std::vector<TemplateParam> &params) {
             p.name = d.name;
             p.type = d.type;
         }
-        if (peek().is("="))
-            src_.fail(peek().pos, "a default template argument is not "
-                                  "supported yet");
+        // **A default argument, kept as tokens.** [temp.param]/9 lets a
+        // parameter carry one, and a use that omits it replays these tokens
+        // with the earlier parameters bound - which is how `N = M` sees `M`.
+        // Skipped by balanced depth so a default of `foo<int>` or `(a > b)`
+        // does not stop at its own inner `>`.
+        if (consume("=")) {
+            p.defBegin = at_;
+            int depth = 0;
+            for (;;) {
+                const Token &t = peek();
+                if (t.kind == TokenKind::End) break;
+                if (depth == 0 && (t.is(",") || t.is(">") || t.is(">>"))) break;
+                if (t.is("<") || t.is("(") || t.is("[")) depth++;
+                else if (depth > 0 && (t.is(">") || t.is(")") || t.is("]"))) depth--;
+                at_++;
+            }
+            p.defEnd = at_;
+            if (p.defEnd == p.defBegin)
+                src_.fail(peek().pos, "a default template argument has no value");
+        }
         for (std::size_t i = 0; i < params.size(); i++)
             if (params[i].name == p.name)
                 src_.fail(p.pos, "'" + p.name + "' is declared twice in this "
@@ -556,14 +573,67 @@ void Parser::templateArguments(const TemplateDecl &decl,
     inTemplateArgs_ = true;
     if (packs != nullptr) packs->assign(decl.params.size(),
                                         std::vector<const Type *>());
+    // **Defaults are replayed with the earlier parameters bound.** They are
+    // trailing by construction, so no explicit argument is ever parsed after
+    // one is used - which means the parameters bound here shadow nothing during
+    // ordinary argument parsing, and are undone when this returns.
+    std::vector<Shadow> undo;
+    struct Unbind {
+        Parser *p; std::vector<Shadow> *u;
+        ~Unbind() { p->unbindTemplateParameters(*u); }
+    } unbind{ this, &undo };
+
     for (std::size_t i = 0; i < decl.params.size(); i++) {
-        if (i > 0 && !consume(","))
+        const TemplateParam &p = decl.params[i];
+        TemplateArg a;
+
+        // If the arguments have run out, the rest must carry defaults. A comma
+        // is due only before a real argument, so it is consumed here and not at
+        // the closing angle.
+        bool defaulted = !p.isPack && atClosingAngle();
+        if (!defaulted && i > 0 && !consume(","))
             src_.fail(peek().pos, "'" + decl.name + "' takes " +
                                   std::to_string(decl.params.size()) +
                                   " template arguments and this gives " +
                                   std::to_string(i));
-        const TemplateParam &p = decl.params[i];
-        TemplateArg a;
+        if (defaulted) {
+            if (p.defBegin == 0)
+                src_.fail(peek().pos, "'" + decl.name + "' takes " +
+                                      std::to_string(decl.params.size()) +
+                                      " template arguments and this gives " +
+                                      std::to_string(i));
+            // The first default binds every parameter before it, so its tokens
+            // can name them; each default binds itself for the next one.
+            if (undo.empty())
+                for (std::size_t k = 0; k < i; k++) {
+                    std::vector<TemplateParam> one(1, decl.params[k]);
+                    std::vector<const Type *> ob(1, (*binding)[k]);
+                    std::vector<long long> ov(1, (*values)[k]);
+                    std::vector<std::vector<const Type *> > op(1, std::vector<const Type *>());
+                    bindTemplateParameters(one, ob, ov, op, &undo);
+                }
+            const std::size_t saved = at_;
+            at_ = p.defBegin;
+            if (p.type == nullptr) {
+                StorageClass sc; Qualifiers quals;
+                const Type *base = specifiers(&sc, &quals);
+                Declared d = declarator(base, true);
+                binding->push_back(d.type); values->push_back(0);
+                a.isType = true; a.type = d.type;
+            } else {
+                const long long v = constantExpression("a default template argument");
+                binding->push_back(p.type); values->push_back(v);
+                a.isType = false; a.type = p.type; a.value = v;
+            }
+            at_ = saved;
+            args->push_back(a);
+            std::vector<TemplateParam> one(1, p);
+            std::vector<const Type *> ob(1, binding->back());
+            std::vector<long long> ov(1, values->back());
+            std::vector<std::vector<const Type *> > op(1, std::vector<const Type *>());
+            bindTemplateParameters(one, ob, ov, op, &undo);
+            continue;
+        }
         // **A pack takes everything that is left**, including nothing. It is
         // the last parameter by construction, so there is no ambiguity about
         // where it stops: the closing angle stops it.

@@ -1,0 +1,9 @@
+// <cassert> - the diagnostic that a condition held, from C++.
+//
+// The one C wrapper with nothing to re-export: assert is a macro, so it is in
+// scope everywhere the moment <assert.h> is included and belongs to no
+// namespace. [cassert]/1 says exactly that - the header is <assert.h> and the
+// content is the same. Re-readable for the same reason <assert.h> is: NDEBUG is
+// consulted on every include, so this file guards nothing and forwards each
+// time.
+#include <assert.h>

@@ -179,6 +179,12 @@ private:
         // `class... Ts` - it stands for a list, and only the last parameter
         // may be one, since everything after it could never be deduced.
         bool isPack = false;
+        // A default argument, kept as a half-open token range [begin, end) the
+        // way a default *function* argument is - instantiation replays tokens,
+        // so a default is replayed too, with the earlier parameters bound.
+        // begin == 0 means there is none.
+        std::size_t defBegin = 0;
+        std::size_t defEnd = 0;
     };
     // What is known about a name that names a template. `start` is the
     // `template` keyword: instantiation here will be a replay of these

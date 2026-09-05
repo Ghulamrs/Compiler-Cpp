@@ -22,10 +22,10 @@ namespace std {
 // { fp_, which_, state_, buf_ } - a null FILE * and the number that says
 // which standard stream to resolve to. 1 is stdout, 2 is stderr, and the null
 // buf_ is what says this writes to a file rather than to a string.
-static ostream cout = { 0, 1, 0, 0 };
-static ostream cerr = { 0, 2, 0, 0 };
+static ostream cout = { 0, 1, 0, 0, 0, 6 };
+static ostream cerr = { 0, 2, 0, 0, 0, 6 };
 // clog is cerr without the flush the standard does not promise either way.
-static ostream clog = { 0, 2, 0, 0 };
+static ostream clog = { 0, 2, 0, 0, 0, 6 };
 
 static istream cin = { 0, 1, 0, 0, 0 };
 

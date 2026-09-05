@@ -1,0 +1,30 @@
+// <iomanip> - the manipulators that take an argument.
+//
+// setw, setprecision and setfill are not functions the stream dispatches like
+// endl; each carries a value, so each is a small object a stream knows how to
+// take. `os << setw(8)` builds one and the `operator<<` for it writes the value
+// into the stream's own state - which is where <ostream> keeps width, precision
+// and fill. Nothing is formatted here; these only set what the next insertion
+// reads. The no-argument float manipulators (fixed, scientific) are <ostream>'s.
+#ifndef _CXX1_IOMANIP
+#define _CXX1_IOMANIP
+
+#include <ostream>
+
+namespace std {
+
+struct _Setw { int n; };
+struct _Setprecision { int n; };
+struct _Setfill { char c; };
+
+inline _Setw         setw(int n)         { _Setw s;         s.n = n; return s; }
+inline _Setprecision setprecision(int n) { _Setprecision s; s.n = n; return s; }
+inline _Setfill      setfill(char c)     { _Setfill s;      s.c = c; return s; }
+
+inline ostream &operator<<(ostream &os, _Setw m)         { os.width_ = m.n; return os; }
+inline ostream &operator<<(ostream &os, _Setprecision m) { os.prec_  = m.n; return os; }
+inline ostream &operator<<(ostream &os, _Setfill)        { return os; }
+
+}  // namespace std
+
+#endif

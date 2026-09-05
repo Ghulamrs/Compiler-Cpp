@@ -47,10 +47,32 @@ public:
     // initialisers in <iostream> - which name four members and leave this one
     // value-initialised - starts in decimal without naming it.
     //
-    // This is the whole of the formatting state. The standard's `ios_base` has
-    // width, fill, precision and a dozen flags beside it; none of them is here,
-    // and a program that reaches for one gets a diagnostic rather than silence.
+    // The conversion base, and beside it the three <iomanip> touches. A field
+    // width (setw: applies to the next insertion, then clears), a precision
+    // (setprecision: sticky), and a float format (0 default = %g, 1 fixed = %f,
+    // 2 scientific = %e). Precision is set to 6 by the aggregate initialisers
+    // in <iostream> - [ios_base]'s own default - and a default-float %.6g is the
+    // %g this header used to write, byte for byte, so no existing output moves.
     int base_;
+    int prec_;
+    int fmt_;
+    int width_;
+
+    // setw right-justifies within the field and forgets it: the width is
+    // consumed by one insertion, which is [ostream.formatted]/3. The fill is a
+    // space, taken as such so the aggregate need not spell it.
+    ostream &rawput(const char *s) {
+        if (buf_ != 0) { *buf_ += s; return *this; }
+        FILE *f = target();
+        if (f == 0 || std::fputs(s, f) < 0) state_ = 1;
+        return *this;
+    }
+    ostream &pad(const char *s) {
+        int n = 0; while (s[n]) n++;
+        for (int i = 0; i < width_ - n; i++) put(' ');
+        width_ = 0;
+        return rawput(s);
+    }
 
     // **A file stream that is not open writes nowhere**, and getting this
     // wrong is worse than it sounds: falling through to `stdout` meant an
@@ -101,10 +123,7 @@ public:
 
     ostream &operator<<(const char *s) {
         if (s == 0) s = "(null)";
-        if (buf_ != 0) { *buf_ += s; return *this; }
-        FILE *f = target();
-        if (f == 0 || std::fputs(s, f) < 0) state_ = 1;
-        return *this;
+        return pad(s);
     }
 
     ostream &operator<<(char c) { return put(c); }
@@ -155,8 +174,11 @@ public:
     }
 
     ostream &operator<<(double v) {
+        char how[8];
+        char kind = fmt_ == 1 ? 'f' : fmt_ == 2 ? 'e' : 'g';
+        std::sprintf(how, "%%.%d%c", prec_, kind);
         char buf[64];
-        std::sprintf(buf, "%g", v);
+        std::sprintf(buf, how, v);
         return *this << buf;
     }
     ostream &operator<<(float v) { return *this << (double)v; }
@@ -206,6 +228,14 @@ public:
 // would collide on them - which is the same reason the stream objects in
 // <iostream> are static.
 static ostream &endl(ostream &o) { return o.put('\n').flush(); }
+
+// **fixed, scientific and defaultfloat set the float format.** They are the
+// manipulators <ostream> owns that take no argument, so `os << std::fixed`
+// reaches the `ostream &(*)(ostream &)` overload the same way endl does. The
+// standard puts them in <ios>; there is no separate <ios> here.
+static ostream &fixed(ostream &o)        { o.fmt_ = 1; return o; }
+static ostream &scientific(ostream &o)   { o.fmt_ = 2; return o; }
+static ostream &defaultfloat(ostream &o) { o.fmt_ = 0; return o; }
 static ostream &flush(ostream &o) { return o.flush(); }
 static ostream &ends(ostream &o) { return o.put('\0'); }
 

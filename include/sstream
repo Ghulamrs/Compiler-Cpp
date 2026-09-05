@@ -33,6 +33,9 @@ public:
         state_ = 0;
         buf_ = &s_;
         base_ = 10;
+        prec_ = 6;      // [ios_base]'s default, as <iostream> gives the console streams
+        fmt_ = 0;
+        width_ = 0;
     }
 
     string str() const { return s_; }
