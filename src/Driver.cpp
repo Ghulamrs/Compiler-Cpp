@@ -385,7 +385,15 @@ bool Driver::link() {
         if (!runCommands(steps)) return false;
 
         command = shellQuote(hostLinker());
-        command += " /nologo /subsystem:console /out:" + shellQuote(linkTo_);
+        // **An 8 MB stack, which is what the other two targets already give.**
+        // Windows reserves 1 MB by default where ELF and Mach-O reserve 8; a
+        // program with deep recursion - a recursive-descent compiler among them -
+        // overflows on Windows alone and nowhere else. Compiler++'s own
+        // "nested too deeply" test refused gracefully on Linux and crashed here
+        // for exactly this reason. The number is Linux's default, so the linked
+        // program behaves the same on every target rather than differently on one.
+        command += " /nologo /subsystem:console /stack:8388608 /out:"
+                 + shellQuote(linkTo_);
         for (const std::string &o : objects) command += " " + shellQuote(o);
 
         command += " libcmt.lib libucrt.lib libvcruntime.lib kernel32.lib"

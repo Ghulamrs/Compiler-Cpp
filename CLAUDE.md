@@ -4646,6 +4646,35 @@ whichever thread lost the race, so a rerun blames the same file.
 `docs/benchmark-2026-09-05.html` is the measured record, and like the audit it is
 frozen rather than edited as things change.
 
+## An 8 MB stack on Windows, which is what the other two targets always had
+
+**The last of Compiler++'s 200 comparisons was a stack overflow, not a
+miscompilation.** `124_err_nested_too_deeply` feeds the compiler an expression
+twenty thousand terms deep, and the point of the case is that the compiler
+*refuses* it - "expression nested too deeply" - rather than dying. On Linux and
+macOS it does; on Windows cxx1's build of Compiler++ crashed first, because
+Windows reserves a 1 MB stack by default where ELF and Mach-O reserve 8, and
+cxx1's frames are large - `analyzeExprImpl` is about 12 KB, since every local
+and every by-value temporary gets its own slot. A recursive walk over a deep
+tree exhausted 1 MB before the depth cap fired.
+
+**So the linked program gets an 8 MB stack, which is Linux's own default.** One
+line on the Windows link - `/stack:8388608` in `Driver::link` - and the program
+behaves the same on every target rather than differently on the one with the
+small default. It is parity, not a workaround: the source refuses deep nesting
+identically everywhere, and only the OS's default stack had differed. Measured
+against cl, which survives the same input because its frames are smaller;
+`docs/` records that a real fix - frame-slot reuse in cxx1's code generator, so
+dead slots are recycled and frames shrink on every target - is a separate and
+much larger piece, worth doing on its own account rather than to close one
+pathological case.
+
+**Compiler++ now matches a cl build on all 200 comparisons.** It compiles,
+assembles, links and runs correctly under cxx1 on x86_64-linux, arm64-darwin
+and x86_64-windows - 200 of 200 on each, byte-identical to a clang, g++ or cl
+build of the same sources. The whole undertaking that this file has recorded
+since "A base's members were built twice" is finished.
+
 ## A static member has no `this`, and one line of Compiler++ was that
 
 **The call-with-arguments fault was a static member function returning a class
