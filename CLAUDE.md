@@ -4646,6 +4646,43 @@ whichever thread lost the race, so a rerun blames the same file.
 `docs/benchmark-2026-09-05.html` is the measured record, and like the audit it is
 frozen rather than edited as things change.
 
+## A static member has no `this`, and one line of Compiler++ was that
+
+**The call-with-arguments fault was a static member function returning a class
+by value.** `SemanticAnalyzer::parameterText` is `static std::string
+parameterText(Function *, size_t)`, and the definition side decided whether a
+function has a `this` from the *qualifier* alone - `A::f` is a member,
+therefore it has one - which is true of every member but the static ones. A-01
+put the hidden return pointer *after* `this` on the Microsoft ABI; a function
+believed to have a `this` it does not have then looks for that pointer in the
+second slot while every caller puts it in the first, and writes its result
+through whatever the first argument was. Here that was a `cc::Function *`, and
+the string's length landed on its `retType` - which is why the next
+`dynamic_cast` on that field read address 0x11.
+
+**Invisible on Itanium**, where the hidden pointer is first whether or not
+there is a `this`, and invisible to every existing case: the emit golden
+reports 0 of 570 changed by the fix, which says no case had a static member
+returning a class by value. `static-member-returns-class.cpp` does now, with a
+guard object the stray write would land on, and `run-cases.cmd` checks its
+output on the box that owns the ABI.
+
+**How it was found, in order, because the order is the lesson.** A vectored
+exception handler compiled by cl and linked beside cxx1's objects - it shares
+no `std::` with them - printed the fault: `__RTDynamicCast` with `rcx = 0x11`,
+so the *object* was bad and the RTTI records I had just ported were not.
+Then a global watch pointer at `&fn->retType`, printed after every statement
+in a copy of Compiler++, walked it down: fine after `checkCallArgs`'s
+argument analysis, fine after `convertible`, corrupt after `warnIfNarrowing` -
+then fine at every statement *inside* `warnIfNarrowing`, so the damage was in
+building its arguments - then `parameterText` was fine through its whole body
+and corrupt on return. Static was the one word left. Four probes of the
+obvious shapes had all passed first, which is the reminder that a probe is a
+hypothesis and the watch is the oracle.
+
+**127 of Compiler++'s 200 comparisons on Windows were this one line**: 30 to
+157 identical. The 43 that remain are the next round.
+
 ## Windows EH in GNU syntax, and Compiler++ links
 
 **It links.** Sixteen objects, no `/FORCE:MULTIPLE`, no duplicate and no

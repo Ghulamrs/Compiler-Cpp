@@ -194,10 +194,29 @@ void CoffSpelling::functionBegin(const std::string &name, bool exported,
 void CoffSpelling::weakDefinition(const std::string &name) {
     if (opened_ == name) { opened_.clear(); return; }
     o_ += "  .section .rdata,\"dr\",discard," + sym(name) + "\n";
+    comdatData_ = 1;
 }
 
-// COFF spells the read-only segment .rdata, and has no .type or .size.
-void CoffSpelling::rodataSection() { o_ += "  .section .rdata,\"dr\"\n"; }
+// COFF spells the read-only segment .rdata, and has no .type or .size. Each
+// plain section is remembered, so a data COMDAT can be closed by putting the
+// plain one back - see comdatData_.
+void CoffSpelling::rodataSection() {
+    plainSection_ = "  .section .rdata,\"dr\"\n"; comdatData_ = 0; o_ += plainSection_;
+}
+void CoffSpelling::dataSection() {
+    plainSection_ = "  .data\n"; comdatData_ = 0; o_ += plainSection_;
+}
+void CoffSpelling::bssSection() {
+    plainSection_ = "  .bss\n"; comdatData_ = 0; o_ += plainSection_;
+}
+void CoffSpelling::align(int n) {
+    // The COMDAT object's own align passes through; the next object's puts
+    // the plain section back first, so it does not land in a section that is
+    // somebody else's to discard.
+    if (comdatData_ == 1) comdatData_ = 2;
+    else if (comdatData_ == 2) { o_ += plainSection_; comdatData_ = 0; }
+    GnuSpelling::align(n);
+}
 void CoffSpelling::objectType(const std::string &name) { (void)name; }
 void CoffSpelling::objectSize(const std::string &name, int size) {
     (void)name; (void)size;

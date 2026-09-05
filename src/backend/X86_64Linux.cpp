@@ -1579,6 +1579,10 @@ void X86_64Linux::emit(const Function &fn) {
     // Before .cfi_endproc, because the last call-site range measures to it.
     if (!lineSource() && !callSites().empty() && !usesFunclets())
         a_->defLabel(".Lfunc.end." + fn.symbol());
+    // The tables are written below; tell the spelling whether there are any,
+    // so its unwind info does not name a FuncInfo that never appears.
+    if (target_.microsoftNames() && !emitsOwnRtti())
+        a_->noteHasEh(!msTries().empty());
     a_->functionEnd(fn.symbol());
     emitExceptionTables(fn);
     if (lineSource()) {

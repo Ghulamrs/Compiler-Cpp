@@ -878,10 +878,15 @@ void Parser::topLevel(Program &program) {
     staticSymbols_.clear();
 
     // A member function is the second argument: on the Microsoft ABI the hidden pointer
-    // serves every class a member returns, whatever its size. Static member functions
-    // are refused by name, so member and `this` cannot come apart here.
+    // serves every class a *non-static* member returns, whatever its size. A static
+    // member has no `this` and follows the free-function size rule, so member-ness for
+    // the return convention is `hasThis`, not `memberOf != nullptr` - the same
+    // distinction the call side draws. They must agree: an 8-byte return would go
+    // through the hidden pointer at the definition and a register at the call, and the
+    // callee would write its result where the caller passed the first argument.
+    const bool returnsAsMember = memberOf != nullptr && !inStaticMember_;
     int sretSlot = 0;
-    if (d.type->isStructOrUnion() && returnsIndirectly(d.type, memberOf != nullptr)) {
+    if (d.type->isStructOrUnion() && returnsIndirectly(d.type, returnsAsMember)) {
         frameSize_ += 8;
         frameSize_ = alignTo(frameSize_, 8);
         sretSlot = frameSize_;
@@ -1114,7 +1119,17 @@ void Parser::topLevel(Program &program) {
     // The definition side of the same question: a member's first parameter is
     // its `this`, and on the Microsoft ABI that is what the hidden return
     // pointer has to come *after*.
-    program.functions.back().setHasThis(!d.qualifier.empty());
+    //
+    // **A static member has no `this`, and asking only about the qualifier said
+    // it had one.** So a `static std::string f(...)` was compiled expecting the
+    // hidden pointer in the second slot while every caller put it in the first,
+    // and the callee wrote its result over whatever the first argument pointed
+    // at. Invisible on Itanium, where the pointer is first either way; on
+    // x86_64-windows it corrupted the caller's object - one line of Compiler++,
+    // `parameterText`, is such a function, and it overwrote a `Function`'s
+    // return type with a string's length. `inStaticMember_` is set a few lines
+    // above, where the `this` is bound or not.
+    program.functions.back().setHasThis(!d.qualifier.empty() && !inStaticMember_);
     program.functions.back().setHasLandingPads(functionHasPads_);
     // Everything replayed from inside a class body - and every member of a
     // template specialization, which is replayed the same way - is implicitly

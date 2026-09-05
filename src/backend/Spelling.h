@@ -132,6 +132,13 @@ public:
 
     virtual void dataSym(const std::string &sym, long long off) = 0;
 
+    // **Whether a FuncInfo will actually be written beside this function.** The
+    // prologue only knows the function *has* landing pads, and a body can have
+    // them and still produce no region - a constructor whose only cleanup is
+    // its own by-value parameter is one - so the unwind info referenced a table
+    // nobody emitted. The generator knows once the body is walked.
+    virtual void noteHasEh(bool yes) { (void)yes; }
+
     // How a label is written where a *table* names it, rather than a jump.
     // Identity everywhere but COFF, where a temporary cannot carry a
     // relocation - see CoffSpelling::sym.
@@ -206,10 +213,14 @@ public:
                        bool mergeable) override;
     void weakDefinition(const std::string &name) override;
     void rodataSection() override;
+    void dataSection() override;
+    void bssSection() override;
+    void align(int n) override;
     void objectType(const std::string &name) override;
     void objectSize(const std::string &name, int size) override;
     void prologue(int frameSize, const std::string &lsda) override;
     void functionEnd(const std::string &name) override;
+    void noteHasEh(bool yes) override { hasEh_ = yes; }
 
     std::string labelText(const std::string &l) const override { return sym(l); }
 
@@ -229,6 +240,16 @@ private:
     // Whether this definition went into a COMDAT, which decides where its
     // unwind data goes - see functionEnd.
     bool mergeable_ = false;
+    // **A data COMDAT is one object's section, and the next object must not
+    // inherit it.** weakDefinition opens `.section .rdata,"dr",discard,"X"`
+    // and nothing closed it, so the global emitted after X - a static local
+    // table, in Compiler++'s parser - was laid down inside X's COMDAT and
+    // discarded with it whenever the linker kept another unit's X. Every
+    // reference to it then resolved to image base. The plain section is
+    // remembered and put back at the next object's `align`, which is the first
+    // thing every global emits after its (optional) `.globl`.
+    const char *plainSection_ = "  .section .rdata,\"dr\"\n";
+    int comdatData_ = 0;   // 0 none, 1 opened and awaiting its own align, 2 open
     // The unwind codes, built in the prologue and written at the end.
     std::string unwindData_;
     int unwindCodes_ = 0;
