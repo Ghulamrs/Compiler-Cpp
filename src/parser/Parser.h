@@ -287,6 +287,11 @@ private:
     void instantiateViableTemplates(const std::string &name,
                                     const std::vector<const Type *> &argTypes,
                                     std::size_t pos);
+    // The same, for a member function template of `cls`.
+    void instantiateViableMemberTemplates(const Type *cls,
+                                          const std::string &name,
+                                          const std::vector<const Type *> &argTypes,
+                                          std::size_t pos);
     // Member function templates, keyed by "<ownerTag>::<member>". A separate
     // table from templates_, which is keyed by a bare name and strips
     // namespaces - a member template is owned by a concrete class, not named.
@@ -391,6 +396,8 @@ private:
                    ? instantiationKey_ : name;
     }
     ExprPtr templateCall(Program *program);
+    // A static member reached through a class template-id, after its `::`.
+    ExprPtr templateIdMember(const Type *cls, std::size_t pos);
     // `Box<int, 3>` where a type was expected. Answers the class, made if the
     // arguments have not been seen before.
     const Type *instantiateClass(const TemplateDecl &decl, std::size_t pos);
@@ -1504,6 +1511,8 @@ private:
                     std::vector<InitStep> &path, std::vector<ExprPtr> &out);
     ExprPtr zeroChain(const Expr &root, const Type *type);
     ExprPtr functionalCast(const Type *to, std::size_t pos);
+    // `T{}` in an expression: the value-initialisation `T()` already gives.
+    ExprPtr bracedValueInit(const Type *to, std::size_t pos);
     const Type *simpleTypeKeyword() const;
 
     struct InitCursor {

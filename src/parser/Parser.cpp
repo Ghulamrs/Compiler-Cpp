@@ -570,6 +570,15 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     const bool outerInStatic = inStaticMember_;
     const bool outerInParams = inParams_;
     const std::vector<std::string> outerStatics = staticSymbols_;
+    // **A default argument belongs to the declaration that wrote it.**
+    // `pendingDefaults_` is handed from the parameter list to whichever declare
+    // consumes it, so a body replayed here - which re-reads its own declaration
+    // - must not start holding the previous one's, nor leave its own behind for
+    // the next: a constructor with a default followed by a friend was read as a
+    // friend whose first parameter had one, and refused for the second having
+    // none. `pendingNoexcept_` is the same hand-off for the specification.
+    const std::vector<std::size_t> outerDefaults = pendingDefaults_;
+    const bool outerNoexcept = pendingNoexcept_;
     functionHasPads_ = false;
     functionHasTry_ = false;
     functionTypeIndex_ = 0;
@@ -577,6 +586,8 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     inStaticMember_ = false;
     inParams_ = false;
     staticSymbols_.clear();
+    pendingDefaults_.clear();
+    pendingNoexcept_ = false;
     for (std::size_t i = 0; i < mine.size(); i++) {
         at_ = mine[i].start;
         // A friend's body is written inside the class and belongs outside it,
@@ -584,7 +595,22 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
         inlineOwner_ = mine[i].freeFunction ? std::string() : mine[i].tag;
         inlineOwnerName_ = mine[i].freeFunction ? std::string()
                          : (mine[i].local.empty() ? mine[i].tag : mine[i].local);
+        // **A friend is not a member, but it is still looked up in the class.**
+        // [basic.lookup.unqual]/9: a friend defined in the class body sees the
+        // class's own names - the injected class name above all, which is what
+        // makes `const V &` a legal parameter there. So the class goes on the
+        // lookup stack for the replay while the *owner* stays empty: scope
+        // without ownership, which is exactly what a friend has.
+        // Cleared for *each* body, not once for the run: the hand-off is
+        // per-declaration, so a constructor's default must not reach the friend
+        // replayed after it.
+        pendingDefaults_.clear();
+        pendingNoexcept_ = false;
+        const bool scoped = mine[i].freeFunction && !mine[i].tag.empty();
+        const Type *scope = scoped ? findTypedef(mine[i].tag) : nullptr;
+        if (scope != nullptr) classStack_.push_back(scope);
         topLevel(*current_);
+        if (scope != nullptr) classStack_.pop_back();
         inlineOwner_.clear();
         inlineOwnerName_.clear();
     }
@@ -615,6 +641,8 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     inStaticMember_ = outerInStatic;
     inParams_ = outerInParams;
     staticSymbols_ = outerStatics;
+    pendingDefaults_ = outerDefaults;
+    pendingNoexcept_ = outerNoexcept;
     replayingInline_ = outerInline;
     at_ = resume;
 }

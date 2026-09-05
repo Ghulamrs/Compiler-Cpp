@@ -518,6 +518,20 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
         instantiateViableTemplates(name, argTypes, pos);
     }
 
+    // **A member operator may be a template too**, `H * x` where operator* is
+    // written `template <int VMAX> V<VMAX> operator*(const V<VMAX> &) const`.
+    // Its parameters are deduced from the right operand alone - the left is the
+    // object - and the specialization lands under the plain member name, where
+    // the ranking below finds it.
+    if (right != nullptr) {
+        const Type *lp = left.type()->unqualified();
+        if (lp->isStructOrUnion()) {
+            std::vector<const Type *> one;
+            one.push_back(right->type());
+            instantiateViableMemberTemplates(lp, name, one, pos);
+        }
+    }
+
     // A unary operator is the same question with one operand: a member takes it as
     // its implicit object and writes no parameter, a non-member writes one. One
     // rank each way, so the comparison is the same comparison.

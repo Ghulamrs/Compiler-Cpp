@@ -283,8 +283,24 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             // the parameter list's '(' - the return type's own '<...>' is nested.
             std::string mname;
             int depth = 0;
-            for (std::size_t i = at_; i < tokens_.size(); i++) {
+            for (std::size_t i = at_; i + 1 < tokens_.size(); i++) {
                 const Token &t = tokens_[i];
+                // **An operator's name is not one token**, and it is spelled
+                // before the parameter list rather than being an identifier: so
+                // it is recognised here rather than left to the last-ident rule,
+                // and `operator()` and `operator[]` carry their own pair, which
+                // is why the parameter list is not simply the next `(`.
+                if (depth == 0 && t.is("operator")) {
+                    if (tokens_[i + 1].is("(") && i + 2 < tokens_.size() &&
+                        tokens_[i + 2].is(")"))
+                        mname = "operator()";
+                    else if (tokens_[i + 1].is("[") && i + 2 < tokens_.size() &&
+                             tokens_[i + 2].is("]"))
+                        mname = "operator[]";
+                    else
+                        mname = "operator" + tokens_[i + 1].text;
+                    break;
+                }
                 if (depth == 0 && t.is("(")) break;
                 if (depth == 0 && t.is(";")) break;
                 if (t.is("<") || t.is("(") || t.is("[")) depth++;

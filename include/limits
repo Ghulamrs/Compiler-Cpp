@@ -7,9 +7,10 @@
 // gets a zero rather than a wrong number.
 //
 // The numbers themselves come from <limits.h> and <float.h>, so this file states
-// no bound of its own. `infinity()` is 1e400, which is how lib/math.h already
-// spells HUGE_VAL: a decimal literal too large for a double, which every host's
-// strtod turns into the infinity the target has.
+// no bound of its own. `infinity()` is the largest value squared, which
+// overflows to the infinity the target has - written that way rather than as a
+// literal too large to represent, which is what lib/math.h does for HUGE_VAL and
+// which every compiler warns about when it reads one.
 #ifndef _CXX1_LIMITS
 #define _CXX1_LIMITS
 
@@ -75,12 +76,17 @@ public:                                                                       \
     static T max()      { return HI; }                                        \
     static T lowest()   { return -HI; }                                       \
     static T epsilon()  { return EPS; }                                       \
-    static T infinity() { return (T)1e400; }                                  \
+    static T infinity() { T big = HI; return big * big; }                     \
 };
 
 _CXX1_FLT_LIMITS(float,       FLT_MIN, FLT_MAX, FLT_EPSILON)
 _CXX1_FLT_LIMITS(double,      DBL_MIN, DBL_MAX, DBL_EPSILON)
-_CXX1_FLT_LIMITS(long double, LDBL_MIN, LDBL_MAX, LDBL_EPSILON)
+// **`long double` is deliberately left unspecialized.** Its bounds on an x87
+// target need more precision than a double holds, and this compiler refuses a
+// floating literal it cannot carry exactly rather than approximating it - the
+// rule that keeps every build machine reading the same number. So there is no
+// honest way to state them here, and is_specialized stays false rather than a
+// wrong bound being written down.
 
 #undef _CXX1_FLT_LIMITS
 

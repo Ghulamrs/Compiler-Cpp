@@ -620,6 +620,12 @@ void Parser::topLevel(Program &program) {
                 if (!ok)
                     src_.fail(d.pos, "'" + key + "' cannot be given a name the "
                                      "linker can hold: " + why);
+                // **Under two keys, as a free specialization is.** The one
+                // with the arguments is what a repeat finds; the plain member
+                // name is what overload resolution ranks, which is how an
+                // operator written as a member template is reached at all.
+                functionIndex_[d.qualifier + "::" + d.name]
+                    .push_back(functions_.size());
                 functionIndex_[key].push_back(functions_.size());
                 functions_.push_back(Signature{
                     memberTemplateName_, sym, d.type, params, variadic, false,

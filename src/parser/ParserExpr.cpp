@@ -454,6 +454,37 @@ const Type *Parser::simpleTypeKeyword() const {
 }
 
 // `T(x)` and `T()` for a T that is not a class, the '(' still ahead.
+// **`T{}` - value-initialisation written as an expression**, [expr.type.conv]/2,
+// which is the same answer `T()` gives: the zero convert can carry to any scalar,
+// or a value-initialised temporary for a class. Braces with a value in them are
+// list-initialisation and are refused, as they are in a declaration.
+ExprPtr Parser::bracedValueInit(const Type *to, std::size_t pos) {
+    expect("{");
+    if (!consume("}"))
+        src_.fail(peek().pos, "'" + to->describe() + "{...}' with a value in the "
+                              "braces is list-initialisation, which is not "
+                              "supported yet - write the value in parentheses. "
+                              "The empty pair is read: it value-initialises");
+    if (to->isVoid()) src_.fail(pos, "'void{}' has no value");
+    if (to->unqualified()->isStructOrUnion())
+        src_.fail(pos, "'" + to->describe() + "{}' - value-initialising a class "
+                       "with braces in an expression is not supported yet; "
+                       "'" + to->describe() + "()' does the same thing and is "
+                       "read");
+    ExprPtr z;
+    if (to->isPointer()) {
+        z.reset(new Num(0LL));
+        z->setType(types_.get(Kind::NullPtr));
+    } else if (to->isFloating()) {
+        z.reset(new Num(0.0L));
+        z->setType(types_.doubleType());
+    } else {
+        z.reset(new Num(0LL));
+        z->setType(types_.intType());
+    }
+    return convert(std::move(z), types_.withoutConst(to));
+}
+
 ExprPtr Parser::functionalCast(const Type *to, std::size_t pos) {
     expect("(");
     if (consume(")")) {
@@ -808,17 +839,43 @@ ExprPtr Parser::primary(Program *program) {
                             "functional cast - [expr.type.conv] takes one "
                             "type name, so write '(" + word + " " +
                             peek().text + ")x', or a typedef of the type");
+        if (peek().is("{")) return bracedValueInit(to, tpos);
         if (!peek().is("("))
             src_.fail(tpos, "'" + word + "' is a type, and in an expression a "
-                            "type needs '(' after it - '" + word + "(x)' "
-                            "converts x, '" + word + "()' is its zero");
+                            "type needs '(' or '{' after it - '" + word + "(x)' "
+                            "converts x, '" + word + "()' and '" + word + "{}' "
+                            "are its zero");
         return functionalCast(to, tpos);
     }
 
     // unqualified `S(4)` is caught further down, where the name is already in
     // hand; a qualified one has to be recognised before either '::' branch
     // takes it, since to them it is a name followed by a call.
+    // **`std::numeric_limits<int>::max()`** - a namespace-qualified class
+    // template-id used as a qualifier. qualifiedTypeEnd stops at the `<`, which
+    // is what says the name is a class template; the arguments are read against
+    // it, the class made, and the `::` after them reaches a static member the
+    // same way an unqualified template-id does.
     if (const std::size_t typeEnd = qualifiedTypeEnd()) {
+        if (peekAt(typeEnd).is("<")) {
+            std::string q = peek().text;
+            for (std::size_t k = 1; k + 1 <= typeEnd - 1; k += 2)
+                q += "::" + peekAt(k + 1).text;
+            std::map<std::string, TemplateDecl>::const_iterator td =
+                findTemplate(q);
+            const std::size_t after = qualifiedTypeEndPastArgs();
+            if (td != templates_.end() && td->second.isClass && after != 0 &&
+                peekAt(after).is("::")) {
+                const std::size_t qpos = peek().pos;
+                at_ += typeEnd;                      // to the `<`
+                const Type *cls = instantiateClass(td->second, qpos);
+                if (cls != nullptr && cls->isStructOrUnion() &&
+                    peek().is("::")) {
+                    at_++;
+                    return templateIdMember(cls, qpos);
+                }
+            }
+        }
         if (peekAt(typeEnd).is("(")) {
             std::string q = peek().text;
             for (std::size_t k = 1; k + 1 <= typeEnd - 1; k += 2)
@@ -1083,9 +1140,15 @@ ExprPtr Parser::primary(Program *program) {
         // A name that holds something callable rather than naming a function: a
         // function pointer, or an object whose `(` is [over.call]. Both are kept out
         // of the free-function branches, which would report the name undeclared.
+        // **A reference is looked through**: `x(i)` where x is a `V &` calls V's
+        // operator() exactly as a `V` does - the reference is not a second type
+        // to ask about, and asking the reference itself said "not a class" and
+        // sent the name to the free-function branch to be reported undeclared.
+        const Type *callee = held != nullptr && held->isReference()
+                           ? held->referent() : held;
         bool callsThroughObject =
-            held != nullptr && (held->isFunctionPointer() ||
-                                held->unqualified()->isStructOrUnion());
+            callee != nullptr && (callee->isFunctionPointer() ||
+                                  callee->unqualified()->isStructOrUnion());
 
         // **An unqualified static member, inside a member function.** It needs no
         // object, which is what lets it be answered here rather than through `this`.
@@ -1181,6 +1244,15 @@ ExprPtr Parser::primary(Program *program) {
         // `P(1)` where P names a class: a temporary, not a call to a function nobody
         // declared. Asked before the call branch below, which would look the name up
         // in the function table and report it undeclared.
+        // `T{}` - the same value-initialisation, under a typedef or a class name.
+        if (peekAt(1).is("{") && peekAt(2).is("}") && !callsThroughObject &&
+            l == nullptr && g == nullptr) {
+            if (const Type *named = findTypedef(name)) {
+                at_++;
+                return bracedValueInit(named, pos);
+            }
+        }
+
         if (peekAt(1).is("(") && !callsThroughObject && l == nullptr &&
             g == nullptr) {
             const Type *named = findTypedef(name);
@@ -1627,11 +1699,21 @@ ExprPtr Parser::postfix() {
             std::string name = declaredName("a member name");
             // **A member function template**, `p->head<3>()` - told from `<` as
             // a comparison only because the member is a registered template.
-            if (peek().is("<") && isMemberTemplate(obj, name)) {
+            if ((peek().is("<") || peek().is("(")) && isMemberTemplate(obj, name)) {
                 n = memberTemplateCall(std::move(n), obj, name, pos);
                 continue;
             }
-            if (consume("(")) { n = memberCall(std::move(n), obj, name, pos); continue; }
+            // **A data member that is itself callable**: `p.H(i, j)` reaches H
+            // and then applies its operator(), where `p.f(i)` calls a member
+            // function f. Which it is is a question about the class - a member
+            // *function* of that name takes the `(`, and without one the
+            // parenthesis belongs to the member's own operator(), applied by the
+            // postfix loop to the access built below.
+            if (findMemberOwner(obj->unqualified(), name) != nullptr &&
+                consume("(")) {
+                n = memberCall(std::move(n), obj, name, pos);
+                continue;
+            }
             // **`p->count` where count is static** names the one shared
             // object, and the expression on the left is still evaluated -
             // [expr.ref] says so - which is what the comma is for.
@@ -1683,11 +1765,21 @@ ExprPtr Parser::postfix() {
             const Type *obj = n->type();
             std::string name = declaredName("a member name");
             // **A member function template**, `v.head<3>()`.
-            if (peek().is("<") && isMemberTemplate(obj, name)) {
+            if ((peek().is("<") || peek().is("(")) && isMemberTemplate(obj, name)) {
                 n = memberTemplateCall(std::move(n), obj, name, pos);
                 continue;
             }
-            if (consume("(")) { n = memberCall(std::move(n), obj, name, pos); continue; }
+            // **A data member that is itself callable**: `p.H(i, j)` reaches H
+            // and then applies its operator(), where `p.f(i)` calls a member
+            // function f. Which it is is a question about the class - a member
+            // *function* of that name takes the `(`, and without one the
+            // parenthesis belongs to the member's own operator(), applied by the
+            // postfix loop to the access built below.
+            if (findMemberOwner(obj->unqualified(), name) != nullptr &&
+                consume("(")) {
+                n = memberCall(std::move(n), obj, name, pos);
+                continue;
+            }
             // **`p->count` where count is static** names the one shared
             // object, and the expression on the left is still evaluated -
             // [expr.ref] says so - which is what the comma is for.

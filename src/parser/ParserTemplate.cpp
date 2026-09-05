@@ -1676,44 +1676,20 @@ ExprPtr Parser::templateCall(Program *program) {
             // has no `check` and the call is ill-formed, as it should be.
             if (cls != nullptr && cls->isStructOrUnion() && peek().is("::")) {
                 at_++;
-                const std::size_t mpos = peek().pos;
-                const std::string member = declaredName("a member name");
-                const std::string key = cls->tag() + "::" + member;
-                if (peek().is("(")) {
-                    at_++;
-                    std::vector<ExprPtr> callArgs;
-                    parseArguments(callArgs);
-                    if (overloadsOf(key) == nullptr)
-                        src_.fail(mpos, "'" + cls->describe() + "' has no static "
-                                        "member function '" + member + "' - only "
-                                        "a static member is reachable through a "
-                                        "template-id with no object");
-                    const Signature &sig = resolveOverload(key, callArgs, mpos);
-                    applyDefaults(sig, callArgs, mpos);
-                    if (needsThis(sig))
-                        src_.fail(mpos, "'" + key + "' is not a static member "
-                                        "function, so it has to be called on an "
-                                        "object");
-                    if (sig.access != Access::Public) {
-                        const Type *ownerType = findTypedef(sig.owner);
-                        if (ownerType == nullptr ||
-                            (!insideAccessOf(ownerType, sig.access) &&
-                             !isFriendOf(ownerType))) {
-                            const char *how = sig.access == Access::Private
-                                                  ? "private" : "protected";
-                            src_.fail(mpos, "'" + key + "' is " + how + " in '" +
-                                            sig.owner + "'");
-                        }
-                    }
-                    return completeCall(key, sig.symbol, nullptr, sig.returns,
-                                        sig.params, sig.variadic, mpos,
-                                        std::move(callArgs), false);
-                }
-                if (const Type::StaticMember *sm = cls->findStaticMember(member))
-                    return staticMemberRef(cls, *sm, cls->tag(), mpos);
-                src_.fail(mpos, "'" + cls->describe() + "' has no static member '" +
-                                member + "'");
+                return templateIdMember(cls, pos);
             }
+        }
+        // **The injected class name.** Inside V<T>'s own members `V` means this
+        // specialization, not the template - [temp.local] - so `V(x)` is a
+        // temporary of it and needs no argument list. The template check above
+        // claims the name first, so the type is asked for here, where the name
+        // is known to be followed by a `(` rather than a `<`.
+        if (peek().is("(")) {
+            if (const Type *self = findTypedef(name))
+                if (self->isStructOrUnion()) {
+                    at_++;
+                    return classTemporary(self, pos);
+                }
         }
         at_ = save;
         refuseTemplateId();
@@ -1818,20 +1794,63 @@ ExprPtr Parser::memberTemplateCall(ExprPtr object, const Type *obj,
     std::vector<long long> values;
     std::vector<TemplateArg> args;
     std::vector<std::vector<const Type *> > packs;
-    templateArguments(mt, &binding, &values, &args, &packs);
+    std::vector<ExprPtr> deducedArgs;
+    bool deduced = false;
+
+    if (peek().is("<")) {
+        templateArguments(mt, &binding, &values, &args, &packs);
+    } else {
+        // **No argument list, so they come from the call** - the same order the
+        // free-function path uses: the arguments are parsed first and the
+        // parameters worked out from their types, [temp.deduct.call].
+        expect("(");
+        parseArguments(deducedArgs);
+        deduced = true;
+        std::vector<const Type *> argTypes;
+        for (std::size_t i = 0; i < deducedArgs.size(); i++)
+            argTypes.push_back(deducedArgs[i]->type());
+        std::string why;
+        std::vector<Shadow> undo;
+        if (!mt.classParams.empty())
+            bindTemplateParameters(mt.classParams, mt.classBinding,
+                                   mt.classValues,
+                                   std::vector<std::vector<const Type *> >(),
+                                   &undo);
+        const bool ok = deduceTemplateArguments(mt, argTypes, &binding, &values,
+                                                &packs, &why);
+        unbindTemplateParameters(undo);
+        if (!ok)
+            src_.fail(pos, "'" + plain->describe() + "::" + name + "' is a "
+                           "member function template and " + why);
+        for (std::size_t i = 0; i < binding.size(); i++) {
+            TemplateArg a;
+            if (mt.params[i].type != nullptr) {
+                a.isType = false; a.type = mt.params[i].type; a.value = values[i];
+            } else if (mt.params[i].isPack) {
+                a.isType = true; a.isPack = true; a.pack = packs[i];
+            } else {
+                a.isType = true; a.type = binding[i];
+            }
+            args.push_back(a);
+        }
+    }
 
     const Signature *sig = instantiateMemberTemplate(mt, binding, values, args, pos);
     if (sig == nullptr)
         src_.fail(pos, "'" + plain->describe() + "::" + name + "' could not be "
                        "instantiated with these template arguments");
 
-    if (!peek().is("("))
-        src_.fail(peek().pos, "'" + name + "' is a member function template, "
-                              "and naming one without calling it is not "
-                              "supported yet");
-    at_++;
     std::vector<ExprPtr> callArgs;
-    parseArguments(callArgs);
+    if (deduced) {
+        callArgs = std::move(deducedArgs);
+    } else {
+        if (!peek().is("("))
+            src_.fail(peek().pos, "'" + name + "' is a member function "
+                                  "template, and naming one without calling it "
+                                  "is not supported yet");
+        at_++;
+        parseArguments(callArgs);
+    }
 
     // A copy, since applyDefaults and completeCall read it while the arguments
     // can grow functions_ out from under a reference.
@@ -1957,5 +1976,98 @@ void Parser::instantiateViableTemplates(const std::string &name,
         } catch (const SubstitutionFailure &) {
             // This template does not apply; the others still might.
         }
+    }
+}
+
+// **A static member reached through a class template-id**, `CNeeds<(N==3)>::
+// check()` or `std::numeric_limits<int>::max()`. The class is already made; what
+// follows the `::` is a qualified access to a member of it, keyed on the
+// instantiated tag the same way `C::check()` is. Only a *static* member is
+// reachable with no object.
+ExprPtr Parser::templateIdMember(const Type *cls, std::size_t pos) {
+    (void)pos;
+    const std::size_t mpos = peek().pos;
+    const std::string member = declaredName("a member name");
+    const std::string key = cls->tag() + "::" + member;
+    if (peek().is("(")) {
+        at_++;
+        std::vector<ExprPtr> callArgs;
+        parseArguments(callArgs);
+        if (overloadsOf(key) == nullptr)
+            src_.fail(mpos, "'" + cls->describe() + "' has no static "
+                            "member function '" + member + "' - only "
+                            "a static member is reachable through a "
+                            "template-id with no object");
+        const Signature &sig = resolveOverload(key, callArgs, mpos);
+        applyDefaults(sig, callArgs, mpos);
+        if (needsThis(sig))
+            src_.fail(mpos, "'" + key + "' is not a static member "
+                            "function, so it has to be called on an "
+                            "object");
+        if (sig.access != Access::Public) {
+            const Type *ownerType = findTypedef(sig.owner);
+            if (ownerType == nullptr ||
+                (!insideAccessOf(ownerType, sig.access) &&
+                 !isFriendOf(ownerType))) {
+                const char *how = sig.access == Access::Private
+                                      ? "private" : "protected";
+                src_.fail(mpos, "'" + key + "' is " + how + " in '" +
+                                sig.owner + "'");
+            }
+        }
+        return completeCall(key, sig.symbol, nullptr, sig.returns,
+                            sig.params, sig.variadic, mpos,
+                            std::move(callArgs), false);
+    }
+    if (const Type::StaticMember *sm = cls->findStaticMember(member))
+        return staticMemberRef(cls, *sm, cls->tag(), mpos);
+    src_.fail(mpos, "'" + cls->describe() + "' has no static member '" +
+                    member + "'");
+}
+
+// **A member function template as an overload-resolution candidate.** The same
+// door instantiateViableTemplates opens for a free template, for a member: the
+// arguments are deduced from the call's own, the class's parameters bound
+// alongside the member's, and the specialization registered under the plain
+// member name where the ranking finds it. A deduction failure drops it.
+void Parser::instantiateViableMemberTemplates(
+    const Type *cls, const std::string &name,
+    const std::vector<const Type *> &argTypes, std::size_t pos) {
+    if (cls == nullptr || cls->tag().empty()) return;
+    std::map<std::string, TemplateDecl>::const_iterator it =
+        memberTemplates_.find(cls->tag() + "::" + name);
+    if (it == memberTemplates_.end()) return;
+    const TemplateDecl mt = it->second;
+
+    std::vector<const Type *> binding;
+    std::vector<long long> values;
+    std::vector<std::vector<const Type *> > packs;
+    std::string why;
+    std::vector<Shadow> undo;
+    if (!mt.classParams.empty())
+        bindTemplateParameters(mt.classParams, mt.classBinding, mt.classValues,
+                               std::vector<std::vector<const Type *> >(), &undo);
+    const bool ok = deduceTemplateArguments(mt, argTypes, &binding, &values,
+                                            &packs, &why);
+    unbindTemplateParameters(undo);
+    if (!ok) return;
+
+    std::vector<TemplateArg> args;
+    for (std::size_t i = 0; i < binding.size(); i++) {
+        TemplateArg a;
+        if (mt.params[i].type != nullptr) {
+            a.isType = false; a.type = mt.params[i].type; a.value = values[i];
+        } else if (mt.params[i].isPack) {
+            a.isType = true; a.isPack = true; a.pack = packs[i];
+        } else {
+            a.isType = true; a.type = binding[i];
+        }
+        args.push_back(a);
+    }
+    try {
+        Trial trial(this);
+        instantiateMemberTemplate(mt, binding, values, args, pos);
+    } catch (const SubstitutionFailure &) {
+        // This one does not apply.
     }
 }
