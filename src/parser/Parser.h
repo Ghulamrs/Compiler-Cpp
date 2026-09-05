@@ -39,6 +39,13 @@ private:
         // The object still has an address; this is what it is worth when read.
         bool isConstantValue = false;
         long long constantValue = 0;
+        // **And the same for a floating one.** A `const double` defined in terms
+        // of others - `const double b = (1 - f) * a;` - is dynamic
+        // initialisation by the letter of [basic.start.init], and every compiler
+        // folds it instead. Keeping the value is what lets the fold happen here,
+        // and the object still has an address.
+        bool isConstantDouble = false;
+        long double constantDouble = 0;
         // **[class.copy]/31 lets a `return` elide the copy of an automatic object, and
         // excludes a parameter by name** - the caller destroys the argument, so eliding
         // there hands the caller two objects over one set of bytes.
@@ -62,6 +69,8 @@ private:
         bool hasInit = false;
         bool isConstantValue = false;   // as for Local, above
         long long constantValue = 0;
+        bool isConstantDouble = false;  // and the floating one, as for Local
+        long double constantDouble = 0;
     };
 
     struct Signature {
@@ -1513,6 +1522,9 @@ private:
     ExprPtr functionalCast(const Type *to, std::size_t pos);
     // `T{}` in an expression: the value-initialisation `T()` already gives.
     ExprPtr bracedValueInit(const Type *to, std::size_t pos);
+    // Every value carried as a double, exactly, or the fold says so.
+    bool foldDouble(const Expr &e, const Target &target, long double *out,
+                    bool *past53, bool *x87Rounded) const;
     const Type *simpleTypeKeyword() const;
 
     struct InitCursor {

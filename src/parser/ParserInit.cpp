@@ -308,8 +308,22 @@ static long double inType(const Type *t, const Target &target, long double v) {
 // **Every value below is carried as a `double`, exactly, or the fold says so.**
 // A host `long double` is 64 bits of significand on the Linux box and 53 on the
 // Mac, so the fold works in double and flags `past53` and `x87Rounded`.
-static bool foldDouble(const Expr &e, const Target &target, long double *out,
-                       bool *past53, bool *x87Rounded) {
+bool Parser::foldDouble(const Expr &e, const Target &target, long double *out,
+                        bool *past53, bool *x87Rounded) const {
+    // **A const floating object read back**, the twin of the integral read-back
+    // fold() already makes: `const double b = (1 - f) * a;` is dynamic
+    // initialisation by the letter of [basic.start.init], and folding it is what
+    // every compiler does instead. The object still has an address.
+    if (const Var *v = dynamic_cast<const Var *>(&e)) {
+        if (v->isLocal()) {
+            if (const Local *l = findLocal(v->name()))
+                if (l->isConstantDouble) { *out = l->constantDouble; return true; }
+            return false;
+        }
+        if (const GlobalSym *g = findGlobal(v->name()))
+            if (g->isConstantDouble) { *out = g->constantDouble; return true; }
+        return false;
+    }
     if (const Num *n = dynamic_cast<const Num *>(&e)) {
         if (n->type()->isFloating()) {
             *out = inType(n->type(), target, n->dvalue());

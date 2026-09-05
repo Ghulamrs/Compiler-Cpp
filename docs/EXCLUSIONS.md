@@ -194,8 +194,8 @@ SFINAE and variadic packs. What is left:
 - **befriending one member function of another class** —
   `src/parser/ParserType.cpp:469`
 - **a const member named in a mem-initialiser list** —
-  `src/parser/ParserTopLevel.cpp:768`
-- **a delegating constructor** — `src/parser/ParserTopLevel.cpp:814`
+  `src/parser/ParserTopLevel.cpp:783`
+- **a delegating constructor** — `src/parser/ParserTopLevel.cpp:829`
 
 ## Conversion functions and operators
 
@@ -240,14 +240,14 @@ SFINAE and variadic packs. What is left:
 - **an inline variable** — `inline` on a variable is a C++17 feature; C++11
   has `inline` only on functions, where it works. `src/parser/ParserTopLevel.cpp:231`
 - **a braced default argument** — `src/parser/ParserClass.cpp:2630`,
-  `src/parser/ParserTopLevel.cpp:542`
+  `src/parser/ParserTopLevel.cpp:557`
 - **a braced member initialiser** — `src/parser/ParserType.cpp:830`
 - **an initialiser for an array of a class** —
-  `src/parser/ParserStmt.cpp:111`, `src/parser/ParserTopLevel.cpp:786`
+  `src/parser/ParserStmt.cpp:111`, `src/parser/ParserTopLevel.cpp:801`
 - **an array of a class with a destructor** — the elements would have to be
   destroyed in reverse; an array of a class with only constructors works.
   `src/parser/ParserStmt.cpp:119`
-- **a bit-field initialised at file scope** — `src/parser/ParserInit.cpp:605`
+- **a bit-field initialised at file scope** — `src/parser/ParserInit.cpp:619`
 
 ## Objects that would run code before `main`
 
@@ -327,7 +327,7 @@ it is written:
   `src/parser/ParserStmt.cpp:518`
 - **a trailing return type**, `auto f(int) -> int` — C++11, and refused as the
   C++11 feature it is rather than as `auto` deduction.
-  `src/parser/ParserTopLevel.cpp:413`
+  `src/parser/ParserTopLevel.cpp:428`
 
 ## Namespaces and lookup
 
@@ -364,10 +364,10 @@ beside it goes in the same commit.
 | `0b101`, a binary literal | C++14 | `src/Lexer.cpp:250` |
 | `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1391` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:184` |
-| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2618`, `src/parser/ParserTopLevel.cpp:486` |
-| `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:418` |
+| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2618`, `src/parser/ParserTopLevel.cpp:501` |
+| `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:433` |
 | a variable template | C++14 | `src/parser/ParserTemplate.cpp:336` |
-| `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:642`, `src/parser/ParserStmt.cpp:180`, `src/parser/ParserTopLevel.cpp:283` |
+| `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:656`, `src/parser/ParserStmt.cpp:180`, `src/parser/ParserTopLevel.cpp:283` |
 | `static_assert` with no message | C++17 | `src/parser/ParserConst.cpp:31` |
 | `namespace N::M { }` | C++17 | `src/parser/ParserTopLevel.cpp:92` |
 | an attribute, `[[noreturn]]` | none parse | `src/parser/ParserType.cpp:1248` |

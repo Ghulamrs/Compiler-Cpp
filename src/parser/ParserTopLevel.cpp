@@ -299,12 +299,25 @@ void Parser::topLevel(Program &program) {
             // than in the value this wants.
             bool constantKnown = false;
             long long constantValue = 0;
+            // The floating twin of the same read-back: a `const double` keeps
+            // what it is worth so one defined from it can fold.
+            bool constantDoubleKnown = false;
+            long double constantDoubleValue = 0;
             if (consume("=") || atBracedInitialiser(d.name)) {
                 Init in = parseInitialiser();
                 if (d.type->isArray() && d.type->length() < 0)
                     d.type = types_.arrayOf(d.type->pointee(),
                                             inferredLength(in, d.type->pointee(), d.pos));
                 constantKnown = constantInitialiser(d.type, in, &constantValue);
+                if (quals.isConst && d.type->isFloating() && !in.isList &&
+                    in.value != nullptr) {
+                    bool p53 = false, x87 = false;
+                    long double dv = 0;
+                    if (foldDouble(*in.value, target_, &dv, &p53, &x87)) {
+                        constantDoubleValue = dv;
+                        constantDoubleKnown = true;
+                    }
+                }
                 if (!constantKnown && quals.isConstexpr)
                     src_.fail(d.pos, "'" + d.name + "' is 'constexpr', so its "
                                      "value has to be known while this is "
@@ -381,6 +394,8 @@ void Parser::topLevel(Program &program) {
             globals_.push_back(GlobalSym{ gname, symbol, d.type, objectIsConst,
                                           sc != StorageExtern, hasInit,
                                           constantKnown, constantValue });
+            globals_.back().isConstantDouble = constantDoubleKnown;
+            globals_.back().constantDouble = constantDoubleValue;
             if (sc != StorageExtern)
                 program.globals.push_back(Global{ gname, symbol, d.type,
                                                   std::move(pieces), hasInit,
