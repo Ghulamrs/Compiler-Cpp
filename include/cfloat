@@ -1,0 +1,5 @@
+// <cfloat> - the C floating limits, in C++ spelling.
+#ifndef _CXX1_CFLOAT
+#define _CXX1_CFLOAT
+#include <float.h>
+#endif

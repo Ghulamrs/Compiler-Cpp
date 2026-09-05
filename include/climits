@@ -1,0 +1,5 @@
+// <climits> - the C limits, in C++ spelling.
+#ifndef _CXX1_CLIMITS
+#define _CXX1_CLIMITS
+#include <limits.h>
+#endif
