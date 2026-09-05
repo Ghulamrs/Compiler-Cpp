@@ -260,7 +260,11 @@ void MasmSpelling::defLabel(const std::string &l) {
     pending_ = mangle(l);
 }
 
-void MasmSpelling::functionBegin(const std::string &name, bool exported) {
+// `mergeable` is what a COMDAT would be told, and ml64 has no directive that
+// reaches the COMDAT bit - see CoffSpelling, which exists for that reason.
+void MasmSpelling::functionBegin(const std::string &name, bool exported,
+                                 bool mergeable) {
+    (void)mergeable;
     defined_.insert(name);
     if (exported) exported_.insert(name);
     flushPending();

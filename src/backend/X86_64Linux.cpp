@@ -1411,7 +1411,7 @@ void X86_64Linux::emit(const Function &fn) {
     labelPrefix_ = ".L." + fn.symbol() + ".";
     returnLabel_ = ".L.return." + fn.symbol();
 
-    a_->functionBegin(fn.symbol(), !fn.isStatic());
+    a_->functionBegin(fn.symbol(), !fn.isStatic(), fn.isInline());
     if (fn.isInline()) a_->weakDefinition(fn.symbol());
     // A second name for the same code - see Function::alias. Emitted as a
     // label at the same address, which is what makes it the same function
@@ -1590,6 +1590,18 @@ void X86_64Linux::emit(const Function &fn) {
         std::exit(1);
     }
     finishChunk();
+}
+
+// **Refused by name, where a segfault used to be.** The Microsoft exception
+// model wants a funclet per handler and the FH3 tables beside it, and both are
+// written by the MASM spelling alone - this generator can reach that target
+// only through `-masm=gnu`, where none of it exists. Saying so is the tree's
+// own rule; walking into it was a null pad and a crash.
+std::string X86_64Linux::beginFunclet() {
+    std::fprintf(stderr, "cxx1: a 'try' or an object with a destructor needs a "
+                         "funclet on x86_64-windows, and the GNU spelling does "
+                         "not write one yet - use -masm=masm for this file\n");
+    std::exit(1);
 }
 
 void X86_64Linux::emitGlobal(const Global &g, Segment seg) {

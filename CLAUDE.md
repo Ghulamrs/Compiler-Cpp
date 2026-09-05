@@ -4646,6 +4646,73 @@ whichever thread lost the race, so a rerun blames the same file.
 `docs/benchmark-2026-09-05.html` is the measured record, and like the audit it is
 frozen rather than edited as things change.
 
+## COMDAT: ml64 makes COFF and cannot mark it, and the way round is one layer deeper
+
+**The object format was never the problem, which is worth measuring before
+reasoning.** `ml64` emits COFF and nothing else - version 14.44 offers no
+object-format switch at all, only `/Fo` to name the file, and `dumpbin` reports
+`8664 machine (x64)` on its output, which MS `link` consumes. What it cannot do
+is set `IMAGE_SCN_LNK_COMDAT` on a section. Side by side on the same machine:
+
+    ml64's object   SECTION HEADER #1..#3     no COMDAT on any
+    cl's object     SECTION HEADER #3           COMDAT; sym= "?get@S@@QEBAHXZ"
+                    SECTION HEADER #4           COMDAT; sym= "?use@@YAHXZ"
+
+`_TEXT$x SEGMENT ALIGN(16) 'CODE' COMDAT` is refused as an unknown attribute,
+not as an unsupported format.
+
+**Withdrawing the PUBLIC links and costs too much.** The other half of the same
+idea is expressible - let every object keep the copy it emitted - and it does
+link, once a second gap is closed: `??_G` has no `Signature`, so A-02's
+`markSymbolUsed` at vtable emission is a no-op for it and it was synthesised
+only beside the destructor's own definition, leaving other units naming a
+symbol they never defined. With both halves the sixteen objects of Compiler++
+link with no duplicates and no unresolved symbols. **And `names vs cl` falls
+from 138 agreed / 0 differed to 87 / 51**, every difference one-directional -
+cl exports what cxx1 no longer does, vtables included, so each unit would carry
+its own. That suite exists to catch exactly this: its comment records the
+`OPTION PROC:PRIVATE` bug as *"the names were right and it was the storage
+class beside them that was wrong"*. Writing 51 `.nocl` files would be
+suppressing the only oracle that noticed. The patch is not taken.
+
+**The way round is the assembler.** clang emits the same COFF and can set the
+bit, so `-masm=gnu` plus `clang -target x86_64-pc-windows-msvc -c` is the
+route. Measured before building anything: a Microsoft name is not a GNU
+identifier and has to be **quoted**, `.cfi_*` is accepted for COFF, and two
+objects each defining `?inl@@YAHXZ` in `.section .text,"xr",discard,"?inl@@YAHXZ"`
+link and fold and the program returns 9.
+
+**`CoffSpelling` is that, and it is additive by construction.** `GnuSpelling`
+is shared with the two targets carrying the Compiler++ result, so the change is
+a `sym()` hook that answers with the name unchanged and a `mergeable` flag on
+`functionBegin` that the existing spelling ignores. The claim that nothing
+moved is not an assertion: the emit golden was recorded before the work and
+reports **0 of 570 files changed** after it.
+
+### And the route is blocked one layer deeper than COMDAT
+
+**`-masm=gnu` for x86_64-windows crashed on any real program, and did so
+before this work** - checked by stashing and rebuilding. `usesFunclets()` was
+true in the MASM spelling alone, so this generator walked a *Microsoft* `try`
+down the Itanium branch and dereferenced a landing pad that is null by
+construction. The exception model is a property of the target and not of the
+spelling, and it says so now.
+
+**Fixing the branch is what shows the size of it.** The Microsoft model wants a
+funclet per handler with the FH3 tables and hand-written `.pdata`/`.xdata`
+beside them, and `beginFunclet`, `endCleanupFunclet` and `storeUnwindHelp` are
+implemented in `Masm.cpp` and nowhere else. Compiler++ has classes with
+destructors, so cxx1 emits cleanup funclets for it and there is no path round.
+Finishing this route means re-spelling the whole Windows exception backend in
+GNU syntax - the size of rung 6.5b, which took four steps.
+
+**So it refuses by name rather than crashing**, which is the standing rule
+applied to a mode nothing exercised: *"a 'try' or an object with a destructor
+needs a funclet on x86_64-windows, and the GNU spelling does not write one yet
+- use -masm=masm for this file"*. What is committed is the foundation and that
+diagnostic; Windows linking now waits on Windows EH in GNU syntax rather than
+on COMDAT.
+
 ## Compiler++ on Windows: three faults found, and the one wall left
 
 **The Mac writes the MASM and the box only assembles it.** There is no cxx1 on

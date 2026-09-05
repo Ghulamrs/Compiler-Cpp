@@ -99,7 +99,8 @@ public:
 
     virtual void defLabel(const std::string &l) = 0;
 
-    virtual void functionBegin(const std::string &name, bool exported) = 0;
+    virtual void functionBegin(const std::string &name, bool exported,
+                               bool mergeable = false) = 0;
 // `lsda` names this function's exception table, or is empty where it has no
 // landing pad. The personality routine must be named between .cfi_startproc
 // and the first instruction, and this is the only place that sees both.
@@ -133,9 +134,14 @@ public:
     virtual void dataBytes(const std::string &bytes) = 0;
 };
 
-class GnuSpelling final : public Spelling {
+// **The GNU spelling, and the one place a COFF variant needs to differ.**
+// `sym` is what every name goes through on its way out. It answers with the
+// name unchanged here, so ELF and Mach-O are exactly what they were; the COFF
+// spelling below quotes what GNU syntax will not take as an identifier.
+class GnuSpelling : public Spelling {
 public:
     explicit GnuSpelling(std::string &o) : o_(o) {}
+    virtual ~GnuSpelling() {}
 
     void ins(const std::string &m) override;
     void ins(const std::string &m, const Op &a) override;
@@ -144,7 +150,8 @@ public:
     void defLabel(const std::string &l) override;
     void fileEntry(int n, const std::string &name) override;
     void location(int file, int line, int column) override;
-    void functionBegin(const std::string &name, bool exported) override;
+    void functionBegin(const std::string &name, bool exported,
+                       bool mergeable = false) override;
     void prologue(int frameSize, const std::string &lsda) override;
     void functionEnd(const std::string &name) override;
     void globl(const std::string &name) override;
@@ -158,10 +165,50 @@ public:
     void align(int n) override;
     void zero(int n) override;
     void dataInt(int size, long long v) override;
-    void dataSym(const std::string &sym, long long off) override;
+    void dataSym(const std::string &s, long long off) override;
+
+protected:
+    // How a symbol is written. Identity for GNU-as on ELF and Mach-O.
+    virtual std::string sym(const std::string &name) const { return name; }
+    void op(const Op &x);
     void dataBytes(const std::string &bytes) override;
 
-private:
+protected:
     std::string &o_;
-    void op(const Op &x);
+};
+
+// **The same GNU syntax, assembled into a COFF object.** Two things separate it
+// from the ELF spelling above, and both were measured against what clang writes
+// for x86_64-pc-windows-msvc:
+//
+//   - **A Microsoft name is not a GNU identifier.** `??_7S@@6B@` begins with a
+//     character GNU-as will not take, so every such name is quoted. clang quotes
+//     the same ones.
+//   - **`.weak` is not what COFF folds by; a COMDAT section is.** ml64 has no
+//     directive that reaches the COMDAT bit at all - its objects are COFF and
+//     carry it on no section, where cl's carry it on one per inline function -
+//     which is the whole reason this spelling exists. `.section .text,"xr",
+//     discard,"<sym>"` sets it, and two objects defining one symbol that way
+//     link and fold.
+//
+// The section has to be opened *before* the label, so functionBegin is told
+// whether the definition is mergeable rather than being followed by a `.weak`.
+class CoffSpelling final : public GnuSpelling {
+public:
+    explicit CoffSpelling(std::string &o) : GnuSpelling(o) {}
+
+    void functionBegin(const std::string &name, bool exported,
+                       bool mergeable) override;
+    void weakDefinition(const std::string &name) override;
+    void rodataSection() override;
+    void objectType(const std::string &name) override;
+    void objectSize(const std::string &name, int size) override;
+
+protected:
+    std::string sym(const std::string &name) const override;
+
+private:
+    // What functionBegin has already given a COMDAT section, so the
+    // weakDefinition that follows it does not open a second one.
+    std::string opened_;
 };

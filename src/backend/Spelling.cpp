@@ -1,6 +1,7 @@
 #include "Spelling.h"
 
 #include <ostream>
+#include <string>
 
 void GnuSpelling::op(const Op &x) {
     switch (x.kind) {
@@ -17,9 +18,9 @@ void GnuSpelling::op(const Op &x) {
         o_ += x.text;
         o_ += ')';
         return;
-    case Op::Rip: o_ += x.text; o_ += "(%rip)"; return;
+    case Op::Rip: o_ += sym(std::string(x.text.p, x.text.n)); o_ += "(%rip)"; return;
     case Op::Ind: o_ += '*'; o_ += x.text; return;
-    case Op::Lbl: o_ += x.text; return;
+    case Op::Lbl: o_ += sym(std::string(x.text.p, x.text.n)); return;
     }
 }
 
@@ -39,9 +40,14 @@ void GnuSpelling::ins(const std::string &m, const Op &a, const Op &b) {
     o_ += '\n';
 }
 
-void GnuSpelling::defLabel(const std::string &l) { o_ += l; o_ += ":\n"; }
+void GnuSpelling::defLabel(const std::string &l) { o_ += sym(l); o_ += ":\n"; }
 
-void GnuSpelling::functionBegin(const std::string &name, bool exported) {
+// The flag is for COFF, where a mergeable definition needs its section opened
+// before the label. ELF and Mach-O say it afterwards, with `.weak`, exactly as
+// they did - so this ignores it and the emitted text is unchanged.
+void GnuSpelling::functionBegin(const std::string &name, bool exported,
+                                bool mergeable) {
+    (void)mergeable;
     if (exported) globl(name);
     textSection();
     defLabel(name);
@@ -69,13 +75,13 @@ void GnuSpelling::functionEnd(const std::string &) {
 }
 
 void GnuSpelling::globl(const std::string &name) {
-    o_ += "  .globl "; o_ += name; o_ += '\n';
+    o_ += "  .globl "; o_ += sym(name); o_ += '\n';
 }
 
 // Measured from clang: `.weak` beside the `.globl`, which is what makes the
 // linker fold the copies of an inline function rather than reject them.
 void GnuSpelling::weakDefinition(const std::string &name) {
-    o_ += "  .weak "; o_ += name; o_ += '\n';
+    o_ += "  .weak "; o_ += sym(name); o_ += '\n';
 }
 
 void GnuSpelling::fileEntry(int n, const std::string &name) {
@@ -102,11 +108,11 @@ void GnuSpelling::dataSection()   { o_ += "  .data\n"; }
 void GnuSpelling::bssSection()    { o_ += "  .bss\n"; }
 
 void GnuSpelling::objectType(const std::string &name) {
-    o_ += "  .type "; o_ += name; o_ += ", @object\n";
+    o_ += "  .type "; o_ += sym(name); o_ += ", @object\n";
 }
 
 void GnuSpelling::objectSize(const std::string &name, int size) {
-    o_ += "  .size "; o_ += name; o_ += ", "; appendNum(o_, size); o_ += '\n';
+    o_ += "  .size "; o_ += sym(name); o_ += ", "; appendNum(o_, size); o_ += '\n';
 }
 
 void GnuSpelling::align(int n) { o_ += "  .align "; appendNum(o_, n); o_ += '\n'; }
@@ -123,9 +129,9 @@ void GnuSpelling::dataInt(int size, long long v) {
     o_ += '\n';
 }
 
-void GnuSpelling::dataSym(const std::string &sym, long long off) {
+void GnuSpelling::dataSym(const std::string &s, long long off) {
     o_ += "  .quad ";
-    o_ += sym;
+    o_ += sym(s);
     if (off > 0) { o_ += '+'; appendNum(o_, off); }
     else if (off < 0) { o_ += '-'; appendNum(o_, -off); }
     o_ += '\n';
@@ -139,4 +145,47 @@ void GnuSpelling::dataBytes(const std::string &bytes) {
                           static_cast<unsigned char>(bytes[k])));
     }
     o_ += '\n';
+}
+
+
+// --- CoffSpelling -----------------------------------------------------------
+
+// Quoted where GNU-as would not take the name as an identifier. A Microsoft
+// mangled name always carries a '?' or an '@'; a C name carries neither, so
+// `printf` and `__CxxFrameHandler3` are written plainly, as clang writes them.
+std::string CoffSpelling::sym(const std::string &name) const {
+    if (name.find('?') == std::string::npos &&
+        name.find('@') == std::string::npos)
+        return name;
+    return "\"" + name + "\"";
+}
+
+void CoffSpelling::functionBegin(const std::string &name, bool exported,
+                                 bool mergeable) {
+    if (mergeable) {
+        // The section carries the COMDAT bit and names the symbol it folds on;
+        // `discard` is IMAGE_COMDAT_SELECT_ANY, which is what an inline
+        // definition wants - keep one, drop the rest.
+        o_ += "  .section .text,\"xr\",discard," + sym(name) + "\n";
+        opened_ = name;
+    } else {
+        textSection();
+    }
+    if (exported) globl(name);
+    defLabel(name);
+}
+
+// For a global the code generator says this *before* the label, which is where
+// the section directive has to go; for a function functionBegin has already
+// opened one, and a second would start an empty section.
+void CoffSpelling::weakDefinition(const std::string &name) {
+    if (opened_ == name) { opened_.clear(); return; }
+    o_ += "  .section .rdata,\"dr\",discard," + sym(name) + "\n";
+}
+
+// COFF spells the read-only segment .rdata, and has no .type or .size.
+void CoffSpelling::rodataSection() { o_ += "  .section .rdata,\"dr\"\n"; }
+void CoffSpelling::objectType(const std::string &name) { (void)name; }
+void CoffSpelling::objectSize(const std::string &name, int size) {
+    (void)name; (void)size;
 }

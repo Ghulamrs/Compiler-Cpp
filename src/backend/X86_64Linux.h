@@ -36,8 +36,14 @@ private:
 
 class X86_64Linux : public Walker {
 public:
+    // **The COFF spelling where the names are Microsoft's.** Same syntax and
+    // the same code generator; what differs is that a mangled name is quoted
+    // and a mergeable definition gets a COMDAT section, neither of which
+    // GNU-as on ELF wants. Reached by `-masm=gnu` for x86_64-windows.
     X86_64Linux(std::ostream &sink, const Target &target, const Abi &abi)
-        : target_(target), sink_(sink), abi_(abi) {}
+        : target_(target), sink_(sink), abi_(abi) {
+        if (target.microsoftNames()) a_ = &coff_;
+    }
 
     using Walker::visit;
     void run(const Program &program) override;
@@ -59,6 +65,17 @@ public:
 protected:
 
     virtual bool writesDwarf() const { return true; }
+
+    // **The exception model follows the target, not the spelling.** This
+    // generator serves x86_64-linux, arm64-darwin, and - under `-masm=gnu` -
+    // x86_64-windows, where the parser builds the Microsoft shape of a `try`:
+    // no landing pad, a funclet per handler. Answering false there sent a
+    // Microsoft `Try` down the Itanium branch and dereferenced a pad that is
+    // null by construction, which is a segfault rather than a diagnostic. The
+    // funclets themselves are written by the MASM spelling alone, so this mode
+    // now refuses by name where it used to crash.
+    bool usesFunclets() const override { return target_.microsoftNames(); }
+    std::string beginFunclet() override;
 
     std::string out_;
     std::size_t emittedSize() override { return out_.size(); }
@@ -101,6 +118,7 @@ private:
     std::vector<DwarfGlobal> dwarfGlobals_;
     std::ostream &sink_;
     GnuSpelling gnu_{out_};
+    CoffSpelling coff_{out_};
 
     const Abi &abi_;
     int depth_ = 0;

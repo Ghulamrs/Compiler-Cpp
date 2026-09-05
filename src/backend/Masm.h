@@ -18,7 +18,8 @@ public:
     void ins(const std::string &m, const Op &a, const Op &b) override;
 
     void defLabel(const std::string &l) override;
-    void functionBegin(const std::string &name, bool exported) override;
+    void functionBegin(const std::string &name, bool exported,
+                       bool mergeable = false) override;
     void prologue(int frameSize, const std::string &lsda) override;
     // The unwind codes the prologue described, written out by functionEnd -
     // which is where the labels they measure against exist.
