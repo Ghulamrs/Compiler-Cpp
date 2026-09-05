@@ -4646,6 +4646,62 @@ whichever thread lost the race, so a rerun blames the same file.
 `docs/benchmark-2026-09-05.html` is the measured record, and like the audit it is
 frozen rather than edited as things change.
 
+## Windows EH in GNU syntax, and Compiler++ links
+
+**It links.** Sixteen objects, no `/FORCE:MULTIPLE`, no duplicate and no
+unresolved symbol, and the MASM path untouched - the emit golden reports **0 of
+570 files changed** through every step below, which is what says ELF, Mach-O and
+ml64 all still emit exactly what they did.
+
+**`.seh_*` does most of it, and cannot do the part COMDAT exists for.** clang's
+COFF assembler builds `.pdata` and `.xdata` from the directives - measured, a
+function carrying them came out with a 0x14-byte .xdata and a 0xc-byte .pdata
+cxx1 wrote no byte of - which would have removed the whole hand-written unwind
+schedule, the part that took four attempts on the MASM side. It refuses inside a
+COMDAT section: `.seh_handlerdata` in `.text,"xr",discard,"sym"` is *expected
+relocatable expression*, and in a uniquely-named variant too. Every inline
+definition is such a section and an inline member with a destructor carries EH,
+so the shortcut fails for exactly the functions COMDAT is for. Written out into
+`associative` sections it assembles, so the codes are MASM's arithmetic in GNU
+spelling after all.
+
+**Two properties were living in the MASM subclass that belong to the target**,
+and both were found by walking into them:
+
+- `usesFunclets()` - the GNU path walked a *Microsoft* `try` down the Itanium
+  branch and dereferenced a landing pad that is null by construction.
+- `localsAboveFrameBase()` - the epilogue restored `rsp` to the bottom of the
+  frame and `pop rbp` read the wrong word, so any call crashed.
+
+**Four things the linker taught, each one an error message:**
+
+- **A table cannot name an `.L` temporary.** Rewritten to a real symbol exactly
+  as the MASM spelling rewrites it, dots to underscores. The same rule the
+  Itanium LSDA already needed `GCC_except_table0` for.
+- **`.pdata` has to be sorted and funclets break the order** - LNK1223, the same
+  trap and the same answer as MASM: the funclets' entries go in a pile written
+  after every function.
+- **A funclet of a mergeable parent is mergeable with it.** `associative` says
+  "discard this with that one", so the funclet and its unwind data go wherever
+  the parent's copy goes.
+- **A funclet is not `.globl`.** Nothing outside the object names one - the
+  tables that point at it sit beside it - and exporting one made every unit
+  holding a copy collide. MASM avoids it by leaving them out of its PUBLIC list.
+
+**The RTTI records had to come across too**, and they are the same five objects
+with `.long X@IMGREL` where MASM writes `DD imagerel X`. `emitsOwnRtti()` keeps
+the MASM path from emitting a second set: both reach the base `run()`, and the
+first attempt wrote them twice, which the golden caught at once - 20 of 570
+changed.
+
+**What this does not fix**, and it is the next wall: the linked program faults
+on a call *with arguments* - `f()` is fine, `f(1)` exits `0xE06D7363`, an
+unhandled C++ exception, which on this target means `operator new` was handed a
+bad size. 30 of Compiler++'s 200 comparisons pass, and they are the ones calling
+nothing with arguments. It predates all of this - the `/FORCE:MULTIPLE` build
+failed identically, and so does the MASM build - so it is a Windows code
+generation bug rather than anything about linking.
+
 ## COMDAT: ml64 makes COFF and cannot mark it, and the way round is one layer deeper
 
 **The object format was never the problem, which is worth measuring before

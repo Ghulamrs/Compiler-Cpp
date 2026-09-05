@@ -114,6 +114,7 @@ private:
     std::string funcletSymbol_;
     const char *funcletKind_ = "$catch$";
     bool writesDwarf() const override { return false; }
+    bool emitsOwnRtti() const override { return true; }
     // The four objects the Microsoft ABI wants per thrown type. Emitted here
     // because no other target has anything like them.
     void emitThrowInfo(const Program &program);

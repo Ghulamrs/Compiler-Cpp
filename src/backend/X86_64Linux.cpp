@@ -1,5 +1,6 @@
 #include "X86_64Linux.h"
 
+#include "../Mangle.h"
 #include "../Source.h"
 
 #include <cmath>
@@ -1445,6 +1446,8 @@ void X86_64Linux::emit(const Function &fn) {
     clearMsTries();
 
     frameSize_ = fn.frameSize();
+    fnSymbol_ = fn.symbol();
+    fnMergeable_ = fn.isInline();
     markLine(fn.pos());
     a_->prologue(fn.frameSize(),
                  fn.hasLandingPads() ? ".Lexception." + fn.symbol()
@@ -1592,16 +1595,242 @@ void X86_64Linux::emit(const Function &fn) {
     finishChunk();
 }
 
-// **Refused by name, where a segfault used to be.** The Microsoft exception
-// model wants a funclet per handler and the FH3 tables beside it, and both are
-// written by the MASM spelling alone - this generator can reach that target
-// only through `-masm=gnu`, where none of it exists. Saying so is the tree's
-// own rule; walking into it was a null pad and a crash.
+// **A funclet is a slice of the ordinary output, lifted.** Walking the handler
+// appends its code like any other, so remembering where that began and cutting
+// back to it gives the body exactly - and the code generator knows none of it.
+// The MASM path does this too; what differs below is only the spelling.
 std::string X86_64Linux::beginFunclet() {
-    std::fprintf(stderr, "cxx1: a 'try' or an object with a destructor needs a "
-                         "funclet on x86_64-windows, and the GNU spelling does "
-                         "not write one yet - use -masm=masm for this file\n");
-    std::exit(1);
+    funcletMark_ = out_.size();
+    funcletSymbol_ = "$" + std::string(funcletKind_).substr(1) +
+                     std::to_string(funcletIndex_++) + "$" + fnSymbol_;
+    return funcletSymbol_;
+}
+
+void X86_64Linux::endCleanupFunclet() {
+    closeFunclet(std::string());
+    funcletKind_ = "$catch$";
+}
+
+void X86_64Linux::endFunclet(const std::string &resume) {
+    closeFunclet("  lea " + resume + "(%rip), %rax\n");
+}
+
+// Write -2 into the runtime's scratch word: the personality routine reads it
+// through the FuncInfo's dispUnwindHelp to know how far this frame had got.
+void X86_64Linux::storeUnwindHelp(int slot) {
+    a_->ins("movq", immText("-2"), mem(-slot, "%rbp"));
+}
+
+// **The funclet's own frame, and the assembler writes its unwind data.** `rdx`
+// is the establisher frame the runtime passes, which on this target is exactly
+// the parent's rbp - the two became one thing when the frame pointer moved to
+// the bottom of the allocation - so the handler reaches the parent's locals
+// with no adjustment. A funclet returns where to carry on, in rax; a cleanup
+// has nothing to return to.
+//
+// `.text$x` is where a funclet lives, and `.seh_proc` beside it is what makes
+// the assembler emit its .pdata and .xdata. The MASM path writes both by hand
+// and has to pile the .pdata in a trailer, because a funclet's entry must sort
+// after every ordinary function's; here the assembler places them.
+void X86_64Linux::closeFunclet(const std::string &tail) {
+    std::string body = out_.substr(funcletMark_);
+    out_.resize(funcletMark_);
+
+    const std::string q = "\"" + funcletSymbol_ + "\"";
+    const std::string b = "\"$LNbeg$" + funcletSymbol_ + "\"";
+    const std::string e = "\"$LNend$" + funcletSymbol_ + "\"";
+    const std::string pu = "\"$LNpush$" + funcletSymbol_ + "\"";
+    const std::string pr = "\"$LNprolog$" + funcletSymbol_ + "\"";
+    const std::string u = "\"$unwind$" + funcletSymbol_ + "\"";
+
+    // **A funclet of a mergeable parent is mergeable with it.** The parent goes
+    // in a COMDAT because every unit that uses it emits one; its funclet is
+    // emitted just as often, and left in a plain section the copies collide.
+    // `associative` is what says "discard this with that one", so the funclet
+    // and its unwind data go wherever the parent's copy goes.
+    const std::string assoc =
+        fnMergeable_ ? ",associative," + a_->labelText(fnSymbol_) : std::string();
+
+    std::string f;
+    // **Not `.globl`.** Nothing outside this object names a funclet - the FH3
+    // tables that point at it are emitted beside it - and exporting one makes
+    // every unit holding a copy collide, which is what the MASM path avoids by
+    // leaving it out of its PUBLIC list.
+    f += "\n  .section .text$x,\"xr\"" + assoc + "\n";
+    f += q + ":\n";
+    f += b + ":\n";
+    f += "  movq %rdx, 16(%rsp)\n";
+    f += "  push %rbp\n";
+    f += pu + ":\n";
+    f += "  sub $32, %rsp\n";
+    f += pr + ":\n";
+    // rdx is the establisher frame, which on this target is exactly the
+    // parent's rbp - the two became one thing when the frame pointer moved to
+    // the bottom of the allocation - so the handler reaches the parent's
+    // locals with no adjustment.
+    f += "  mov %rdx, %rbp\n";
+    f += body;
+    f += tail;
+    f += "  add $32, %rsp\n";
+    f += "  pop %rbp\n";
+    f += "  ret\n";
+    f += e + ":\n";
+
+    // **Written out rather than left to `.seh_*`**, for the reason
+    // CoffSpelling::prologue records: the directives cannot carry handler data,
+    // and a funclet's names the parent's FuncInfo. Two codes, no frame register.
+    f += "  .section .xdata,\"dr\"" + assoc + "\n";
+    f += "  .p2align 3\n";
+    f += u + ":\n";
+    f += "  .byte 0x19\n";
+    f += "  .byte " + pr + "-" + b + "\n";
+    f += "  .byte 2\n";
+    f += "  .byte 0\n";
+    // UWOP_ALLOC_SMALL for 32 bytes: 2 with (32/8 - 1) in the high nibble.
+    f += "  .byte " + pr + "-" + b + "\n";
+    f += "  .byte 0x32\n";
+    f += "  .byte " + pu + "-" + b + "\n";
+    f += "  .byte 0x50\n";
+    f += "  .long __CxxFrameHandler3@IMGREL\n";
+    // The funclet shares the parent's FuncInfo: one description of the try.
+    f += "  .long \"$cppxdata$" + fnSymbol_ + "\"@IMGREL\n";
+    f += "  .text\n";
+
+    funcletPdata_ += "  .section .pdata,\"dr\"" + assoc + "\n";
+    funcletPdata_ += "  .p2align 2\n";
+    funcletPdata_ += "  .long " + b + "@IMGREL\n";
+    funcletPdata_ += "  .long " + e + "@IMGREL\n";
+    funcletPdata_ += "  .long " + u + "@IMGREL\n";
+    funclets_ += f;
+}
+
+// **The FH3 tables for a frame that only cleans up.** Nothing is caught here -
+// the runtime runs some destructors and carries on - so there are no try blocks
+// and no handler map, and each region is a *state* whose action is a funclet
+// and whose toState is the region before it. Same table and same values the
+// MASM path writes; `.long X@IMGREL` is what `DD imagerel X` is called here.
+void X86_64Linux::emitCoffCleanupTables(const Function &fn) {
+    (void)fn;
+    const std::string m = fnSymbol_;
+    const std::size_t states = msTries().size();
+
+    std::string o;
+    o += funclets_;
+    funclets_.clear();
+    funcletIndex_ = 0;
+
+    o += "\n  .section .xdata,\"dr\"\n";
+    o += "  .p2align 2\n";
+    o += "\"$cppxdata$" + m + "\":\n";
+    o += "  .long 0x19930522\n";
+    o += "  .long " + std::to_string(states) + "\n";
+    o += "  .long \"$stateUnwindMap$" + m + "\"@IMGREL\n";
+    o += "  .long 0\n";                     // no try blocks
+    o += "  .long 0\n";                     // and so no try map
+    o += "  .long " + std::to_string(states + 1) + "\n";
+    o += "  .long \"$ip2state$" + m + "\"@IMGREL\n";
+    o += "  .long " +
+         std::to_string(establisherOffset(msTries()[0].unwindHelpSlot)) + "\n";
+    o += "  .long 0\n";
+    o += "  .long 1\n";
+
+    o += "\"$stateUnwindMap$" + m + "\":\n";
+    for (std::size_t k = 0; k < states; k++) {
+        // toState: the region before this one, and -1 for the first, which is
+        // what says "nothing further in this frame".
+        o += "  .long " + (k == 0 ? std::string("-1") : std::to_string(k - 1)) + "\n";
+        o += "  .long " + a_->labelText(msTries()[k].cleanupFunclet) + "@IMGREL\n";
+    }
+
+    o += "\"$ip2state$" + m + "\":\n";
+    o += "  .long " + a_->labelText(m) + "@IMGREL\n";
+    o += "  .long -1\n";
+    for (std::size_t k = 0; k < states; k++) {
+        o += "  .long " + a_->labelText(msTries()[k].begin) + "@IMGREL\n";
+        o += "  .long " + std::to_string(k) + "\n";
+    }
+    o += "  .text\n";
+    out_ += o;
+}
+
+// **The five objects the Microsoft ABI wants per class with a vftable**, in GNU
+// spelling. Same records and the same constants the MASM path writes; the only
+// differences are the directive names and that a `DD imagerel X` is a
+// `.long X@IMGREL`. They live in `.data$r` on both.
+void X86_64Linux::emitCoffClassRtti(const Program &program) {
+    if (program.rtti.empty()) return;
+    std::string &o = out_;
+
+    // The chain of every class named, closed and deduplicated: a class's array
+    // lists its bases' descriptors, so a base needs the full set of records
+    // even when nothing in this file names it.
+    std::vector<const Type *> all;
+    for (std::size_t i = 0; i < program.rtti.size(); i++)
+        for (const Type *k = program.rtti[i]; k != nullptr; k = k->base()) {
+            bool had = false;
+            for (std::size_t j = 0; j < all.size(); j++) if (all[j] == k) had = true;
+            if (!had) all.push_back(k);
+        }
+
+    for (std::size_t i = 0; i < all.size(); i++) {
+        MicrosoftRtti n;
+        std::string why;
+        if (!microsoftClassRttiNames(all[i], &n, &why)) continue;
+
+        int contained = 0;
+        for (const Type *k = all[i]->base(); k != nullptr; k = k->base())
+            contained++;
+
+        const std::string d = a_->labelText(n.descriptor);
+        const std::string bd = a_->labelText(n.baseDescriptor);
+        const std::string ar = a_->labelText(n.array);
+        const std::string hi = a_->labelText(n.hierarchy);
+        const std::string lo = a_->labelText(n.locator);
+
+        o += "  .section .data$r,\"dr\"\n";
+        o += "  .p2align 3\n";
+        o += d + ":\n";
+        o += "  .quad \"??_7type_info@@6B@\"\n";
+        o += "  .quad 0\n";
+        o += "  .asciz \"" + n.decorated + "\"\n";
+
+        // Where this class sits inside itself: at the top, never virtual.
+        o += "  .p2align 2\n";
+        o += bd + ":\n";
+        o += "  .long " + d + "@IMGREL\n";
+        o += "  .long " + std::to_string(contained) + "\n";
+        o += "  .long 0\n";              // mdisp
+        o += "  .long -1\n";             // pdisp - there is no vbtable
+        o += "  .long 0\n";              // vdisp
+        o += "  .long 0x40\n";           // attributes
+        o += "  .long " + hi + "@IMGREL\n";
+
+        o += ar + ":\n";
+        o += "  .long " + bd + "@IMGREL\n";
+        for (const Type *k = all[i]->base(); k != nullptr; k = k->base()) {
+            MicrosoftRtti b;
+            if (!microsoftClassRttiNames(k, &b, &why)) break;
+            o += "  .long " + a_->labelText(b.baseDescriptor) + "@IMGREL\n";
+        }
+        o += "  .long 0\n";
+
+        o += hi + ":\n";
+        o += "  .long 0\n";
+        o += "  .long 0\n";              // attributes - no MI, no virtual bases
+        o += "  .long " + std::to_string(contained + 1) + "\n";
+        o += "  .long " + ar + "@IMGREL\n";
+
+        // The locator names itself, which is how the runtime recovers the image
+        // base every other field is relative to.
+        o += lo + ":\n";
+        o += "  .long 1\n";
+        o += "  .long 0\n";              // the vfptr's offset in the object
+        o += "  .long 0\n";              // cdOffset
+        o += "  .long " + d + "@IMGREL\n";
+        o += "  .long " + hi + "@IMGREL\n";
+        o += "  .long " + lo + "@IMGREL\n";
+        o += "  .text\n";
+    }
 }
 
 void X86_64Linux::emitGlobal(const Global &g, Segment seg) {
@@ -1680,6 +1909,10 @@ void X86_64Linux::emitData(const Program &program) {
 }
 
 void X86_64Linux::run(const Program &program) {
+    // The Microsoft RTTI records, where this generator serves that target.
+    // The MASM path emits its own in the same place and for the same reason:
+    // no other target has anything like them.
+    if (target_.microsoftNames() && !emitsOwnRtti()) emitCoffClassRtti(program);
 
     std::vector<std::string> defined;
     for (const Function &fn : program.functions) defined.push_back(fn.symbol());
@@ -1713,5 +1946,7 @@ void X86_64Linux::run(const Program &program) {
 
     a_->preamble(sink_);
     for (const std::string &chunk : chunks_) sink_ << chunk;
+    // After every function, so the .pdata the linker sees is in address order.
+    sink_ << funcletPdata_;
     a_->postamble(sink_);
 }

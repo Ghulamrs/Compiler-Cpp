@@ -131,6 +131,11 @@ public:
     virtual void dataInt(int size, long long v) = 0;
 
     virtual void dataSym(const std::string &sym, long long off) = 0;
+
+    // How a label is written where a *table* names it, rather than a jump.
+    // Identity everywhere but COFF, where a temporary cannot carry a
+    // relocation - see CoffSpelling::sym.
+    virtual std::string labelText(const std::string &l) const { return l; }
     virtual void dataBytes(const std::string &bytes) = 0;
 };
 
@@ -170,7 +175,7 @@ public:
 protected:
     // How a symbol is written. Identity for GNU-as on ELF and Mach-O.
     virtual std::string sym(const std::string &name) const { return name; }
-    void op(const Op &x);
+    virtual void op(const Op &x);
     void dataBytes(const std::string &bytes) override;
 
 protected:
@@ -203,12 +208,28 @@ public:
     void rodataSection() override;
     void objectType(const std::string &name) override;
     void objectSize(const std::string &name, int size) override;
+    void prologue(int frameSize, const std::string &lsda) override;
+    void functionEnd(const std::string &name) override;
+
+    std::string labelText(const std::string &l) const override { return sym(l); }
 
 protected:
     std::string sym(const std::string &name) const override;
+    void op(const Op &x) override;
 
 private:
     // What functionBegin has already given a COMDAT section, so the
     // weakDefinition that follows it does not open a second one.
     std::string opened_;
+    // The function being written, whether it needs a FuncInfo beside it, and
+    // how far the frame pointer sits below the Itanium one - see op().
+    std::string fnName_;
+    bool hasEh_ = false;
+    int frameSize_ = 0;
+    // Whether this definition went into a COMDAT, which decides where its
+    // unwind data goes - see functionEnd.
+    bool mergeable_ = false;
+    // The unwind codes, built in the prologue and written at the end.
+    std::string unwindData_;
+    int unwindCodes_ = 0;
 };
