@@ -4198,6 +4198,28 @@ The differential is the oracle; the probes were only ever hypotheses.
     128 of Compiler++'s own 129 test cases now behave identically under both
     builds. The remaining one aborts, and is its own finding.
 
+## `inline`, a linkage hint on machinery that already existed
+
+**`inline` on a function makes its definition mergeable across translation
+units** - [dcl.inline]/6 - which is exactly the weak/COMDAT emission a template
+specialization and an inline-member body already get. So the whole feature is
+three lines: consume the keyword in the specifier loop as a `Qualifiers` flag,
+and OR it into the `setInline` at emission, which the two Itanium targets spell
+`.weak` / `.weak_def_can_be_hidden` and Windows spells COMDAT. `static inline`
+stays non-weak, because the `!internal` guard already there says an
+internal-linkage function is per-translation-unit whatever else is written.
+
+**The name is unchanged** - `inline` is about linkage, not the type - so
+`names.sh` checks it against clang, which spells the same symbol `linkonce_odr`,
+and a two-object link folds the copies rather than rejecting them. The keyword
+moved from `pending[]` to `implementedElsewhere[]`, so `inline` in an expression
+now says it is implemented and does not begin one rather than that it is
+unsupported.
+
+**Refused by name: an inline *variable*.** That is a C++17 feature; C++11 has
+`inline` only on functions. The refusal is where a non-function declarator is
+seen with the flag set, and it names the standard version.
+
 ## Weak definitions, and the link that follows from them
 
 **781 duplicate symbols became none**, and Compiler++'s sixteen objects became

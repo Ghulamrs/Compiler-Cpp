@@ -1006,6 +1006,10 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
             continue;
         }
         if (consume("volatile")) { quals->isVolatile = true; continue; }
+        // **`inline` is a hint about linkage, not about the type.** It makes a
+        // function's definition mergeable across translation units; nothing else
+        // downstream needs it. Refused on a variable, which is a C++17 feature.
+        if (consume("inline")) { quals->isInline = true; continue; }
         if (consume("register")) { *storage = StorageRegister; continue; }
         if (consume("auto"))     { *storage = StorageAuto; continue; }
         break;

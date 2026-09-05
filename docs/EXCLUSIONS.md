@@ -91,10 +91,8 @@ and the containers are written the way anyone writes them. What that rule does
 *not* do is chain: at most one user-defined conversion per sequence, so nothing
 makes a `Far` out of an `int` because a `Near` sits between them.
 
-Two limits the headers themselves carry, both compiler limits rather than
-choices. **There is no `inline`**, and no weak or linkonce linkage to give it,
-so a header's non-member functions are `static`: every translation unit that
-includes one gets its own copy. And **`<cmath>` overloads nothing** - `lib/`
+One limit the headers themselves carry, a compiler limit rather than a choice.
+**`<cmath>` overloads nothing**: `lib/`
 declares the `double` form alone, so `std::sqrt(2.0f)` converts to double and
 back rather than calling `sqrtf`. The answer is right; the call is not the one a
 conforming library makes.
@@ -198,15 +196,15 @@ SFINAE and variadic packs. What is left:
 - **a friend function defined inside the class body** —
   `src/parser/ParserType.cpp:469`
 - **a const member named in a mem-initialiser list** —
-  `src/parser/ParserTopLevel.cpp:750`
-- **a delegating constructor** — `src/parser/ParserTopLevel.cpp:796`
+  `src/parser/ParserTopLevel.cpp:762`
+- **a delegating constructor** — `src/parser/ParserTopLevel.cpp:808`
 
 ## Conversion functions and operators
 
 - **`operator new` / `operator delete`** as user functions —
-  `src/parser/ParserType.cpp:1304`
-- **`operator->*`** — `src/parser/ParserType.cpp:1309`
-- **a user-defined literal** — `src/parser/ParserType.cpp:1311`
+  `src/parser/ParserType.cpp:1308`
+- **`operator->*`** — `src/parser/ParserType.cpp:1313`
+- **a user-defined literal** — `src/parser/ParserType.cpp:1315`
 - **`operator&&`, `operator||`, `operator,` and `operator->*`** — the four that
   still fall into the generic refusal below, **named** rather than left to it.
   The ten compound assignments used to be here too and are reachable now; a
@@ -226,7 +224,7 @@ SFINAE and variadic packs. What is left:
   Every other overloadable operator resolves from an expression, asked of a
   one-line program each: `+ - * / % & | ^ << >> == != < <= > >=` binary,
   `+ - * & ! ~ ++ --` unary, and `() [] = ->`.
-  `src/parser/ParserType.cpp:1425`
+  `src/parser/ParserType.cpp:1429`
 
 ## Initialisation, and braces
 
@@ -235,11 +233,13 @@ SFINAE and variadic packs. What is left:
   which is value-initialisation; and a braced list handed to a class that
   declares a `std::initializer_list` constructor, which is built through it.
   `src/parser/ParserStmt.cpp:188`, `src/parser/ParserInit.cpp:38`
+- **an inline variable** — `inline` on a variable is a C++17 feature; C++11
+  has `inline` only on functions, where it works. `src/parser/ParserTopLevel.cpp:231`
 - **a braced default argument** — `src/parser/ParserClass.cpp:2630`,
-  `src/parser/ParserTopLevel.cpp:530`
+  `src/parser/ParserTopLevel.cpp:542`
 - **a braced member initialiser** — `src/parser/ParserType.cpp:805`
 - **an initialiser for an array of a class** —
-  `src/parser/ParserStmt.cpp:111`, `src/parser/ParserTopLevel.cpp:768`
+  `src/parser/ParserStmt.cpp:111`, `src/parser/ParserTopLevel.cpp:780`
 - **an array of a class with a destructor** — the elements would have to be
   destroyed in reverse; an array of a class with only constructors works.
   `src/parser/ParserStmt.cpp:119`
@@ -254,11 +254,11 @@ it is written:
 - **a static local array whose elements have a constructor** —
   `src/parser/ParserStmt.cpp:107`
 - **a file-scope object with a constructor** —
-  `src/parser/ParserTopLevel.cpp:277`
+  `src/parser/ParserTopLevel.cpp:289`
 - **a static data member of a class with a constructor** —
   `src/parser/ParserClass.cpp:1981`
 - **a static reference** — `src/parser/ParserStmt.cpp:349`
-- **a reference at file scope** — `src/parser/ParserTopLevel.cpp:260`
+- **a reference at file scope** — `src/parser/ParserTopLevel.cpp:272`
 
 ## Expressions
 
@@ -276,7 +276,7 @@ it is written:
 - **a pointer to a *virtual* member function** — it holds a vtable index where
   this holds an address. `src/parser/ParserExpr.cpp:1803`
 - **a pointer to a *const* member function** — the constness of `this` is not
-  part of a function type here. `src/parser/ParserType.cpp:1506`
+  part of a function type here. `src/parser/ParserType.cpp:1510`
 - **postfix `++` / `--` on a bit-field** — the prefix form works.
   `src/parser/ParserOperator.cpp:495`
 - **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:676`
@@ -323,7 +323,7 @@ it is written:
   `src/parser/ParserStmt.cpp:518`
 - **a trailing return type**, `auto f(int) -> int` — C++11, and refused as the
   C++11 feature it is rather than as `auto` deduction.
-  `src/parser/ParserTopLevel.cpp:401`
+  `src/parser/ParserTopLevel.cpp:413`
 
 ## Namespaces and lookup
 
@@ -360,13 +360,13 @@ beside it goes in the same commit.
 | `0b101`, a binary literal | C++14 | `src/Lexer.cpp:250` |
 | `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1319` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:184` |
-| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2618`, `src/parser/ParserTopLevel.cpp:474` |
-| `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:406` |
+| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2618`, `src/parser/ParserTopLevel.cpp:486` |
+| `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:418` |
 | a variable template | C++14 | `src/parser/ParserTemplate.cpp:323` |
-| `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:642`, `src/parser/ParserStmt.cpp:180`, `src/parser/ParserTopLevel.cpp:271` |
+| `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:642`, `src/parser/ParserStmt.cpp:180`, `src/parser/ParserTopLevel.cpp:283` |
 | `static_assert` with no message | C++17 | `src/parser/ParserConst.cpp:31` |
 | `namespace N::M { }` | C++17 | `src/parser/ParserTopLevel.cpp:92` |
-| an attribute, `[[noreturn]]` | none parse | `src/parser/ParserType.cpp:1219` |
+| an attribute, `[[noreturn]]` | none parse | `src/parser/ParserType.cpp:1223` |
 
 ## Keywords the parser has no rule for
 
@@ -374,15 +374,15 @@ Twenty, from `pending[]` in `src/parser/Parser.cpp`. Each is refused **by
 name** at the three doors a keyword can arrive at — an expression, a member
 declaration, and a name — rather than as a parse error further along:
 `src/parser/Parser.cpp:99`, `src/parser/ParserExpr.cpp:613`,
-`src/parser/ParserType.cpp:1215`.
+`src/parser/ParserType.cpp:1219`.
 
     alignas   alignof   and       and_eq    asm
     bitand    bitor     char16_t  char32_t  compl
-    export    inline    not       not_eq    or
-    or_eq     thread_local        typeid    xor       xor_eq
+    export    not       not_eq    or        or_eq
+    thread_local        typeid    xor       xor_eq
 
 **A second list beside it says the opposite thing**, and the distinction is the
-point: `implementedElsewhere[]` holds `catch`, `friend`, `mutable`,
+point: `implementedElsewhere[]` holds `catch`, `friend`, `inline`, `mutable`,
 `namespace`, `operator`, `template`, `using` and `virtual` — all implemented,
 none of which begins an expression, so the answer is *"it is implemented, but
 it does not begin an expression"* and not *"not supported yet"*. Those eight

@@ -700,6 +700,10 @@ private:
         // everything downstream needs to know nothing more. What this adds is the
         // *demand*: an initialiser that is not a constant expression is an error.
         bool isConstexpr = false;
+        // `inline` on a function: its definition may appear in several
+        // translation units, so it is emitted as a weak/COMDAT definition the
+        // linker folds - the same treatment a template specialization gets.
+        bool isInline = false;
     };
 
     struct TypedefName {

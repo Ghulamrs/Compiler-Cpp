@@ -19,7 +19,7 @@ const char *notYetSupported(const std::string &word) {
     static const char *const pending[] = {
         "alignas", "alignof", "and", "and_eq", "asm",
         "bitand", "bitor", "char16_t", "char32_t", "compl",
-        "export", "inline",
+        "export",
         "not", "not_eq", "or", "or_eq",
         "thread_local", "typeid",
         "xor", "xor_eq"
@@ -34,7 +34,7 @@ const char *notYetSupported(const std::string &word) {
 // two answers are different claims: one says the compiler cannot, one says not here.
 const char *implementedElsewhere(const std::string &word) {
     static const char *const elsewhere[] = {
-        "catch", "friend", "mutable", "namespace",
+        "catch", "friend", "inline", "mutable", "namespace",
         "operator", "template", "using", "virtual"
     };
     for (const char *k : elsewhere)

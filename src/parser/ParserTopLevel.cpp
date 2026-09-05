@@ -220,6 +220,18 @@ void Parser::topLevel(Program &program) {
         quals.isConstexpr &&
         (peek().is("(") || d.paramsAt != 0 || d.type->isFunction());
 
+    // **`inline` is a function specifier here.** It marks the definition
+    // mergeable across translation units - a weak/COMDAT symbol - which is the
+    // same treatment a template specialization already gets. On a variable it is
+    // a C++17 inline variable, refused by name.
+    const bool inlineFunction =
+        quals.isInline &&
+        (peek().is("(") || d.paramsAt != 0 || d.type->isFunction());
+    if (quals.isInline && !inlineFunction)
+        src_.fail(d.pos, "'inline' on a variable is a C++17 feature, and this "
+                         "compiler is C++11 - 'inline' marks a function's "
+                         "definition mergeable across translation units");
+
     // **`constexpr` does not make the return type const**, and it is measured rather
     // than reasoned: cl and clang both spell `constexpr int sq(int)` as ?sq@@YAHH@Z.
     // The keyword sets isConst because on an *object* that is exactly what it means.
@@ -1164,7 +1176,8 @@ void Parser::topLevel(Program &program) {
     // Everything replayed from inside a class body - and every member of a
     // template specialization, which is replayed the same way - is implicitly
     // inline, so its definition may appear in several translation units.
-    program.functions.back().setInline(replayingInline_ && !internal);
+    program.functions.back().setInline((replayingInline_ || inlineFunction) &&
+                                        !internal);
     functionHasPads_ = false;
     functionTypeIndex_ = 0;
     functionHasTry_ = false;
