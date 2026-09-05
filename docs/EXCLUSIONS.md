@@ -179,7 +179,7 @@ SFINAE and variadic packs. What is left:
 - **instantiating a template that was only declared** —
   `src/parser/ParserTemplate.cpp:1777`
 - **`sizeof` of a template parameter in a signature** — the linker name would
-  have to spell the expression. `src/parser/ParserExpr.cpp:2032`
+  have to spell the expression. `src/parser/ParserExpr.cpp:2061`
 
 ## Classes, members and friends
 
@@ -278,7 +278,7 @@ it is written:
 - **choosing an overload by the type it is assigned to** —
   `src/parser/ParserExpr.cpp:530`
 - **a pointer to a *virtual* member function** — it holds a vtable index where
-  this holds an address. `src/parser/ParserExpr.cpp:1904`
+  this holds an address. `src/parser/ParserExpr.cpp:1933`
 - **a pointer to a *const* member function** — the constness of `this` is not
   part of a function type here. `src/parser/ParserType.cpp:1535`
 - **postfix `++` / `--` on a bit-field** — the prefix form works.
@@ -362,7 +362,7 @@ beside it goes in the same commit.
 | --- | --- | --- |
 | `1'000`, a digit separator | C++14 | `src/Lexer.cpp:146` |
 | `0b101`, a binary literal | C++14 | `src/Lexer.cpp:250` |
-| `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1391` |
+| `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1407` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:184` |
 | `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2637`, `src/parser/ParserTopLevel.cpp:510` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:442` |

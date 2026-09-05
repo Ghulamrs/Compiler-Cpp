@@ -1303,18 +1303,20 @@ ExprPtr Parser::primary(Program *program) {
         }
 
         at_++;
-        if (const EnumConst *e = findEnum(name)) {
-            ExprPtr n(new Num(e->value));
-            n->setType(types_.intType());
-            return n;
-        }
-        if (ExprPtr v = objectRef(name)) return v;
+        // **[basic.lookup.unqual]/1 and [basic.scope.hiding]/1: the nearest
+        // declaration wins**, and there are three scopes here in this order -
+        // the block, then the class, then the namespace. Asking them in any
+        // other order is a silent wrong answer rather than a diagnostic, and
+        // this used to ask enumerators first and members last: an enumerator
+        // hid a local and a parameter, and a global hid a data member, each
+        // reading the wrong object with nothing said.
+        if (ExprPtr v = localRef(name)) return v;
 
-        // Inside a member function an unqualified name may be a member of the
-        // class - [class.mfct.non-static] says it is `this->name`, and that is
-        // exactly what is built here rather than a second kind of lookup.
-        if (currentClass_ != nullptr && findLocal(name) == nullptr &&
-            findGlobal(name) == nullptr) {
+        // Class scope. Inside a member function an unqualified name may be a
+        // member - [class.mfct.non-static] says it is `this->name`, and that
+        // is what is built here rather than a second kind of lookup - or an
+        // enumerator the class declared, which is at class scope too.
+        if (currentClass_ != nullptr) {
             const Local *self = findLocal("this");
             if (const Member *m = currentClass_->findMember(name)) {
                 if (self == nullptr)
@@ -1347,7 +1349,21 @@ ExprPtr Parser::primary(Program *program) {
                     return useReference(std::move(acc));
                 }
             }
+
+            if (const EnumConst *e = findClassEnum(name)) {
+                ExprPtr n(new Num(e->value));
+                n->setType(types_.intType());
+                return n;
+            }
         }
+
+        // Namespace scope, last of the three.
+        if (const EnumConst *e = findEnum(name)) {
+            ExprPtr n(new Num(e->value));
+            n->setType(types_.intType());
+            return n;
+        }
+        if (ExprPtr v = globalRef(name)) return v;
 
         // Taking the address of an overloaded name needs a target type to choose by
         // - [over.over] - and there is none here. Refused by name rather than by
@@ -1559,7 +1575,16 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
     return both;
 }
 
+// **Block scope and namespace scope are separate questions**, because
+// [basic.lookup.unqual] puts class scope between them: a member hides a global
+// and is hidden by a local. objectRef asks both in order for the callers that
+// are not inside a class and have no middle step to take.
 ExprPtr Parser::objectRef(const std::string &name) {
+    if (ExprPtr v = localRef(name)) return v;
+    return globalRef(name);
+}
+
+ExprPtr Parser::localRef(const std::string &name) {
     if (const Local *l = findLocal(name)) {
         Var *v = l->staticName.empty() ? Var::local(name, l->offset)
                                        : Var::global(l->staticName);
@@ -1569,6 +1594,10 @@ ExprPtr Parser::objectRef(const std::string &name) {
         n->setType(l->type);
         return useReference(std::move(n));
     }
+    return nullptr;
+}
+
+ExprPtr Parser::globalRef(const std::string &name) {
     if (const GlobalSym *g = findGlobal(name)) {
         Var *v = Var::global(name);
         v->setSymbol(g->symbol);

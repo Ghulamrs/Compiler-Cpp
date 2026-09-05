@@ -313,6 +313,13 @@ const Parser::EnumConst *Parser::findEnum(const std::string &name) const {
         if (q != enumIndex_.end()) return &enums_[q->second];
     }
 
+    return findClassEnum(name);
+}
+
+// The class half on its own. An enumerator of the class being parsed is at
+// class scope, so it beats a global and loses to a local - which the caller
+// in `primary` needs to ask separately from the namespace-scope table above.
+const Parser::EnumConst *Parser::findClassEnum(const std::string &name) const {
     for (std::size_t i = classStack_.size(); i-- > 0; )
         if (const EnumConst *e = enumInClass(classStack_[i], name)) return e;
     if (currentClass_ != nullptr)

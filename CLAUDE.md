@@ -6133,6 +6133,50 @@ the language being told the truth.
 of them `x86_64-windows`, each by exactly one replaced line - checked, not
 assumed, which before the golden existed was not something anybody could say.
 
+## Three scopes, and they were being asked in nearly the reverse order
+
+**[basic.lookup.unqual]/1 and [basic.scope.hiding]/1: the nearest declaration
+wins.** An unqualified name in a member function has three scopes to search
+and one order to search them in - the block, then the class, then the
+namespace. This parser asked namespace-scope enumerators *first*, then locals
+and globals together, and members *last* and only where no global of that name
+existed. Both consequences were silent wrong values in ordinary code:
+
+```cpp
+enum { A = 1, K = 2 };
+int f(int K) { return K; }
+int main() { int A = 5; printf("%d %d\n", A, f(7)); }   // clang 5 7, cxx1 1 2
+```
+
+```cpp
+int k = 10;
+struct S { int k; S() : k(3) {} int get() { return k; } };  // clang 3, cxx1 10
+```
+
+An enumerator hid a local *and* a parameter; a global hid a data member, which
+also made a `[k]` capture and a `[this]` capture read the global. Any class
+whose member shares a name with any global anywhere in the program read the
+wrong object, and nothing was said.
+
+**The middle rung is what makes this more than swapping the ends.** A class's
+own enumerator is at *class* scope: it beats a global and loses to a local.
+`findEnum` searched the flat namespace table before walking the class stack, so
+it could never outrank a global; `findClassEnum` is that walk on its own, asked
+at step two. And `objectRef` did locals-then-globals as a single step, which
+cannot express a scope that belongs *between* them - it is `localRef` and
+`globalRef` now, with `objectRef` kept as the pair for the callers that are not
+inside a class and have no middle step to take.
+
+**The emit golden reports 0 of 627 files changed.** A reordering of name lookup
+altered nothing that already compiled, which says both that the change is
+contained and that no case in the suite had been exercising the wrong order -
+the second being why 353 green cases never noticed.
+
+`tests/cases/lookup-order.cpp` pins which scope owns the name in ten shapes: a
+parameter and a local against an enumerator, a member against a global reached
+directly and through both kinds of capture, a local against a member, a class
+enumerator against a global, and a local against a class enumerator.
+
 ## The object ledger, because printing cannot show a leak
 
 **Every suite here compares what a program prints, and three failures leave

@@ -1450,6 +1450,10 @@ private:
     // An enumerator named through the class it was written in, and through
     // that class's bases - the mirror of lookupInClass for the enum table.
     const EnumConst *enumInClass(const Type *cls, const std::string &name) const;
+    // findEnum's class half on its own: an enumerator of the class being
+    // parsed is at *class* scope and beats a global, where one at namespace
+    // scope does not beat a member.
+    const EnumConst *findClassEnum(const std::string &name) const;
     std::size_t qualifiedTypeEnd() const;
     std::vector<std::string> lookupKeys(const std::string &name,
                                         const Type *left,
@@ -1510,6 +1514,9 @@ private:
                            bool isStatic, std::size_t pos);
 
     ExprPtr objectRef(const std::string &name);
+    // The two halves of it, because class scope sits between them.
+    ExprPtr localRef(const std::string &name);
+    ExprPtr globalRef(const std::string &name);
     ExprPtr useReference(ExprPtr e);
     ExprPtr bindReference(const Type *ref, ExprPtr init, std::size_t pos,
                           const std::string &what);
