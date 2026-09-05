@@ -39,6 +39,13 @@ void __assert_fail(const char *expr, const char *file, unsigned line,
                    const char *func);
 #endif
 
+// **The `extern "C"` closes inside the guard**, with the declarations it
+// brackets. It opened inside the guard, so its `}` must too, or a second
+// include - which is allowed, the macro being re-read every time - skips the
+// open and emits an orphan `}` at file scope. cassert included both directly
+// and through another header is exactly that second include.
+}  // extern "C"
+
 #endif
 
 // Outside the guard on purpose - see above.
@@ -61,6 +68,4 @@ void __assert_fail(const char *expr, const char *file, unsigned line,
 #define assert(e) ((e) ? (void)0 : __assert_fail(#e, __FILE__, __LINE__, "(unknown)"))
 #endif
 
-
-}  // extern "C"
 #endif
