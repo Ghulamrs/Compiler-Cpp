@@ -1,0 +1,3 @@
+flat: n=3 sum=60
+empty: n=0
+nested: m=3 | 6 22 8

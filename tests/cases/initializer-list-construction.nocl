@@ -1,0 +1,11 @@
+the only names that differ are std::initializer_list<T>'s own - its two
+constructors and its begin/end. cl compiles against its own std::initializer_list,
+a compiler-known type it spells with the namespace (?$initializer_list@H@std@@)
+and whose element copy it fills in with the ??_H vector-constructor iterator;
+cxx1 builds against include/initializer_list, a plain class template. Two
+differences follow, both already recorded in CLAUDE.md. A specialization is
+keyed by its bare name here, so it carries no namespace - ?$initializer_list@H@@
+rather than @std@@ - the same divergence noted for std::vector<int>. And cxx1
+emits no ??_H iterator, copying the backing array inline instead. What this case
+is about, the language step that builds a list from a brace-init and selects the
+constructor, is checked by run.sh on all three machines.

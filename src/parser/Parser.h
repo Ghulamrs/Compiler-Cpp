@@ -1455,6 +1455,16 @@ private:
     void emitAggregate(const std::string &name, std::vector<InitStep> &path,
                        const Type *type, InitCursor &c, std::size_t pos,
                        std::vector<StmtPtr> &out);
+    // **List-initialisation of a class with an initializer_list constructor.**
+    // The first finds that constructor and hands back the element type through
+    // ilType; the second turns a brace-init-list into a backing array and an
+    // initializer_list over it, returning the list object for the constructor.
+    const Signature *initializerListConstructor(const Type *cls,
+                                                const Type **ilType);
+    ExprPtr buildInitializerList(const Type *ilType, Init &in, std::size_t pos,
+                                 std::vector<StmtPtr> &into);
+    int ilTemps_ = 0;
+
     void emitInit(const std::string &name, std::vector<InitStep> &path,
                   const Type *type, Init &in, std::vector<StmtPtr> &out);
     // [dcl.init.list]/7: a value inside braces may not narrow. Asked of every

@@ -155,11 +155,28 @@ StmtPtr Parser::declarationBody() {
                 valueInit = true;
             }
 
-            // **A braced initialiser, and the two different answers it has.**
-            // [dcl.init.aggr]/1 in C++11 makes a class with a member initialiser no
-            // aggregate; where it wrote none, the braces want C++11 list-init.
+            std::vector<ExprPtr> args;
+            bool copyInit = valueInitCopied;
+            std::vector<StmtPtr> ilSetup;
+            bool listInit = false;
+
+            // **A braced initialiser, and the answers it has.** A class with an
+            // initializer_list constructor takes the braces as a list -
+            // [over.match.list] - which becomes a backing array and the list
+            // over it. [dcl.init.aggr]/1 in C++11 makes a class with a member
+            // initialiser no aggregate; where it wrote none and has no
+            // initializer_list constructor, the braces are refused.
             if (peek().is("{") || (peek().is("=") && peekAt(1).is("{"))) {
-                if (hasMemberInitialiser(d.type->tag()))
+                const Type *ilType = nullptr;
+                const Signature *ilCtor =
+                    initializerListConstructor(d.type->unqualified(), &ilType);
+                if (ilCtor != nullptr) {
+                    consume("=");
+                    Init in = parseInitialiser();
+                    args.push_back(buildInitializerList(ilType, in, d.pos, ilSetup));
+                    copyInit = true;
+                    listInit = true;
+                } else if (hasMemberInitialiser(d.type->tag())) {
                     src_.fail(d.pos, "'" + d.type->describe() + "' writes an "
                                      "initialiser on a member, so in C++11 it "
                                      "is not an aggregate and a braced list "
@@ -167,14 +184,15 @@ StmtPtr Parser::declarationBody() {
                                      "that rule and this compiler is C++11. "
                                      "Give the class a constructor, or take "
                                      "the member initialiser off");
-                src_.fail(d.pos, "list-initialisation - '" + d.name +
-                                 "{...}' calling a constructor - is not "
-                                 "supported yet; write the arguments in "
-                                 "parentheses");
+                } else {
+                    src_.fail(d.pos, "list-initialisation - '" + d.name +
+                                     "{...}' calling a constructor - is not "
+                                     "supported yet unless the class has an "
+                                     "initializer_list constructor; write the "
+                                     "arguments in parentheses");
+                }
             }
-            std::vector<ExprPtr> args;
-            bool copyInit = valueInitCopied;
-            if (consume("(")) {
+            if (!listInit && consume("(")) {
                 if (peek().is(")"))
                     src_.fail(d.pos, "'" + d.name + "()' declares a function "
                                      "taking nothing and returning '" +
@@ -217,6 +235,11 @@ StmtPtr Parser::declarationBody() {
 
             int off = declare(d.name, d.type, d.pos);
             locals_.back().guardsJump = true;
+
+            // The backing array and the list object, before the constructor
+            // that reads them - a list-init only.
+            for (std::size_t z = 0; z < ilSetup.size(); z++)
+                inits.push_back(std::move(ilSetup[z]));
 
             // **Copy elision, in the one case worth having it**: where the initialiser
             // is a call already returning through a hidden pointer, the object is built

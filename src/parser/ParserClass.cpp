@@ -1,6 +1,7 @@
 // The parser: what a class needs written for it. Constructors and destructors,
 // vtables and thunks, the implicit special members and the code that defines them
 // when something calls one, and the static data members. Rungs 3 and 4.
+#include <cstdio>
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
@@ -926,6 +927,118 @@ static ExprPtr indexBytes(TypeTable &types, ExprPtr decayed, const Type *elem,
 // `S a[4];` where S has constructors - the default constructor once per element, in
 // a loop. **This was the one construction that silently did not happen**: an array is
 // not a struct, so it fell through to an uninitialised local. Every level at once.
+// **The constructor an initializer_list brace-init selects**, [over.match.list]/1.
+// The one taking a single std::initializer_list<T>; T is handed back as the
+// element type of the list the arguments have to be gathered into.
+const Parser::Signature *
+Parser::initializerListConstructor(const Type *cls, const Type **ilType) {
+    const std::vector<std::size_t> *set = overloadsOf(constructorKey(cls->tag()));
+    if (set == nullptr) return nullptr;
+    for (std::size_t i = 0; i < set->size(); i++) {
+        const Signature &c = functions_[(*set)[i]];
+        if (c.params.size() != 1) continue;
+        const Type *p = c.params[0]->unqualified();
+        if (p->isStructOrUnion() && p->isSpecialization() &&
+            p->templateName() == "initializer_list" &&
+            (p->templateNamespace() == "std" ||
+             p->templateNamespace() == "std::")) {
+            if (ilType != nullptr) *ilType = c.params[0];
+            return &c;
+        }
+    }
+    return nullptr;
+}
+
+// **A brace-init-list becomes a backing array and an initializer_list over it**,
+// [dcl.init.list]/5. The array holds the elements; the list is `{ &array[0],
+// count }` - the pointer and count <initializer_list> lays out. Both are locals
+// of the enclosing scope, so the array outlives the list, which is all the list
+// promises. The list object is returned as an lvalue for the constructor to take
+// by value - a trivially-copyable pair, so the copy is bytes.
+ExprPtr Parser::buildInitializerList(const Type *ilType, Init &in,
+                                     std::size_t pos, std::vector<StmtPtr> &into) {
+    const Type *elem = ilType->templateArgs().empty()
+                         ? types_.get(Kind::Int)
+                         : ilType->templateArgs()[0].type;
+    const long long n = static_cast<long long>(in.items.size());
+    const int k = ilTemps_++;
+
+    const Type *arrType = types_.arrayOf(elem, n);
+    const std::string bk = ".ilbacking" + std::to_string(k);
+    const int bkOff = declare(bk, arrType, pos);
+
+    // **A class element with an initializer_list constructor is built through
+    // it, not aggregate-initialised.** `emitInit` fills an aggregate field by
+    // field; a class that took an il-ctor is not one, so each `{...}` element is
+    // one more list handed to that ctor at `&array[i]`. Scalars and true
+    // aggregates fall through to `emitInit` as before.
+    const Type *plainElem = elem->unqualified();
+    const Type *innerIl = nullptr;
+    const Signature *innerCtor = plainElem->isStructOrUnion()
+        ? initializerListConstructor(plainElem, &innerIl) : nullptr;
+    if (innerCtor != nullptr) {
+        markUsed(innerCtor);
+        const std::string sym = innerCtor->symbol;
+        const Type *innerParam = innerCtor->params[0];
+        const Type *elemPtr = types_.pointerTo(plainElem);
+        for (std::size_t i = 0; i < in.items.size(); i++) {
+            if (!in.items[i].isList)
+                src_.fail(in.items[i].pos, "this element is built from a braced "
+                          "list and this initialiser is not braced");
+            ExprPtr list = buildInitializerList(innerIl, in.items[i], pos, into);
+            ExprPtr arr(Var::local(bk, bkOff)); arr->setType(arrType);
+            ExprPtr idx(new Num(static_cast<long long>(i)));
+            idx->setType(types_.get(Kind::Int));
+            ExprPtr addr = arithmetic(BinOp::Add, decay(std::move(arr)),
+                                      std::move(idx), pos);
+            std::vector<ExprPtr> all;
+            all.push_back(std::move(addr));
+            all.push_back(std::move(list));
+            std::vector<const Type *> ps{ elemPtr, innerParam };
+            into.push_back(StmtPtr(new ExprStmt(
+                completeCall(plainElem->tag(), sym, nullptr,
+                             types_.get(Kind::Void), ps, false, pos,
+                             std::move(all)))));
+        }
+    } else {
+        std::vector<InitStep> path;
+        emitInit(bk, path, arrType, in, into);
+    }
+
+    const std::string ilName = ".ilobject" + std::to_string(k);
+    const int ilOff = declare(ilName, ilType, pos);
+
+    const Member *fm = ilType->findMember("first_");
+    const Member *cm = ilType->findMember("count_");
+    if (fm == nullptr || cm == nullptr)
+        src_.fail(pos, "the std::initializer_list here has no first_ and count_ "
+                       "members - the <initializer_list> the compiler builds is "
+                       "not the one this program included");
+
+    // first_ = &array[0], the array decayed to a pointer to its first element.
+    ExprPtr arr(Var::local(bk, bkOff)); arr->setType(arrType);
+    ExprPtr first = decay(std::move(arr));
+    ExprPtr ilA(Var::local(ilName, ilOff)); ilA->setType(ilType);
+    ExprPtr fdst(new MemberAccess(std::move(ilA), "first_", fm->offset));
+    fdst->setType(fm->type);
+    ExprPtr fst(new Assign(std::move(fdst), convert(std::move(first), fm->type)));
+    fst->setType(fm->type);
+    into.push_back(StmtPtr(new ExprStmt(std::move(fst))));
+
+    // count_ = n
+    ExprPtr ilB(Var::local(ilName, ilOff)); ilB->setType(ilType);
+    ExprPtr cdst(new MemberAccess(std::move(ilB), "count_", cm->offset));
+    cdst->setType(cm->type);
+    ExprPtr cnt(new Num(n)); cnt->setType(cm->type);
+    ExprPtr cst(new Assign(std::move(cdst), std::move(cnt)));
+    cst->setType(cm->type);
+    into.push_back(StmtPtr(new ExprStmt(std::move(cst))));
+
+    ExprPtr result(Var::local(ilName, ilOff));
+    result->setType(ilType);
+    return result;
+}
+
 StmtPtr Parser::constructLocalArray(const Declared &d, int offset,
                                     int indexSlot) {
     const Type *elem = d.type;
