@@ -191,13 +191,26 @@ void Parser::bindTemplateParameters(const std::vector<TemplateParam> &params,
                    binding[i]->kind() == Kind::TemplateParam) {
             // **A non-type parameter read as a pattern**, the same signal a pack
             // uses: its binding is a Kind::TemplateParam rather than a value, so
-            // `V<N>` reads as a reference to N instead of folding to a number.
+            // a bare `V<N>` reads as a reference to N. **The concrete value is
+            // bound too**, so a param *expression* - `V<N + M>` - which is not a
+            // bare reference and cannot be spelled `XT_E`, folds to a number
+            // instead of failing to look N up. Its Itanium name then diverges
+            // from clang's symbolic form, recorded per case.
             s.isParamRef = true;
             auto it = nonTypePatternParams_.find(p.name);
             if (it != nonTypePatternParams_.end()) {
                 s.hadParamRef = true; s.paramRefWas = it->second;
             }
             nonTypePatternParams_[p.name] = binding[i]->length();
+            // The concrete value, as a second undo entry so both are restored.
+            Shadow ev;
+            ev.name = p.name;
+            ev.isType = false;
+            auto en = enumIndex_.find(p.name);
+            if (en != enumIndex_.end()) { ev.had = true; ev.was = en->second; }
+            enumIndex_[p.name] = enums_.size();
+            enums_.push_back(EnumConst{ p.name, values[i] });
+            undo->push_back(ev);
         } else {
             auto it = enumIndex_.find(p.name);
             if (it != enumIndex_.end()) { s.had = true; s.was = it->second; }
@@ -781,6 +794,10 @@ std::string Parser::specializationKey(const std::string &name,
             }
             key += "}";
         }
+        else if (args[i].isParam)
+            // A non-type parameter reference - `V<N>` in a pattern - keyed by
+            // which parameter, or `V<N>` and `V<M>` would be one type.
+            key += "$P" + std::to_string(args[i].paramIndex);
         else if (!args[i].isType) key += std::to_string(args[i].value);
         // A pattern's argument is a template parameter, and describe() would
         // put a space in a tag every table is keyed by.

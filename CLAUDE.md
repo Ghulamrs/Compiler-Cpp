@@ -3451,6 +3451,37 @@ operator's. Captures by reference then need 7.4's story about lifetime, and a
 generic lambda would want `auto` in a parameter, which is C++14 and out of
 scope.
 
+## Three small steps the exercise needed: array references, computed arguments, the cast that was not one
+
+**A reference-to-array parameter binds without decay.** `const double (&)[N]`
+takes a `double[N]` lvalue, the element gaining const - a qualification
+conversion, [dcl.init.ref] - where a by-value parameter would decay the array
+to a pointer. An array's own `unqualified()` keeps its element's const, so both
+`rankArgument` and `bindReference` ask the array case apart from the exact-type
+one: same length, same element modulo const, and never dropping const onto a
+non-const reference. The argument is not decayed, because `parseArguments`
+never decays - it decays per-parameter, and a reference parameter asks for none.
+
+**A non-type argument may be an expression of the parameters.** `V<N + M>` -
+the concatenation's dimension - folds at instantiation, where N and M are
+concrete. The pattern read that spells the Itanium name binds each non-type
+parameter as *both* a reference (so a bare `V<N>` is `XT_E`) and its concrete
+value (so `V<N + M>`, which is not a bare reference, folds rather than failing
+to look N up). The folded argument then diverges from clang, which spells the
+expression symbolically - `VIXplT_T0_EE` for N+M against cxx1's `VILi3EE` -
+recorded per case; Microsoft uses the substituted signature and is exact. And
+`specializationKey` keys a parameter reference by *which* parameter, `$P0`
+against `$P1`, or `V<N>` and `V<M>` would intern as one type.
+
+**`(T(x) == T(y))` is a comparison, not a cast.** A `(` before a type name
+opens a C-style cast only when the type-id closes with its own `)`; `T(2.5)`
+after it is a functional-cast temporary. So the cast is attempted through a
+`Trial` - which turns the declarator parse's hard failure into a recoverable
+one - and where the type-id does not reach a `)`, the `(` was a parenthesised
+expression after all. This is the shape `assert(T(x) == T(y))` expands to, its
+condition wrapped in parentheses, and it is the first use of the SFINAE trial
+machinery outside template substitution.
+
 ## A class template-id as a qualifier in an expression
 
 **`CNeeds<(N == 3)>::check()`** - the template-id is instantiated and a static

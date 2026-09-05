@@ -1414,9 +1414,18 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
         return convert(std::move(addr), types_.pointerTo(referent));
     }
 
+    // **A reference to an array binds it directly**, the element gaining const
+    // at most - `const double (&)[N]` takes a `double[N]` lvalue. The array's
+    // own `unqualified()` keeps the element's const, so this is asked apart from
+    // the exact-type case below.
+    const bool arrayBind = it->isArray() && referent->isArray() &&
+        it->length() == referent->length() &&
+        it->pointee()->unqualified() == referent->pointee()->unqualified() &&
+        (referent->pointee()->isConst() || !it->pointee()->isConst());
+
     if (isGlvalue(*init) && noAddressBecause == nullptr &&
-        it->unqualified() == referent->unqualified()) {
-        if (it->isConst() && !referent->isConst())
+        (it->unqualified() == referent->unqualified() || arrayBind)) {
+        if (!arrayBind && it->isConst() && !referent->isConst())
             src_.fail(pos, what + " is '" + ref->describe() + "' and this is '" +
                            it->describe() + "' - a reference that can write "
                            "cannot bind to a const");

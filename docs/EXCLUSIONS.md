@@ -45,7 +45,7 @@ a grep is not.
 than they fire. `template <>` at `src/parser/ParserTemplate.cpp:38` is refused
 where a template parameter list is expected, while
 `template <> struct Box<int> { … };` compiles; the functional-cast temporary at
-`src/parser/ParserOverload.cpp:663` is refused during overload ranking, while
+`src/parser/ParserOverload.cpp:678` is refused during overload ranking, while
 `take(P(4))` and `P q = P(3);` compile. Both were checked with a program before
 this sentence was written, and the same habit is the reason `pending[]` had
 eight keywords in it that were implemented.
@@ -108,7 +108,7 @@ that was not written. This is a library sized to what has been asked of it
 rather than to the standard, and the distance between those two is not small.
 It is also why a *language* feature is refused in one place: `auto` from a
 braced initialiser deduces an `initializer_list`, which there is no library for
-— `src/parser/ParserTemplate.cpp:1004`.
+— `src/parser/ParserTemplate.cpp:1021`.
 
 A conforming C++ implementation is a compiler **and** a library. cxx1 is a
 language translator with three code generators. Read every claim about C++11
@@ -149,7 +149,7 @@ SFINAE and variadic packs. What is left:
   definition**, one written outside its class —
   `src/parser/ParserType.cpp:308`; **explicit instantiation inside a class** —
   `src/parser/ParserType.cpp:274`; and a member function template **named
-  without being called** — `src/parser/ParserTemplate.cpp:1812`. A member
+  without being called** — `src/parser/ParserTemplate.cpp:1829`. A member
   template whose arguments would have to be **deduced** from the call, rather
   than written, is not reached: the call finds no such member and says so.
 - **an unnamed template parameter** — `src/parser/ParserTemplate.cpp:52`,
@@ -157,29 +157,29 @@ SFINAE and variadic packs. What is left:
 - **a non-type parameter pack** — a pack of types is supported.
   `src/parser/ParserTemplate.cpp:63`
 - **a non-type template parameter that is not an integer type** —
-  `src/parser/ParserTemplate.cpp:736`
+  `src/parser/ParserTemplate.cpp:749`
 - **two class templates of one name** — function templates overload (a call
   deduces against each and overload resolution ranks the specializations), but
   two *class* templates of one name is partial specialization, a different
-  path. `src/parser/ParserTemplate.cpp:467`
+  path. `src/parser/ParserTemplate.cpp:480`
 - **an explicit specialization of a *function* template** — the class form
-  works. `src/parser/ParserTemplate.cpp:484`
+  works. `src/parser/ParserTemplate.cpp:497`
 - **`template <>` where a parameter list is expected** —
   `src/parser/ParserTemplate.cpp:38`
-- **explicit instantiation** — `src/parser/ParserTemplate.cpp:340`
+- **explicit instantiation** — `src/parser/ParserTemplate.cpp:353`
 - **a template that is neither a class nor a function** —
-  `src/parser/ParserTemplate.cpp:280`
+  `src/parser/ParserTemplate.cpp:293`
 - **a constructor or destructor of a class template written outside the class**
-  — `src/parser/ParserTemplate.cpp:356`
+  — `src/parser/ParserTemplate.cpp:369`
 - **naming a function template without calling it** —
-  `src/parser/ParserTemplate.cpp:1711`, `src/parser/ParserTemplate.cpp:1755`
+  `src/parser/ParserTemplate.cpp:1728`, `src/parser/ParserTemplate.cpp:1772`
 - **naming a member through a template's argument list**, `A<int>::n` — a
   `typedef` for the instantiation reaches it.
-  `src/parser/ParserTemplate.cpp:1780`
+  `src/parser/ParserTemplate.cpp:1797`
 - **instantiating a template that was only declared** —
-  `src/parser/ParserTemplate.cpp:1784`
+  `src/parser/ParserTemplate.cpp:1801`
 - **`sizeof` of a template parameter in a signature** — the linker name would
-  have to spell the expression. `src/parser/ParserExpr.cpp:1931`
+  have to spell the expression. `src/parser/ParserExpr.cpp:1940`
 
 ## Classes, members and friends
 
@@ -274,15 +274,15 @@ it is written:
 - **choosing an overload by the type it is assigned to** —
   `src/parser/ParserExpr.cpp:499`
 - **a pointer to a *virtual* member function** — it holds a vtable index where
-  this holds an address. `src/parser/ParserExpr.cpp:1803`
+  this holds an address. `src/parser/ParserExpr.cpp:1812`
 - **a pointer to a *const* member function** — the constness of `this` is not
   part of a function type here. `src/parser/ParserType.cpp:1510`
 - **postfix `++` / `--` on a bit-field** — the prefix form works.
-  `src/parser/ParserOperator.cpp:495`
+  `src/parser/ParserOperator.cpp:512`
 - **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:676`
 - **a functional-cast temporary reached through overload ranking** — a
   converting constructor is not tried at a call.
-  `src/parser/ParserOverload.cpp:663`
+  `src/parser/ParserOverload.cpp:678`
 
 ## `new` and `delete`
 
@@ -362,7 +362,7 @@ beside it goes in the same commit.
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:184` |
 | `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2618`, `src/parser/ParserTopLevel.cpp:486` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:418` |
-| a variable template | C++14 | `src/parser/ParserTemplate.cpp:323` |
+| a variable template | C++14 | `src/parser/ParserTemplate.cpp:336` |
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:642`, `src/parser/ParserStmt.cpp:180`, `src/parser/ParserTopLevel.cpp:283` |
 | `static_assert` with no message | C++17 | `src/parser/ParserConst.cpp:31` |
 | `namespace N::M { }` | C++17 | `src/parser/ParserTopLevel.cpp:92` |

@@ -14,13 +14,30 @@ ExprPtr Parser::castExpr() {
         std::size_t save = at_;
         at_++;
         if (atTypeName()) {
-            StorageClass sc;
-            const Type *to = specifiers(&sc);
-            to = declarator(to, true).type;
-            expect(")");
-            ExprPtr v = decay(castExpr());
-            if (to->isVoid()) return ExprPtr(new Cast(to, std::move(v)));
-            return convert(std::move(v), to, true);   // a cast allows explicit
+            // **`(T(2.5) == ...)` is not a cast to a function type.** A `(` after
+            // the type opens a declarator only when what follows is one - so the
+            // cast is attempted tentatively, and where the type-id does not close
+            // with its own `)` the `(` was a parenthesised expression after all:
+            // `V<3>(2.5)` is a functional-cast temporary, not `(V<3>(2.5))` cast.
+            bool isCast = false;
+            try {
+                Trial trial(this);
+                StorageClass psc;
+                const Type *pt = specifiers(&psc);
+                declarator(pt, true);
+                isCast = peek().is(")");
+            } catch (const SubstitutionFailure &) {
+                isCast = false;
+            }
+            if (isCast) {
+                StorageClass sc;
+                const Type *to = specifiers(&sc);
+                to = declarator(to, true).type;
+                expect(")");
+                ExprPtr v = decay(castExpr());
+                if (to->isVoid()) return ExprPtr(new Cast(to, std::move(v)));
+                return convert(std::move(v), to, true);   // a cast allows explicit
+            }
         }
         at_ = save;
     }

@@ -258,6 +258,21 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     if (param->isReference()) {
         const Type *want = param->pointee();
 
+        // **A reference to an array binds to an array of the same length**,
+        // without the decay a by-value parameter would apply - `const double
+        // (&)[N]` takes a `double[N]` lvalue, the element gaining const, which
+        // is a qualification for a const reference and refused for a non-const
+        // one that would drop it. [dcl.init.ref], [conv.qual]. An array is
+        // always an lvalue, so there is no temporary to consider.
+        if (want->isArray() && given->isArray() &&
+            want->length() == given->length() &&
+            want->pointee()->unqualified() == given->pointee()->unqualified()) {
+            const bool wantConst = want->pointee()->isConst();
+            const bool givenConst = given->pointee()->isConst();
+            if (!wantConst && givenConst) return Rank::None;
+            return wantConst && !givenConst ? Rank::Qualification : Rank::Identity;
+        }
+
         // **A reference to a base binds to a derived object** - [dcl.init.ref],
         // and the sequence is a derived-to-base Conversion, which is what makes
         // `f(Base &)` lose to `f(Derived &)` for a Derived rather than tie with
