@@ -190,11 +190,11 @@ SFINAE and variadic packs. What is left:
   `src/parser/ParserExpr.cpp:1158`. A static member function on its own works.
 - **a member function of a union** — `src/parser/ParserClass.cpp:2048`
 - **`friend class X;`** — one named function can be befriended.
-  `src/parser/ParserType.cpp:440`
+  `src/parser/ParserType.cpp:436`
 - **befriending one member function of another class** —
-  `src/parser/ParserType.cpp:452`
+  `src/parser/ParserType.cpp:448`
 - **a friend function defined inside the class body** —
-  `src/parser/ParserType.cpp:469`
+  `src/parser/ParserType.cpp:465`
 - **a const member named in a mem-initialiser list** —
   `src/parser/ParserTopLevel.cpp:762`
 - **a delegating constructor** — `src/parser/ParserTopLevel.cpp:808`
@@ -202,9 +202,9 @@ SFINAE and variadic packs. What is left:
 ## Conversion functions and operators
 
 - **`operator new` / `operator delete`** as user functions —
-  `src/parser/ParserType.cpp:1308`
-- **`operator->*`** — `src/parser/ParserType.cpp:1313`
-- **a user-defined literal** — `src/parser/ParserType.cpp:1315`
+  `src/parser/ParserType.cpp:1302`
+- **`operator->*`** — `src/parser/ParserType.cpp:1307`
+- **a user-defined literal** — `src/parser/ParserType.cpp:1309`
 - **`operator&&`, `operator||`, `operator,` and `operator->*`** — the four that
   still fall into the generic refusal below, **named** rather than left to it.
   The ten compound assignments used to be here too and are reachable now; a
@@ -224,7 +224,7 @@ SFINAE and variadic packs. What is left:
   Every other overloadable operator resolves from an expression, asked of a
   one-line program each: `+ - * / % & | ^ << >> == != < <= > >=` binary,
   `+ - * & ! ~ ++ --` unary, and `() [] = ->`.
-  `src/parser/ParserType.cpp:1429`
+  `src/parser/ParserType.cpp:1423`
 
 ## Initialisation, and braces
 
@@ -237,7 +237,7 @@ SFINAE and variadic packs. What is left:
   has `inline` only on functions, where it works. `src/parser/ParserTopLevel.cpp:231`
 - **a braced default argument** — `src/parser/ParserClass.cpp:2630`,
   `src/parser/ParserTopLevel.cpp:542`
-- **a braced member initialiser** — `src/parser/ParserType.cpp:805`
+- **a braced member initialiser** — `src/parser/ParserType.cpp:799`
 - **an initialiser for an array of a class** —
   `src/parser/ParserStmt.cpp:111`, `src/parser/ParserTopLevel.cpp:780`
 - **an array of a class with a destructor** — the elements would have to be
@@ -276,7 +276,7 @@ it is written:
 - **a pointer to a *virtual* member function** — it holds a vtable index where
   this holds an address. `src/parser/ParserExpr.cpp:1812`
 - **a pointer to a *const* member function** — the constness of `this` is not
-  part of a function type here. `src/parser/ParserType.cpp:1510`
+  part of a function type here. `src/parser/ParserType.cpp:1504`
 - **postfix `++` / `--` on a bit-field** — the prefix form works.
   `src/parser/ParserOperator.cpp:512`
 - **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:676`
@@ -366,7 +366,7 @@ beside it goes in the same commit.
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:642`, `src/parser/ParserStmt.cpp:180`, `src/parser/ParserTopLevel.cpp:283` |
 | `static_assert` with no message | C++17 | `src/parser/ParserConst.cpp:31` |
 | `namespace N::M { }` | C++17 | `src/parser/ParserTopLevel.cpp:92` |
-| an attribute, `[[noreturn]]` | none parse | `src/parser/ParserType.cpp:1223` |
+| an attribute, `[[noreturn]]` | none parse | `src/parser/ParserType.cpp:1217` |
 
 ## Keywords the parser has no rule for
 
@@ -374,7 +374,7 @@ Twenty, from `pending[]` in `src/parser/Parser.cpp`. Each is refused **by
 name** at the three doors a keyword can arrive at — an expression, a member
 declaration, and a name — rather than as a parse error further along:
 `src/parser/Parser.cpp:99`, `src/parser/ParserExpr.cpp:613`,
-`src/parser/ParserType.cpp:1219`.
+`src/parser/ParserType.cpp:1213`.
 
     alignas   alignof   and       and_eq    asm
     bitand    bitor     char16_t  char32_t  compl

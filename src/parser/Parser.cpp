@@ -553,6 +553,30 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     alive_.clear();
     pendingTemps_.clear();
     bodyCleanupFrom_ = 0;
+    // **The exception state is per-function too, and `topLevel` clears it after
+    // it emits** - so a replay in the middle of a body cleared the *enclosing*
+    // function's. `functionHasTry_` guards the refusal of a `try` beside a local
+    // with a destructor: cleared by a lambda written between them, the pair was
+    // accepted and reached the assembler as an undefined LSDA label.
+    // `functionHasPads_` decides whether the prologue names a personality
+    // routine at all. `staticSymbols_` is what catches two static locals of one
+    // name. None is the replayed body's business, and none is the enclosing
+    // function's to lose. `inUnnamedNamespace_` is deliberately not here: it is
+    // linkage for the whole file, not state for one function.
+    const bool outerHasPads = functionHasPads_;
+    const bool outerHasTry = functionHasTry_;
+    const int outerTypeIndex = functionTypeIndex_;
+    const bool outerVariadic = variadicBody_;
+    const bool outerInStatic = inStaticMember_;
+    const bool outerInParams = inParams_;
+    const std::vector<std::string> outerStatics = staticSymbols_;
+    functionHasPads_ = false;
+    functionHasTry_ = false;
+    functionTypeIndex_ = 0;
+    variadicBody_ = false;
+    inStaticMember_ = false;
+    inParams_ = false;
+    staticSymbols_.clear();
     for (std::size_t i = 0; i < mine.size(); i++) {
         at_ = mine[i].start;
         inlineOwner_ = mine[i].tag;
@@ -581,6 +605,13 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     alive_ = outerAlive;
     pendingTemps_ = outerPending;
     bodyCleanupFrom_ = outerBodyCleanup;
+    functionHasPads_ = outerHasPads;
+    functionHasTry_ = outerHasTry;
+    functionTypeIndex_ = outerTypeIndex;
+    variadicBody_ = outerVariadic;
+    inStaticMember_ = outerInStatic;
+    inParams_ = outerInParams;
+    staticSymbols_ = outerStatics;
     replayingInline_ = outerInline;
     at_ = resume;
 }

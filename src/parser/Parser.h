@@ -159,6 +159,18 @@ private:
         static std::size_t npos() { return (std::size_t)-1; }
     };
     std::vector<PendingBody> pendingBodies_;
+    // **Where a declaration actually put its signature.** `functions_.size()`
+    // taken before it is not the answer: declaring a member whose parameter
+    // names a class template instantiates that template first, and the
+    // instantiation appends its own members - so the signature lands later, and
+    // a PendingBody gated on the earlier index asked about somebody else's
+    // function and never replayed its body.
+    std::size_t signatureAddedUnder(const std::string &key,
+                                    std::size_t before) const {
+        const std::vector<std::size_t> *set = overloadsOf(key);
+        if (set == nullptr || set->empty()) return PendingBody::npos();
+        return set->back() >= before ? set->back() : PendingBody::npos();
+    }
     void replayInlineBodies(std::vector<PendingBody> mine);
     // **[dcl.inline]/6: a member defined inside its class is implicitly
     // inline**, and so is every member of a template specialization - which is

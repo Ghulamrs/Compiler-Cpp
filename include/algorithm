@@ -59,6 +59,41 @@ static std::size_t count(In from, In to, const T &want) {
     return seen;
 }
 
+
+// **sort - [alg.sort], as an insertion sort.** The standard asks for O(n log n)
+// and this is quadratic: a complexity guarantee this library does not meet,
+// rather than a wrong answer, and it is written down here rather than implied.
+// It needs no scratch memory and moves through the iterator alone, so it works
+// for any iterator that can step both ways.
+template <class It, class Less>
+static void sort(It from, It to, Less less) {
+    for (It i = from; i != to; ++i)
+        for (It j = i; j != from; ) {
+            It prev = j;
+            --prev;
+            if (!less(*j, *prev)) break;
+            auto held = *prev;
+            *prev = *j;
+            *j = held;
+            j = prev;
+        }
+}
+
+// The same, ordered by `<` - which is what the two-argument form means.
+template <class It>
+static void sort(It from, It to) {
+    for (It i = from; i != to; ++i)
+        for (It j = i; j != from; ) {
+            It prev = j;
+            --prev;
+            if (!(*j < *prev)) break;
+            auto held = *prev;
+            *prev = *j;
+            *j = held;
+            j = prev;
+        }
+}
+
 }  // namespace std
 
 #endif

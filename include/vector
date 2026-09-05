@@ -25,6 +25,7 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <initializer_list>
 
 namespace std {
 
@@ -49,6 +50,16 @@ public:
         reserve(n);
         for (size_type i = 0; i < n; i++) push_back(T());
     }
+    // **`vector<T> v{a, b, c}`** - [sequence.reqmts]: the braced list arrives as
+    // one std::initializer_list and its elements are copied in order. Reserved
+    // first, so one allocation serves the whole list however long it is.
+    vector(std::initializer_list<T> list) : items_(0), size_(0), cap_(0) {
+        reserve(list.size());
+        for (typename std::initializer_list<T>::const_iterator it = list.begin();
+             it != list.end(); ++it)
+            push_back(*it);
+    }
+
     ~vector() { std::free(items_); }
 
     vector &operator=(const vector &o) {

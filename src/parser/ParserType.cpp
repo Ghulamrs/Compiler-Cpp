@@ -351,11 +351,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             declareConstructor(tag, cpos, access, isExplicit);
             isExplicit = false;
             if (peek().is("{") || peek().is(":")) {
-                pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
-                                                      constructorKey(tag),
-                                                      functions_.size() > sigAt
-                                                          ? sigAt
-                                                          : PendingBody::npos() });
+                pendingBodies_.push_back(PendingBody{
+                    tag, itemStart, local, constructorKey(tag),
+                    signatureAddedUnder(constructorKey(tag), sigAt) });
                 skipBracedBlock();
                 continue;
             }
@@ -404,11 +402,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             const std::size_t sigAt = functions_.size();
             declareDestructor(tag, dpos, access, isVirtual);
             if (peek().is("{")) {
-                pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
-                                                      destructorKey(tag),
-                                                      functions_.size() > sigAt
-                                                          ? sigAt
-                                                          : PendingBody::npos() });
+                pendingBodies_.push_back(PendingBody{
+                    tag, itemStart, local, destructorKey(tag),
+                    signatureAddedUnder(destructorKey(tag), sigAt) });
                 skipBracedBlock();
                 continue;
             }
@@ -757,11 +753,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     declareMember(tag, d, constThis, access,
                                   kind == Kind::Union, isVirtual, memberIsStatic,
                                   isPure);
-                    pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
-                                                          tag + "::" + d.name,
-                                                          functions_.size() > sigAt
-                                                              ? sigAt
-                                                              : PendingBody::npos() });
+                    pendingBodies_.push_back(PendingBody{
+                        tag, itemStart, local, tag + "::" + d.name,
+                        signatureAddedUnder(tag + "::" + d.name, sigAt) });
                     skipBracedBlock();
                     heldBody = true;
                     break;
