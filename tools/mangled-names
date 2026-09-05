@@ -56,6 +56,12 @@ trap 'rm -rf "$OUT"' EXIT
 # operand starting with '*'. Virtual dispatch is exactly that - `call *%r11` -
 # and without the guard the register was scraped as a name and reported as a
 # symbol cxx1 had and clang did not.
+# **An EXTERN is a declaration, not a symbol this file has**, and reading one as
+# a name made the comparison asymmetric the moment data started declaring its
+# references. MASM needs every symbol a `DQ` names declared; the GNU spelling
+# needs nothing, and the scrape has no rule for a `.quad` operand - so a vtable
+# slot holding `_purecall` was a name on one side and absent on the other. Call
+# targets are still compared, from the `call` lines, on both sides.
 # **`OPTION PROC:PRIVATE` is not a function called OPTION.** The PROC rule
 # below reads `<name> PROC` as a definition, and MASM's own directives are
 # written the same shape - so the preamble that stops MASM exporting every
@@ -67,7 +73,6 @@ names() {
     sed -n \
         -e 's/^[[:space:]]*\.globl[[:space:]]*//p' \
         -e 's/^[[:space:]]*PUBLIC[[:space:]]*//p' \
-        -e 's/^[[:space:]]*EXTERN[[:space:]]*//p' \
         -e 's/^\([^[:space:]]*\)[[:space:]][[:space:]]*PROC.*/\1/p' \
         -e 's/^\([^[:space:]:]*\):.*/\1/p' \
         -e 's/^\([A-Za-z_$?][A-Za-z0-9_$?@]*\)[[:space:]][[:space:]]*D[BWDQ][[:space:]].*/\1/p' \
@@ -142,18 +147,22 @@ for pair in "x86_64-linux:x86_64-linux-gnu" \
     # clang for MSVC's EH funclets there would compare a feature cxx1 has
     # against one it does not.
     #
-    # **-fno-rtti is the same argument again**, and it arrived with vtables: a
-    # polymorphic class makes clang emit _ZTI and _ZTS - the typeinfo object
-    # and its name string - and cxx1 has no RTTI at all, refusing `typeid` by
-    # name. Under -fno-rtti clang writes a plain 0 in the vtable's typeinfo
-    # slot, which is exactly what cxx1 writes.
+    # **RTTI is asked for on the Itanium targets now, and that is the same
+    # argument a third time.** It used to be -fno-rtti everywhere, because a
+    # polymorphic class makes clang emit _ZTI and _ZTS and cxx1 emitted
+    # neither, writing a plain 0 in the vtable's typeinfo slot. cxx1 emits both
+    # since `dynamic_cast` landed, on all three targets - Itanium's two objects
+    # behind the vtable and the Microsoft ABI's five in front of it alike - so
+    # the two are comparable and are compared. That is what caught the tag
+    # `__unnamed`, and what caught `??_R2Leaf@@@` for `??_R2Leaf@@8`.
     # **-fexceptions everywhere, since rung 6.5b step 4.** This asked clang for
     # -fno-exceptions on Windows while cxx1 had no exception tables for that
     # target: every case with a `throw` or a destructor would otherwise have
     # reported a missing feature as a naming difference. cxx1 throws, catches
     # and runs cleanups there now, so the two are comparable and are compared.
     EH=-fexceptions
-    if ! clang++ -x c++ -std=c++11 $EH -fno-rtti -w -target "$theirs" -S "$SRC" -o "$OUT/theirs.s" \
+    RTTI=-frtti
+    if ! clang++ -x c++ -std=c++11 $EH $RTTI -w -target "$theirs" -S "$SRC" -o "$OUT/theirs.s" \
                  2>"$OUT/theirs.err"; then
         echo "$mine: clang refused it, so there is nothing to compare against"
         sed 's/^/    /' "$OUT/theirs.err" | head -3

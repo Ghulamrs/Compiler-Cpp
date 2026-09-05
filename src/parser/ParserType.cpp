@@ -102,6 +102,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     if (!specializationOf.empty()) {
         type->setLocalName(tag);
         type->setSpecialization(specializationOf, instantiatingArgs_);
+        type->setTemplateNamespace(instantiatingNamespace_);
         // **The injected class name.** Inside `Holder`'s own body the word `Holder`
         // means this specialization and not the template, which is what makes
         // `const Holder &` a legal parameter there. Registered as a member type.
@@ -115,10 +116,14 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         type->setLocalName(local);
         type->setEnclosing(within);
     }
-    // Only a definition decides this. `class X;` followed by `struct X { };` is one
-    // type written two ways - the standard makes the keywords interchangeable here -
-    // so the body is what sets it and a mere mention never unsets it.
+    // A definition decides this, and a declaration answers when no definition
+    // has. `class X;` followed by `struct X { };` is one type written two ways -
+    // the standard makes the keywords interchangeable here - so the body still
+    // wins and a later mention never unsets it. But a unit that sees only the
+    // declaration has to spell the name the same way as one that sees the body,
+    // or the two do not link: Microsoft writes V for a class and U for a struct.
     if (peek().is("{") || peek().is(":")) type->setDeclaredClass(isClass);
+    else                                  type->noteClassKey(isClass);
     if (!localOwner.empty()) {
         // The single component is what both ABIs spell inside the wrapper, and the
         // written name is what resolves inside this function - which also shadows a
@@ -257,6 +262,17 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         if (peek().is("template"))
             src_.fail(peek().pos, "a member template is not supported yet");
 
+        // **A using-declaration in a class is a different rule from one at
+        // namespace scope**, which this compiler has: here it redeclares a base
+        // member, changing its access or bringing an overload set into the
+        // derived class's own, and neither is an alias.
+        if (peek().is("using"))
+            src_.fail(peek().pos, "a using-declaration inside a class is not "
+                                  "supported yet - it redeclares a base member "
+                                  "here rather than naming it, which changes "
+                                  "access and overload resolution; one at "
+                                  "namespace scope works");
+
         // Where this member's declaration begins. A body written here is
         // replayed from exactly this token, so the replay re-reads the return
         // type and parameters rather than trying to rebuild them.
@@ -280,11 +296,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             peek().text == local && peekAt(1).is("(")) {
             std::size_t cpos = peek().pos;
             at_++;
+            const std::size_t sigAt = functions_.size();
             declareConstructor(tag, cpos, access, isExplicit);
             isExplicit = false;
             if (peek().is("{") || peek().is(":")) {
                 pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
-                                                      constructorKey(tag) });
+                                                      constructorKey(tag),
+                                                      functions_.size() > sigAt
+                                                          ? sigAt
+                                                          : PendingBody::npos() });
                 skipBracedBlock();
                 continue;
             }
@@ -292,18 +312,27 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             continue;
         }
 
-        // Anything else it was written on. A conversion function is named separately
-        // because `explicit operator bool()` is the other place the standard allows
-        // it, and "a constructor" would send the reader after the wrong mistake.
+        // **`explicit` on a conversion function is C++11 and is not built.**
+        // Asked before the general complaint below, which would otherwise send
+        // the reader after the wrong mistake: the keyword *does* belong here,
+        // and it is the rule behind it that is missing. An explicit conversion
+        // has to be refused everywhere except a `static_cast` and a condition,
+        // and accepting the word while ignoring that is a claim the compiler
+        // cannot support.
+        if (isExplicit && peek().is("operator") &&
+            peekAt(1).kind != TokenKind::Punct)
+            src_.fail(explicitAt, "'explicit' on a conversion function is "
+                                  "C++11 and is not supported yet - the "
+                                  "conversion itself works, and an explicit one "
+                                  "would have to be refused everywhere except a "
+                                  "static_cast and a condition");
+
+        // Anything else it was written on: neither a constructor, which the
+        // branch above read, nor a conversion function.
         if (isExplicit)
-            src_.fail(explicitAt,
-                      peek().is("operator")
-                          ? "'explicit' on a conversion function is C++11 and "
-                            "would work here, but a conversion function is not "
-                            "supported yet at all - so there is nothing for it "
-                            "to apply to"
-                          : "'explicit' applies to a constructor, and this "
-                            "declaration is not one");
+            src_.fail(explicitAt, "'explicit' applies to a constructor or a "
+                                  "conversion function, and this declaration "
+                                  "is neither");
 
         // **The replay must not start at `virtual`.** A held body is re-read through
         // the ordinary out-of-line path, where the keyword is not written, so it is
@@ -318,10 +347,14 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             peekAt(1).text == local && peekAt(2).is("(")) {
             std::size_t dpos = peek().pos;
             at_ += 2;
+            const std::size_t sigAt = functions_.size();
             declareDestructor(tag, dpos, access, isVirtual);
             if (peek().is("{")) {
                 pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
-                                                      destructorKey(tag) });
+                                                      destructorKey(tag),
+                                                      functions_.size() > sigAt
+                                                          ? sigAt
+                                                          : PendingBody::npos() });
                 skipBracedBlock();
                 continue;
             }
@@ -396,6 +429,13 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
         StorageClass msc;
         Qualifiers mquals;
+        const bool wasEnum = peek().is("enum");
+        // **`mutable` is a decl-specifier on a non-static data member**, and
+        // read here rather than in `specifiers` because it names no type and
+        // nothing outside a class body may write it. Written after the type -
+        // `int mutable x;`, which is legal and nobody writes - it is refused
+        // by the keyword table with the message that keyword already has.
+        const bool isMutable = consume("mutable");
         const Type *base = specifiers(&msc, &mquals);
 
         // **A typedef inside a class names a type and declares no member.** It is
@@ -424,6 +464,11 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // takes no room in the enclosing object, so there is nothing to lay out and
         // nothing to name - the specifier was the whole declaration.
         if (peek().is(";")) {
+            // An `enum Kind { ... };` in a class body declares a type and no
+            // member, exactly as a nested class does - and it is told apart by
+            // the keyword, because the type it answers with is `int` and there
+            // is nothing in that to recognise.
+            if (wasEnum) { at_++; continue; }
             if (!base->isStructOrUnion() || base->tag().empty())
                 src_.fail(peek().pos, "this declares nothing - a member needs a "
                                       "name");
@@ -499,6 +544,20 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             const bool memberIsFunction = peek().is("(") || d.paramsAt != 0 ||
                                           d.type->isFunction();
 
+            // **[dcl.stc]/9 names what `mutable` may not be applied to**, and
+            // each of the four would be a contradiction rather than a gap: a
+            // static member is not part of any object, a const one is what the
+            // keyword exists to undo, a reference cannot be rebound whatever
+            // is said about it, and a function is not a member that is written.
+            if (isMutable) {
+                if (msc == StorageStatic || memberIsFunction ||
+                    d.type->isReference() || d.type->isConst())
+                    src_.fail(d.pos, "'mutable' may not be applied to '" +
+                                     d.name + "' - [dcl.stc] allows it on a "
+                                     "non-static data member that is neither "
+                                     "const nor a reference");
+            }
+
             // **`constexpr` on a member function, taken off the return type here as
             // well.** The out-of-line path does the same, and a member declared here
             // is defined through that path - so without this the two disagree.
@@ -518,11 +577,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
             // **A static member is not part of the object**, so it leaves the
             // layout untouched and the cursor where it was.
-            if (msc == StorageStatic) {
-                if (peek().is("("))
-                    src_.fail(d.pos, "'" + d.name + "' is a static member "
-                                     "function, which is not supported yet - a "
-                                     "static data member works now");
+            if (msc == StorageStatic && !peek().is("(")) {
                 declareStaticMember(tag, type, d, access);
                 if (!consume(",")) break;
                 continue;
@@ -582,7 +637,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 }
                 members.push_back(Member{ d.name, d.type, static_cast<int>(at),
                                           static_cast<int>(w),
-                                          static_cast<int>(bitOff), access });
+                                          static_cast<int>(bitOff), access,
+                                          isMutable });
                 if (!consume(",")) break;
                 continue;
             }
@@ -591,17 +647,50 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             // declarator leaves the parameter list for its caller, as a free
             // function's does. It goes in the same table, under "Point::get".
             if (peek().is("(")) {
+                const bool memberIsStatic = msc == StorageStatic;
                 std::vector<const Type *> mparams;
                 bool mvariadic = false;
                 parameterTypes(mparams, mvariadic);
                 d.type = types_.functionType(d.type, std::move(mparams), mvariadic);
                 bool constThis = false;
                 if (consume("const")) constThis = true;
+                // [class.static]/1: a static member function has no `this`, so
+                // there is nothing for either of these to qualify. Refused where
+                // written - a `const` quietly dropped would change a mangled
+                // name and nothing else, which is the worst kind of silence.
+                if (memberIsStatic && constThis)
+                    src_.fail(d.pos, "'" + d.name + "' is a static member "
+                                     "function and has no 'this', so 'const' "
+                                     "has nothing to qualify");
+                if (memberIsStatic && isVirtual)
+                    src_.fail(d.pos, "'" + d.name + "' cannot be both 'static' "
+                                     "and 'virtual' - one says there is no "
+                                     "object and the other dispatches on one");
                 pendingNoexcept_ = exceptionSpecification();
                 // **A `constexpr` member function is implicitly const in C++11**, and
                 // that is a mangling difference: clang spells it `_ZNK1B5twiceEi`.
                 // C++14 removed the rule, so a compiler pinned to C++11 keeps it.
                 if (mquals.isConstexpr) constThis = true;
+
+                // **`= 0` is the pure-specifier**, and it is spelled with a
+                // zero that is not an initialiser: the function has no body
+                // here and the class's slot holds the runtime's trap instead.
+                // Only a virtual may carry it, which is what makes an abstract
+                // class abstract.
+                bool isPure = false;
+                if (peek().is("=") && peekAt(1).kind == TokenKind::Num &&
+                    !peekAt(1).isFloat && peekAt(1).value == 0) {
+                    if (!isVirtual)
+                        src_.fail(peek().pos, "'= 0' makes a function pure, and "
+                                              "only a virtual one can be - '" +
+                                              d.name + "' is not declared "
+                                              "'virtual'");
+                    if (memberIsStatic)
+                        src_.fail(peek().pos, "'" + d.name + "' cannot be both "
+                                              "'static' and pure");
+                    at_ += 2;
+                    isPure = true;
+                }
 
                 // **The body is held, not parsed.** It has to be able to see members
                 // declared after it, so nothing in it can be read until the class is
@@ -610,10 +699,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     if (tag.empty())
                         src_.fail(d.pos, "a member function needs a class with "
                                          "a name - this one is anonymous");
+                    const std::size_t sigAt = functions_.size();
                     declareMember(tag, d, constThis, access,
-                                  kind == Kind::Union, isVirtual);
+                                  kind == Kind::Union, isVirtual, memberIsStatic,
+                                  isPure);
                     pendingBodies_.push_back(PendingBody{ tag, itemStart, local,
-                                                          tag + "::" + d.name });
+                                                          tag + "::" + d.name,
+                                                          functions_.size() > sigAt
+                                                              ? sigAt
+                                                              : PendingBody::npos() });
                     skipBracedBlock();
                     heldBody = true;
                     break;
@@ -622,7 +716,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     src_.fail(d.pos, "a member function needs a class with a "
                                      "name - this one is anonymous");
                 declareMember(tag, d, constThis, access, kind == Kind::Union,
-                              isVirtual);
+                              isVirtual, memberIsStatic, isPure);
                 if (!consume(",")) break;
                 continue;
             }
@@ -633,6 +727,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
             if (!d.type->isComplete())
                 src_.fail(d.pos, "'" + d.name + "' has an incomplete type");
+            checkNotAbstract(d.type, d.pos, "the member '" + d.name + "'");
             // **What a reference member occupies is a pointer**, and asking the type
             // is the wrong question: `sizeof` a reference is its referent's size. The
             // declared type stays the reference, which makes every read dereference.
@@ -646,7 +741,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 ((bitCursor > openEnd ? bitCursor : openEnd) + 7) / 8;
             long long at = (kind == Kind::Union) ? 0 : alignTo(byteCursor, a);
             members.push_back(Member{ d.name, d.type, static_cast<int>(at), 0, 0,
-                                      access });
+                                      access, isMutable });
             // `int x = 5;` - C++11's initialiser on the member itself. The tokens stay
             // where they are and their place is recorded; every constructor that does
             // not name this member in its own list reads them again.
@@ -734,6 +829,14 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     if (copyConstructorOf(type) != nullptr || moveConstructorOf(type) != nullptr)
         type->setNonTrivialCopy(true);
     if (destructorOf(type) != nullptr) type->setHasDestructor(true);
+    // **Abstract is a question about the finished table**, not about what this
+    // class declared: a derived class that overrides every pure virtual has
+    // replaced those entries and is concrete, and one that leaves any is not.
+    if (!tag.empty()) {
+        const std::vector<VSlot> &slots = vtables_[tag];
+        for (std::size_t i = 0; i < slots.size(); i++)
+            if (slots[i].pure) { type->setAbstract(true); break; }
+    }
     if (type->polymorphic()) emitVtable(type, tag, pos);
     // **A specialization's member bodies are not replayed here.** This is in the
     // middle of whatever asked for the class, and a replay goes through topLevel,
@@ -750,10 +853,23 @@ const Type *Parser::enumSpecifier() {
     std::string tag;
     if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
 
+    // **An enum is named through what encloses it**, the same way a class is:
+    // `C::Kind` inside a class and `n::Kind` inside a namespace. The lookups
+    // walk the scope, so `Kind` still means this one from inside, and the
+    // qualified spelling now finds it from outside - which it did not before,
+    // for a namespace either.
+    const Type *within = classStack_.empty() ? nullptr : classStack_.back();
+    std::string prefix;
+    if (within != nullptr) prefix = within->tag() + "::";
+    else if (!namespaceStack_.empty()) prefix = namespacePrefix();
+
     // The tag names a type, as a class tag does. What it does not yet name is
     // a *distinct* type: an enumeration is still int here, so the conversions
     // C++ refuses in both directions are accepted. docs/CONFORMANCE.md has it.
-    if (!tag.empty()) declareTypeName(tag, types_.intType());
+    // **The name is an `int` that remembers it** - see TypeTable::enumType.
+    // An anonymous enumeration has nothing to remember and stays plain `int`.
+    if (!tag.empty())
+        declareTypeName(prefix + tag, types_.enumType(prefix + tag));
 
     if (!peek().is("{")) return types_.intType();
     at_++;
@@ -762,11 +878,12 @@ const Type *Parser::enumSpecifier() {
     while (!peek().is("}")) {
         std::size_t npos = peek().pos;
         std::string name = expectIdent("an enumerator");
-        if (findEnum(name)) src_.fail(npos, "'" + name + "' is declared twice");
+        if (findEnum(prefix + name))
+            src_.fail(npos, "'" + name + "' is declared twice");
         if (consume("="))
             next = narrowTo(constantExpression("a constant"), types_.intType());
-        enumIndex_[name] = enums_.size();
-        enums_.push_back(EnumConst{ name, next });
+        enumIndex_[prefix + name] = enums_.size();
+        enums_.push_back(EnumConst{ prefix + name, next });
         next = next + 1;
         if (!consume(",")) break;
     }
@@ -788,6 +905,38 @@ const Type *Parser::specifiers(StorageClass *storage, Qualifiers *quals) {
 const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *quals) {
     std::size_t start = peek().pos;
     *storage = StorageNone;
+
+    // **A conversion function's name *is* its return type**, which is the one
+    // place in the language where those two are the same thing. So the type is
+    // read out of the name here without being consumed, and the declarator then
+    // reads `operator int` whole in the ordinary way - which is what makes one
+    // path serve all three spellings: the member declaration, the out-of-class
+    // definition `S::operator int()`, and the replay of a body held inside the
+    // class, which restarts at the `operator` and would otherwise meet a
+    // declaration with no type at all.
+    //
+    // First without a qualification, then with one. The qualified form is
+    // scanned past rather than consumed, because the declarator wants
+    // `S::operator int` entire and what this answers is what the conversion
+    // makes, which is inside the name rather than in front of it.
+    {
+        std::size_t k = 0;
+        if (peek().kind == TokenKind::Ident && peekAt(1).is("::"))
+            while (peekAt(k).kind == TokenKind::Ident && peekAt(k + 1).is("::"))
+                k += 2;
+        if (peekAt(k).is("operator") && peekAt(k + 1).kind != TokenKind::Punct) {
+            const std::size_t resume = at_;
+            at_ += k;
+            operatorName();
+            const Type *to = conversionTarget_;
+            conversionTarget_ = nullptr;
+            at_ = resume;
+            if (to != nullptr) {
+                *storage = StorageNone;
+                return to;
+            }
+        }
+    }
 
     for (;;) {
         if (consume("static"))  { *storage = StorageStatic; continue; }
@@ -839,7 +988,7 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // named where a type was expected is not, and is refused by name.
     if (peek().kind == TokenKind::Ident && isTemplateName(peek().text) &&
         peekAt(1).is("<")) {
-        const TemplateDecl decl = templates_[peek().text];
+        const TemplateDecl decl = findTemplate(peek().text)->second;
         if (!decl.isClass) refuseTemplateId();
         const std::size_t tpos = peek().pos;
         at_++;
@@ -862,6 +1011,14 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
             std::string q = peek().text;
             const Type *found = nullptr;
             std::size_t consumed = 0;
+            // **`std::vector<int>` - a class template named qualified.** The
+            // same walk, stopping at a template instead of a typedef, with the
+            // `<` part of the question: a template is not a type until its
+            // arguments are given. Tracked separately from `found` so that the
+            // longer of the two wins, which is the rule this loop already has
+            // for `Outer::Inner`.
+            std::string tmpl;
+            std::size_t tmplConsumed = 0;
             for (std::size_t k = 1; peekAt(k).is("::") &&
                                     peekAt(k + 1).kind == TokenKind::Ident;
                  k += 2) {
@@ -870,12 +1027,24 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
                     found = n;
                     consumed = k + 2;
                 }
+                if (peekAt(k + 2).is("<") && isClassTemplate(q)) {
+                    tmpl = q;
+                    tmplConsumed = k + 2;
+                }
+            }
+            if (tmplConsumed > consumed) {
+                const std::size_t tpos = peek().pos;
+                at_ += tmplConsumed;
+                const Type *cls = instantiateClass(findTemplate(tmpl)->second,
+                                                   tpos);
+                return memberTypeWalk(cls);
             }
             if (found != nullptr) {
                 // A nested class is a member, and `private:` reaches it.
                 if (found->enclosing() != nullptr &&
                     found->nestedAccess() != Access::Public &&
-                    !insideClass(found->enclosing()))
+                    !insideClass(found->enclosing()) &&
+                    !definesMemberOf(found->enclosing(), consumed))
                     src_.fail(peek().pos, "'" + found->localName() + "' is " +
                                           (found->nestedAccess() == Access::Private
                                                ? "private" : "protected") +
@@ -887,6 +1056,18 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         }
         if (const Type *t = findTypedef(peek().text)) {
             at_++;
+            return memberTypeWalk(t);
+        }
+    }
+
+    // **A leading `::` names the global scope and nothing nearer**, which is
+    // what a class writes when a member, a local or a namespace has taken the
+    // name it wants - `::Lexer *lexer;` inside a `cc::Parser` that also knows
+    // a `Lexer`. The token says where to look; everything after it is the
+    // ordinary path.
+    if (peek().is("::") && peekAt(1).kind == TokenKind::Ident) {
+        if (const Type *t = findGlobalTypedef(peekAt(1).text)) {
+            at_ += 2;
             return memberTypeWalk(t);
         }
     }
@@ -957,13 +1138,16 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         return quals->isConst ? types_.withConst(deduced) : deduced;
     }
     // Same reason as in expectIdent: `friend`, `mutable`, `explicit`, `using` and
-    // `static_assert` all begin a member declaration in C++ and none begins one here.
-    // **And a declaration whose *type* is `operator` is a conversion function.**
+    // `static_assert` all begin a member declaration in C++ and none begins one
+    // here. **A conversion function is read at the top of this function**, so
+    // what reaches here is an `operator` this compiler could not make a name
+    // out of - `operator` followed by punctuation that is not an operator.
     if (peek().is("operator"))
-        src_.fail(peek().pos, "a conversion function is not supported yet - "
-                              "this declaration names a type to convert to "
-                              "where every operator that can be overloaded "
-                              "here is punctuation");
+        src_.fail(peek().pos, "'operator' here names neither an operator this "
+                              "compiler can overload nor a type it can convert "
+                              "to - a conversion function's name is a type, and "
+                              "every operator that can be overloaded is "
+                              "punctuation");
     if (peek().is("explicit"))
         src_.fail(peek().pos, "'explicit' is written on a constructor's "
                               "declaration inside its class, and nowhere else "
@@ -1071,11 +1255,43 @@ std::string Parser::operatorName() {
         src_.fail(pos, "'operator->*' is not supported yet");
     if (peek().kind == TokenKind::Str)
         src_.fail(pos, "a user-defined literal is not supported yet");
-    if (peek().kind != TokenKind::Punct)
-        src_.fail(pos, "a conversion function is not supported yet - "
-                       "'operator " + spelling + "' names a type to convert "
-                       "to, where every operator this compiler can overload "
-                       "is punctuation");
+    // **A type after `operator` is a conversion function**, not an operator
+    // that happens to be spelled with letters. `operator bool()` and
+    // `operator char *()` both come here; every operator that can be
+    // overloaded is punctuation, so the token kind is the whole test.
+    //
+    // The name it is filed under is `operator ` and the type, with a space -
+    // which is what tells it from `operator+` at every later reading, the
+    // punctuation forms having none.
+    if (peek().kind != TokenKind::Punct) {
+        StorageClass csc;
+        Qualifiers cq;
+        const Type *to = specifiers(&csc, &cq);
+        if (cq.isConst) to = types_.withConst(to);
+        // **A conversion-declarator is only `*` and `&`** - [class.conv.fct]
+        // and the grammar for conversion-type-id, which has no function and no
+        // array declarator in it. That is not a simplification: the `()` after
+        // `operator int` is the *parameter list*, so reading a general
+        // declarator here swallowed it and left the parameter list unread.
+        for (;;) {
+            if (consume("*")) {
+                to = types_.pointerTo(to);
+                while (peek().is("const") || peek().is("volatile")) {
+                    if (peek().is("const")) to = types_.withConst(to);
+                    at_++;
+                }
+                continue;
+            }
+            if (peek().is("&") && !peekAt(1).is("&")) {
+                at_++;
+                to = types_.referenceTo(to);
+                continue;
+            }
+            break;
+        }
+        conversionTarget_ = to;
+        return "operator " + to->describe();
+    }
     if (findOperator(spelling) == nullptr)
         src_.fail(peek().pos, "'" + spelling + "' is not an operator, so "
                               "there is nothing here to overload");
@@ -1113,6 +1329,35 @@ void Parser::checkOperatorDeclarable(const std::string &name, std::size_t params
     // it a dummy `int` that nobody passes, so it counts two operands and is unary all
     // the same. Recognised by that parameter being an int, the only shape allowed.
     if (operands == 2 && (spelling == "++" || spelling == "--")) return;
+
+    // **The compound assignments, `@=`.** [over.ass] makes each a member like
+    // plain assignment and puts no constraint on what it takes - `s += 'c'` and
+    // `s += t` are two overloads of one name. A class's `+=` is that operator
+    // alone: it is not rewritten into `+` and an assignment, which is why
+    // having `operator+` and `operator=` does not give you this one.
+    static const char *const compound[] = {
+        "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="
+    };
+    if (operands == 2 && member)
+        for (const char *k : compound)
+            if (spelling == k) return;
+
+    // **[over.sub]: subscripting is a member and takes exactly one argument.**
+    // There is no non-member form, so `operands == 2 && member` is the whole of
+    // the shape - a free `operator[]` is a different error and is caught below
+    // by falling through, which says the operator cannot be reached rather than
+    // that its arity is wrong.
+    if (spelling == "[]" && operands == 2 && member) return;
+
+    // **[over.ass]: assignment is a member too**, and unlike subscripting it may
+    // take anything - `s = 3` is an `operator=(int)`. So only the member-ness is
+    // checked here; the one operand it writes is whatever it converts from.
+    if (spelling == "=" && operands == 2 && member) return;
+
+    // **[over.ref]: `operator->` is a member and takes nothing.** What it returns
+    // is checked where it is used, not here: a pointer ends the chain and a class
+    // continues it, and neither is knowable from the declaration alone.
+    if (spelling == "->" && operands == 1 && member) return;
 
     // The call operator has no arity to check: [over.call] lets it take
     // whatever it likes, and it has no non-member form to be confused with.
@@ -1241,7 +1486,7 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
     // name just read is a class template, so what follows it is an argument list and
     // the class it makes is the qualifier. The rest is read by the loop below.
     {
-        auto tmpl = templates_.find(name);
+        auto tmpl = findTemplate(name);
         if (!name.empty() && peek().is("<") && tmpl != templates_.end() &&
             tmpl->second.isClass) {
             const std::size_t tpos = pos;

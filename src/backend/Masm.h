@@ -18,7 +18,8 @@ public:
     void ins(const std::string &m, const Op &a, const Op &b) override;
 
     void defLabel(const std::string &l) override;
-    void functionBegin(const std::string &name, bool exported) override;
+    void functionBegin(const std::string &name, bool exported,
+                       bool mergeable = false) override;
     void prologue(int frameSize, const std::string &lsda) override;
     // The unwind codes the prologue described, written out by functionEnd -
     // which is where the labels they measure against exist.
@@ -113,9 +114,13 @@ private:
     std::string funcletSymbol_;
     const char *funcletKind_ = "$catch$";
     bool writesDwarf() const override { return false; }
+    bool emitsOwnRtti() const override { return true; }
     // The four objects the Microsoft ABI wants per thrown type. Emitted here
     // because no other target has anything like them.
     void emitThrowInfo(const Program &program);
+    // The five objects the Microsoft ABI wants per class with a vftable, for
+    // the same reason and in the same place.
+    void emitClassRtti(const Program &program);
 
     MasmSpelling masm_;
 };

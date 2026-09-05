@@ -1,0 +1,114 @@
+// <map> - an ordered map, kept as a sorted array.
+//
+// **The elements are a sorted `vector<pair<K, V> >` and the iterator is a
+// pointer into it.** So `it->first`, `it->second`, `++it` and `it != m.end()`
+// are the built-in operations on a pointer to a pair, and none of them is
+// written here. A real map is a balanced tree with stable nodes; this trades
+// that for a header a person can read, and pays for it twice:
+//
+//   - **`insert` is O(n)**, because the elements above the new one move up. A
+//     lookup is O(log n) by bisection, which is the operation that is actually
+//     hot in the tree this was written for.
+//   - **Every insertion invalidates every iterator and every reference**, where
+//     a real map invalidates none. `m[k] = v` in a loop over `m` is undefined
+//     here and defined there. Nothing in the corpus does it; a reader should
+//     know it before they do.
+//
+// `operator[]` inserts a default-constructed value when the key is absent,
+// which is what makes `m[k]++` work and what makes it a mistake to use for
+// asking whether a key is there. `find` and `count` are the questions that do
+// not insert.
+#ifndef _CXX1_MAP
+#define _CXX1_MAP
+
+#include <cstddef>
+#include <utility>
+#include <vector>
+
+namespace std {
+
+template <class K, class V>
+class map {
+public:
+    typedef K key_type;
+    typedef V mapped_type;
+    typedef std::pair<K, V> value_type;
+    typedef std::size_t size_type;
+    typedef value_type *iterator;
+    typedef const value_type *const_iterator;
+
+    map() {}
+
+    size_type size() const { return items_.size(); }
+    bool empty() const { return items_.empty(); }
+    void clear() { items_.clear(); }
+    // The two maps exchange their insides rather than their entries, so
+    // neither copies anything and a reference into either follows its own.
+    void swap(map &other) { items_.swap(other.items_); }
+
+    iterator begin() { return items_.begin(); }
+    iterator end() { return items_.end(); }
+    const_iterator begin() const { return items_.begin(); }
+    const_iterator end() const { return items_.end(); }
+
+    // **Bisection, and the answer is where the key is *or would go*.** One
+    // search serves find, count, insert and operator[], which is what keeps
+    // the four of them from disagreeing about what "present" means.
+    size_type lower(const K &k) const {
+        size_type lo = 0;
+        size_type hi = items_.size();
+        while (lo < hi) {
+            const size_type mid = lo + (hi - lo) / 2;
+            if (items_[mid].first < k) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+
+    iterator find(const K &k) {
+        const size_type at = lower(k);
+        if (at == items_.size() || k < items_[at].first) return end();
+        return items_.begin() + at;
+    }
+    const_iterator find(const K &k) const {
+        const size_type at = lower(k);
+        if (at == items_.size() || k < items_[at].first) return end();
+        return items_.begin() + at;
+    }
+
+    size_type count(const K &k) const {
+        const size_type at = lower(k);
+        return at != items_.size() && !(k < items_[at].first) ? 1 : 0;
+    }
+
+    V &operator[](const K &k) {
+        const size_type at = lower(k);
+        if (at != items_.size() && !(k < items_[at].first))
+            return items_[at].second;
+        items_.insert(items_.begin() + at, value_type(k, V()));
+        return items_[at].second;
+    }
+
+    // Answers where the element is and whether this call put it there, which
+    // is the half of the standard's return that anything reads.
+    std::pair<iterator, bool> insert(const value_type &v) {
+        const size_type at = lower(v.first);
+        if (at != items_.size() && !(v.first < items_[at].first))
+            return std::pair<iterator, bool>(items_.begin() + at, false);
+        items_.insert(items_.begin() + at, v);
+        return std::pair<iterator, bool>(items_.begin() + at, true);
+    }
+
+    void erase(const K &k) {
+        const size_type at = lower(k);
+        if (at != items_.size() && !(k < items_[at].first))
+            items_.erase(items_.begin() + at);
+    }
+
+private:
+    std::vector<value_type> items_;
+};
+
+}  // namespace std
+
+#endif

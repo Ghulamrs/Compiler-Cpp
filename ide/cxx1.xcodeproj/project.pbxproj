@@ -24,6 +24,8 @@
 		9B076A3BFE526CEAFEED50E5 /* ParserOperator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9007C25AD21D33132ABC93DE /* ParserOperator.cpp */; };
 		65AD20A97CDDFC3863511CD4 /* ParserOverload.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 3E0575791BD640A45CAAAE70 /* ParserOverload.cpp */; };
 		606601CADFDA5BDF7A41B73F /* ParserStmt.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C92CA000B1DB818A5C2997A /* ParserStmt.cpp */; };
+		7B2D79AE6D5544768A836A01 /* ParserTopLevel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1CAAA1421FBF418F98E4486C /* ParserTopLevel.cpp */; };
+		A5EE38DE88EB4D45A64ADD17 /* ParserConst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F3FD86A7597B4373A306D7AA /* ParserConst.cpp */; };
 		0B460DBD2B3B64579C2DFF64 /* ParserTemplate.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DC7CEDBC4778277FD98832AA /* ParserTemplate.cpp */; };
 		9D58D51CCC8F52B75713AAD5 /* ParserType.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BE1F463CA0C34065CAEF505B /* ParserType.cpp */; };
 		CEA9F161EB296A691B9FAD8F /* Arm64Darwin.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 201EE94DC01106B98E56A367 /* Arm64Darwin.cpp */; };
@@ -55,6 +57,8 @@
 		9007C25AD21D33132ABC93DE /* ParserOperator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserOperator.cpp; path = "../src/parser/ParserOperator.cpp"; sourceTree = "<group>"; };
 		3E0575791BD640A45CAAAE70 /* ParserOverload.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserOverload.cpp; path = "../src/parser/ParserOverload.cpp"; sourceTree = "<group>"; };
 		1C92CA000B1DB818A5C2997A /* ParserStmt.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserStmt.cpp; path = "../src/parser/ParserStmt.cpp"; sourceTree = "<group>"; };
+		1CAAA1421FBF418F98E4486C /* ParserTopLevel.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserTopLevel.cpp; path = "../src/parser/ParserTopLevel.cpp"; sourceTree = "<group>"; };
+		F3FD86A7597B4373A306D7AA /* ParserConst.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserConst.cpp; path = "../src/parser/ParserConst.cpp"; sourceTree = "<group>"; };
 		DC7CEDBC4778277FD98832AA /* ParserTemplate.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserTemplate.cpp; path = "../src/parser/ParserTemplate.cpp"; sourceTree = "<group>"; };
 		BE1F463CA0C34065CAEF505B /* ParserType.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserType.cpp; path = "../src/parser/ParserType.cpp"; sourceTree = "<group>"; };
 		201EE94DC01106B98E56A367 /* Arm64Darwin.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Arm64Darwin.cpp; path = "../src/backend/Arm64Darwin.cpp"; sourceTree = "<group>"; };
@@ -168,6 +172,8 @@
 				9007C25AD21D33132ABC93DE /* ParserOperator.cpp */,
 				3E0575791BD640A45CAAAE70 /* ParserOverload.cpp */,
 				1C92CA000B1DB818A5C2997A /* ParserStmt.cpp */,
+				1CAAA1421FBF418F98E4486C /* ParserTopLevel.cpp */,
+				F3FD86A7597B4373A306D7AA /* ParserConst.cpp */,
 				DC7CEDBC4778277FD98832AA /* ParserTemplate.cpp */,
 				BE1F463CA0C34065CAEF505B /* ParserType.cpp */,
 			);
@@ -236,6 +242,8 @@
 				9B076A3BFE526CEAFEED50E5 /* ParserOperator.cpp in Sources */,
 				65AD20A97CDDFC3863511CD4 /* ParserOverload.cpp in Sources */,
 				606601CADFDA5BDF7A41B73F /* ParserStmt.cpp in Sources */,
+				7B2D79AE6D5544768A836A01 /* ParserTopLevel.cpp in Sources */,
+				A5EE38DE88EB4D45A64ADD17 /* ParserConst.cpp in Sources */,
 				0B460DBD2B3B64579C2DFF64 /* ParserTemplate.cpp in Sources */,
 				9D58D51CCC8F52B75713AAD5 /* ParserType.cpp in Sources */,
 				CEA9F161EB296A691B9FAD8F /* Arm64Darwin.cpp in Sources */,

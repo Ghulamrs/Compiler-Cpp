@@ -12,6 +12,7 @@
 StmtPtr Parser::constructLocal(const Declared &d, int offset,
                                std::vector<ExprPtr> args, bool copyInit,
                                bool valueInit) {
+    checkNotAbstract(d.type, d.pos, "'" + d.name + "'");
     const std::string key = constructorKey(d.type->tag());
     const Signature &ctor = resolveOverload(key, args, d.pos);
     applyDefaults(ctor, args, d.pos);
@@ -304,6 +305,11 @@ void Parser::synthesizeDeleting(const std::string &cls, const Type *type,
                                            false, 0, pos,
                                            std::vector<::Local>()));
     current_->functions.back().setSymbol(symbol);
+    // **A compiler-written special member is inline** - [class.copy] and its
+    // neighbours say the implicit definition is - so several translation
+    // units may each hold one and the linker folds them. Without this, two
+    // units that include one class collided on its implicit destructor.
+    current_->functions.back().setInline(true);
     frameSize_ = savedFrame;
 }
 
@@ -336,7 +342,8 @@ ExprPtr Parser::destructorCall(ExprPtr address, const Signature &dtor,
 std::vector<StmtPtr> Parser::wrapMsCleanups(
     std::vector<StmtPtr> body,
     const std::vector<std::pair<std::size_t, std::size_t> > &built,
-    std::size_t aliveAtEntry, std::size_t pos) {
+    std::size_t aliveAtEntry, std::size_t pos,
+    const std::vector<Temporary> &temps) {
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     const int pointerSlot = allocateFrameSlot(voidPtr);
     const int selectorSlot = allocateFrameSlot(types_.intType());
@@ -356,6 +363,26 @@ std::vector<StmtPtr> Parser::wrapMsCleanups(
         if (guarded.empty()) continue;
 
         std::vector<StmtPtr> steps;
+        // The block's temporaries, each under its guard - see cleanupPad. The
+        // funclets chain, so clearing as it destroys is what stops the next
+        // one in the chain destroying the same object again.
+        for (std::size_t j = temps.size(); j-- > 0; ) {
+            const Signature *dtor = destructorOf(temps[j].type);
+            if (dtor == nullptr || temps[j].flag == 0) continue;
+            ExprPtr what(Var::local("$copy", temps[j].slot));
+            what->setType(temps[j].type);
+            ExprPtr at(new Unary('&', std::move(what)));
+            at->setType(types_.pointerTo(temps[j].type));
+            ExprPtr live(Var::local("$guard", temps[j].flag));
+            live->setType(types_.intType());
+            std::vector<StmtPtr> both;
+            both.push_back(StmtPtr(new ExprStmt(
+                destructorCall(std::move(at), *dtor, 0))));
+            both.push_back(StmtPtr(new ExprStmt(setGuard(temps[j].flag, 0))));
+            steps.push_back(StmtPtr(new If(std::move(live),
+                                           StmtPtr(new Block(std::move(both))),
+                                           StmtPtr())));
+        }
         emitDestructors(steps, k == 0 ? aliveAtEntry : built[k - 1].second,
                         pos, -1, built[k].second);
         Block *b = new Block(std::move(steps));
@@ -373,7 +400,8 @@ std::vector<StmtPtr> Parser::wrapMsCleanups(
 std::vector<StmtPtr> Parser::wrapCleanups(
     std::vector<StmtPtr> body,
     const std::vector<std::pair<std::size_t, std::size_t> > &built,
-    std::size_t aliveAtEntry, std::size_t pos) {
+    std::size_t aliveAtEntry, std::size_t pos,
+    const std::vector<Temporary> &temps) {
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     const int pointerSlot = allocateFrameSlot(voidPtr);
     const int selectorSlot = allocateFrameSlot(types_.intType());
@@ -392,7 +420,7 @@ std::vector<StmtPtr> Parser::wrapCleanups(
         if (guarded.empty()) continue;
         out.push_back(StmtPtr(new Try(
             std::move(guarded),
-            cleanupPad(aliveAtEntry, built[k].second, pointerSlot, pos),
+            cleanupPad(aliveAtEntry, built[k].second, pointerSlot, temps, pos),
             pointerSlot, selectorSlot, std::vector<std::string>())));
     }
     return out;
@@ -402,11 +430,37 @@ std::vector<StmtPtr> Parser::wrapCleanups(
 // a `return` unwinds - `alive_` holds them and nothing new had to track them - and
 // the difference is where the code runs from: a pad, ending in _Unwind_Resume.
 StmtPtr Parser::cleanupPad(std::size_t from, std::size_t to, int pointerSlot,
+                           const std::vector<Temporary> &temps,
                            std::size_t pos) {
     // **Bounded rather than truncated.** Resizing `alive_` down and back up would
     // default-construct what it had thrown away, and the second pad would then
     // destroy an object with no class - silently one destructor short.
     std::vector<StmtPtr> steps;
+    // **The temporaries of this block go first**, being the most recently
+    // built - and each under its own guard, because the pad may be reached
+    // from a point in the statement where this one does not exist yet. Every
+    // temporary of the block is listed in every pad: the flag is what says
+    // which of them are live, so listing one that is not costs a test.
+    for (std::size_t k = temps.size(); k-- > 0; ) {
+        const Signature *dtor = destructorOf(temps[k].type);
+        if (dtor == nullptr || temps[k].flag == 0) continue;
+        ExprPtr what(Var::local("$copy", temps[k].slot));
+        what->setType(temps[k].type);
+        ExprPtr at(new Unary('&', std::move(what)));
+        at->setType(types_.pointerTo(temps[k].type));
+        ExprPtr live(Var::local("$guard", temps[k].flag));
+        live->setType(types_.intType());
+        // **Cleared as it is destroyed.** `_Unwind_Resume` carries on through
+        // the enclosing regions of the same function, so a pad that destroyed
+        // without clearing would be followed by one that destroyed again.
+        std::vector<StmtPtr> both;
+        both.push_back(StmtPtr(new ExprStmt(
+            destructorCall(std::move(at), *dtor, 0))));
+        both.push_back(StmtPtr(new ExprStmt(setGuard(temps[k].flag, 0))));
+        steps.push_back(StmtPtr(new If(std::move(live),
+                                       StmtPtr(new Block(std::move(both))),
+                                       StmtPtr())));
+    }
     emitDestructors(steps, from, pos, -1, to);
 
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
@@ -526,6 +580,7 @@ std::string Parser::synthesizeThunk(const std::string &cls, const Type *type,
                                            alignTo(frameSize_, 16), false, 0,
                                            false, 0, pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(name);
+    current_->functions.back().setInline(true);
     frameSize_ = savedFrame;
     return name;
 }
@@ -614,6 +669,77 @@ ExprPtr Parser::thisMember(int thisSlot, const Type *cls, const Member &m) {
     return acc;
 }
 
+// **The type_info beside a vtable, and the name string beside that.** Two
+// objects per class and a third slot filled: `_ZTS4Base` holds the text "4Base",
+// `_ZTI4Base` points at it behind a vtable pointer that says which *kind* of
+// type_info this is, and the vtable's second word - a plain zero until now -
+// points at `_ZTI`. Measured from clang: a class with no base is
+// `__class_type_info`, one with a single public base is `__si_class_type_info`
+// and carries the base's `_ZTI` as a third word, and both are the library's
+// objects reached at +16, past their own two header words.
+//
+// The bases are walked, not just named: a chain's every link needs its own pair
+// or the runtime has nothing to walk, which is why this recurses.
+std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
+                                      std::size_t pos) {
+    const std::string ti = itaniumClassTypeInfoSymbol(tag);
+    for (std::size_t i = 0; i < current_->globals.size(); i++)
+        if (current_->globals[i].symbol == ti) return ti;      // one per class
+
+    // **A class this cannot describe gets none, and that is not an error here.**
+    // More than one base wants `__vmi_class_type_info`, a third shape carrying
+    // the bases' offsets and flags, which is not built. Such a class kept
+    // working before there was any type_info at all, so it keeps working now:
+    // the vtable's slot stays the zero it always held, and the only thing that
+    // cannot be done is a `dynamic_cast` naming it - which is refused there, by
+    // name, where the reader is asking for the thing that is missing.
+    const std::vector<Type::BaseSpec> &bases = cls->bases();
+    if (bases.size() > 1) return std::string();
+
+    // **The base first, and nothing is laid down until it answers.** A chain is
+    // only as describable as its links - with no `_ZTI` for the base there is
+    // nothing to point the third word at - and giving up after emitting the
+    // name string would leave a `_ZTS` in the object that nothing refers to.
+    std::string baseTypeInfo;
+    if (!bases.empty()) {
+        baseTypeInfo = emitClassTypeInfo(bases[0].type, bases[0].type->tag(), pos);
+        if (baseTypeInfo.empty()) return std::string();
+    }
+
+    const std::string ts = itaniumClassTypeNameSymbol(tag);
+    const std::string text = itaniumClassNameString(tag);
+    std::vector<GlobalPiece> letters;
+    for (std::size_t i = 0; i <= text.size(); i++)             // the NUL too
+        letters.push_back(GlobalPiece{ static_cast<int>(i), 1,
+                                       i < text.size() ? text[i] : 0,
+                                       std::string() });
+    const Type *chars = types_.arrayOf(types_.get(Kind::Char),
+                                       static_cast<long long>(text.size() + 1));
+    // **Weak**: every translation unit that sees the class emits these three,
+    // and the linker folds them rather than rejecting them - which is what
+    // clang does and what a program of more than one file needs.
+    current_->globals.push_back(Global{ ts, ts, chars, std::move(letters),
+                                        true, false, true,
+                                        std::string(), true });
+
+    std::vector<GlobalPiece> pieces;
+    pieces.push_back(GlobalPiece{
+        0, 8, 16,
+        bases.empty() ? "_ZTVN10__cxxabiv117__class_type_infoE"
+                      : "_ZTVN10__cxxabiv120__si_class_type_infoE" });
+    pieces.push_back(GlobalPiece{ 8, 8, 0, ts });
+    if (!baseTypeInfo.empty())
+        pieces.push_back(GlobalPiece{ 16, 8, 0, baseTypeInfo });
+
+    const Type *word = types_.pointerTo(types_.get(Kind::Void));
+    const Type *object = types_.arrayOf(word,
+                                        static_cast<long long>(pieces.size()));
+    current_->globals.push_back(Global{ ti, ti, object, std::move(pieces),
+                                        true, false, true,
+                                        std::string(), true });
+    return ti;
+}
+
 void Parser::emitVtable(const Type *cls, const std::string &tag,
                         std::size_t pos) {
     if (tag.empty())
@@ -637,12 +763,18 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
     // deleting destructor, whose body calls an ordinary one nothing else names.
     if (const Signature *dtor = destructorOf(cls)) markSymbolUsed(dtor->symbol);
 
+    // **The typeinfo slot is filled now**, where it held a plain zero. Itanium
+    // only: the Microsoft ABI puts a complete-object locator in front of the
+    // table instead, and that is its own measurement.
+    const std::string typeInfo = ms ? std::string()
+                                    : emitClassTypeInfo(cls, tag, pos);
+
     std::vector<GlobalPiece> pieces;
     int at = 0;
     if (!ms) {
         pieces.push_back(GlobalPiece{ at, 8, 0, std::string() });  // offset-to-top
         at += 8;
-        pieces.push_back(GlobalPiece{ at, 8, 0, std::string() });  // typeinfo
+        pieces.push_back(GlobalPiece{ at, 8, 0, typeInfo });       // typeinfo
         at += 8;
     }
     for (std::size_t i = 0; i < slots.size(); i++) {
@@ -674,7 +806,10 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
             pieces.push_back(GlobalPiece{ at, 8, -static_cast<long long>(off),
                                           std::string() });
             at += 8;
-            pieces.push_back(GlobalPiece{ at, 8, 0, std::string() });
+            // A secondary table names the *complete* object's type_info, the
+            // same one the primary does - it is one object with two tables in
+            // it, not two objects.
+            pieces.push_back(GlobalPiece{ at, 8, 0, typeInfo });
             at += 8;
         }
         const std::vector<VSlot> &theirs = vtables_[b->tag()];
@@ -693,10 +828,27 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
         }
     }
 
+    // **The Microsoft locator goes in front of the table, not behind it.** A
+    // class with more than one base has no description this compiler can write
+    // - the same limit the Itanium half has - so it gets no locator and its
+    // table is what it always was; only a `dynamic_cast` naming it is refused.
+    std::string locatorWord;
+    if (ms && cls->bases().size() <= 1) {
+        MicrosoftRtti names;
+        std::string why;
+        if (microsoftClassRttiNames(cls, &names, &why)) {
+            locatorWord = names.locator;
+            bool had = false;
+            for (std::size_t i = 0; i < current_->rtti.size(); i++)
+                if (current_->rtti[i] == cls) had = true;
+            if (!had) current_->rtti.push_back(cls);
+        }
+    }
+
     const Type *entry = types_.pointerTo(types_.get(Kind::Void));
     const Type *table = types_.arrayOf(entry, static_cast<long long>(pieces.size()));
     current_->globals.push_back(Global{ symbol, symbol, table, std::move(pieces),
-                                        true, false, true });
+                                        true, false, true, locatorWord, true });
 }
 
 // A constructor, read at the point its '(' was seen: a member function whose name is
@@ -1102,6 +1254,7 @@ void Parser::synthesizeDestructor(std::size_t which) {
                                            alignTo(frameSize_, 16), false, 0,
                                            false, 0, pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(symbol);
+    current_->functions.back().setInline(true);
     if (!target_.microsoftNames()) {
         std::string d2;
         itaniumDestructorName(cls, type, false, &d2);
@@ -1314,6 +1467,13 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
     // walk, not two** - `M m = M(2);` used to be stored and then built over.
     const std::vector<Member> &ms = type->members();
     for (std::size_t i = 0; i < ms.size(); i++) {
+        // **A base's members are this class's list too**, the layout having
+        // copied them down - and the base's own constructor has already built
+        // them by the time this body runs. Building them again default-
+        // constructs over what the base set, which is why `Base` alone worked
+        // and `Derived : Base` did not: the destructor walk has skipped them
+        // since implicit destructors landed and this one never did.
+        if (memberFromBase(type, ms[i])) continue;
         StmtPtr one = memberInitialiser(cls, type, ms[i], thisSlot, pos);
         std::vector<ExprPtr> none;
         if (one == nullptr && type->kind() != Kind::Union)
@@ -1327,6 +1487,7 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
                                            alignTo(frameSize_, 16), false, 0,
                                            false, 0, pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(symbol);
+    current_->functions.back().setInline(true);
     // The same two names a written constructor is emitted under: C1 for a
     // complete object and C2 for a base subobject, the second a label in front
     // of the first. Microsoft has one name and wants no alias.
@@ -1584,6 +1745,7 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
                                            alignTo(frameSize_, 16), false, 0,
                                            false, 0, pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(symbol);
+    current_->functions.back().setInline(true);
     // A constructor is emitted under both of Itanium's names; an operator has
     // one name in either ABI.
     if (!assigning && !target_.microsoftNames()) {
@@ -1745,9 +1907,30 @@ ExprPtr Parser::staticMemberRef(const Type *owner, const Type::StaticMember &s,
 // A member function declaration, keyed under "Class::name" in the one table every
 // function lives in. Nothing about overload resolution had to be told that members
 // exist: two members with different parameters are two entries under that key.
+// An abstract class has a slot holding the runtime's trap rather than a
+// function, so an object of one could be asked for something that is not
+// there. Refused where the object would be made - the array case included,
+// since every element would be one.
+void Parser::checkNotAbstract(const Type *t, std::size_t pos,
+                              const std::string &what) {
+    const Type *c = t;
+    while (c != nullptr && c->isArray()) c = c->pointee();
+    if (c == nullptr || !c->isStructOrUnion() || !c->abstract()) return;
+    std::string why = what + " is '" + c->describe() + "', which is abstract - ";
+    const std::vector<VSlot> &slots = vtables_[c->tag()];
+    for (std::size_t i = 0; i < slots.size(); i++)
+        if (slots[i].pure) {
+            why += "'" + slots[i].name + "' is pure and nothing has overridden "
+                   "it, so an object of this class would have a slot with no "
+                   "function in it";
+            src_.fail(pos, why);
+        }
+    src_.fail(pos, why + "it has a pure virtual nothing has overridden");
+}
+
 void Parser::declareMember(const std::string &cls, const Declared &d,
                            bool constThis, Access access, bool inUnion,
-                           bool isVirtual) {
+                           bool isVirtual, bool isStatic, bool isPure) {
     if (inUnion)
         src_.fail(d.pos, "a member function of a union is not supported yet");
 
@@ -1765,6 +1948,26 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
 
     if (inUnion && isVirtual)
         src_.fail(d.pos, "a union cannot have a virtual function");
+
+    // **A static member takes no slot and overrides nothing.** It is not part
+    // of an object, so there is no object to dispatch on; [class.static]/1 says
+    // it can be neither `virtual` nor cv-qualified, and both are refused where
+    // they are written rather than quietly dropped here.
+    if (isStatic) {
+        const std::string sym = memberSymbol(cls, d.name, fn, access, false,
+                                             d.pos, false, true);
+        if (!pendingDefaults_.empty()) defaultArgs_[sym] = pendingDefaults_;
+        pendingDefaults_.clear();
+        set.push_back(functions_.size());
+        functions_.push_back(Signature{
+            d.name, sym,
+            fn->returns(), params, fn->isVariadicFn(), false, d.pos, false,
+            cls, false, access, false });
+        functions_.back().isStaticMember = true;
+        functions_.back().isNoexcept = pendingNoexcept_;
+        pendingNoexcept_ = false;
+        return;
+    }
 
     // **A slot is taken once and then kept**: an override replaces the entry the base
     // put there, matching on the signature minus the return type. **And finding that
@@ -1809,8 +2012,19 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
     pendingNoexcept_ = false;
 
     if (!isVirtual) return;
-    if (slot < slots.size()) { slots[slot].symbol = symbol; return; }
-    slots.push_back(VSlot{ d.name, symbol, params, constThis });
+
+    // **A pure virtual's slot holds the runtime's trap, not this function.**
+    // The declaration may still have a body - C++ allows one, and a derived
+    // class can call it explicitly - so the symbol is unchanged and only the
+    // table entry differs. An override coming later replaces the entry and
+    // clears `pure`, which is what makes the derived class concrete.
+    const std::string entry = isPure ? pureVirtualSymbol() : symbol;
+    if (slot < slots.size()) {
+        slots[slot].symbol = entry;
+        slots[slot].pure = isPure;
+        return;
+    }
+    slots.push_back(VSlot{ d.name, entry, params, constThis, isPure });
 }
 
 // A member function's linkage name. Never plain, and never affected by
@@ -1818,11 +2032,17 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
 // choice here.
 std::string Parser::memberSymbol(const std::string &cls, const std::string &name,
                                  const Type *fn, Access access, bool constThis,
-                                 std::size_t pos, bool isVirtual) {
+                                 std::size_t pos, bool isVirtual, bool isStatic) {
     // Q public, I protected, A private - the Microsoft ABI puts the access in the name
     // and Itanium does not, both measured. **And a virtual member is U on Microsoft
     // whatever its access**: ?who@Base@@UEAAHXZ against ?plain@Base@@QEAAHXZ.
-    const char code = isVirtual        ? 'U'
+    // **A static member is S, K or C** - public, protected, private - where a
+    // non-static is Q, I or A. Itanium spells a static member exactly as it
+    // spells any other, `_ZN1S3pubEi`, so only this half of the pair moves.
+    const char code = isStatic && access == Access::Public    ? 'S'
+                    : isStatic && access == Access::Protected ? 'K'
+                    : isStatic                                ? 'C'
+                    : isVirtual        ? 'U'
                     : access == Access::Public    ? 'Q'
                     : access == Access::Protected ? 'I'
                                                   : 'A';
@@ -1859,7 +2079,14 @@ std::string Parser::dataSymbol(const std::string &name, const Type *type,
     // Microsoft mangles a variable only where something outside could name
     // it. An internal one keeps what it was written with - measured against
     // clang, which spells it the same way.
-    if (isStatic) return name;
+    //
+    // **But only one at file scope with no namespace around it.** A static
+    // *in* a namespace is mangled all the same - cl writes `?obj@n@@3US@1@A`
+    // for one, measured - and it has to be: the name it was written with is
+    // `n::obj`, and MASM cannot hold a label with a `::` in it. That is what
+    // `std::cout` in <iostream> found, as an assembler syntax error rather
+    // than as anything a reader would recognise.
+    if (isStatic && name.find("::") == std::string::npos) return name;
     std::string out, why;
     if (!microsoftDataName(name, type, &out, &why))
         src_.fail(pos, "'" + name + "' cannot be given a name the linker can "

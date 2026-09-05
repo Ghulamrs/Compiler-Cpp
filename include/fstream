@@ -1,0 +1,93 @@
+// <fstream> - the streams that read and write a file.
+//
+// They derive from <ostream> and <istream> and add three things: a `fopen` in
+// the constructor, an `fclose` in the destructor, and the open modes. Every
+// `operator<<` and `operator>>` above them is reused untouched, because the
+// base already reaches its file through `fp_`.
+//
+// **These have constructors and destructors, and the standard streams have
+// neither.** That is not an inconsistency: an fstream is always a local or a
+// member, and a local with a constructor has always worked here - it is only
+// an object at *file scope* that has nowhere to run one, which is why
+// `std::cout` is an aggregate. See the comment at the top of <ostream>.
+//
+// **What is missing, and deliberately: `rdbuf()`.** `ss << in.rdbuf()` is the
+// idiom for reading a whole file, and it needs a `streambuf` - a layer this
+// library does not have and which is its own piece of work rather than a
+// member to add here. Read with `getline` or `read` meanwhile.
+#ifndef _CXX1_FSTREAM
+#define _CXX1_FSTREAM
+
+#include <cstdio>
+#include <ios>
+#include <istream>
+#include <ostream>
+#include <string>
+
+namespace std {
+
+// The `fopen` mode string a set of flags asks for. Reading and writing at once
+// is not offered: there is one `FILE *` and one direction per class here.
+static const char *_cxx1_mode(int flags, bool reading) {
+    const bool binary = (flags & ios::binary) != 0;
+    if (reading) return binary ? "rb" : "r";
+    if ((flags & ios::app) != 0) return binary ? "ab" : "a";
+    return binary ? "wb" : "w";
+}
+
+class ofstream : public ostream {
+public:
+    ofstream() { fp_ = 0; which_ = 0; state_ = 1; buf_ = 0; base_ = 10; }
+    ofstream(const char *path) { fp_ = 0; buf_ = 0; base_ = 10; open(path, ios::out); }
+    ofstream(const char *path, int flags) { fp_ = 0; buf_ = 0; base_ = 10; open(path, flags); }
+    ~ofstream() { close(); }
+
+    void open(const char *path) { open(path, ios::out); }
+    void open(const char *path, int flags) {
+        close();
+        which_ = 0;
+        buf_ = 0;
+        fp_ = std::fopen(path, _cxx1_mode(flags, false));
+        state_ = fp_ != 0 ? 0 : 1;
+    }
+    bool is_open() const { return fp_ != 0; }
+    void close() {
+        if (fp_ != 0) std::fclose(fp_);
+        fp_ = 0;
+    }
+};
+
+class ifstream : public istream {
+public:
+    ifstream() { fp_ = 0; which_ = 0; state_ = 1; src_ = 0; pos_ = 0; }
+    ifstream(const char *path) { fp_ = 0; src_ = 0; pos_ = 0; open(path, ios::in); }
+    ifstream(const char *path, int flags) { fp_ = 0; src_ = 0; pos_ = 0; open(path, flags); }
+    ~ifstream() { close(); }
+
+    void open(const char *path) { open(path, ios::in); }
+    void open(const char *path, int flags) {
+        close();
+        which_ = 0;
+        src_ = 0;
+        pos_ = 0;
+        fp_ = std::fopen(path, _cxx1_mode(flags, true));
+        state_ = fp_ != 0 ? 0 : 1;
+    }
+    bool is_open() const { return fp_ != 0; }
+    void close() {
+        if (fp_ != 0) std::fclose(fp_);
+        fp_ = 0;
+    }
+
+    // Whole-file read, which is what `rdbuf()` would have been used for.
+    string readAll() {
+        string all;
+        int c = get();
+        while (c >= 0) { all += (char)c; c = get(); }
+        return all;
+    }
+};
+
+}  // namespace std
+
+#endif

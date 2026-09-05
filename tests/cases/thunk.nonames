@@ -1,0 +1,2 @@
+x86_64-linux  clang emits _ZTI1C and _ZTS1C for a class with two bases and cxx1 emits neither: that type_info is __vmi_class_type_info, a third shape carrying each base's offset and flags, and only __class_type_info and __si_class_type_info are built. The class still compiles and its vtable is still right - what is refused is a `dynamic_cast` naming it, by name, at src/parser/ParserExprNew.cpp. See docs/EXCLUSIONS.md.
+arm64-darwin  the same difference, and for the same reason: __vmi_class_type_info is not built, so a class with two bases carries no type_info.

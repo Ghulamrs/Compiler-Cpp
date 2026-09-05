@@ -21,6 +21,14 @@ static std::vector<std::string> scopeComponents(const std::string &name) {
 
 #include <vector>
 
+// **A conversion function is told by the space in its name.** It is filed as
+// `operator bool`; every operator that can be overloaded is punctuation and is
+// filed as `operator+`, with none. One test, so the two manglers cannot come to
+// different conclusions about which kind of member they are spelling.
+static bool isConversionFunction(const std::string &name) {
+    return name.compare(0, 9, "operator ") == 0;
+}
+
 namespace {
 
 // A type is const-qualified in its own right when it is not the same object as its
@@ -123,12 +131,30 @@ public:
             break;
         }
         for (std::size_t i = start; i < reach.size(); i++) {
+            // **`std` is written `St`** - [mangle.substitution] gives it one of
+            // the predefined abbreviations, so `std::string` is `St6string` and
+            // not `N3std6stringE`. Measured against clang, which also shows
+            // that `St` takes no numbered slot: two `std::string` parameters
+            // are `St6stringS_`, so the *whole* `St6string` is candidate zero
+            // and the namespace alone is not a candidate at all.
+            if (i == 0 && parts[i] == "std") {
+                out += "St";
+                continue;
+            }
             out += std::to_string(parts[i].size());
             out += parts[i];
             Sub s;
             s.name = reach[i];
             subs_.push_back(s);
         }
+    }
+
+    // Is this qualified name exactly `std::X`? Then it needs no `N...E` around
+    // it: the abbreviation is a prefix in its own right, and clang writes
+    // `St6string` where `std::deep::inner` is `NSt4deep5innerE`.
+    static bool isDirectlyInStd(const std::string &qualified) {
+        const std::vector<std::string> parts = scopeComponents(qualified);
+        return parts.size() == 2 && parts[0] == "std";
     }
 
     // The enclosing function as it goes inside `Z...E`: the mangled name with its
@@ -169,6 +195,14 @@ public:
     // and its letters - `_ZNK1VplERKS_` against `_ZNK1V3addERKS_` - and everything
     // either side of it is unchanged. `unary` picks between the two codes.
     void writtenName(const std::string &name, bool unary) {
+        // **`cv` and then the type**, which is the whole of a conversion
+        // function's name on this ABI: `_ZNK1ScvbEv` for `operator bool() const`.
+        // The type comes from the *return* type, those being the same thing here.
+        if (isConversionFunction(name)) {
+            out += "cv";
+            type(conversionTo_);
+            return;
+        }
         const std::string spelling = operatorSpelling(name);
         if (const OperatorCode *op = findOperator(spelling)) {
             out += itaniumOperatorCode(*op, unary);
@@ -178,9 +212,14 @@ public:
         out += name;
     }
 
+    // What a conversion function converts to, for writtenName - which is given
+    // a name and not a signature and so cannot reach the return type itself.
+    const Type *conversionTo_ = nullptr;
+
     void memberFunction(const std::string &cls, const Type *clsType,
                         const std::string &name,
                         const Type *fn, bool constThis) {
+        conversionTo_ = fn->returns();
         out = "_ZN";
         if (constThis) out += "K";
         prefix(clsType, cls);
@@ -245,6 +284,15 @@ public:
     void typeInfoFor(const Type *t) { type(t); }
 
     void function(const std::string &name, const Type *fn, bool internal) {
+        // **The `L` is not written on an operator's name.** clang marks an
+        // internal-linkage *identifier* - `_ZL8ordinaryi` - and does not mark an
+        // operator, however it is declared: `static int operator+(const W &,
+        // int)` is `_ZplRK1Wi`, with the same local symbol binding and no L.
+        // Measured across `+`, `-` and `==` beside an ordinary static in one
+        // file, so it is the kind of name that decides and not the operator.
+        if (internal && (findOperator(operatorSpelling(name)) != nullptr ||
+                         isConversionFunction(name)))
+            internal = false;
         out = internal ? "_ZL" : "_Z";
         // **A name with a scope in it is a nested-name**, `_ZN1N1fEi`, and a
         // namespace component is written exactly as a class one is.
@@ -359,6 +407,15 @@ private:
     // candidates come out of it and in this order: the name, then the whole thing.
     // Measured on _Z6nested6HolderIS_IiEE.
     void templateId(const Type *t) {
+        // **The namespace the template was declared in**, which the bare name
+        // does not carry: `std::vector<int>` is `St6vectorIiE`. Written before
+        // the name and by the same rules a class's scope follows - `St` for
+        // std, length-and-letters for anything else.
+        if (!t->templateNamespace().empty()) {
+            const std::string qualified =
+                t->templateNamespace() + t->templateName();
+            namespacesOf(qualified);
+        }
         if (!substitutedName(t->templateName())) {
             out += std::to_string(t->templateName().size());
             out += t->templateName();
@@ -370,6 +427,21 @@ private:
         const std::vector<TemplateArg> &args = t->templateArgs();
         for (std::size_t i = 0; i < args.size(); i++) templateArgument(args[i]);
         out += 'E';
+    }
+
+    // **An enumeration is spelled exactly as a class is** - measured:
+    // `void a(Colour)` is `_Z1a6Colour`, `void b(cc::BinaryOp)` is
+    // `_Z1bN2cc8BinaryOpE` with the `N...E` for the same reason, and the whole
+    // name is a substitution candidate so `d(Colour, Colour)` is `6ColourS_`.
+    void enumeration(const Type *t) {
+        const std::vector<std::string> parts = scopeComponents(t->enumTag());
+        const bool nested = parts.size() > 1;
+        if (nested) out += 'N';
+        namespacesOf(t->enumTag());
+        out += std::to_string(parts.back().size());
+        out += parts.back();
+        if (nested) out += 'E';
+        subs_.push_back(Sub{ t, std::string() });
     }
 
     void type(const Type *t) {
@@ -419,6 +491,10 @@ private:
             subs_.push_back(Sub{ t, std::string() });
             return;
         }
+        // **Before the builtin code**, because an enumeration *is* `Kind::Int`
+        // here and would otherwise come out `i`. Asked here rather than in the
+        // chain below, which the builtin return never reaches.
+        if (t->isEnumeration()) { enumeration(t); return; }
         if (const char *b = itaniumBuiltin(t->kind())) { out += b; return; }
 
         if (t->isPointer())        { out += 'P'; type(t->pointee()); }
@@ -456,9 +532,12 @@ private:
             // is what consults the substitution table on the way down.
             if (t->enclosing() != nullptr || t->inNamespace()) {
                 if (tagOf(t) == nullptr) return;
-                out += 'N';
+                // `std::X` is `StX` with no wrapper - see isDirectlyInStd.
+                const bool bare = t->enclosing() == nullptr &&
+                                  isDirectlyInStd(t->tag());
+                if (!bare) out += 'N';
                 prefix(t, std::string());
-                out += 'E';
+                if (!bare) out += 'E';
                 return;                       // prefix() pushed it already
             }
             if (t->isSpecialization()) {
@@ -495,6 +574,11 @@ private:
 
 class Microsoft : public Mangler {
 public:
+    // **The class as a type descriptor spells it**, `?AUBase@@` - which is the
+    // same thing a return type is written as, so this is that rule under the
+    // name the RTTI records ask for it by rather than a second copy of it.
+    void classAsTypeName(const Type *t) { returnType(t); }
+
     // ?name@Class@@ and then four letters - the access, __ptr64, the constness of
     // `this`, the calling convention - with every enclosing class innermost first,
     // closed by '@'. A local class's owner goes in as `?1?` and the whole name.
@@ -556,6 +640,11 @@ public:
     // back-reference**: in `??HV@@QEBA?AU0@D@Z` the class is back-reference *0*,
     // where a named member would have left it 1. Arity plays no part here.
     bool operatorPrefix(const std::string &name) {
+        // **`??B`, and unlike every other operator it writes its return type**
+        // - which memberFunction already does for all of them, so naming it is
+        // the whole of the difference: `??BS@@QEBA_NXZ` for
+        // `operator bool() const`. Measured against clang.
+        if (isConversionFunction(name)) { out = "??B"; return true; }
         const OperatorCode *op = findOperator(operatorSpelling(name));
         if (op == nullptr) return false;
         out = "??";
@@ -573,8 +662,14 @@ public:
         }
         scopeOf(clsType, cls, localOwner);
         out += access;            // Q public, I protected, A private
-        out += 'E';               // this is __ptr64
-        out += constThis ? 'B' : 'A';
+        // **A static member has no `this`, so it spells none.** S, K and C are
+        // the static codes - public, protected, private - and after one the
+        // calling convention follows immediately: `?pub@S@@SAHH@Z` against a
+        // non-static `?nonstatic@S@@QEAAHH@Z`. Measured against clang.
+        if (access != 'S' && access != 'K' && access != 'C') {
+            out += 'E';           // this is __ptr64
+            out += constThis ? 'B' : 'A';
+        }
         out += 'A';               // __cdecl
         returnType(fn->returns());
         const std::vector<const Type *> &params = fn->params();
@@ -820,10 +915,23 @@ private:
     // and only arguments go in that table - a return type of the same type is
     // spelled out in full.
     void argument(const Type *t) {
-        if (microsoftBuiltin(t->kind()) == nullptr) {
+        // **An enumeration takes a slot though its kind is `Kind::Int`** - it
+        // is spelled `W4Colour@@` rather than `H`, and a repeat is the digit:
+        // `d(Colour, Colour)` is `W4Colour@@0@Z`, measured.
+        if (microsoftBuiltin(t->kind()) == nullptr || t->isEnumeration()) {
             for (std::size_t i = 0; i < args_.size(); i++)
                 if (args_[i] == t) { out += static_cast<char>('0' + i); return; }
+            // **A type takes its slot after it is spelled, not before.** With a
+            // function pointer the difference is visible: the `O &` inside its
+            // signature finishes first and is slot 0, the pointer itself is
+            // slot 1, and an `O &` parameter after it is `0` - which is what cl
+            // and clang both write. Pushed before spelling, the pointer took 0
+            // and the same name came out `1`. A flat parameter list numbers the
+            // same way either way, which is why nothing saw it until a function
+            // took a manipulator and a stream.
+            type(t);
             if (args_.size() < 10) args_.push_back(t);
+            return;
         }
         type(t);
     }
@@ -835,7 +943,15 @@ private:
             out += "6A";
             type(p->returns());
             if (p->params().empty() && !p->isVariadicFn()) { out += "XZ"; return; }
-            for (const Type *a : p->params()) type(a);
+            // **The argument table is one table for the whole name**, and a
+            // parameter inside a function pointer's signature goes into it like
+            // any other. `apply(O &(*)(O &), O &)` is `...AEAUO@@AEAU1@@Z0@Z`
+            // from cl and clang alike - the outer `O &` is `0`, a back-reference
+            // to the one first seen *inside* the pointer. Spelled with type()
+            // these never entered the table and the outer one was written out
+            // in full, which names.sh caught on the first function that took
+            // both a manipulator and a stream.
+            for (const Type *a : p->params()) argument(a);
             out += p->isVariadicFn() ? "ZZ" : "@Z";
             return;
         }
@@ -897,6 +1013,15 @@ private:
             // than by qualifying the array, which has no qualifier of its own.
             if (elem->isConst()) out += "$$CB";
             type(elem->unqualified());
+            return;
+        }
+        // **`W4` and then the name, exactly where a class writes its letter** -
+        // measured: `void a(Colour)` is `?a@@YAXW4Colour@@@Z` and
+        // `void b(cc::BinaryOp)` is `?b@@YAXW4BinaryOp@cc@@@Z`. Asked before
+        // the builtin code, an enumeration being `Kind::Int` here.
+        if (t->isEnumeration()) {
+            out += "W4";
+            scopeOf(nullptr, t->enumTag());
             return;
         }
         if (const char *b = microsoftBuiltin(t->kind())) { out += b; return; }
@@ -966,6 +1091,31 @@ std::string vtableSymbol(const std::string &tag, bool microsoft) {
     return out;
 }
 
+// **A class's type_info and the string beside it, which are one encoding under
+// two prefixes.** `_ZTS4Base` holds "4Base" and `_ZTI4Base` points at it: the
+// text of the name IS the type as a signature spells it, so the same nested
+// form vtableSymbol builds serves all three. Measured against clang for a
+// top-level class and one in a namespace.
+std::string itaniumClassNameString(const std::string &tag) {
+    const std::vector<std::string> parts = scopeComponents(tag);
+    std::string out;
+    if (parts.size() > 1) out += 'N';
+    for (const std::string &part : parts) {
+        out += std::to_string(part.size());
+        out += part;
+    }
+    if (parts.size() > 1) out += 'E';
+    return out;
+}
+
+std::string itaniumClassTypeInfoSymbol(const std::string &tag) {
+    return "_ZTI" + itaniumClassNameString(tag);
+}
+
+std::string itaniumClassTypeNameSymbol(const std::string &tag) {
+    return "_ZTS" + itaniumClassNameString(tag);
+}
+
 bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem) {
     if (itaniumBuiltin(t->kind()) == nullptr) {
         *problem = "only a fundamental type has a type_info object the "
@@ -979,6 +1129,47 @@ bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem) 
     m.typeInfoFor(t);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
+    return true;
+}
+
+// **The five objects the Microsoft ABI wants before it will answer a
+// `dynamic_cast`**, measured from clang: a TypeDescriptor naming the class, a
+// BaseClassDescriptor per class in the chain, an array of those, a
+// ClassHierarchyDescriptor over the array, and a CompleteObjectLocator that
+// ties the first and the last together and sits one word in front of the
+// vftable. Itanium hangs two objects off the vtable; this hangs five in front
+// of it, and `__RTDynamicCast` walks them.
+//
+// `??_R1A@?0A@EA@` carries the base's position as four numbers - mdisp 0,
+// pdisp -1, vdisp 0, attributes 0x40 - and they are constant here because a
+// class with more than one base is refused: its first base is always at offset
+// zero and never virtual, so there is nothing else they could say.
+bool microsoftClassRttiNames(const Type *cls, MicrosoftRtti *out,
+                             std::string *problem) {
+    if (!cls->isStructOrUnion()) {
+        *problem = "'" + cls->describe() + "' is not a class, so it has no "
+                   "run-time class description";
+        return false;
+    }
+    Microsoft type;
+    type.classAsTypeName(cls);                  // "?AUBase@@" - the type as a name
+    if (!type.ok) { *problem = type.problem; return false; }
+
+    Microsoft scope;
+    scope.scopeOf(cls, cls->tag());             // "Base@@" - the class as a scope
+    if (!scope.ok) { *problem = scope.problem; return false; }
+    // `scopeOf` closes the scope itself, so this is already `Leaf@@` - and
+    // `Shape@N@@` for one in a namespace. The four records differ only in what
+    // follows it: `8` for the three that describe the class, `6B@` for the
+    // locator, which names a vftable rather than the class.
+    const std::string within = scope.out;
+
+    out->decorated = "." + type.out;
+    out->descriptor = "??_R0" + type.out + "@8";
+    out->baseDescriptor = "??_R1A@?0A@EA@" + within + "8";
+    out->array = "??_R2" + within + "8";
+    out->hierarchy = "??_R3" + within + "8";
+    out->locator = "??_R4" + within + "6B@";
     return true;
 }
 
@@ -1161,10 +1352,16 @@ std::string itaniumDataName(const std::string &name, bool internal) {
     const std::vector<std::string> parts = scopeComponents(name);
     if (parts.size() > 1) {
         std::string out = "_ZN";
-        for (std::size_t i = 0; i < parts.size(); i++) {
+        for (std::size_t i = 0; i + 1 < parts.size(); i++) {
             out += std::to_string(parts[i].size());
             out += parts[i];
         }
+        // **The L for internal linkage goes before the unqualified name**, not
+        // after the `_ZN` where a file-scope static puts it - `_ZN1nL3objE`,
+        // measured. Getting it wrong gives a name nothing else spells.
+        if (internal) out += "L";
+        out += std::to_string(parts.back().size());
+        out += parts.back();
         return out + "E";
     }
     if (!internal) return name;

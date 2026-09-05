@@ -1,0 +1,2 @@
+x86_64-linux  cxx1 emits both of Itanium's constructor forms where clang emits only the one a use needs - the same difference docs/CONFORMANCE.md records for an inline member function. Shape is only ever built as a base here, so clang writes its C2 and no C1 at all.
+arm64-darwin  cxx1 emits both of Itanium's constructor forms where clang emits only the one a use needs - the same difference docs/CONFORMANCE.md records for an inline member function. Shape is only ever built as a base here, so clang writes its C2 and no C1 at all.

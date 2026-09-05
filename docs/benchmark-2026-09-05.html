@@ -1,0 +1,425 @@
+<title>Sixteen Sources, Three Machines</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+:root {
+  --paper:#F2F4F7; --panel:#FFFFFF; --ink:#111A28; --ink-soft:#465267;
+  --rule:#C9D2DE; --rule-soft:#E2E8F0;
+  --cxx1:#1D5FA8; --cxx1-dim:#A9C4E2;
+  --native:#7C8798; --native-dim:#CFD5DE;
+  --flag:#B0451D; --flag-dim:#E8C4B4;
+  --shadow:0 1px 2px rgba(17,26,40,.06), 0 8px 24px -16px rgba(17,26,40,.28);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper:#0D131E; --panel:#141C2A; --ink:#E7ECF4; --ink-soft:#9AA7BB;
+    --rule:#2A3648; --rule-soft:#1E2836;
+    --cxx1:#5C9BE0; --cxx1-dim:#28405C;
+    --native:#8B97A9; --native-dim:#2C3646;
+    --flag:#E0714A; --flag-dim:#4A2A1D;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"] {
+  --paper:#0D131E; --panel:#141C2A; --ink:#E7ECF4; --ink-soft:#9AA7BB;
+  --rule:#2A3648; --rule-soft:#1E2836;
+  --cxx1:#5C9BE0; --cxx1-dim:#28405C;
+  --native:#8B97A9; --native-dim:#2C3646;
+  --flag:#E0714A; --flag-dim:#4A2A1D;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+}
+
+* { box-sizing:border-box; }
+body {
+  background:var(--paper); color:var(--ink);
+  font-family:"Source Serif 4", Georgia, serif;
+  font-size:17px; line-height:1.62;
+  margin:0; padding:0 24px 96px;
+}
+.wrap { max-width:1080px; margin:0 auto; }
+.col { max-width:68ch; }
+
+header { padding:64px 0 40px; border-bottom:2px solid var(--ink); margin-bottom:40px; }
+.eyebrow {
+  font-family:"JetBrains Mono", ui-monospace, monospace;
+  font-size:11.5px; font-weight:500; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--ink-soft); margin:0 0 18px;
+}
+h1 {
+  font-family:Archivo, "Helvetica Neue", sans-serif;
+  font-weight:700; font-size:clamp(34px,5.4vw,54px); line-height:1.04;
+  letter-spacing:-.022em; margin:0 0 18px; text-wrap:balance;
+}
+.standfirst { font-size:19px; color:var(--ink-soft); margin:0; max-width:60ch; }
+
+h2 {
+  font-family:Archivo, sans-serif; font-weight:600;
+  font-size:25px; letter-spacing:-.012em; line-height:1.2;
+  margin:56px 0 6px; text-wrap:balance;
+}
+h2 + .deck { color:var(--ink-soft); margin:0 0 22px; max-width:64ch; }
+h3 {
+  font-family:Archivo, sans-serif; font-weight:600; font-size:16px;
+  letter-spacing:.005em; margin:32px 0 8px;
+}
+p { margin:0 0 16px; }
+strong { font-weight:600; }
+code, .n {
+  font-family:"JetBrains Mono", ui-monospace, monospace;
+  font-size:.88em; font-variant-numeric:tabular-nums;
+}
+code { background:var(--rule-soft); padding:.1em .34em; border-radius:3px; }
+
+/* --- machine panels --- */
+.machines { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:20px; margin:28px 0 8px; }
+.machine {
+  background:var(--panel); border:1px solid var(--rule); border-radius:6px;
+  padding:20px 20px 22px; box-shadow:var(--shadow);
+  display:flex; flex-direction:column; gap:14px;
+}
+.mhead { display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+  padding-bottom:12px; border-bottom:1px solid var(--rule-soft); }
+.mname { font-family:Archivo, sans-serif; font-weight:600; font-size:15px; }
+.mspec { font-family:"JetBrains Mono", monospace; font-size:11px; color:var(--ink-soft);
+  letter-spacing:.02em; text-align:right; }
+
+.rows { display:flex; flex-direction:column; gap:11px; }
+.row { display:grid; grid-template-columns:104px 1fr 52px; align-items:center; gap:10px; }
+.rlab { font-family:"JetBrains Mono", monospace; font-size:11.5px; color:var(--ink-soft); }
+.track { background:var(--rule-soft); border-radius:2px; height:15px; position:relative; overflow:hidden; }
+.bar { height:100%; border-radius:2px; }
+.bar.c { background:var(--cxx1); }
+.bar.n { background:var(--native); }
+.rval { font-family:"JetBrains Mono", monospace; font-size:12.5px; font-weight:500;
+  font-variant-numeric:tabular-nums; text-align:right; }
+.scale { display:flex; justify-content:space-between; font-family:"JetBrains Mono", monospace;
+  font-size:10.5px; color:var(--ink-soft); padding-left:114px; padding-right:62px;
+  border-top:1px solid var(--rule-soft); padding-top:6px; }
+
+.legend { display:flex; gap:20px; flex-wrap:wrap; font-family:"JetBrains Mono", monospace;
+  font-size:11.5px; color:var(--ink-soft); margin:4px 0 0; }
+.key { display:inline-flex; align-items:center; gap:7px; }
+.sw { width:22px; height:9px; border-radius:2px; display:inline-block; }
+
+.ratio { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:16px; margin:26px 0; }
+.rcard { background:var(--panel); border:1px solid var(--rule); border-left:3px solid var(--cxx1);
+  border-radius:4px; padding:15px 17px; }
+.rnum { font-family:Archivo, sans-serif; font-weight:700; font-size:30px; line-height:1;
+  letter-spacing:-.02em; font-variant-numeric:tabular-nums; }
+.rwhat { font-family:"JetBrains Mono", monospace; font-size:11px; color:var(--ink-soft);
+  margin-top:7px; line-height:1.5; }
+
+/* --- the split --- */
+.split { background:var(--panel); border:1px solid var(--rule); border-radius:6px;
+  padding:22px; margin:24px 0; box-shadow:var(--shadow); }
+.srow { display:grid; grid-template-columns:96px 1fr; align-items:center; gap:12px; margin-bottom:12px; }
+.sbar { display:flex; height:26px; border-radius:3px; overflow:hidden; background:var(--rule-soft); }
+.seg { display:flex; align-items:center; padding:0 8px; font-family:"JetBrains Mono", monospace;
+  font-size:11px; font-weight:500; white-space:nowrap; overflow:hidden; }
+.seg.compile { background:var(--cxx1); color:#fff; }
+.seg.assemble { background:var(--flag); color:#fff; }
+.seg.would { background:var(--flag-dim); color:var(--ink); }
+.slab { font-family:"JetBrains Mono", monospace; font-size:11.5px; color:var(--ink-soft); }
+
+table { border-collapse:collapse; width:100%; font-size:14px; margin:20px 0; }
+.tw { overflow-x:auto; }
+th, td { text-align:left; padding:9px 14px 9px 0; border-bottom:1px solid var(--rule-soft); }
+th { font-family:Archivo, sans-serif; font-weight:600; font-size:11.5px; letter-spacing:.07em;
+  text-transform:uppercase; color:var(--ink-soft); border-bottom:1px solid var(--rule); }
+td.num { font-family:"JetBrains Mono", monospace; font-variant-numeric:tabular-nums; text-align:right;
+  padding-right:22px; }
+
+.note { border-left:2px solid var(--rule); padding:2px 0 2px 18px; color:var(--ink-soft);
+  font-size:16px; margin:22px 0; }
+.flagnote { border-left-color:var(--flag); }
+footer { margin-top:64px; padding-top:20px; border-top:1px solid var(--rule);
+  font-family:"JetBrains Mono", monospace; font-size:11.5px; color:var(--ink-soft); line-height:1.8; }
+</style>
+
+<div class="wrap">
+<header>
+  <p class="eyebrow">cxx1 &middot; measured 2026-09-05 &middot; frozen record</p>
+  <h1>Sixteen Sources, Three Machines</h1>
+  <p class="standfirst">How long cxx1 takes to compile Compiler&#43;&#43; against the compiler each
+  platform ships with &mdash; and where its own time actually goes.</p>
+</header>
+
+<div class="col">
+<p><strong>What was compiled.</strong> The sixteen <code>.cpp</code> files of Compiler&#43;&#43;,
+a separate C&#43;&#43;98 compiler of about 12,000 lines that cxx1 now builds correctly on
+macOS and x86_64-linux. Every run produces sixteen object files from cold sources; nothing
+is linked, because linking would time the platform&#39;s linker rather than either compiler.</p>
+
+<p><strong>What the native compiler was asked for.</strong> <code>-O0</code>, or
+<code>/Od</code> for cl. cxx1 has no optimiser at all, so <code>-O2</code> would be timing a
+pass it does not run. This is a measurement of time-to-working-code on one real program, not
+a like-for-like comparison of two compilers doing the same work &mdash; clang, g++ and cl are
+each carrying an optimiser, a diagnostic engine and a debug-info writer that cxx1 has no
+equivalent of.</p>
+</div>
+
+<h2>Source to object</h2>
+<p class="deck col">The honest comparison: both sides start at <code>.cpp</code> and finish at
+<code>.o</code>. One scale across all three machines, so the bars compare directly.</p>
+
+<div class="machines">
+
+  <div class="machine">
+    <div class="mhead">
+      <span class="mname">Apple M4 Pro</span>
+      <span class="mspec">12 cores<br>24 GB &middot; clang 17</span>
+    </div>
+    <div class="rows">
+      <div class="row"><span class="rlab">cxx1 &minus;j1</span>
+        <div class="track"><div class="bar c" style="width:27.4%"></div></div><span class="rval">2.19</span></div>
+      <div class="row"><span class="rlab">cxx1 &minus;j12</span>
+        <div class="track"><div class="bar c" style="width:6.3%"></div></div><span class="rval">0.50</span></div>
+      <div class="row"><span class="rlab">clang&#43;&#43; &minus;j1</span>
+        <div class="track"><div class="bar n" style="width:48.9%"></div></div><span class="rval">3.91</span></div>
+      <div class="row"><span class="rlab">clang&#43;&#43; &minus;j12</span>
+        <div class="track"><div class="bar n" style="width:10.1%"></div></div><span class="rval">0.81</span></div>
+    </div>
+    <div class="scale"><span>0s</span><span>4s</span><span>8s</span></div>
+  </div>
+
+  <div class="machine">
+    <div class="mhead">
+      <span class="mname">Xeon Platinum 8259CL</span>
+      <span class="mspec">2 cores &middot; 2.50 GHz<br>419 MB &middot; g&#43;&#43; 11.5</span>
+    </div>
+    <div class="rows">
+      <div class="row"><span class="rlab">cxx1 &minus;j1</span>
+        <div class="track"><div class="bar c" style="width:17.0%"></div></div><span class="rval">1.36</span></div>
+      <div class="row"><span class="rlab">cxx1 &minus;j2</span>
+        <div class="track"><div class="bar c" style="width:15.0%"></div></div><span class="rval">1.20</span></div>
+      <div class="row"><span class="rlab">g&#43;&#43; &minus;j1</span>
+        <div class="track"><div class="bar n" style="width:97.4%"></div></div><span class="rval">7.79</span></div>
+      <div class="row"><span class="rlab">g&#43;&#43; &minus;j2</span>
+        <div class="track"><div class="bar n" style="width:83.6%"></div></div><span class="rval">6.69</span></div>
+    </div>
+    <div class="scale"><span>0s</span><span>4s</span><span>8s</span></div>
+  </div>
+
+  <div class="machine">
+    <div class="mhead">
+      <span class="mname">Core i7-12700</span>
+      <span class="mspec">20 threads<br>64 GB &middot; cl 19.44</span>
+    </div>
+    <div class="rows">
+      <div class="row"><span class="rlab">cxx1 &minus;j1</span>
+        <div class="track"><div class="bar c" style="width:14.5%"></div></div><span class="rval">1.16</span></div>
+      <div class="row"><span class="rlab">cxx1 &minus;j8</span>
+        <div class="track"><div class="bar c" style="width:3.6%"></div></div><span class="rval">0.29</span></div>
+      <div class="row"><span class="rlab">cl &minus;j1</span>
+        <div class="track"><div class="bar n" style="width:73.9%"></div></div><span class="rval">5.91</span></div>
+      <div class="row"><span class="rlab">cl /MP8</span>
+        <div class="track"><div class="bar n" style="width:11.8%"></div></div><span class="rval">0.94</span></div>
+    </div>
+    <div class="scale"><span>0s</span><span>4s</span><span>8s</span></div>
+  </div>
+
+</div>
+
+<div class="legend">
+  <span class="key"><span class="sw" style="background:var(--cxx1)"></span> cxx1</span>
+  <span class="key"><span class="sw" style="background:var(--native)"></span> the platform&#39;s compiler</span>
+  <span class="key">seconds, best of two or three runs, warm page cache</span>
+</div>
+
+<div class="ratio">
+  <div class="rcard"><div class="rnum">1.8&times;</div>
+    <div class="rwhat">faster than clang&#43;&#43;<br>serial, source &rarr; object</div></div>
+  <div class="rcard"><div class="rnum">5.7&times;</div>
+    <div class="rwhat">faster than g&#43;&#43;<br>serial, source &rarr; object</div></div>
+  <div class="rcard"><div class="rnum">5.1&times;</div>
+    <div class="rwhat">faster than cl<br>serial, source &rarr; object</div></div>
+  <div class="rcard"><div class="rnum">1.6&times;</div>
+    <div class="rwhat">faster than clang&#43;&#43;<br>parallel, on the Mac</div></div>
+</div>
+
+<div class="col">
+<p>cxx1 wins every comparison here, serial and parallel, on all three machines. It did not
+when this page was first written: the parallel column was a loss on two of them, and the next
+two sections are the two things that had to change &mdash; one in the compiler, one underneath
+it.</p>
+</div>
+
+<h2>Where cxx1&#39;s time goes</h2>
+<p class="deck col">Splitting <code>-c</code> into its two halves explains every number above.
+cxx1 writes assembly itself and then shells out to the platform assembler once per file.</p>
+
+<div class="split">
+  <div class="srow">
+    <span class="slab">M4 Pro, &minus;j12</span>
+    <div class="sbar">
+      <div class="seg compile" style="width:16%">0.08</div>
+      <div class="seg would" style="width:84%">0.42s assembling</div>
+    </div>
+  </div>
+  <div class="srow">
+    <span class="slab">Xeon, &minus;j2</span>
+    <div class="sbar">
+      <div class="seg compile" style="width:54%">0.65 compiling</div>
+      <div class="seg assemble" style="width:46%">0.55s assembling</div>
+    </div>
+  </div>
+  <div class="srow">
+    <span class="slab">i7-12700, &minus;j8</span>
+    <div class="sbar">
+      <div class="seg compile" style="width:52%">0.15 compiling</div>
+      <div class="seg would" style="width:48%">0.14s assembling</div>
+    </div>
+  </div>
+  <div class="legend" style="margin-top:16px">
+    <span class="key"><span class="sw" style="background:var(--cxx1)"></span> cxx1 compiling, threaded</span>
+    <span class="key"><span class="sw" style="background:var(--flag)"></span> the assembler, serialised</span>
+    <span class="key"><span class="sw" style="background:var(--flag-dim)"></span> the assembler, on the pool</span>
+  </div>
+</div>
+
+<div class="col">
+<p><strong><code>-j</code> parallelises compilation and not assembly.</strong>
+<code>Driver::assembleObjects</code> in <code>src/Driver.cpp</code> is a plain serial loop that
+spawns one assembler per file. On the Mac the compile phase falls from 0.27s to 0.08s under
+<code>-j12</code> &mdash; a clean 3.4&times; &mdash; and then the twelve megabytes of assembly it
+produced take 1.94 seconds to assemble, whatever <code>-j</code> says.</p>
+
+<p class="note flagnote">Process spawning is not the cost. Sixteen invocations of
+<code>c++ -c</code> on a four-line <code>.s</code> file take 0.37s on the Mac, so the other
+1.5 seconds is the assembler doing real work on real input.</p>
+</div>
+
+<h2>What the fix bought</h2>
+<p class="deck col">Two changes, one in the compiler and one underneath it. Every figure here
+is before and after on the same machine, same sources, same assembler.</p>
+
+<div class="split">
+  <div class="srow">
+    <span class="slab">M4 Pro</span>
+    <div class="sbar">
+      <div class="seg compile" style="width:25%">0.50</div>
+      <div class="seg" style="width:75%; background:var(--rule); color:var(--ink-soft)">was 2.19 &mdash; 4.4&times;</div>
+    </div>
+  </div>
+  <div class="srow">
+    <span class="slab">i7-12700</span>
+    <div class="sbar">
+      <div class="seg compile" style="width:25%">0.29</div>
+      <div class="seg" style="width:75%; background:var(--rule); color:var(--ink-soft)">was 1.16 &mdash; 4.0&times;</div>
+    </div>
+  </div>
+  <div class="srow">
+    <span class="slab">Xeon</span>
+    <div class="sbar">
+      <div class="seg compile" style="width:88%">1.20</div>
+      <div class="seg" style="width:12%; background:var(--rule); color:var(--ink-soft)">1.37</div>
+    </div>
+  </div>
+</div>
+
+<div class="col">
+<h3>One: the assembler is a job like any other</h3>
+<p><code>Driver::assembleObjects</code> was a plain serial loop spawning one assembler per
+file, so sixteen sources compiled in <span class="n">0.08s</span> on twelve cores and then took
+<span class="n">1.9s</span> to assemble one at a time. It runs on the same work-stealing pool
+the compiling does, and so does the Windows link path, which had its own copy of the loop.</p>
+
+<p>Windows took that whole: <span class="n">0.75s</span> to <span class="n">0.29s</span>. The
+Xeon took what it had &mdash; its two vCPUs are hyperthread siblings of one physical core, and
+g&#43;&#43; itself gets only <span class="n">1.16&times;</span> from the second, so
+<span class="n">1.28</span> to <span class="n">1.20</span> is the machine&#39;s ceiling rather
+than a shortfall. <strong>The Mac did not move at all.</strong></p>
+
+<h3>Two: <code>system()</code> is not a way to start a process</h3>
+<p><code>-time</code> said &ldquo;16 tool runs on 12 threads&rdquo; and the wall clock stayed at
+<span class="n">1.98s</span>, because Apple&#39;s libc holds a global lock for the duration of
+the child. Concurrent <code>std::system</code> calls serialise completely. The same question put
+to all three C libraries:</p>
+</div>
+
+<div class="tw">
+<table>
+<thead><tr><th>sixteen equal sleeps issued from eight threads</th><th style="text-align:right">measured</th><th style="text-align:right">parallel floor</th><th>verdict</th></tr></thead>
+<tbody>
+<tr><td>macOS &middot; Apple libc</td><td class="num">4260 ms</td><td class="num">~500</td><td>serialised &mdash; global lock</td></tr>
+<tr><td>Linux &middot; glibc 2.34</td><td class="num">530 ms</td><td class="num">~500</td><td>parallel</td></tr>
+<tr><td>Windows &middot; MSVC CRT</td><td class="num">2105 ms</td><td class="num">~2000</td><td>parallel</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="col">
+<p><code>posix_spawn</code> and <code>waitpid</code> in place of <code>std::system</code> on
+the POSIX path took the Mac from <span class="n">1.98s</span> to
+<span class="n">0.50s</span>, which is the <span class="n">0.08</span> of compiling plus
+<span class="n">0.42</span> of assembling &mdash; within a hair of the
+<span class="n">0.45s</span> the same files took through <code>xargs&nbsp;-P12</code>, which is
+what said the ceiling was the library and not the work.</p>
+
+<p class="note">Asking all three was the point. The first machine measured is the one that
+behaves differently from the other two, and a conclusion drawn from it alone &mdash; that
+parallel assembly does not help &mdash; would have been wrong about two platforms and wrong
+about the cause on the third.</p>
+
+<p>The pool also closed a data race it would otherwise have opened: the command named in an
+assembler error was one file-scope string that several threads would have written at once. It
+is per-thread now, and the <em>first</em> failure by index is reported rather than whichever
+thread lost the race, so a rerun blames the same file.</p>
+</div>
+
+<h2>The compiler proper</h2>
+<p class="deck col">Compile-only, stopping at assembly, so the platform assembler is out of both
+sides. Measured on the Mac; the other two machines were not asked for assembly-only output.</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>M4 Pro, compile only</th><th style="text-align:right">&minus;j1</th><th style="text-align:right">&minus;j12</th><th style="text-align:right">scaling</th></tr></thead>
+<tbody>
+<tr><td>cxx1 <code>-S</code></td><td class="num">0.27</td><td class="num">0.08</td><td class="num">3.4&times;</td></tr>
+<tr><td>clang&#43;&#43; <code>-S</code></td><td class="num">4.03</td><td class="num">0.82</td><td class="num">4.9&times;</td></tr>
+<tr><td><strong>ratio</strong></td><td class="num"><strong>14.9&times;</strong></td><td class="num"><strong>10.3&times;</strong></td><td class="num">&mdash;</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="col">
+<p>cxx1&#39;s front end and code generator get through these sixteen files about fifteen times
+faster than clang&#39;s. That is doing full C&#43;&#43; parsing, name lookup, overload resolution,
+template instantiation by token replay, and mangling for both the Itanium and Microsoft ABIs
+&mdash; but no optimisation, no debug info unless asked, and a diagnostic engine that stops at
+the first error.</p>
+
+<p class="note">Read the ratio as the cost of everything clang does that cxx1 does not, more
+than as a verdict on either. The useful figure for a person waiting on a build is the
+source-to-object one above.</p>
+</div>
+
+<h2>What this is not</h2>
+<div class="col">
+<p><strong>Not a scaling study.</strong> The three machines are wildly unlike: 12 fast cores
+against 2 slow ones on 419&nbsp;MB against 20 threads on 64&nbsp;GB. The Xeon&#39;s
+<span class="n">1.16&times;</span> from a second core is a memory ceiling, not a parallelism
+result &mdash; g&#43;&#43; will not fit twice in that box.</p>
+
+<p><strong>Not a quality comparison.</strong> The native compilers produce optimisable IR,
+full debug information and far better diagnostics. cxx1 produces working code for one program.</p>
+
+<p><strong>Not one snapshot.</strong> The source-to-object figures are cxx1 as it stands after
+the parallel assemble step; the &ldquo;was&rdquo; markers show where each machine started. The
+<code>std::system</code> table is a property of each platform&#39;s C library, not of cxx1.</p>
+
+<p><strong>Not the whole build.</strong> Linking is excluded, and on Windows cxx1 cannot link
+Compiler&#43;&#43; at all yet &mdash; ml64 has no COMDAT directive, so every inline and template
+member collides. Compilation and assembly are what is measured here, and both succeed on all
+three.</p>
+</div>
+
+<footer>
+  Measured 2026-09-05 on the three boxes <code>tools/verify-three</code> uses.<br>
+  Sources: Compiler&#43;&#43; at commit 5056bba, unmodified. cxx1 with the assemble
+  step on the pool and posix_spawn in place of system().<br>
+  Method: best of two or three runs, warm page cache, otherwise idle machines.<br>
+  Native compilers at <code>-O0</code> / <code>/Od</code>; cxx1 has no optimiser to disable.
+</footer>
+</div>

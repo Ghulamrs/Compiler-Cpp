@@ -1,0 +1,79 @@
+// <set> - an ordered set, kept the same way `<map>` is.
+//
+// A sorted `vector<T>` with a pointer for an iterator, bisection for the
+// lookup, and the same two costs written down there: insertion is O(n) and
+// invalidates every iterator. What a set adds over a map is only that the
+// element *is* the key, so there is no pair and `*it` is the value.
+#ifndef _CXX1_SET
+#define _CXX1_SET
+
+#include <cstddef>
+#include <vector>
+
+namespace std {
+
+template <class T>
+class set {
+public:
+    typedef T key_type;
+    typedef T value_type;
+    typedef std::size_t size_type;
+    typedef T *iterator;
+    typedef const T *const_iterator;
+
+    set() {}
+
+    size_type size() const { return items_.size(); }
+    bool empty() const { return items_.empty(); }
+    void clear() { items_.clear(); }
+
+    iterator begin() { return items_.begin(); }
+    iterator end() { return items_.end(); }
+    const_iterator begin() const { return items_.begin(); }
+    const_iterator end() const { return items_.end(); }
+
+    size_type lower(const T &v) const {
+        size_type lo = 0;
+        size_type hi = items_.size();
+        while (lo < hi) {
+            const size_type mid = lo + (hi - lo) / 2;
+            if (items_[mid] < v) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+
+    iterator find(const T &v) {
+        const size_type at = lower(v);
+        if (at == items_.size() || v < items_[at]) return end();
+        return items_.begin() + at;
+    }
+    const_iterator find(const T &v) const {
+        const size_type at = lower(v);
+        if (at == items_.size() || v < items_[at]) return end();
+        return items_.begin() + at;
+    }
+
+    size_type count(const T &v) const {
+        const size_type at = lower(v);
+        return at != items_.size() && !(v < items_[at]) ? 1 : 0;
+    }
+
+    void insert(const T &v) {
+        const size_type at = lower(v);
+        if (at != items_.size() && !(v < items_[at])) return;
+        items_.insert(items_.begin() + at, v);
+    }
+
+    void erase(const T &v) {
+        const size_type at = lower(v);
+        if (at != items_.size() && !(v < items_[at])) items_.erase(items_.begin() + at);
+    }
+
+private:
+    std::vector<T> items_;
+};
+
+}  // namespace std
+
+#endif

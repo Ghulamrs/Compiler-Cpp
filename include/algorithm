@@ -1,0 +1,64 @@
+// <algorithm> - the few that are reached for.
+//
+// **Everything here is a template over iterators, and an iterator in this
+// library is a pointer.** `vector<T>::iterator` is `T *` and a map's is a
+// `pair<K, V> *`, so these work on arrays and on this library's containers
+// alike, which is the property that makes them worth having as templates rather
+// than as members.
+//
+// What is not here: `sort`, `find_if`, and the rest of the header. They are
+// absent because nothing calls them, and adding them untested would be adding
+// the appearance of a library rather than a library.
+#ifndef _CXX1_ALGORITHM
+#define _CXX1_ALGORITHM
+
+#include <cstddef>
+
+namespace std {
+
+template <class In, class Out>
+static Out copy(In from, In to, Out into) {
+    while (from != to) {
+        *into = *from;
+        ++into;
+        ++from;
+    }
+    return into;
+}
+
+// **Written with an `if` and not a conditional**, and the reason is a compiler
+// limit worth recording rather than working around silently: `return b < a ? b
+// : a;` over two `const T &` is an lvalue and should be returnable as a
+// reference, and this compiler reads the conditional as a temporary and refuses
+// it. The two forms say the same thing; this one compiles.
+template <class T>
+static const T &min(const T &a, const T &b) {
+    if (b < a) return b;
+    return a;
+}
+
+template <class T>
+static const T &max(const T &a, const T &b) {
+    if (a < b) return b;
+    return a;
+}
+
+template <class In, class T>
+static In find(In from, In to, const T &want) {
+    while (from != to && !(*from == want)) ++from;
+    return from;
+}
+
+template <class In, class T>
+static std::size_t count(In from, In to, const T &want) {
+    std::size_t seen = 0;
+    while (from != to) {
+        if (*from == want) seen++;
+        ++from;
+    }
+    return seen;
+}
+
+}  // namespace std
+
+#endif

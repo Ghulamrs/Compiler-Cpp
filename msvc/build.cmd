@@ -48,6 +48,7 @@ cl /nologo /std:c++14 /permissive- /EHsc /W4 /WX /O2 ^
    /I"%HERE%compat" /I"%ROOT%\src" ^
    /D_CRT_SECURE_NO_WARNINGS ^
    /DCXX1_INCLUDE_DIR="\"%ROOTFWD%/lib\"" ^
+   /DCXX1_CXX_INCLUDE_DIR="\"%ROOTFWD%/include\"" ^
    /Fo"%ROOT%\obj-msvc\\" /Fe"%ROOT%\cxx1-msvc.exe" ^
    "%ROOT%\src\*.cpp" "%ROOT%\src\parser\*.cpp" "%ROOT%\src\backend\*.cpp"
 if errorlevel 1 ( echo build.cmd: FAILED & exit /b 1 )

@@ -1,0 +1,15 @@
+if 1
+if null
+then 5
+else 0
+while 7
+while 8
+ctor 5
+held 5
+dtor 5
+after
+ctor 0
+zero 0
+dtor 0
+inner 2
+outer 100

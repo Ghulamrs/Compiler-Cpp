@@ -1,0 +1,296 @@
+// <string> - one class, and the operators around it.
+//
+// **Not `<cstring>`**, which is C's `string.h` under `std::`. This is the
+// class; that is the byte functions. The two names are one letter apart and a
+// program that reaches for the wrong one gets no error, so it is worth saying
+// twice.
+//
+// What is here is what a program actually calls, and no more: the tree this
+// library was written for uses seventeen members of this class, and each is
+// below. There is no small-string optimisation - every string owns a heap
+// buffer, even an empty one does not - and no allocator parameter, because
+// there is nowhere to put one that anything would read.
+//
+// **The class owns memory, which is why it defines all four of the special
+// members** rather than letting the compiler copy its bytes: two strings
+// sharing a buffer would free it twice, and that is the failure that prints the
+// right answer first.
+#ifndef _CXX1_STRING
+#define _CXX1_STRING
+
+#include <cstddef>
+#include <cstdlib>
+#include <cstring>
+
+namespace std {
+
+class string {
+public:
+    typedef std::size_t size_type;
+    // -1 as a size: "to the end", or "not found". Every function that takes a
+    // length accepts it and every search returns it.
+    static const size_type npos = (size_type)-1;
+
+    string() { init(0, 0); }
+    string(const char *s) { init(s, s == 0 ? 0 : std::strlen(s)); }
+    string(const char *s, size_type n) { init(s, n); }
+    string(const string &o) { init(o.buf_, o.len_); }
+    string(size_type n, char c) {
+        reserveExactly(n);
+        for (size_type i = 0; i < n; i++) buf_[i] = c;
+        len_ = n;
+        buf_[len_] = 0;
+    }
+    ~string() { std::free(buf_); }
+
+    string &operator=(const string &o) {
+        // Self-assignment first, because the next line frees what it would
+        // then copy from.
+        if (this != &o) assignFrom(o.buf_, o.len_);
+        return *this;
+    }
+    string &operator=(const char *s) {
+        assignFrom(s, s == 0 ? 0 : std::strlen(s));
+        return *this;
+    }
+    string &operator=(char c) { assignFrom(&c, 1); return *this; }
+
+    string &operator+=(const string &o) { return appendBytes(o.buf_, o.len_); }
+    string &operator+=(const char *s) {
+        return appendBytes(s, s == 0 ? 0 : std::strlen(s));
+    }
+    string &operator+=(char c) { return appendBytes(&c, 1); }
+
+    char &operator[](size_type i) { return buf_[i]; }
+    const char &operator[](size_type i) const { return buf_[i]; }
+
+    size_type size() const { return len_; }
+    size_type length() const { return len_; }
+    bool empty() const { return len_ == 0; }
+    const char *c_str() const { return buf_; }
+    const char *data() const { return buf_; }
+
+    void clear() { len_ = 0; buf_[0] = 0; }
+    void push_back(char c) { appendBytes(&c, 1); }
+    void pop_back() { if (len_ != 0) { len_--; buf_[len_] = 0; } }
+
+    char &back() { return buf_[len_ - 1]; }
+    const char &back() const { return buf_[len_ - 1]; }
+    char &front() { return buf_[0]; }
+    const char &front() const { return buf_[0]; }
+
+    char *begin() { return buf_; }
+    char *end() { return buf_ + len_; }
+    const char *begin() const { return buf_; }
+    const char *end() const { return buf_ + len_; }
+
+    string &append(const string &o) { return appendBytes(o.buf_, o.len_); }
+    string &append(const char *s) {
+        return appendBytes(s, s == 0 ? 0 : std::strlen(s));
+    }
+    string &append(const char *s, size_type n) { return appendBytes(s, n); }
+
+    // **`buf_ == 0` is a real state here, and not only before construction.**
+    // This library's `vector` assigns into raw `calloc`'d storage - placement
+    // new is refused by this compiler, so there is no way to construct an
+    // element in place - and a zeroed slot is a `string` with a null buffer,
+    // zero length and zero capacity. Without the second test, `reserve(0)` on
+    // one did nothing and the `buf_[len_] = 0` that follows every write went to
+    // a null pointer: `std::vector<std::string> s(2);` crashed.
+    void reserve(size_type n) { if (n > cap_ || buf_ == 0) reserveExactly(n); }
+
+    void resize(size_type n, char c) {
+        if (n > len_) {
+            reserve(n);
+            for (size_type i = len_; i < n; i++) buf_[i] = c;
+        }
+        len_ = n;
+        buf_[len_] = 0;
+    }
+    void resize(size_type n) { resize(n, 0); }
+
+    string substr(size_type pos, size_type n) const {
+        if (pos > len_) pos = len_;
+        size_type have = len_ - pos;
+        return string(buf_ + pos, n > have ? have : n);
+    }
+    string substr(size_type pos) const { return substr(pos, npos); }
+    string substr() const { return substr(0, npos); }
+
+    size_type find(char c, size_type from) const {
+        for (size_type i = from; i < len_; i++)
+            if (buf_[i] == c) return i;
+        return npos;
+    }
+    size_type find(char c) const { return find(c, 0); }
+
+    size_type find(const char *s, size_type from) const {
+        size_type n = s == 0 ? 0 : std::strlen(s);
+        if (n > len_) return npos;
+        for (size_type i = from; i + n <= len_; i++)
+            if (std::memcmp(buf_ + i, s, n) == 0) return i;
+        return npos;
+    }
+    size_type find(const char *s) const { return find(s, 0); }
+    size_type find(const string &s, size_type from) const {
+        return find(s.buf_, from);
+    }
+    size_type find(const string &s) const { return find(s.buf_, 0); }
+
+    size_type rfind(char c) const {
+        for (size_type i = len_; i-- > 0; )
+            if (buf_[i] == c) return i;
+        return npos;
+    }
+
+    // The parameter is `wanted` and not `set`, which it was: once `<set>` is
+    // included as well, `set` names a class template, and this compiler reads
+    // the template in preference to the parameter that shadows it. A header
+    // has no business using a library name for a parameter either way.
+    size_type find_first_of(const char *wanted) const {
+        for (size_type i = 0; i < len_; i++)
+            if (std::strchr(wanted, buf_[i]) != 0 && buf_[i] != 0) return i;
+        return npos;
+    }
+    size_type find_last_of(const char *wanted) const {
+        for (size_type i = len_; i-- > 0; )
+            if (std::strchr(wanted, buf_[i]) != 0 && buf_[i] != 0) return i;
+        return npos;
+    }
+    // **The one-character forms**, which is how a path is usually split -
+    // `path.find_last_of('/')`. A `char` reaches the `const char *` overload
+    // through no conversion C++ has, so without these the call is refused.
+    size_type find_first_of(char c) const { return find(c, 0); }
+    size_type find_last_of(char c) const { return rfind(c); }
+
+    string &insert(size_type pos, const char *s) {
+        size_type n = s == 0 ? 0 : std::strlen(s);
+        if (pos > len_) pos = len_;
+        reserve(len_ + n);
+        // Backwards, so that a move within one buffer cannot overwrite what it
+        // has not read yet.
+        for (size_type i = len_; i-- > pos; ) buf_[i + n] = buf_[i];
+        for (size_type i = 0; i < n; i++) buf_[pos + i] = s[i];
+        len_ += n;
+        buf_[len_] = 0;
+        return *this;
+    }
+    string &insert(size_type pos, const string &s) {
+        return insert(pos, s.c_str());
+    }
+
+    string &erase(size_type pos, size_type n) {
+        if (pos > len_) return *this;
+        size_type have = len_ - pos;
+        if (n > have) n = have;
+        for (size_type i = pos; i + n < len_; i++) buf_[i] = buf_[i + n];
+        len_ -= n;
+        buf_[len_] = 0;
+        return *this;
+    }
+    string &erase(size_type pos) { return erase(pos, npos); }
+
+    int compare(const string &o) const { return std::strcmp(buf_, o.buf_); }
+    int compare(const char *s) const { return std::strcmp(buf_, s); }
+
+private:
+    // **The buffer is never null and always terminated**, so `c_str()` needs no
+    // special case and neither does an empty string.
+    void init(const char *s, size_type n) {
+        cap_ = 0;
+        buf_ = 0;
+        reserveExactly(n);
+        if (n != 0) std::memcpy(buf_, s, n);
+        len_ = n;
+        buf_[len_] = 0;
+    }
+    void reserveExactly(size_type want) {
+        size_type room = want < 15 ? 15 : want;
+        char *fresh = (char *)std::malloc(room + 1);
+        if (buf_ != 0) {
+            std::memcpy(fresh, buf_, len_);
+            std::free(buf_);
+        } else {
+            len_ = 0;
+        }
+        fresh[len_] = 0;
+        buf_ = fresh;
+        cap_ = room;
+    }
+    void assignFrom(const char *s, size_type n) {
+        reserve(n);
+        if (n != 0) std::memcpy(buf_, s, n);
+        len_ = n;
+        buf_[len_] = 0;
+    }
+    string &appendBytes(const char *s, size_type n) {
+        if (n != 0) {
+            // Grown by doubling and not by exactly what is wanted, so that
+            // building a string one character at a time is not quadratic.
+            if (len_ + n > cap_) {
+                size_type want = cap_ * 2;
+                reserveExactly(len_ + n > want ? len_ + n : want);
+            }
+            std::memcpy(buf_ + len_, s, n);
+            len_ += n;
+            buf_[len_] = 0;
+        }
+        return *this;
+    }
+
+    char *buf_;
+    size_type len_;
+    size_type cap_;
+};
+
+// **The comparisons and the concatenations are non-members**, which is what
+// lets `"a" + s` work as well as `s + "a"`: a member would need the left side
+// to be the class.
+//
+// **`static` and not `inline`, and that is a compiler limit rather than a
+// choice.** These want to be `inline`: one definition, merged across every
+// translation unit that includes this. cxx1 has no `inline` and no weak or
+// linkonce linkage to give it, so the honest spelling is internal linkage -
+// each file that includes this gets its own copy of these eleven functions,
+// which is correct because they hold no state, and wasteful in a way nothing
+// here can measure. When COMDAT lands, these become `inline`.
+static bool operator==(const string &a, const string &b) { return a.compare(b) == 0; }
+static bool operator==(const string &a, const char *b) { return a.compare(b) == 0; }
+static bool operator==(const char *a, const string &b) { return b.compare(a) == 0; }
+static bool operator!=(const string &a, const string &b) { return a.compare(b) != 0; }
+static bool operator!=(const string &a, const char *b) { return a.compare(b) != 0; }
+static bool operator!=(const char *a, const string &b) { return b.compare(a) != 0; }
+static bool operator<(const string &a, const string &b) { return a.compare(b) < 0; }
+static bool operator>(const string &a, const string &b) { return a.compare(b) > 0; }
+static bool operator<=(const string &a, const string &b) { return a.compare(b) <= 0; }
+static bool operator>=(const string &a, const string &b) { return a.compare(b) >= 0; }
+
+static string operator+(const string &a, const string &b) {
+    string r(a);
+    r += b;
+    return r;
+}
+static string operator+(const string &a, const char *b) {
+    string r(a);
+    r += b;
+    return r;
+}
+static string operator+(const char *a, const string &b) {
+    string r(a);
+    r += b;
+    return r;
+}
+static string operator+(const string &a, char b) {
+    string r(a);
+    r += b;
+    return r;
+}
+static string operator+(char a, const string &b) {
+    string r(1, a);
+    r += b;
+    return r;
+}
+
+}  // namespace std
+
+#endif

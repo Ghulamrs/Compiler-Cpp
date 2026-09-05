@@ -1,0 +1,72 @@
+// <sstream> - the streams that read and write a string.
+//
+// **They derive from <ostream> and <istream> rather than repeating them**, and
+// what makes that possible is one pointer in each base: `ostream::buf_` and
+// `istream::src_`. When it is set, the three functions that actually move
+// bytes go to the string instead of the `FILE *`, and every `operator<<` and
+// `operator>>` above them is reused untouched.
+//
+// The other way to do it is a virtual `put`, and a virtual is exactly what
+// `std::cout` cannot have: it would need a vptr, a vptr needs a constructor,
+// and a file-scope object with a constructor is what this compiler refuses.
+// So the branch is a pointer test rather than a call through a table.
+//
+// **These have constructors and the standard streams do not**, which is not an
+// inconsistency: an ostringstream is always a local, and a local with a
+// constructor has always worked.
+#ifndef _CXX1_SSTREAM
+#define _CXX1_SSTREAM
+
+#include <istream>
+#include <ostream>
+#include <string>
+
+namespace std {
+
+class ostringstream : public ostream {
+public:
+    string s_;
+
+    ostringstream() {
+        fp_ = 0;
+        which_ = 0;
+        state_ = 0;
+        buf_ = &s_;
+        base_ = 10;
+    }
+
+    string str() const { return s_; }
+    void str(const string &v) { s_ = v; }
+};
+
+class istringstream : public istream {
+public:
+    string s_;
+
+    istringstream() {
+        fp_ = 0;
+        which_ = 0;
+        state_ = 0;
+        s_ = string();
+        src_ = &s_;
+        pos_ = 0;
+    }
+
+    // The string is copied in, not referred to, so it outlives whatever the
+    // caller passed - which is what the standard's `istringstream(s)` does too.
+    istringstream(const string &from) {
+        fp_ = 0;
+        which_ = 0;
+        state_ = 0;
+        s_ = from;
+        src_ = &s_;
+        pos_ = 0;
+    }
+
+    string str() const { return s_; }
+    void str(const string &v) { s_ = v; pos_ = 0; state_ = 0; }
+};
+
+}  // namespace std
+
+#endif

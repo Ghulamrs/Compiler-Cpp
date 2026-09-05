@@ -1,0 +1,39 @@
+// <cstring> - The byte and string functions, under `std::`.
+//
+// Note what this is *not*: `<cstring>` is the C header wrapped, and `<string>`
+// is a class. They are unrelated headers with confusable names, and a program
+// that wants `std::string` and includes this one gets neither an error nor the
+// class - which is worth knowing before it happens.
+//
+// Derived from lib/string.h: every name that header declares is named here, and
+// the two are checked against each other by the case that includes both.
+#ifndef _CXX1_CSTRING
+#define _CXX1_CSTRING
+
+#include <string.h>
+
+namespace std {
+
+using ::memchr;
+using ::memcmp;
+using ::memcpy;
+using ::memmove;
+using ::memset;
+using ::strcat;
+using ::strchr;
+using ::strcmp;
+using ::strcpy;
+using ::strcspn;
+using ::strerror;
+using ::strlen;
+using ::strncmp;
+using ::strncpy;
+using ::strpbrk;
+using ::strrchr;
+using ::strspn;
+using ::strstr;
+using ::strtok;
+
+}  // namespace std
+
+#endif

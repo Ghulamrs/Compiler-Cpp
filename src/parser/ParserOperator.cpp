@@ -237,10 +237,13 @@ ExprPtr Parser::logicalAnd() {
     while (peek().is("&&")) {
         std::size_t pos = peek().pos;
         at_++;
+        const std::size_t before = pendingTemps_.size();
         ExprPtr r = decay(bitOr());
         n = decay(std::move(n));
-        requireScalar(*n, pos, "'&&'");
-        requireScalar(*r, pos, "'&&'");
+        n = contextualScalar(std::move(n), pos, "'&&'");
+        r = contextualScalar(std::move(r), pos, "'&&'");
+        r = markSkippableTemporaries(std::move(r), before,
+                                     pendingTemps_.size());
         ExprPtr node(new Binary(BinOp::LAnd, std::move(n), std::move(r)));
         node->setType(types_.get(Kind::Bool));   // [expr.log.and]/1
         n = std::move(node);
@@ -253,10 +256,13 @@ ExprPtr Parser::logicalOr() {
     while (peek().is("||")) {
         std::size_t pos = peek().pos;
         at_++;
+        const std::size_t before = pendingTemps_.size();
         ExprPtr r = decay(logicalAnd());
         n = decay(std::move(n));
-        requireScalar(*n, pos, "'||'");
-        requireScalar(*r, pos, "'||'");
+        n = contextualScalar(std::move(n), pos, "'||'");
+        r = contextualScalar(std::move(r), pos, "'||'");
+        r = markSkippableTemporaries(std::move(r), before,
+                                     pendingTemps_.size());
         ExprPtr node(new Binary(BinOp::LOr, std::move(n), std::move(r)));
         node->setType(types_.get(Kind::Bool));   // [expr.log.or]/1
         n = std::move(node);
@@ -361,15 +367,27 @@ ExprPtr Parser::compound(BinOp op, ExprPtr target, ExprPtr value, std::size_t po
     requireAssignable(*target, pos, "the left of a compound assignment");
     const Type *to = target->type();
 
-    // **`a += b` is not `a = a + b` when a is a class.** Reading the target back,
-    // combining and storing is the right rewrite for a built-in operand and the
-    // wrong one for a class, where [over.match.oper] wants `operator+=` alone.
-    if (to->unqualified()->isStructOrUnion())
-        src_.fail(pos, std::string("'operator") + binOpSpelling(op) +
-                       "=' is not supported yet - and a compound assignment on "
-                       "a class is that operator alone: it is not rewritten "
-                       "into '" + binOpSpelling(op) + "' and an assignment the "
-                       "way it is for a built-in type");
+    // **`a += b` is not `a = a + b` when a is a class.** Reading the target
+    // back, combining and storing is the right rewrite for a built-in operand
+    // and the wrong one for a class, where [over.match.oper] wants
+    // `operator+=` alone - so a class that has `operator+` and `operator=` and
+    // not this one cannot be written `+=` at all, and says so.
+    if (to->unqualified()->isStructOrUnion()) {
+        const std::string name = std::string("operator") + binOpSpelling(op) + "=";
+        if (resolveOperator(name, *target, value.get(), pos) !=
+            OperatorChoice::Member)
+            src_.fail(pos, "'" + to->unqualified()->describe() + "' declares no "
+                           "'" + name + "' that takes this, and a compound "
+                           "assignment on a class is that operator alone - it "
+                           "is not rewritten into '" + binOpSpelling(op) +
+                           "' and an assignment the way it is for a built-in "
+                           "type");
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(value));
+        const Type *objectType = target->type();
+        return memberCallWith(std::move(target), objectType, name, pos,
+                              std::move(args));
+    }
 
     if (ExprPtr readBack = clonePure(*target)) {
         ExprPtr combined = (op == BinOp::Shl || op == BinOp::Shr)
@@ -493,20 +511,109 @@ ExprPtr Parser::conditional() {
     std::size_t pos = peek().pos;
     at_++;
     cond = decay(std::move(cond));
-    requireScalar(*cond, pos, "the condition of '?:'");
+    cond = contextualScalar(std::move(cond), pos, "the condition of '?:'");
 
+    // **What each arm builds, only that arm may destroy.** The entries each
+    // one adds are noted so the class path below can guard them.
+    const std::size_t tempsBeforeA = pendingTemps_.size();
     ExprPtr a = decay(expr());
+    const std::size_t tempsAfterA = pendingTemps_.size();
     expect(":");
     ExprPtr b = decay(conditional());
+    const std::size_t tempsAfterB = pendingTemps_.size();
 
     const Type *ta = a->type();
     const Type *tb = b->type();
     const Type *result = nullptr;
 
+    // **[expr.cond]/4: both arms glvalues of one type, and the `?:` is one
+    // too.** `IRReg &r = pl ? b : a;` is an ordinary reference binding in C++
+    // and was refused here for want of a shape - so the shape is the addresses:
+    // `*(c ? &a : &b)` puts two pointers where the arms were, which every
+    // backend already moves, and the dereference around them is an lvalue that
+    // can be assigned to, taken the address of, or bound to a reference.
+    //
+    // **Asked before the class path below**, which copies into a slot of its
+    // own: for two lvalues of one type there is nothing to copy, and copying
+    // would take the reference binding away again. The types have to match
+    // exactly, cv-qualification included - a difference there makes them
+    // different types, and [expr.cond]/5 sends those to the prvalue answer.
+    if (ta == tb && isLvalue(*a) && isLvalue(*b)) {
+        const Type *ptr = types_.pointerTo(ta);
+        ExprPtr at(new Unary('&', std::move(a)));
+        at->setType(ptr);
+        ExprPtr bt(new Unary('&', std::move(b)));
+        bt->setType(ptr);
+        ExprPtr which(new Conditional(std::move(cond), std::move(at),
+                                      std::move(bt)));
+        which->setType(ptr);
+        ExprPtr n(new Unary('*', std::move(which)));
+        n->setType(ta);
+        return n;
+    }
+
     if (ta->isArithmetic() && tb->isArithmetic()) {
         result = usualArithmetic(ta, tb);
         a = convert(std::move(a), result);
         b = convert(std::move(b), result);
+    } else if (ta->unqualified()->isStructOrUnion() ||
+               tb->unqualified()->isStructOrUnion()) {
+        // **[expr.cond]/3: each arm is tried as the target for the other**, and
+        // exactly one must convert - asked before anything is built, because
+        // both directions have to be known before either is taken.
+        const Type *pa = ta->unqualified();
+        const Type *pb = tb->unqualified();
+        const Type *want = nullptr;
+        if (pa == pb) {
+            // One class, two qualifications: the result is a prvalue, so
+            // neither arm's constness reaches it.
+            want = pa;
+        } else {
+            const bool aToB = pb->isStructOrUnion() &&
+                              convertingConstructor(pb, *a) != nullptr;
+            const bool bToA = pa->isStructOrUnion() &&
+                              convertingConstructor(pa, *b) != nullptr;
+            if (aToB && !bToA) want = pb;
+            else if (bToA && !aToB) want = pa;
+            else
+                src_.fail(pos, std::string("the arms of '?:' are '") +
+                               ta->describe() + "' and '" + tb->describe() +
+                               (aToB ? "', and each converts to the other, so "
+                                       "neither is the answer"
+                                     : "', and neither converts to the other"));
+        }
+
+        // **The answer needs storage of its own**, which is the whole of why
+        // this was refused: a `Conditional` yields a value the backends move as
+        // a scalar and a class has nowhere to be moved to. Both arms build into
+        // one slot, the conditional becomes the `int` they answer with, and the
+        // expression wears the `*(build, &tmp)` shape a class temporary wears.
+        const int slot = allocateFrameSlot(want);
+        int guard = 0;
+        if (destructorOf(want) != nullptr) {
+            guard = guardFlag();
+            pendingTemps_.push_back(Temporary{ slot, want, guard });
+        }
+        ExprPtr armA = buildInto(want, slot, std::move(a), guard, pos);
+        armA = markArmTemporaries(std::move(armA), tempsBeforeA, tempsAfterA);
+        ExprPtr armB = buildInto(want, slot, std::move(b), guard, pos);
+        armB = markArmTemporaries(std::move(armB), tempsAfterA, tempsAfterB);
+        ExprPtr chosen(new Conditional(std::move(cond), std::move(armA),
+                                       std::move(armB)));
+        chosen->setType(types_.intType());
+
+        ExprPtr again(Var::local("$cond", slot));
+        again->setType(want);
+        ExprPtr at(new Unary('&', std::move(again)));
+        at->setType(types_.pointerTo(want));
+        ExprPtr both(new Comma(std::move(chosen), std::move(at)));
+        both->setType(types_.pointerTo(want));
+        ExprPtr made(new Unary('*', std::move(both)));
+        made->setType(want);
+        // About to expire, like any other temporary: without the mark, passing
+        // one by value would reach for the copy constructor.
+        made->setXvalue();
+        return made;
     } else if (ta == tb) {
         result = ta;
     } else if (ta->isPointer() && isNullConstant(*b)) {
@@ -549,6 +656,27 @@ ExprPtr Parser::assign() {
 
     const Type *to = n->type();
     ExprPtr value = decay(assign());
+
+    // **`t = 5` where the class declares an `operator=` that takes an int.**
+    // [over.ass] makes assignment a member, so resolveOperator's member half is
+    // the whole lookup - and it has to be asked before the built-in check,
+    // which knows only that an int is not a T.
+    //
+    // Asked only when the right side is *not* the class itself: the copy
+    // assignment below already answers that one, and answers it with the
+    // reference convention this compiler's calls use. Narrowed that way so
+    // that ordinary struct assignment reaches exactly the path it always has.
+    if (to->unqualified()->isStructOrUnion() && value->type() != nullptr &&
+        value->type()->unqualified() != to->unqualified() &&
+        resolveOperator("operator=", *n, value.get(), pos) ==
+            OperatorChoice::Member) {
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(value));
+        const Type *objectType = n->type();
+        return memberCallWith(std::move(n), objectType, "operator=", pos,
+                              std::move(args));
+    }
+
     checkAssignable(*value, to, pos, "the left of '='");
 
     // **A class with a copy assignment of its own is assigned by calling it**,

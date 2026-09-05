@@ -36,8 +36,14 @@ private:
 
 class X86_64Linux : public Walker {
 public:
+    // **The COFF spelling where the names are Microsoft's.** Same syntax and
+    // the same code generator; what differs is that a mangled name is quoted
+    // and a mergeable definition gets a COMDAT section, neither of which
+    // GNU-as on ELF wants. Reached by `-masm=gnu` for x86_64-windows.
     X86_64Linux(std::ostream &sink, const Target &target, const Abi &abi)
-        : target_(target), sink_(sink), abi_(abi) {}
+        : target_(target), sink_(sink), abi_(abi) {
+        if (target.microsoftNames()) a_ = &coff_;
+    }
 
     using Walker::visit;
     void run(const Program &program) override;
@@ -59,6 +65,54 @@ public:
 protected:
 
     virtual bool writesDwarf() const { return true; }
+    // **The MASM path writes its own RTTI records**, in its own run(), so the
+    // COFF ones must not be written as well - both reach here through the same
+    // base run() and the second set is a duplicate symbol.
+    virtual bool emitsOwnRtti() const { return false; }
+
+    // **The exception model follows the target, not the spelling.** This
+    // generator serves x86_64-linux, arm64-darwin, and - under `-masm=gnu` -
+    // x86_64-windows, where the parser builds the Microsoft shape of a `try`:
+    // no landing pad, a funclet per handler. Answering false there sent a
+    // Microsoft `Try` down the Itanium branch and dereferenced a pad that is
+    // null by construction, which is a segfault rather than a diagnostic. The
+    // funclets themselves are written by the MASM spelling alone, so this mode
+    // now refuses by name where it used to crash.
+    bool usesFunclets() const override { return target_.microsoftNames(); }
+    std::string beginFunclet() override;
+    void endCleanupFunclet() override;
+    void endFunclet(const std::string &resume) override;
+    void storeUnwindHelp(int slot) override;
+    void closeFunclet(const std::string &tail);
+    // A Windows local is `frameSize - slot` above the establisher frame, which
+    // is the whole translation between how cxx1 addresses a local and how an
+    // FH3 table describes one. The MASM path says the same thing in its own
+    // class; both are the same arithmetic on the same frame.
+    int establisherOffset(int slot) const { return frameSize_ - slot; }
+    void emitCoffCleanupTables(const Function &fn);
+    // The five objects the Microsoft ABI wants per class with a vftable.
+    void emitCoffClassRtti(const Program &program);
+
+    // A funclet is written by walking the handler into the ordinary output and
+    // lifting the text back out - what the body appended, in order, IS the
+    // funclet, so moving it costs no second code path. Same device the MASM
+    // path uses, and for the same reason.
+    std::string funclets_;
+    std::size_t funcletMark_ = 0;
+    int funcletIndex_ = 0;
+    std::string funcletSymbol_;
+    const char *funcletKind_ = "$catch$";
+    // The function being emitted, which the tables and funclets name.
+    std::string fnSymbol_;
+    // Whether the function being emitted went into a COMDAT, which its
+    // funclets and their unwind data have to join - see closeFunclet.
+    bool fnMergeable_ = false;
+    // **A funclet's .pdata goes last, after every ordinary function's.** A
+    // .pdata contribution is sorted by the address it describes and every
+    // funclet lives in .text$x, which the linker lays after .text - so emitting
+    // one beside its parent interleaves the two orders and the linker says
+    // LNK1223. The MASM path keeps the same pile for the same reason.
+    std::string funcletPdata_;
 
     std::string out_;
     std::size_t emittedSize() override { return out_.size(); }
@@ -74,7 +128,14 @@ protected:
     // **Where the frame base sits, relative to the locals.** Itanium takes rbp
     // before allocating, so a local is [rbp-slot]; Microsoft wants the base at
     // the bottom of it, so a local is [rbp + (frameSize - slot)].
-    virtual bool localsAboveFrameBase() const { return false; }
+    // **Where the frame pointer sits, which is the target's shape and not the
+    // spelling's.** Microsoft takes rbp *after* the allocation so that every FH3
+    // displacement is an unsigned offset up from the establisher; Itanium takes
+    // it before. This answered false for `-masm=gnu` on x86_64-windows, so the
+    // epilogue restored rsp to the bottom of the frame and `pop rbp` read the
+    // wrong word - the second property found living in the MASM subclass that
+    // belongs to the target, after usesFunclets().
+    virtual bool localsAboveFrameBase() const { return target_.microsoftNames(); }
 
     // One local. Every frame-relative operand in this file is written against
     // rbp as Itanium establishes it, so a target whose base is elsewhere moves
@@ -86,6 +147,13 @@ protected:
     // Itanium writes one .gcc_except_table; the Microsoft ABI writes funclets
     // and four tables, so the hook is the shape rather than the table.
     virtual void emitExceptionTables(const Function &fn) {
+        // Microsoft frames carry FH3 tables, not an LSDA. The MASM path says
+        // this in its own class; this is the same decision for the COFF one.
+        if (target_.microsoftNames()) {
+            if (!msTries().empty()) emitCoffCleanupTables(fn);
+            else { out_ += funclets_; funclets_.clear(); funcletIndex_ = 0; }
+            return;
+        }
         if (!callSites().empty()) emitLsda(fn.symbol());
     }
     std::vector<std::string> lsdaTypes_;
@@ -101,6 +169,7 @@ private:
     std::vector<DwarfGlobal> dwarfGlobals_;
     std::ostream &sink_;
     GnuSpelling gnu_{out_};
+    CoffSpelling coff_{out_};
 
     const Abi &abi_;
     int depth_ = 0;

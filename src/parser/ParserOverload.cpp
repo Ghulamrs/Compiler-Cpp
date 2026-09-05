@@ -48,10 +48,41 @@ const Type *Parser::usualArithmetic(const Type *a, const Type *b) const {
 }
 
 // Defined below, beside the conversion rules it belongs with.
-static int publicBaseOffset(const Type *derived, const Type *base);
+int publicBaseOffset(const Type *derived, const Type *base);
 
 ExprPtr Parser::convert(ExprPtr e, const Type *to) const {
     if (e->type() == to) return e;
+
+    // **A class converted by its own conversion function**, which is where a
+    // class reaches a number, a pointer or a bool. Written here so that every
+    // caller of convert gets it - an initialisation, an assignment, an
+    // argument, a return - rather than at each of those in turn.
+    if (e->type() != nullptr && e->type()->unqualified()->isStructOrUnion() &&
+        !to->unqualified()->isStructOrUnion()) {
+        Parser *self = const_cast<Parser *>(this);
+        if (const Signature *how = self->conversionFunction(e->type(), to)) {
+            const Type *object = e->type();
+            std::vector<ExprPtr> none;
+            ExprPtr got = self->memberCallWith(std::move(e), object, how->name,
+                                               0, std::move(none));
+            return got->type() == to ? std::move(got)
+                                     : convert(std::move(got), to);
+        }
+    }
+
+    // **A class differing only in const-ness is the same object**, so there is
+    // nothing here to convert: [conv.qual] changes the type and not the value,
+    // and the object keeps its address and its bytes. Re-labelled rather than
+    // cast, because the Cast below reaches `genConversion`, which reads a class
+    // as a scalar and truncates its address to the object's *size* - so a 1, 2
+    // or 4-byte class copied from a `const` reference segfaulted, while 8 bytes
+    // and up survived because the truncation happened to keep the whole
+    // pointer. `struct N { int id; };` in a `vector` is how it was met.
+    if (to->unqualified() == e->type()->unqualified() &&
+        to->unqualified()->isStructOrUnion()) {
+        e->setType(to);
+        return e;
+    }
 
     // **Derived * to Base * moves the value where the base is not the first one**
     // - B at 4 walks the pointer forward by four. The null check is the rule and
@@ -139,7 +170,7 @@ static bool isStringLiteral(const Expr &e) {
 // [conv.qual]: a pointer may gain const and never lose it, and const below the
 // first level counts only where every level above it is const too. Then whether
 // `base` is a public base of `derived`, and at what offset - every base, not one.
-static int publicBaseOffset(const Type *derived, const Type *base) {
+int publicBaseOffset(const Type *derived, const Type *base) {
     if (derived == nullptr || base == nullptr) return -1;
     const Type *d = derived->unqualified();
     const Type *b = base->unqualified();
@@ -201,11 +232,54 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     const Type *given = arg.type();
 
     // A reference parameter binds or it does not; there is no conversion to rank.
-    // The referents must be one type and a non-const reference cannot bind a const
-    // object - not a worse match, no match. More is a rung of its own.
+    // The referents must be one type, or the argument's must derive from the
+    // parameter's, and a non-const reference cannot bind a const object - not a
+    // worse match, no match.
     if (param->isReference()) {
         const Type *want = param->pointee();
-        if (want->unqualified() != given->unqualified()) return Rank::None;
+
+        // **A reference to a base binds to a derived object** - [dcl.init.ref],
+        // and the sequence is a derived-to-base Conversion, which is what makes
+        // `f(Base &)` lose to `f(Derived &)` for a Derived rather than tie with
+        // it. The pointer form of this has always worked; the reference form
+        // was left out, and `std::getline(istringstream, s)` is what found it.
+        if (want->unqualified() != given->unqualified() &&
+            publicBaseOffset(given, want) > -1 &&
+            isLvalue(arg) && !param->isRValueReference()) {
+            if (!want->isConst() && given->isConst()) return Rank::None;
+            return Rank::Conversion;
+        }
+
+        if (want->unqualified() != given->unqualified()) {
+            // **A `const T &` takes a temporary, so it takes a conversion.**
+            // [over.ics.user] with [dcl.init.ref]: the converting constructor
+            // makes an object and the reference binds to it. A non-const
+            // reference gets nothing, because that object has nowhere to live
+            // beyond the call and binding to it would be a promise to write
+            // somewhere the caller can read.
+            if (want->isConst() && rankingConversion_ == 0) {
+                rankingConversion_++;
+                const bool usable =
+                    want->unqualified()->isStructOrUnion()
+                        ? convertingConstructor(want, arg) != nullptr
+                        : (given->unqualified()->isStructOrUnion() &&
+                           conversionFunction(given, want) != nullptr);
+                rankingConversion_--;
+                if (usable) return Rank::UserDefined;
+            }
+            // **And a standard conversion makes that temporary too.**
+            // [dcl.init.ref]/5 binds a const lvalue reference to a temporary
+            // initialised by *any* implicit conversion sequence, and the
+            // sequence's rank is the reference binding's rank. Only the
+            // user-defined half was here, so `v.push_back(new Derived)` into a
+            // `vector<Base *>` and `v.assign(8, 0)` into a
+            // `vector<unsigned char>` were both refused as no viable function.
+            if (want->isConst()) {
+                const Rank direct = rankArgument(arg, want->unqualified());
+                if (direct != Rank::None) return direct;
+            }
+            return Rank::None;
+        }
         if (!want->isConst() && given->isConst()) return Rank::None;
 
         // **Which reference will take this argument is a question about the
@@ -279,6 +353,23 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     // ambiguous, measured.
     if (to->isNullPtr() && from->isInteger())
         return isNullConstant(arg) ? Rank::Conversion : Rank::None;
+
+    // **Last of all, a user-defined conversion** - [over.ics.rank]/2 puts one
+    // below every standard conversion, so this is asked only where nothing
+    // above it answered. Both directions live here: a constructor of the target
+    // when the target is a class, and a conversion function on the source when
+    // the source is one. The counter is [over.ics.user]/1 - at most one per
+    // sequence - and is also what stops either search recursing into the other.
+    if (rankingConversion_ == 0) {
+        rankingConversion_++;
+        const bool usable =
+            to->unqualified()->isStructOrUnion()
+                ? convertingConstructor(to, arg) != nullptr
+                : (from->unqualified()->isStructOrUnion() &&
+                   conversionFunction(from, to) != nullptr);
+        rankingConversion_--;
+        if (usable) return Rank::UserDefined;
+    }
 
     return Rank::None;
 }
@@ -640,6 +731,15 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
     if (ft->unqualified() == to->unqualified()) return;
 
     if (ft->isArithmetic() && to->isArithmetic()) return;
+
+    // **A class converts by its own conversion function**, [class.conv.fct] -
+    // the mirror of the converting constructor, and the same one rule: at most
+    // one user-defined conversion in a sequence, so what the function answers is
+    // finished by a standard conversion and no further.
+    if (ft->unqualified()->isStructOrUnion() &&
+        !to->unqualified()->isStructOrUnion() &&
+        const_cast<Parser *>(this)->conversionFunction(ft, to) != nullptr)
+        return;
 
     auto refuse = [&](const char *tail) {
         src_.fail(pos, what + " is '" + to->describe() + "' and this is '" +

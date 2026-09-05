@@ -39,8 +39,12 @@ long atol(const char *);
 // the caller owns. Declaring it the tidier way would make every correct
 // program that passes a char ** fail to compile here.
 //
-// strtol and strtoul are its neighbours and are still not here.
+// strtol and strtoul are its neighbours and take a base as well: 0 reads the
+// prefix - 0x for sixteen, a leading 0 for eight - and 2 to 36 says outright.
+double atof(const char *);
 double strtod(const char *, char **);
+long strtol(const char *, char **, int);
+unsigned long strtoul(const char *, char **, int);
 
 int abs(int);
 long labs(long);

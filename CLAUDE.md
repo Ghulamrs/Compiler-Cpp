@@ -5,14 +5,32 @@ code in this repository.
 
 ## Two languages, and they are not the same one
 
-**`src/` is ISO C++14. The language `cxx1` compiles is C++11.** Keep these
-apart in every sentence you write about this project, because almost every
-confusing question here comes from conflating them.
+**`src/` is ISO C++14. The language `cxx1` compiles is C++11 — minus the list
+in `docs/EXCLUSIONS.md`, and with no C++ standard library at all.** Keep the
+two languages apart in every sentence you write about this project, because
+almost every confusing question here comes from conflating them.
 
 The consequence worth stating up front: **this compiler can never compile
 itself**, and that is deliberate rather than a gap. A C++11 compiler cannot
 read C++14 source. Self-hosting is not a milestone here and offering it as one
 is a mistake — see "How correctness is established" for what replaces it.
+
+**The subset is not a footnote, and "C++11" on its own was a claim this
+compiler cannot support.** Some of that has since been answered — `dynamic_cast`
+works on all three targets, conversion functions exist, and `include/` holds a
+real library: `<string>`, `<vector>`, `<map>`, `<set>`, `<algorithm>`,
+`<utility>`, the five C wrappers, and the stream family `<iostream>`,
+`<ostream>`, `<istream>`, `<sstream>`, `<fstream>`, `<ios>`, `<cstdio>`. What
+remains is still a subset, and a large one: the library is sized to what has
+been asked of it rather than to the standard, `<memory>` and
+`<initializer_list>` are not there, and `docs/EXCLUSIONS.md` runs to a hundred
+entries. An ordinary conforming C++98 program may still not compile here, and a
+reader who took the headline at its word would meet that with nowhere to look.
+`docs/EXCLUSIONS.md` is the list — **101 refusal sites**, derived from
+the source by `tools/exclusions` rather than written by hand, and
+`tools/exclusions --check docs/EXCLUSIONS.md` reports every refusal the
+document does not cite. This is the tree's own rule 5 — *a claim with no oracle
+is not allowed to be believed* — applied to the first sentence of this file.
 
 `-std=c++14 -Wall -Wextra -Werror -pedantic` in the `Makefile`. A Mac cannot
 enforce C++14: Apple's libc++ hands you `std::string_view` in C++14 mode, so a
@@ -50,8 +68,10 @@ existed; what was missing was the list.
 5. **The suites**: the header comments of `tests/run.sh`, `tests/emit.sh`,
    `tests/names.sh`, `tests/overload.sh`, then `tools/verify-three`, which is
    the three-box rule with a command behind it.
-6. **`docs/`**: `CONFORMANCE.md` for what compiles and should not, the newest
-   `HANDOVER-*.md` for where a round stopped, and
+6. **`docs/`**: `EXCLUSIONS.md` for what this compiler does not accept — read
+   it before writing a program for cxx1, since it is the difference between
+   "C++11" and what is actually here — then `CONFORMANCE.md` for what compiles
+   and should not, the newest `HANDOVER-*.md` for where a round stopped, and
    `DESIGN-REVIEW-2026-09-02.md` for what to change next and what not to.
 
 **What this file is *for*, once that reading is done**, is the measurement
@@ -517,7 +537,9 @@ such pointer in the file read-only.
 
 **Not in rung 1, and deliberately**: a declaration in an `if` or `while`
 condition. It needs the condition's scope to wrap both branches, which is a
-change to how `If` is built rather than an addition to it.
+change to how `If` is built rather than an addition to it. **Landed
+2026-09-04**, and that description held - see "A declaration in a condition,
+and the two rules that are not one rule".
 
 **Rung 3 is done in dependency order too, and `class` with access control
 comes first**, for the same reason `const` did: the member table has to carry
@@ -790,6 +812,35 @@ address - the array type and `decay` are what yield an address. And a `Binary`
 built by hand is not the parser's pointer arithmetic: `+ 2` added two bytes
 rather than two entries, so the vptr pointed two bytes into the table's first
 word. Both places compute bytes explicitly now and say why.
+
+**A pure virtual holds a slot it has no function for**, and what goes in it is
+the runtime's own trap — `__cxa_pure_virtual` on Itanium, `_purecall` on
+Microsoft, both measured. The vtable is still emitted and the constructor still
+stores it, because an abstract class is built as a base subobject every time a
+derived one is.
+
+**`= 0` is a specifier and not an initialiser**, so it is read where the
+exception specification is read rather than anywhere a value would be. The
+function may still have a body — C++ allows one and a derived class can call it
+explicitly — so the *symbol* is unchanged and only the table entry differs.
+
+**Abstract is a question about the finished table, not about what the class
+declared.** A derived class that overrides every pure entry has replaced them
+and is concrete; one that leaves any is abstract in its turn, even though it
+declared no pure virtual of its own. `VSlot::pure` carries it and an override
+clears it, which is the same machinery that already replaced the symbol.
+
+**The refusal is where an object would be made, not where the call would
+happen** — a local, a member, a `new` — because by the time the call is reached
+there is nothing left to say about it. It names the function that has no
+implementation, which is the thing the reader has to write.
+
+Worth knowing about how this was found: pure virtuals were missing and
+`docs/EXCLUSIONS.md` did **not** list them, because the refusal was a bare
+`expected ';'` rather than a message naming the feature. That is the same
+defect the exclusions document exists to catch, one level down, and it is why
+the rule there is that a refusal says "is not supported yet" or names a
+standard version.
 
 **A virtual destructor puts a function in the vtable that no program writes.**
 `delete p` through a base pointer has to reach the right destructor and then
@@ -3968,6 +4019,1209 @@ initialiser at all.
 `list-init-values-refused.cpp` and `empty-braces-no-length-refused.cpp` pin the
 two refusals.
 
+## An enumeration keeps its name, which is half of being a type
+
+**`void f(Colour)` was `_Z1fi`**, so no cxx1 object naming an enumeration could
+link against one from another compiler - and that is what blocked a
+file-by-file differential against a clang build of the same sources, which is
+the tool that then found a miscompilation in one file out of sixteen.
+
+**An enumeration is now a distinct `Type` that is an `int` in every respect
+except its name.** `Kind::Int`, the same size and alignment and conversions and
+arithmetic, interned per tag, carrying the qualified name that only the
+manglers read. Both spellings measured, four shapes each:
+
+    void a(Colour)          _Z1a6Colour           ?a@@YAXW4Colour@@@Z
+    void b(cc::BinaryOp)    _Z1bN2cc8BinaryOpE    ?b@@YAXW4BinaryOp@cc@@@Z
+    void d(Colour, Colour)  _Z1d6ColourS_         ?d@@YAXW4Colour@@0@Z
+
+Two details neither ABI makes obvious. Itanium spells an enumeration *exactly*
+as it spells a class - the `N...E` appears for a namespaced one for the same
+reason, and the whole name is a substitution candidate, which is what makes the
+repeat `S_`. Microsoft writes `W4` where a class writes its `U` or `V`, and the
+repeat is the argument table's digit - so an enumeration has to **take a slot in
+that table**, which it did not, its kind being `Kind::Int` and the gate asking
+`microsoftBuiltin`.
+
+**What this is not is a type.** Underneath it is still an integer, so
+`Colour c = n;` for an `int n` is still accepted where C++ requires a cast.
+`docs/CONFORMANCE.md` says so plainly and says what finishing it costs: a
+`Kind::Enum` carrying its enumerators, conversions in both directions, and
+overload resolution ranking them. Held back deliberately - the ABI was what
+blocked the differential, and opening the type system is its own round.
+
+`nested-enum` lost its `.nonames` and `.nocl` with this: it had recorded the
+old divergence on all three targets and now agrees name for name.
+
+## A base's members were built twice, and the second time was wrong
+
+**The layout copies a base's data members down into the derived class's list** -
+that flattening *is* the layout - and the base's own constructor has already
+built them by the time the derived constructor's body runs. Both constructor
+walks built them again, default-constructing over whatever the base had set.
+
+So a base whose constructor does work through a member that has a constructor
+was correct alone and wrong the moment anything derived from it:
+
+    Base b;      // cur holds what Base's constructor put there
+    Derived d;   // cur holds its default-constructed state
+
+**A plain `int` member hid it for a long time**: there is nothing to rebuild, so
+the second walk writes nothing and the bug is invisible. It needs a member with
+a constructor of its own to show at all.
+
+**The destructor walk has skipped base members since implicit destructors
+landed.** `memberFromBase` is that test and the comment beside it says why - a
+base's own destructor deals with what it brought. Neither constructor walk asked,
+and there are two: the one that synthesises an implicit default constructor, and
+the one that fills in what a user-written constructor's initialiser list left
+out. Both ask now.
+
+**This is what made cxx1's build of Compiler++ reject every program.** Its
+parser derives from a base whose constructor reads the first token into a
+member, and that member was default-constructed again straight afterwards - so
+the parser always saw `TOK_UNKNOWN` at line 0, whatever the input, including an
+empty file.
+
+**How it was found is the part worth keeping.** Seven probes of the shape had
+already come back correct, each a guess about a program of sixteen files. What
+found it was building the *same sources* with clang and cxx1 and diffing the
+behaviour, then narrowing by writing a harness that called Compiler++'s lexer
+directly - which proved the lexer right and moved the search to the parser.
+The differential is the oracle; the probes were only ever hypotheses.
+
+    128 of Compiler++'s own 129 test cases now behave identically under both
+    builds. The remaining one aborts, and is its own finding.
+
+## Weak definitions, and the link that follows from them
+
+**781 duplicate symbols became none**, and Compiler++'s sixteen objects became
+a program. Three kinds needed the marker, and finding them was a matter of
+running the linker three times.
+
+**An inline function.** [dcl.inline]/6 makes a member defined inside its class
+implicitly inline, and an inline definition may appear in several translation
+units - so the linker folds the copies rather than rejecting them. Everything
+that reaches `topLevel` through a *replay* is one, which is exactly the set:
+a member written inside a class body, and every member of a template
+specialization, are replayed the same way. `replayingInline_` is that flag.
+
+**A compiler-written special member.** [class.copy] and its neighbours make the
+implicit definition inline too, and those never go through `topLevel` at all -
+they are built directly, at five sites in `ParserClass.cpp`.
+
+**And the three objects a polymorphic class emits**: its vtable, its typeinfo
+and the typeinfo's name string. Those are data rather than code, so the flag
+went on `Global` beside `prefixWord` and the globals path emits the same marker.
+
+The spellings were already written down, measured from clang, in
+`docs/CONFORMANCE.md` - `.weak` on ELF, `.weak_def_can_be_hidden` on Mach-O,
+both beside the `.globl` rather than instead of it. The Spelling base class
+answers with nothing by default, so a target that has not been measured says
+nothing rather than something wrong: **Windows is that target today.**
+
+### `std` is written `St`, and the bug was invisible twice over
+
+**`std::string` is `St6string`, not `N3std6stringE`** - the Itanium ABI gives
+`::std::` one of its predefined abbreviations. Every cxx1 object that named a
+type from its own headers had the wrong symbol.
+
+It was invisible in a single-file program, and invisible in an all-cxx1 link,
+both being self-consistent. It shows the moment a cxx1 object meets a clang one
+- and `tools/mangled-names` skips exactly the cases that would have caught it,
+because a case including a C++ library header is compiled by clang against
+*clang's* library and the two symbol lists have nothing in common. A `.nonames`
+that says "there is nothing to compare here" is right about the library and was
+hiding a fact about the ABI.
+
+Two of the four measured rules are not guessable: `std::deep::inner` is
+`NSt4deep5innerE`, the wrapper coming back once the name is deeper than one
+component; and `f(std::string, std::string)` is `St6stringS_`, which says `St`
+takes **no numbered slot** - the whole of `St6string` is candidate zero.
+
+**A specialization is still spelled without it**, and `docs/CONFORMANCE.md`
+records why: templates are keyed by their bare name, so `std::vector<int>` does
+not know which namespace it came from. That is the same root as the local
+`count` that lost to `std::count`, met from the other side.
+
+## All sixteen of Compiler++ compile, and the link is a different question
+
+**16 of 16 sources compile and assemble** as of 2026-09-04. That is worth
+stating precisely, because it is not the same as "cxx1 compiles Compiler++":
+the objects do not yet link, and nothing has been run.
+
+The last source wanted three things, and only the first is about templates.
+
+**A statement may begin with a type.** `std::vector<T>().swap(v);` -
+`atDeclarationStart` saw a type name and claimed the line, so the declarator
+path wanted a name where the `(` was. An **empty pair** after the type is what
+says otherwise: a declaration needs a name between the type and the `(`, so
+`T ();` could only be a function declaration with no name. `int (*p)();` has a
+`*` there and is untouched.
+
+**The walk over a qualified name stops at the `<`**, because for its own purpose
+the name is what matters - so the empty pair was looked for at the wrong token.
+`qualifiedTypeEndPastArgs` steps over the argument list by depth, counting a
+`>>` as two, and both callers ask it.
+
+**And a class template-id is a temporary where a plain class name already was.**
+`refuseTemplateId` answered for every template in an expression; a class
+template followed by `(` reaches `classTemporary`, the same function `P(1)` has
+always used.
+
+### What the link found, which no single-file case could
+
+**A base's implicit default constructor was never defined.** `struct Decl :
+Node { virtual ~Decl() {} };` has no constructor of its own, so the implicit one
+runs and it is not trivial - something stores the vptr. A user-written derived
+constructor that names no base calls it, and that path took the signature **by
+value** where the branch beside it goes through `resolveOverload`, which marks
+the table's entry used. The copy was marked; the table's entry was not; and
+`defineImplicitFunctions` never gave it a body. It compiles, it assembles, and
+the linker says `Undefined symbols: cc::Decl::Decl()`.
+
+**It links until something derives from a class with a vptr and no constructor
+of its own**, which is why a suite of single-file cases never saw it - every
+case that could have was written with a constructor. This is the argument for
+linking as an oracle rather than compiling: `tests/emit.sh` stops at assembly by
+design, and an undefined symbol is invisible to it.
+
+**And what stops the link now is recorded rather than new**: 781 duplicate
+symbols, every inline member of every header in every translation unit.
+`docs/CONFORMANCE.md` has had "an inline member function is a strong symbol"
+since inline members landed - cxx1 has no COMDAT and no way to say a definition
+is mergeable. A single-file program never meets it. Sixteen that share headers
+meet it 781 times.
+
+## `Base::f(...)` - the version an override replaced, and who may call it
+
+**[expr.call]/1: naming a function with a qualified-id suppresses the
+dispatch**, which is the whole reason an override writes `Base::f(...)`. Two of
+Compiler++'s sixteen sources do, as `cc::Lowering::lowerDecl(d)`.
+
+Three things had to be true, and the branch that already existed for a *static*
+member function is the shape they were built on - it claims the name only where
+the set holds a static, and refuses a non-static one by name, which is exactly
+the door this came through.
+
+**The lookup does not walk up.** A qualified call says which class's version it
+means, so `findMemberOwner` is not asked and `memberCallWith` takes the owner as
+given - one parameter, which also turns the dispatch off.
+
+**The base's own name has to resolve.** `cc::Base::f` is in the type table;
+plain `Base::f` is the **injected class name**, which is not - so the bases are
+walked and their `localName()` compared. That is the same half the
+mem-initialiser list needed one commit earlier, and finding it twice in two days
+is the argument for a shared helper the next time it comes up.
+
+**And protected reaches further than private does.** [class.access.base]/5 lets
+a derived class name a protected member of its base, and `insideAccessOf` asked
+only "are we inside that class" - so a protected static called unqualified from
+a derived member was refused. It takes the member's access now, because private
+and protected are different questions and answering them with one test made the
+stricter answer wrong. A private member of a base is still refused, which is the
+half worth testing.
+
+## A base named with its namespace in a mem-initialiser list
+
+**`: cc::Lowering(module, l, d)`** is how a class writes a base that is not in
+scope unqualified, and both spellings were refused. The qualified one read a
+single identifier and then wanted a `(`, finding `::`. The unqualified one -
+`: Base(v)` for a `cc::Base` - resolved nothing, because the base's tag is
+`cc::Base` and the entry was compared against it as a string.
+
+**The comparison by type was already there and could not answer.** It was added
+when a base in a namespace first appeared, and it needs `findTypedef(entry)` to
+resolve the written name - but inside the derived class `Base` alone is the
+**injected class name**, which is not something the type table holds. So the
+base's `localName()` is compared as well, that being exactly what the injected
+name is.
+
+The list reads a qualified name now, and either spelling arrives at the same
+base. What goes in the map is the tag either way, because that is what the walk
+over the bases looks it up by - the string is the key, and the matching is the
+part that had to stop being a string comparison.
+
+## A local named `count` lost to `std::count`
+
+**`findTemplate` keys every template by its bare name on purpose**, so that
+`std::vector` finds `vector`; the note there says two namespaces cannot each
+have a template of one name anyway, and that widening what can be *named* does
+not widen what can be *declared*. True, and it had a second effect nobody
+looked for: an **unqualified** `count` found `std::count` from anywhere, with
+no using-directive in sight.
+
+So including `<algorithm>` broke any program with a local called `count`,
+`find`, `swap`, `min`, `max`, `sort`, `fill`, `copy`, `equal`, `merge` or a
+dozen more - a wide class of ordinary programs, and one of Compiler++'s sixteen
+sources stops on `count = pop().i;`.
+
+**The fix is one condition and not a re-keying.** [basic.lookup.unqual] gives
+the nearest declaration, so a name declared as an object is not a template
+name. Re-keying every template by its namespace is the other repair and a much
+larger one; this is the rule the standard states, and a program with both a
+template and an object of one name in one scope is ill-formed anyway.
+
+**Only unqualified lookup gets the test, and the first attempt got that
+wrong.** The namespace branch consumes `std::` and then asks about the bare
+name, so testing there killed `std::count(...)` beside a local `count` - which
+is exactly what a program writes, and what the case now pins. A qualified name
+has said which namespace it means and nothing local can be intended.
+
+## Two declarators, one declaration, and a `continue` in a `do`/`while`
+
+**`std::string a, b;` was refused** with `expected ';'` pointing at the second
+name - as ordinary a line of C++ as there is. The entry in the table above
+blamed the constructor *arguments*, because `P a(1), b(2);` is the shape it was
+first written down in. It was never about the arguments: `P a, b;` failed the
+same way, and so did every class with a constructor.
+
+The declarator loop is a `do` / `while (consume(","))`, and the three branches
+that build a class ended with
+
+    if (!consume(",")) break;
+    continue;
+
+**`continue` in a `do`/`while` jumps to the condition**, which consumes a comma
+of its own. So the comma was taken twice, the loop ended, and the second
+declarator was left for `expect(";")` to trip over. The comma belongs to the
+condition; the branches just `continue`.
+
+Worth the section for the shape rather than the size. A `continue` that means
+"next iteration" in a `for` or a `while` means "test the condition now" in a
+`do`, and where the condition has a side effect the two are different
+programs - which is why the fault reached three branches written at three
+different times and none of them looked wrong on its own.
+
+## A class template's member is instantiated only where it is called
+
+**[temp.inst]/2: instantiating a class template instantiates the declarations
+of its members, not the definitions.** A body is compiled only where something
+calls it - which is exactly what lets `std::vector<T>` hold a `T` with no
+default constructor while still *declaring* `vector(size_type)`, whose body
+says `T()`.
+
+cxx1 gated a replayed body on the member's **name**, and every constructor of a
+class shares one key. So `Box<NoDefault> b;` marked that key used and replayed
+*every* constructor's body with it - the one nothing called was compiled for a
+`T` it cannot be compiled for, and the class would not instantiate at all.
+
+**It was invisible until a second constructor existed.** Every class template in
+the tree had one, so name and overload were the same question; adding
+`vector(size_type n)` to `include/vector` broke four of Compiler++'s sixteen
+sources at a stroke, none of them naming a constructor. The gate is the
+overload now: each body carries the index of the signature its declaration
+added, and falls back to the key where the declaration added none - a lambda's
+call operator, which is recorded without one.
+
+**And the element storage is raw**, which is a constraint rather than a
+shortcut: placement new is refused by this compiler, so `vector` has no way to
+construct an element in place and assigns into `calloc`'d memory instead. A
+zeroed slot is therefore a real state for a `string` - null buffer, zero length,
+zero capacity - and `reserve(0)` did nothing for one, leaving the
+`buf_[len_] = 0` that follows every write to go to a null pointer.
+`std::vector<std::string> s(2);` crashed for that and nothing else.
+
+## A private nested type as a member's own return type
+
+**[class.access]/6: a member's definition may name its class's private types**,
+and the return type is written before the `C::` that says whose member it is.
+`VM::Value VM::pop()` reads the type first, when nothing yet says this is a
+member of VM - so `insideClass` answered no and the class was refused a
+definition it had every right to write.
+
+**The declarator ahead is asked instead**, which is the only thing that knows.
+The scan stops at the first `(`, `;`, `{` or `=` at depth zero, so it cannot
+wander past this declaration, and it takes the **longest run of `A::B::` that
+names a type** - `Outer::Inner::f` asks about `Outer::Inner` rather than
+stopping at `Outer`, which is the same longest-prefix rule `specifiers` already
+follows. A class nested inside the owner counts, because its members reach the
+owner's private names exactly as the owner's own do.
+
+**What it must not do is let anyone else in**, and that is the half worth
+testing: `VM::Value v;` in a function, `VM::Value other();` at file scope and
+`sizeof(VM::Value)` are each still refused, and clang refuses all three too.
+The look-ahead answers "is this the definition of a member of that class", not
+"is that class mentioned nearby".
+
+## `?:` as an lvalue, which was a missing shape rather than a missing rule
+
+**[expr.cond]/4: a `?:` whose arms are glvalues of one type is a glvalue.** So
+`int &r = p ? a : b;` is an ordinary reference binding, `(p ? a : b) = 20` an
+ordinary assignment, and `&(p ? a : b)` an ordinary address. All three were
+refused here from rung 2 on, and the refusal said the compiler could not build
+one - which was true and unhelpful.
+
+**The shape is the addresses.** `*(c ? &a : &b)` puts two pointers where the
+arms were, which every backend already moves, and the dereference around them
+is an lvalue: assignable, addressable, bindable. Nothing was added to any code
+generator, which is the trade this file keeps recommending - where C++ adds a
+*category*, look for an existing operation to lower it to.
+
+**It is asked before the class lowering**, and that order is the whole of the
+correctness. The class path copies both arms into a slot of its own; for two
+lvalues of one type there is nothing to copy, and copying would take the
+binding away again - `p ? x : y` would name a temporary rather than `x`, and
+writing through the reference would reach nothing at all.
+
+The types have to match exactly, cv-qualification included: a difference there
+makes them different types, and [expr.cond]/5 sends those to the prvalue answer
+the class lowering gives. What is left reaching the reference-binding path has
+arms that are not both lvalues of one type, so its message says which of the
+two rules applies rather than what the compiler cannot do.
+
+## `long long` is a type of its own, and the streams had never heard of it
+
+**`<ostream>` had insertions down to `unsigned long` and no further**, so a
+64-bit value written through `<<` reached every arithmetic overload by a
+conversion and none of them better than the rest. The call was ambiguous, and
+the diagnostic listed seven candidates without naming the one that was
+missing - which is the shape to remember, because a list of candidates answers
+"which of these" when the question was "why is none of them right".
+
+**On both Itanium targets `long` and `long long` are the same width**, which is
+exactly why this was easy to miss: every value round-trips, every `sizeof`
+agrees, and nothing looks wrong until overload resolution has to choose. They
+are still distinct types, and [over.ics.scs] ranks a conversion between them
+like any other.
+
+A program that pins its own integer width writes this all day. Three of
+Compiler++'s sixteen sources stopped here, all printing a `vmword` - which is
+`long long` on everything but MSVC, where the same header spells it `__int64`.
+
+The extraction pair went in with it, for the same reason: `in >> x` for a
+`long long` lvalue had the same seven-way tie. `stream-long-long.cpp` runs a
+value no `double` holds exactly and no 32-bit type holds at all, so a
+conversion to any other overload would show.
+
+## A converting constructor on `return`, and the `?:` that looked like its twin
+
+**[stmt.return]/2 copy-initialises the returned object**, and a converting
+constructor is part of that: `return "v";` from a function returning
+`std::string` is `string("v")`. `userConversion` had done this for a by-value
+argument since conversion functions landed, and `return` simply never reached
+it - one call, two of Compiler++'s sixteen sources.
+
+**`?:` looked like the same fix and is not.** Converting the arms the same way
+made `c ? "_" : name` compile and then **abort at run time**, on three more
+sources. A class-typed `?:` works here only where both arms are lvalues of one
+type - `b ? s : t` - because `Conditional` yields a value the backends move as
+a scalar, and a class needs storage of its own to be built into. Give either
+arm a temporary and there is nowhere for the answer to live.
+
+**So it is refused, and the refusal was made to say that.** It read
+"incompatible types", which points at the arms when the problem is where the
+result would go; it now names the rule and suggests an `if`. Compiling and
+crashing is worse than refusing, and this is the one place today where the
+difference between the two was a single `else` branch.
+
+**It landed 2026-09-04, and it took three fixes in the order they had to
+come.** The lowering was never the hard part: a frame slot for the result, each
+arm building into it through `buildInto`, the conditional itself becoming the
+`int` the arms answer with, and the expression wearing the `*(build, &tmp)`
+shape `classTemporary` already produces.
+
+**First, a guard is only as good as its initialisation.** The flags these
+temporaries carry are cleared in front of the full expression by
+`endFullExpression` - and a declaration never goes through it, flushing instead
+through `flushTemporaries`, which runs *after* the statements it is destroying
+for and cannot place anything in front of them. So on that path a guard held
+whatever the frame did. They are cleared at the **function's entry** now, which
+is the one place every path passes and which `flushTemporaries` does not need
+to reach: cleared there and again as each object is destroyed, a guard is false
+whenever its temporary does not exist.
+
+**Then a temporary an arm made became that arm's alone.** One arm runs, so
+destroying the other's temporaries is destroying objects that were never built
+- `b ? take(T(5)) : take(T(9))` did, and `int r = ...` of that form ran two
+destructors on slots nothing had written. Most temporaries are marked where
+they are constructed; what needed `markArmTemporaries` is the object a *call*
+returns, which cannot be marked there without wrapping the `Call` node the
+elision paths find by `dynamic_cast`.
+
+**And that turned up a live one, which is the find of the round.** `return
+f();` for a class returned by value handed the caller the bytes in the result
+slot *and* destroyed that slot at the end of the full expression - so the
+caller received freed memory. `releaseTemporary` walks the expression to the
+slot and a bare `Call` is not a `Var`, so it released nothing. It was
+introduced by the commit that first registered a call's result as a temporary,
+and no case saw it: `std::string::substr(pos, n)` is called directly
+everywhere in the suite, and it is the one-argument `substr(pos)` - one line,
+`return substr(pos, npos);` - that came back empty.
+
+## Five walls out of Compiler++, and the shape they had in common
+
+**macOS first, then Linux, then Windows** - and the reason that order costs
+nothing is that every wall here was in `src/parser/`, which does not know what
+machine it is compiling for. A front-end fix lands on all three at once; only
+the ABI and the code generators differ, and 510 emit cases already walk those.
+
+**A typedef at namespace scope was keyed by its bare name.** A class declared
+there carried its namespace in its tag and was findable as `n::S`; a typedef
+was registered as `sz` and so could be reached from inside the namespace, by
+the walk in `findTypedef`, and never as `std::streamsize` written out - which
+is how a program outside the namespace names it. Keyed by the qualified name
+now, as everything else at that scope already was.
+
+**A leading `::` works as a type and is still refused in an expression**, and
+the split is not arbitrary. A type is one look in one table, and that table is
+exactly the global scope by construction: a class at file scope is keyed by its
+bare name, one in a namespace by its qualified name, one local to a function
+lives in `localTypes_`. So `findGlobalTypedef` reaches the first and neither of
+the others, and `::Lexer *lexer;` is that plus a token. A name in an expression
+goes through `qualifyForLookup`, where a namespace and a using-directive get
+their say - restricting that for one name means a flag put down again before
+the call's arguments are parsed, and the half-built version *silently found
+`cc::f` where the program asked for `::f`*. Measured, not guessed, which is why
+it is refused rather than shipped.
+
+**A redeclaration was looked up under a different key than the definition
+registered.** `findGlobalToUpdate(d.name)` took the written name while the
+registration below took `namespacePrefix() + d.name`, so a `cc::shared` beside
+a global `shared` was reported as declared twice. One key, computed once.
+
+**A `const T &` parameter took a user-defined conversion and not a standard
+one.** [dcl.init.ref]/5 binds a const lvalue reference to a temporary
+initialised by *any* implicit conversion sequence, and the reference binding's
+rank is that sequence's rank. Only the user-defined half was here, so
+`v.push_back(new Derived)` into a `vector<Base *>` and `v.assign(8, 0)` into a
+`vector<unsigned char>` were both refused as no viable function - one a
+pointer conversion, the other an integral one, neither of them exotic.
+
+**And the library gaps were the rest**: `assign` and `swap` on `vector`, `swap`
+on `map`, `strtol`, `strtoul`, `atof`, the one-character `find_first_of` and
+`find_last_of` (the `const char *` forms were there and a `char` reaches them
+through no conversion C++ has), and `rdbuf`.
+
+**`ss << in.rdbuf()` is the whole reason a streambuf exists in most
+programs**, and it is the one thing this library did not have a shape for. The
+standard makes it a class with the buffering underneath; here the streams
+buffer through `FILE *` already, so `rdbuf()` hands back a token naming the
+stream it came from and the `operator<<` for it copies whatever is left. It is
+deliberately not called `streambuf`: nothing else here takes one, and a class
+with that name would promise the rest of the standard's interface.
+
+**Found on the way and not fixed: inside a namespace, an unqualified name
+finds the global one first.** `findTypedef` looks in the flat table before it
+tries `qualifyForLookup`, so inside `namespace cc` a written `Lexer` is the
+global `::Lexer` rather than `cc::Lexer` - the nearer scope should win. It is
+recorded in `docs/CONFORMANCE.md` rather than mended here, because reversing
+that order changes how every unqualified name in a namespace resolves and
+wants a round of its own.
+
+## A temporary during unwinding, and why the obvious fix is a regression
+
+**Cleanup regions were built from `alive_`**, which is the list of objects with
+names, and a temporary lives inside one full expression and is never in it. So
+an argument copy and a class temporary were destroyed on the normal path and
+leaked on the unwind - measured against clang with a throw through
+`take(Owner(6))`, which ends with none alive there and two here.
+
+**A pad covering the statement would have destroyed what the statement had not
+built yet.** In `two(A(1), A(99))`, where the second constructor throws, it
+would run `~A` on storage nothing constructed - a corruption in place of a
+leak, which is the trade this tree refuses everywhere else. And the region
+cannot begin after each construction instead: a `Try` wraps statements, and
+that boundary is inside one.
+
+**So each temporary carries a guard flag in the frame**, an int that is cleared
+in front of the full expression, set the moment its constructor returns, and
+cleared again as the object is destroyed - on the normal path and in the pad
+alike. The pad destroys each temporary under its own flag, so one region covers
+a whole statement and still destroys exactly what exists. It is MSVC's unwind
+state variable written out by hand, and it needed nothing the AST did not
+already have: `If`, `Assign` and `Comma`.
+
+**Cleared in front of the expression, not once.** A statement inside a loop
+runs again, and a flag left set from the turn before would have the pad destroy
+an object this turn never built. `inLoop` in the case is there for that and
+nothing else.
+
+**And the pad clears as it destroys.** `_Unwind_Resume` carries on through the
+enclosing regions of the same function, so a pad that destroyed without
+clearing would be followed by one that destroyed the same object again - a
+double free reached only by an exception, which no normal-path test could see.
+The Windows funclets chain for the same reason and got the same treatment.
+
+**The regions start at the top of the block now** rather than at the first
+construction, because the first temporary can come before anything is alive and
+would otherwise sit outside every region.
+
+**Every temporary of the block is listed in every pad of it.** That reads
+wasteful and is what makes it correct: the flag is what says which of them are
+live at the point the exception left, so listing one that is not costs a test
+and no more. Deciding *which* pad should carry which temporary would be the
+statement-splitting this design exists to avoid.
+
+**And a function body's regions reach back to its own by-value parameters.**
+On Microsoft the callee destroys those, and `block()` bounded its regions at
+what was alive when the body opened - which is *after* them. So an exception
+leaving such a function destroyed everything but its parameters, on the one
+target that owns them. `bodyCleanupFrom_` carries the earlier bound and only
+the regions use it: the normal path already unwound them, through the `return`
+and through the append that catches falling off the end.
+
+**The one shape that stays broken is a Windows ABI question, not a design
+gap.** Where an argument's constructor throws after an earlier argument was
+copied into its parameter, nobody destroys that copy there: the caller does not
+own it and the callee is never entered. Clearing the guard after the call
+over-destroys instead - measured, because the callee's own regions destroy the
+parameter on the way out and the caller's pad then does it again. Telling
+"entered" from "not entered" is a state change at the call instruction, which
+statement-granular regions cannot express. `docs/CONFORMANCE.md` records it and
+the case names the shape rather than skipping it.
+
+**The Windows answers here were measured in about fifteen seconds each**, not
+by `verify-three`: the assembly is generated on the Mac, `scp`-ed to the box,
+and assembled, linked and run there by a four-line `.cmd`. A full three-box run
+rebuilds the compiler twice and answers one question in twenty minutes. Build
+the short loop before the third question, not after the tenth.
+
+**What is not covered is the object a call returns**, and the reason is
+mechanical: setting a flag after the call means wrapping the `Call` node, and
+both elision paths find their candidate by `dynamic_cast`-ing to it, so
+wrapping would silently turn elision off. Elision routes that object into the
+slot of whatever consumes it and those slots are guarded, so
+`two(make(7), make(2))` balances; an un-elided result with a throw later in the
+same expression does not. `docs/CONFORMANCE.md` records it, and the fix is a
+field on `Call` plus a line in each code generator.
+
+## `system()` is not a way to start a process, and one platform said so
+
+**`-j` threaded the compiling and not the assembling.** `Driver::assembleObjects`
+was a plain serial loop spawning one assembler per file, so sixteen sources
+compiled in 0.08s on twelve cores and then took 1.9s to assemble one at a time -
+the whole of why `cxx1 -c` lost to a parallel clang while winning every serial
+comparison. It runs on the same work-stealing pool `runJobs` uses now, and so
+does the Windows link path, which had its own copy of the loop.
+
+**And on the Mac that bought nothing, which is the finding.** `-time` reported
+"16 tool runs on 12 threads" and the wall clock did not move. `std::system` on
+Apple's libc holds a global lock for the duration of the child, so concurrent
+calls serialise completely. Measured, sixteen quarter-second sleeps issued from
+eight threads:
+
+| | measured | parallel floor | |
+| --- | --- | --- | --- |
+| macOS, Apple libc | 4260 ms | ~500 | serialised |
+| Linux, glibc 2.34 | 530 ms | ~500 | parallel |
+| Windows, MSVC CRT | 2105 ms | ~2000 | parallel |
+
+**Asking all three is what made the answer right.** The machine to hand was the
+one that behaves differently from the other two, and a conclusion drawn from it
+alone - that parallel assembly does not help - would have been wrong about two
+platforms and wrong about the cause on the third. This is the house rule about
+one target being correct and another not, arriving through the C library rather
+than through a code generator.
+
+**`posix_spawn` and `waitpid` in place of `std::system`, on the POSIX path
+only.** The status is the one `waitpid` gives, so every caller's `!= 0` test is
+unchanged; Windows keeps `system()`, which measured parallel. `environ` comes
+from `_NSGetEnviron()` on Apple and from the plain symbol elsewhere.
+
+**What is deliberately not copied is `system()`'s signal handling.** It ignores
+SIGINT in the parent while the child runs; for a compiler driver a Ctrl-C should
+stop the whole compile rather than one assembler.
+
+**Source to object, Compiler++'s sixteen sources, before and after:**
+
+| | before | after | the platform's own |
+| --- | --- | --- | --- |
+| M4 Pro, -j12 | 2.19 | **0.50** | clang 0.81 |
+| i7-12700, -j8 | 1.16 | **0.29** | cl 0.94 |
+| Xeon, -j2 | 1.37 | 1.20 | g++ 6.69 |
+
+The Xeon's small gain is the machine rather than the change: its two vCPUs are
+hyperthread siblings of one physical core, and g++ itself gets only 1.16x from
+the second. The Mac's 0.50 is 0.08 compiling plus 0.42 assembling, within a hair
+of the 0.45s the same files took through `xargs -P12` - which is what said the
+ceiling had been the library and not the work.
+
+**The pool also closed a race it would otherwise have opened.** The command
+named in an assembler error was one file-scope string several threads would have
+written at once. It is `thread_local` now, with the failing worker copying it out
+under a lock - and the **first failure by index** is reported rather than
+whichever thread lost the race, so a rerun blames the same file.
+
+`docs/benchmark-2026-09-05.html` is the measured record, and like the audit it is
+frozen rather than edited as things change.
+
+## An 8 MB stack on Windows, which is what the other two targets always had
+
+**The last of Compiler++'s 200 comparisons was a stack overflow, not a
+miscompilation.** `124_err_nested_too_deeply` feeds the compiler an expression
+twenty thousand terms deep, and the point of the case is that the compiler
+*refuses* it - "expression nested too deeply" - rather than dying. On Linux and
+macOS it does; on Windows cxx1's build of Compiler++ crashed first, because
+Windows reserves a 1 MB stack by default where ELF and Mach-O reserve 8, and
+cxx1's frames are large - `analyzeExprImpl` is about 12 KB, since every local
+and every by-value temporary gets its own slot. A recursive walk over a deep
+tree exhausted 1 MB before the depth cap fired.
+
+**So the linked program gets an 8 MB stack, which is Linux's own default.** One
+line on the Windows link - `/stack:8388608` in `Driver::link` - and the program
+behaves the same on every target rather than differently on the one with the
+small default. It is parity, not a workaround: the source refuses deep nesting
+identically everywhere, and only the OS's default stack had differed. Measured
+against cl, which survives the same input because its frames are smaller;
+`docs/` records that a real fix - frame-slot reuse in cxx1's code generator, so
+dead slots are recycled and frames shrink on every target - is a separate and
+much larger piece, worth doing on its own account rather than to close one
+pathological case.
+
+**Compiler++ now matches a cl build on all 200 comparisons.** It compiles,
+assembles, links and runs correctly under cxx1 on x86_64-linux, arm64-darwin
+and x86_64-windows - 200 of 200 on each, byte-identical to a clang, g++ or cl
+build of the same sources. The whole undertaking that this file has recorded
+since "A base's members were built twice" is finished.
+
+## A static member has no `this`, and one line of Compiler++ was that
+
+**The call-with-arguments fault was a static member function returning a class
+by value.** `SemanticAnalyzer::parameterText` is `static std::string
+parameterText(Function *, size_t)`, and the definition side decided whether a
+function has a `this` from the *qualifier* alone - `A::f` is a member,
+therefore it has one - which is true of every member but the static ones. A-01
+put the hidden return pointer *after* `this` on the Microsoft ABI; a function
+believed to have a `this` it does not have then looks for that pointer in the
+second slot while every caller puts it in the first, and writes its result
+through whatever the first argument was. Here that was a `cc::Function *`, and
+the string's length landed on its `retType` - which is why the next
+`dynamic_cast` on that field read address 0x11.
+
+**Invisible on Itanium**, where the hidden pointer is first whether or not
+there is a `this`, and invisible to every existing case: the emit golden
+reports 0 of 570 changed by the fix, which says no case had a static member
+returning a class by value. `static-member-returns-class.cpp` does now, with a
+guard object the stray write would land on, and `run-cases.cmd` checks its
+output on the box that owns the ABI.
+
+**How it was found, in order, because the order is the lesson.** A vectored
+exception handler compiled by cl and linked beside cxx1's objects - it shares
+no `std::` with them - printed the fault: `__RTDynamicCast` with `rcx = 0x11`,
+so the *object* was bad and the RTTI records I had just ported were not.
+Then a global watch pointer at `&fn->retType`, printed after every statement
+in a copy of Compiler++, walked it down: fine after `checkCallArgs`'s
+argument analysis, fine after `convertible`, corrupt after `warnIfNarrowing` -
+then fine at every statement *inside* `warnIfNarrowing`, so the damage was in
+building its arguments - then `parameterText` was fine through its whole body
+and corrupt on return. Static was the one word left. Four probes of the
+obvious shapes had all passed first, which is the reminder that a probe is a
+hypothesis and the watch is the oracle.
+
+**127 of Compiler++'s 200 comparisons on Windows were this one line**: 30 to
+157 identical. The 43 that remain are the next round.
+
+## Windows EH in GNU syntax, and Compiler++ links
+
+**It links.** Sixteen objects, no `/FORCE:MULTIPLE`, no duplicate and no
+unresolved symbol, and the MASM path untouched - the emit golden reports **0 of
+570 files changed** through every step below, which is what says ELF, Mach-O and
+ml64 all still emit exactly what they did.
+
+**`.seh_*` does most of it, and cannot do the part COMDAT exists for.** clang's
+COFF assembler builds `.pdata` and `.xdata` from the directives - measured, a
+function carrying them came out with a 0x14-byte .xdata and a 0xc-byte .pdata
+cxx1 wrote no byte of - which would have removed the whole hand-written unwind
+schedule, the part that took four attempts on the MASM side. It refuses inside a
+COMDAT section: `.seh_handlerdata` in `.text,"xr",discard,"sym"` is *expected
+relocatable expression*, and in a uniquely-named variant too. Every inline
+definition is such a section and an inline member with a destructor carries EH,
+so the shortcut fails for exactly the functions COMDAT is for. Written out into
+`associative` sections it assembles, so the codes are MASM's arithmetic in GNU
+spelling after all.
+
+**Two properties were living in the MASM subclass that belong to the target**,
+and both were found by walking into them:
+
+- `usesFunclets()` - the GNU path walked a *Microsoft* `try` down the Itanium
+  branch and dereferenced a landing pad that is null by construction.
+- `localsAboveFrameBase()` - the epilogue restored `rsp` to the bottom of the
+  frame and `pop rbp` read the wrong word, so any call crashed.
+
+**Four things the linker taught, each one an error message:**
+
+- **A table cannot name an `.L` temporary.** Rewritten to a real symbol exactly
+  as the MASM spelling rewrites it, dots to underscores. The same rule the
+  Itanium LSDA already needed `GCC_except_table0` for.
+- **`.pdata` has to be sorted and funclets break the order** - LNK1223, the same
+  trap and the same answer as MASM: the funclets' entries go in a pile written
+  after every function.
+- **A funclet of a mergeable parent is mergeable with it.** `associative` says
+  "discard this with that one", so the funclet and its unwind data go wherever
+  the parent's copy goes.
+- **A funclet is not `.globl`.** Nothing outside the object names one - the
+  tables that point at it sit beside it - and exporting one made every unit
+  holding a copy collide. MASM avoids it by leaving them out of its PUBLIC list.
+
+**The RTTI records had to come across too**, and they are the same five objects
+with `.long X@IMGREL` where MASM writes `DD imagerel X`. `emitsOwnRtti()` keeps
+the MASM path from emitting a second set: both reach the base `run()`, and the
+first attempt wrote them twice, which the golden caught at once - 20 of 570
+changed.
+
+**What this does not fix**, and it is the next wall: the linked program faults
+on a call *with arguments* - `f()` is fine, `f(1)` exits `0xE06D7363`, an
+unhandled C++ exception, which on this target means `operator new` was handed a
+bad size. 30 of Compiler++'s 200 comparisons pass, and they are the ones calling
+nothing with arguments. It predates all of this - the `/FORCE:MULTIPLE` build
+failed identically, and so does the MASM build - so it is a Windows code
+generation bug rather than anything about linking.
+
+## COMDAT: ml64 makes COFF and cannot mark it, and the way round is one layer deeper
+
+**The object format was never the problem, which is worth measuring before
+reasoning.** `ml64` emits COFF and nothing else - version 14.44 offers no
+object-format switch at all, only `/Fo` to name the file, and `dumpbin` reports
+`8664 machine (x64)` on its output, which MS `link` consumes. What it cannot do
+is set `IMAGE_SCN_LNK_COMDAT` on a section. Side by side on the same machine:
+
+    ml64's object   SECTION HEADER #1..#3     no COMDAT on any
+    cl's object     SECTION HEADER #3           COMDAT; sym= "?get@S@@QEBAHXZ"
+                    SECTION HEADER #4           COMDAT; sym= "?use@@YAHXZ"
+
+`_TEXT$x SEGMENT ALIGN(16) 'CODE' COMDAT` is refused as an unknown attribute,
+not as an unsupported format.
+
+**Withdrawing the PUBLIC links and costs too much.** The other half of the same
+idea is expressible - let every object keep the copy it emitted - and it does
+link, once a second gap is closed: `??_G` has no `Signature`, so A-02's
+`markSymbolUsed` at vtable emission is a no-op for it and it was synthesised
+only beside the destructor's own definition, leaving other units naming a
+symbol they never defined. With both halves the sixteen objects of Compiler++
+link with no duplicates and no unresolved symbols. **And `names vs cl` falls
+from 138 agreed / 0 differed to 87 / 51**, every difference one-directional -
+cl exports what cxx1 no longer does, vtables included, so each unit would carry
+its own. That suite exists to catch exactly this: its comment records the
+`OPTION PROC:PRIVATE` bug as *"the names were right and it was the storage
+class beside them that was wrong"*. Writing 51 `.nocl` files would be
+suppressing the only oracle that noticed. The patch is not taken.
+
+**The way round is the assembler.** clang emits the same COFF and can set the
+bit, so `-masm=gnu` plus `clang -target x86_64-pc-windows-msvc -c` is the
+route. Measured before building anything: a Microsoft name is not a GNU
+identifier and has to be **quoted**, `.cfi_*` is accepted for COFF, and two
+objects each defining `?inl@@YAHXZ` in `.section .text,"xr",discard,"?inl@@YAHXZ"`
+link and fold and the program returns 9.
+
+**`CoffSpelling` is that, and it is additive by construction.** `GnuSpelling`
+is shared with the two targets carrying the Compiler++ result, so the change is
+a `sym()` hook that answers with the name unchanged and a `mergeable` flag on
+`functionBegin` that the existing spelling ignores. The claim that nothing
+moved is not an assertion: the emit golden was recorded before the work and
+reports **0 of 570 files changed** after it.
+
+### And the route is blocked one layer deeper than COMDAT
+
+**`-masm=gnu` for x86_64-windows crashed on any real program, and did so
+before this work** - checked by stashing and rebuilding. `usesFunclets()` was
+true in the MASM spelling alone, so this generator walked a *Microsoft* `try`
+down the Itanium branch and dereferenced a landing pad that is null by
+construction. The exception model is a property of the target and not of the
+spelling, and it says so now.
+
+**Fixing the branch is what shows the size of it.** The Microsoft model wants a
+funclet per handler with the FH3 tables and hand-written `.pdata`/`.xdata`
+beside them, and `beginFunclet`, `endCleanupFunclet` and `storeUnwindHelp` are
+implemented in `Masm.cpp` and nowhere else. Compiler++ has classes with
+destructors, so cxx1 emits cleanup funclets for it and there is no path round.
+Finishing this route means re-spelling the whole Windows exception backend in
+GNU syntax - the size of rung 6.5b, which took four steps.
+
+**So it refuses by name rather than crashing**, which is the standing rule
+applied to a mode nothing exercised: *"a 'try' or an object with a destructor
+needs a funclet on x86_64-windows, and the GNU spelling does not write one yet
+- use -masm=masm for this file"*. What is committed is the foundation and that
+diagnostic; Windows linking now waits on Windows EH in GNU syntax rather than
+on COMDAT.
+
+## Compiler++ on Windows: three faults found, and the one wall left
+
+**The Mac writes the MASM and the box only assembles it.** There is no cxx1 on
+the Windows machine for this: the front end is shared and the code generator is
+reachable from anywhere with `-arch`, so sixteen `.asm` files go over and ml64
+and link do the rest. That is `tools/windows/asm-run.cmd`'s trade at sixteen
+files instead of one, and it turns a twenty-minute round into a two-minute one.
+
+**A symbol named by data is a use, and MASM needs it declared.** `referenced_`
+was filled from the two *operand* paths, so an EXTERN was written for everything
+a call mentions and for nothing a `DQ` does. A vtable slot holding a function
+defined in another translation unit reached ml64 undeclared - `error A2006:
+undefined symbol` - on ten of Compiler++'s sixteen and on nothing in the suite,
+where every class is defined where it is used. It is the mirror of A-02: there a
+vtable slot was a use nothing emitted, here a use nothing declared.
+
+**And then the same thing from the other side.** With data recording a
+reference, the four RTTI objects a vtable names - the locator, the hierarchy,
+the base array, the base descriptor - were declared EXTERN *and* defined a few
+lines below, which ml64 calls a symbol redefinition. `MasmCodeGen::run`
+predefined the descriptor alone, that being the only one a `lea` had ever
+mentioned. All five now.
+
+**A forward declaration carries its class key, and cxx1 dropped it.**
+[dcl.type.elab] lets `class D;` and `struct D;` declare one entity and lets a
+program mix them; the Microsoft ABI writes **V** for a class and **U** for a
+struct, so the two spellings are two symbols. cxx1 recorded the keyword only at
+the *definition* - right for a diagnostic, wrong for a name - so a unit seeing
+only `class Diagnostics;` wrote U where the defining unit wrote V, and they did
+not link. A declaration records it now when no definition has, and a definition
+still wins, which is what keeps `class X;` and `struct X { }` one type.
+
+**No single-file suite could have found it.** Every case compiles alone, where
+both spellings agree with themselves; it takes two translation units of one
+program. `tests/cases/forward-declared-class-key.cpp` is the case, and what
+holds it is `names.sh` comparing `?f@@YAHAEAVD@@@Z` against clang.
+
+**The scrape had to stop reading an EXTERN as a symbol.** MASM needs every name
+a `DQ` mentions declared and the GNU spelling needs nothing, and
+`tools/mangled-names` has no rule for a `.quad` operand - so `_purecall` in a
+vtable became a name on one side and nothing on the other. Call targets are
+still compared, from the `call` lines, on both sides.
+
+### The wall: ml64 cannot say COMDAT
+
+**All sixteen assemble and the link is the only thing left.** What collides is
+every inline and template member: `vector<unsigned char>::push_back`,
+`ostringstream::~ostringstream`, and so on, each emitted in every translation
+unit that uses it. [dcl.inline]/6 allows exactly that and leaves the linker to
+fold the copies - `.weak` on ELF, `.weak_def_can_be_hidden` on Mach-O, and on
+Windows a COMDAT section, which **ml64 has no directive for at all**. cl's own
+listing marks these `; COMDAT`, which is its object writer talking rather than
+anything assemblable.
+
+**Both pure answers were tried and both fail.** Keeping every copy PUBLIC is
+what happens today: `LNK2005`, six of them. Withdrawing the PUBLIC so each
+object keeps its own copy - the only thing MASM *can* express - links those and
+then leaves **19 unresolved `??_G` deleting destructors**, because a unit that
+emits a vtable naming one does not always emit the function. So the two
+requirements are "define it everywhere" and "export it nowhere", and cxx1
+satisfies neither completely.
+
+**What would settle it**, in the order they are worth trying: a COFF-capable
+assembler on the box, since cxx1 already has `-masm=gnu` and clang writes
+`.section .text,"xr",discard,"<symbol>"` for exactly this - measured, and the
+box has no clang today; or emitting every vtable slot's function in every unit
+that emits the table, which makes "define everywhere" true and lets the PUBLIC
+be withdrawn; or a key-function scheme, which is a design this compiler does not
+have. `/FORCE:MULTIPLE` links and runs and is a diagnostic, not a fix - it says
+the COMDAT is the only wall left, and it was used to establish exactly that.
+
+## A temporary made after the full expression ended, and the function it leaked into
+
+**`endFullExpression` empties `pendingTemps_`, and the return path pushed onto
+it afterwards.** [stmt.return]/2 copy-initialises the returned object, so
+`return "<type>";` from a function returning a class calls a converting
+constructor - and `userConversion` was applied *below* the flush. The temporary
+it made was registered for destruction on a list nothing would empty again: it
+survived the end of the function and was still there when the **next function**
+was parsed, which duly emitted a guarded destructor call for a frame slot of a
+frame that no longer existed.
+
+**Compiler++ has that pair verbatim.** `Semantic.cpp`'s `describe` ends
+`return "<type>";` and `countText` is the next function in the file, so
+`countText` began with
+
+    call _ZNSt13ostringstreamC2Ev     ; construct ss
+    lea  -0x414(%rbp),%rax            ; a guard belonging to describe
+    movslq (%rax),%rax
+    cmp  $0x0,%rax
+    je   ...                          ; skip if it happens to be clear
+    lea  -0x410(%rbp),%rax
+    call _ZNSt6stringD2Ev             ; ~string on whatever is there
+
+- and on x86_64-linux `free` was handed a pointer into the source text about a
+quarter of the time. `rdi` at the fault read `0x2c32202c31286464`, which is the
+ASCII of `dd(1, 2,` - the giveaway that the address was text rather than an
+object.
+
+**The fix is an ordering, not a mechanism**: convert before the full expression
+ends. That also puts the temporary where `releaseTemporary` can see it, which
+is what it wants - the converted object *is* what the caller receives, so its
+bytes are handed over rather than destroyed here, which is the same rule
+`return f();` needed.
+
+**The two boxes disagreed about how bad it was, and that is the lesson.** On
+macOS the stale guard reads a clean zero, the destructor is skipped, and the
+only symptom is one leaked object - `tests/cases/return-conversion-leaks-temporary.cpp`
+prints `live 2` where clang prints `live 1`. On x86_64-linux the same slot holds
+whatever the frame held and it segfaults, intermittently, 8 runs in 30. Four
+green suites and 200 of 200 Compiler++ comparisons on the Mac did not see it;
+building Compiler++ on the Linux box is what did. **The case dirties the frame
+before calling** for exactly this reason - on a clean stack the wrong code
+passes.
+
+**How it was found**: `coredumpctl debug` for a backtrace with line numbers,
+because gdb disables ASLR and the bug then never fires under it - 25 runs under
+gdb, no crash, then a core from an ordinary run named `Semantic.cpp:244` at
+once. `set disable-randomization off` is the other way in. Then disassembling
+the named line turned "corruption somewhere" into a guard test the source has
+no `?:` and no `&&` to explain, which is what said the entry came from another
+function.
+
+**Recorded rather than fixed, and beside this because it was found here:**
+`bindReference` materialises a const-reference temporary with a bytewise
+`Assign` rather than the copy constructor, so a class prvalue bound to
+`const T &` is shallow-copied into a slot that is then never destroyed. It is a
+wasted slot today rather than a fault - the source temporary is still destroyed
+exactly once - but it is the wrong lowering, and [dcl.init.ref]/5 asks for no
+copy at all: the prvalue is materialised and the reference binds to *it*.
+
+## The operand `&&` skipped, and the destructor it was owed anyway
+
+**A temporary built in the right operand of `&&` or `||` was destroyed even
+when the operand never ran.** [expr.log.and]/1 evaluates the second operand
+only if the first is true, so an object it would have made was never made - and
+the destructor the full expression owes at its end is owed for nothing. cxx1
+ran it regardless, on a frame slot holding whatever the stack had left there:
+for `std::string` that is `free` of a stack address, which GuardMalloc reports
+and an ordinary run turns into a segfault three passes later.
+
+**This is what stood between cxx1 and Compiler++**, and it was one line of
+ordinary C++11:
+
+```cpp
+if (cl->vtable[s]->name == m->name &&
+    mangleSignature(cl->vtable[s]->params) == want) { ... }
+```
+
+The left half is false for most entries, so `mangleSignature` - which returns a
+`std::string` by value, into a slot of the caller's frame - is skipped, and the
+slot is destroyed all the same. It is reachable from three lines of C++:
+`class B : public A` with a virtual function each, and `b.g()` on a named
+object, which is the one path that asks for the final override by signature.
+
+**The guard a `?:` arm already carried is the whole fix**, and the machinery
+was there: a temporary with a destructor gets a flag in the frame, cleared in
+front of the full expression, set where the object comes into being, and read
+by the destruction at the end and by the pad alike. `markArmTemporaries` sets
+it at the end of an arm; `markSkippableTemporaries` does the same for an
+operand that may be jumped over.
+
+**One difference, and it decides the shape.** A `?:` arm's value is an int the
+conditional discards, so the guard can simply follow it - `Comma(arm, set)`
+answers with the guard. An `&&` operand's value is what the comparison reads,
+so the same shape would make every taken branch true. The operand is kept in a
+slot of its own, the guards are set, and the slot is handed back:
+`(($sc = r), $g1 = 1, ..., $sc)`.
+
+**How it was found, and what did not find it.** Four suites green on three
+boxes, and 128 of Compiler++'s 129 cases byte-identical to a clang build of the
+same sources. What found it was `DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib`
+- GuardMalloc turns the corruption into a report at the moment of the bad free
+rather than a fault somewhere else - plus `br set -n malloc_error_break` for the
+backtrace, which named `std::string::~string()` inside one function. Two
+`fprintf` calls added to that function made the bug vanish, which is what said
+it was heap corruption rather than a wrong pointer. Reading the emitted
+assembly for the named function is what turned "corruption somewhere" into the
+`beq` that skips a construction and the `bl __ZNSt6stringD1Ev` after it that
+does not skip the destruction.
+
+**The case counts live objects and whether the operand ran**, never
+constructor calls - CLAUDE.md's standing rule, and both halves matter here:
+elision may change how many copies happen and may not change how many objects
+exist, nor whether a skipped operand was evaluated.
+`tests/cases/temporary-in-short-circuit.cpp`, measured against clang for both
+operators, both outcomes, a nested `&&` inside a skipped operand, and an
+operand whose value decides the branch. Its members are defined **out of
+line**: written inside the class they are inline, clang emits none of them, and
+the names suite would then report a difference about emission rather than
+mangling - the trap this file already records twice. What is left is a
+`.nonames` for arm64-darwin alone, where cxx1 emits the `__Unwind_Resume` of a
+cleanup pad clang has no temporary to need.
+
+## A class returned by value was never destroyed, and the two halves that hid it
+
+**One object leaked per call**, in every shape a call's result can appear in:
+`make();` discarded, `make().v`, `T b = make();`, `T b(make())`, and
+`take(make())`. It was reported as a double destroy and measured as the
+opposite - which is the whole reason to count live objects rather than read
+printed lines. `Guard g = Guard(5);` printing two destructors for one
+constructor is **not** a fault: it is the legal non-eliding option, and
+`clang -fno-elide-constructors` prints exactly what cxx1 prints. The fault was
+next door and had the other sign.
+
+**The caller never owned the result slot.** `completeCall` allocates a frame
+slot for a class return - it is where the callee builds through the hidden
+pointer - and nothing was destroying it. It goes on `pendingTemps_` now like
+any other temporary, so the full expression ends it. What that needs beside it
+is a way to *give it up*: `claimCallResult` takes the entry back off wherever
+something redirects the result into storage of its own - the copy elision in a
+declaration, and the argument-copy elision in `materialiseCopy`. Without that
+the destructor would run on a slot nothing ever built, which is worse than
+the leak.
+
+**And the callee copied what it had already given away.** `return Owner(n);`
+releases the temporary rather than destroying it - correctly, because its bytes
+travel out through the hidden pointer and the caller owns them from that
+moment. But the branch below it, which exists so that returning a glvalue this
+function does not own calls the copy constructor, could not tell that case from
+a released temporary: it built a second object and left the first undestroyed.
+`releaseTemporary` answers whether it found one now, and a released temporary
+*is* the object going out.
+
+**The elision had to widen, and the reason is the point.** The gate asked
+`nonTrivialCopy()`, so a class of plain members with a `~T` - trivial to copy,
+observable to destroy - was copied rather than elided. Once the result slot was
+being destroyed properly that showed up as two destructions where clang has
+one, in three existing cases. Both readings are legal; matching the oracle is
+worth more. **A destructor makes the copy observable even where the copy
+itself is trivial**, and that is what the gate asks now.
+
+**Found beside it and not fixed: a temporary is not destroyed when an
+exception passes through.** Cleanup regions are built from `alive_`, which
+holds named objects; `pendingTemps_` has no region of its own, so an argument
+copy or a class temporary is destroyed on the normal path and leaked on the
+unwind. Measured with a throw through `take(Owner(6))` - clang balances,
+cxx1 leaves two alive - and it is pre-existing rather than opened by this
+change: it needs cleanup regions built from the temporaries list, which is
+real machinery and its own step. `docs/CONFORMANCE.md` records it.
+
+**`return-by-value-balance.cpp` counts live objects and whether constructions
+balance destructions, and never the number of constructor calls.** Elision is
+permitted rather than required in C++11 and the two oracles take different
+options, so a constructor count has no single right answer - while a leak or a
+double destroy moves those two numbers and nothing else does. That is the
+shape CLAUDE.md already prescribed for `return-copy-balance` and `move-only`,
+and this is the case family it said was missing.
+
+## A declaration in a condition, and the two rules that are not one rule
+
+**`if (T x = e)` was deferred at rung 1** with the note that it "needs the
+condition's scope to wrap both branches, which is a change to how `If` is built
+rather than an addition to it". That was the right description and it is what
+the fix turned out to be: the statement goes inside a `Block` of its own -
+which already carries a scope - with the declaration hoisted in front of the
+`If` and the destructors after it. Three of Compiler++'s sixteen sources were
+stopped by it, all writing the same line: `if (cc::ArrayType *at =
+dynamic_cast<cc::ArrayType*>(t))`.
+
+**The `if` form and the `while` form are different rules, and reading them as
+one is how to get this silently wrong.** [stmt.select]/2 evaluates the
+condition of an `if` once, so hoisting is exact. [stmt.iter]/2 creates and
+destroys the loop variable **on every turn** - so hoisting a `while`'s
+initialiser would evaluate it once and then loop for ever on the value it got.
+`while (int *p = pull())` is the shape that shows it, and it is an infinite
+loop rather than a wrong number.
+
+So the `while` form declares the slot once - it is one object as far as the
+frame is concerned - and **moves the initialisation into the condition**,
+`(x = e)`, which is what the standard asks for as long as there is no
+constructor or destructor to run. A class there is refused by name, and that
+refusal is the honest edge of this: it would need its constructor written where
+the test is.
+
+**The `if` form gets full generality for free**, because it goes through
+`declarationBody` rather than through a second declaration parser. One flag
+tells that function's tail that the `)` is the caller's and that a condition
+declares one name; everything above the tail - `auto`, a class with a
+constructor, the copy elision, the `alive_` bookkeeping - is the path an
+ordinary declaration already took. **The tail is one place and the loop is
+not**: the class branch leaves the declarator loop by `break` rather than by
+falling out of it, so the check that was first written inside the loop was
+skipped by exactly the declarations that needed it most.
+
+**And the names suite found the half that was missing.** `tests/names.sh`
+reported that clang emitted `_Unwind_Resume` for a function with a
+condition-declared object and cxx1 did not - which reads as a naming difference
+and was a missing cleanup region. The normal-path destructors run where the
+statement ends, and unwinding does not go that way: an exception through either
+arm would have left the object undestroyed. The condition's object needs the
+same `built` record a block keeps for what it constructs, in the same shape -
+a statement index and how many were alive after it.
+`tests/cases/condition-declaration-unwind.cpp` runs it and the destructor
+fires.
+
+**Found on the way, and not fixed here: `Guard g = Guard(5);` destroys twice.**
+One construction, two destructions - the temporary is elided into `g`'s storage
+and then both are on `alive_`. It has nothing to do with conditions; it is an
+ordinary declaration initialised by a class temporary, and for a class that
+owns anything it is a double free. Recorded rather than mended in the same
+change, because it is a different subject and wants a case family of its own.
+
+## `mutable`, three lines and one exception that was already there
+
+**[dcl.stc]/9 makes a `mutable` member writable through a const object**, which
+is what a class reaches for when something it caches or counts is not part of
+the value it presents. It was refused with "'mutable' is implemented, but not
+where a type was wanted" - implemented on a lambda, and nowhere else - and one
+`mutable bool` in one header stopped five of Compiler++'s sixteen sources.
+
+**The propagation was already in one shape at each of the three places a member
+is reached**, which is why the fix is three lines rather than a design. `.`,
+`->`, and the implicit `this->name` inside a member function each ask whether
+the object is const and qualify the member's type if it is - and each already
+carried one exception, the reference member whose referent [dcl.ref] does not
+reach. A mutable member is the second exception in the same condition.
+
+**It is a property of the member and not of its type**, so the flag sits on
+`Member` beside the access and the bit-field width, not in the qualifiers.
+Putting it in the type would have made `mutable int` a type distinct from
+`int`, which would reach the mangler - and neither ABI spells it, because the
+keyword changes no name and no layout.
+
+**The four things it may not be applied to are refused by name**, and each is a
+contradiction rather than a gap: a static member is not part of any object, a
+const one is what the keyword exists to undo, a reference cannot be rebound
+whatever is said about it, and a function is not a member that is written.
+clang refuses all four and so does this.
+
+**Written after the type - `int mutable x;`, which is legal and nobody writes -
+it is still refused**, by the keyword table with the message that keyword
+already had. The specifier is read before `specifiers()` in the member loop,
+which is one place rather than a fifth spelling inside a function that answers
+about types.
+
+## An enumeration inside a class or a namespace, and the three things it wanted
+
+**`enum Kind { Red, Green };` written in a class body was refused with "this
+declares nothing - a member needs a name"**, which is a message about a member
+declaration answering a question about a type declaration. It is the ordinary
+way C++ spells a small set of named constants, so this shut a door most
+programs go through - five of Compiler++'s sixteen sources among them - and it
+was not on any refusal list, because nothing refused it *by name*.
+
+**Three things were missing at once and each was in a different file**, which
+is why it read as one wall rather than three.
+
+**The declaration.** In a class body `enum Kind { ... };` declares a type and
+no member, exactly as a nested class does - and it is told apart by the
+**keyword**, not by what the specifier answers with. A nested class is
+recognised at the semicolon by the type being a struct with a tag; an
+enumeration answers `int`, and there is nothing in an `int` to recognise. So
+the member loop records whether the specifier started at `enum` before it
+reads one.
+
+**The name.** The tag and every enumerator take the enclosing class's tag or
+the namespace prefix - `C::Kind`, `C::Red`, `n::Level`, `n::Low` - which is the
+same qualified-string key a nested class already uses. Without it two classes
+could not each write `Red`, and a class's enumerator collided with a global of
+that name.
+
+**And the lookup, which is a walk rather than one flat map.** `enums_` was
+keyed by the written name and read by one `find`, so a prefixed enumerator was
+findable only by its full name. `findEnum` now tries the flat map, then
+`qualifyForLookup` for the namespaces, then `classStack_`, `currentClass_` and
+`inlineOwner_` - which is the order every other name in this parser is looked
+up in, and it is what makes `Green` mean `C::Green` inside a member of C and
+nowhere else. `enumInClass` is the per-class half, written to mirror
+`lookupInClass` so the two cannot drift.
+
+**A qualified enumerator needed a fourth place, and it is not where the
+namespace one lives.** `n::Low` is read by the namespace branch of `primary`,
+which is guarded on `namespaces_` and never sees a class. `C::Red` goes to the
+branch below it - the one that finds a static data member by the longest
+prefix that names a class and has such a member - and it now makes the same
+walk one step over for an enumerator. A value and not an object, so there is
+nothing to take the address of and the number is the whole of it.
+
+**An enumeration is still `int`, and this did not change that.**
+`docs/CONFORMANCE.md` records it, and it is visible in the mangling: cxx1
+spells `n::twice(Level)` as `_ZN1n5twiceEi` where clang writes
+`_ZN1n5twiceENS_5LevelE`, and `?twice@n@@YAHH@Z` against `?twice@n@@YAHW4Level@1@@Z`.
+`tests/cases/nested-enum.nonames` records that for all three targets. Giving an
+enumeration a type of its own is a separate step, and it changes the name of
+every function that takes one.
+
 ## Ordinary C++ this refuses, and none of it is on the ladder
 
 **The gap this section exists to close.** `docs/CONFORMANCE.md` holds what
@@ -3984,17 +5238,26 @@ Found 2026-08-30 and each checked against clang, which accepts all three.
 
 | written | what comes back |
 | --- | --- |
-| `P a(1), b(2);` | `expected ';'` — only the first declarator of a declaration may have constructor arguments |
+| `P a(1), b(2);` | `expected ';'` — **fixed 2026-09-04**, and it was never about the arguments: see below |
 | `return P(1);` | `'P(...)' makes a temporary of type 'struct P'` — a class temporary written as a functional cast |
-| `int f(int) { … }` | `a parameter of a definition needs a name` |
+| `int f(int) { … }` | `a parameter of a definition needs a name` - **fixed 2026-09-04** |
 
-**The third has a sharper edge than it looks.** The postfix increment is
-declared `operator++(int)` and *nobody names that parameter* - it exists only
-to tell the two forms apart, so every real program writing one hits this. The
-prototype form is accepted and only the definition is refused, which is the
-inherited C rule: a body needs a name to refer to the parameter by. C++ does
-not require one, and a compiler that means to run other people's code has to
-take it.
+**The third had a sharper edge than it looks, and it is mended.** The postfix
+increment is declared `operator++(int)` and *nobody names that parameter* - it
+exists only to tell the two forms apart, so every real program writing one hit
+this. The prototype form was accepted and only the definition refused, which
+is the inherited C rule: a body needs a name to refer to the parameter by. C++
+does not require one, and a compiler that means to run other people's code has
+to take it.
+
+**An unnamed parameter still occupies a slot and a place in the calling
+convention**, which is why skipping it was not an option and giving it `off =
+0` would have put it on top of the frame's first word. It is declared under a
+name no program can write - `$unnamed<n>` - and everything below that point is
+the named path unchanged: the frame slot, the calling convention, and on
+Windows the `alive_` entry that destroys a by-value class parameter. The same
+device the lambda return typedef and a pack's members already used. Four of
+Compiler++'s sixteen sources were stopped by it.
 
 **The second is what a constructor is usually written through**, so it is the
 one most likely to stop a real program: `return P(1);`, `f(P(1))` and
@@ -4027,6 +5290,7 @@ since the fork.
 | `cl-measure` | asks cl on the Windows box about the Microsoft ABI |
 | `unwind-check` | rung 6's tables |
 | `windows/` | the Windows half of `verify-three`, kept in the repo on purpose |
+| `windows/asm-run.cmd` | one `.asm` assembled, linked and run on the box - seconds, not a rebuild |
 | `backend-overlap` | python3; how much of the two code generators is the same algorithm twice. Still works, mentioned nowhere until now |
 | `gen-corpus` | python3; generates a corpus of a given size. Still works; its comments cite a `tests/challenge.sh` that did not come across |
 

@@ -260,7 +260,11 @@ void MasmSpelling::defLabel(const std::string &l) {
     pending_ = mangle(l);
 }
 
-void MasmSpelling::functionBegin(const std::string &name, bool exported) {
+// `mergeable` is what a COMDAT would be told, and ml64 has no directive that
+// reaches the COMDAT bit - see CoffSpelling, which exists for that reason.
+void MasmSpelling::functionBegin(const std::string &name, bool exported,
+                                 bool mergeable) {
+    (void)mergeable;
     defined_.insert(name);
     if (exported) exported_.insert(name);
     flushPending();
@@ -380,6 +384,7 @@ void MasmSpelling::functionEnd(const std::string &name) {
 
 void MasmSpelling::globl(const std::string &name) { exported_.insert(name); }
 
+
 void MasmSpelling::textSection() {
     flushPending();
     if (seg_ != Code) { o_ += "\n.CODE\n"; seg_ = Code; }
@@ -421,6 +426,14 @@ void MasmSpelling::dataInt(int size, long long v) {
 }
 
 void MasmSpelling::dataSym(const std::string &sym, long long off) {
+    // **A symbol named by data is a use, and MASM needs it declared.** The two
+    // operand paths record one; this did not, so a vtable slot holding a
+    // function defined in another translation unit reached ml64 undeclared -
+    // `error A2006: undefined symbol`, on ten of Compiler++'s sixteen and on
+    // nothing in the suite, where every class is defined where it is used.
+    // The mirror of A-02: there a vtable slot was a use nothing emitted, here
+    // it is a use nothing declared.
+    referenced_.insert(sym);
     std::string t = mangle(sym);
     if (off > 0) t += "+" + std::to_string(off);
     else if (off < 0) t += "-" + std::to_string(-off);
@@ -738,10 +751,90 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
     out_ += o;
 }
 
+// **The five objects the Microsoft ABI wants before it will answer a
+// `dynamic_cast`**, measured from clang. Itanium hangs two off the back of a
+// vtable; this hangs five in front of one:
+//
+//   ??_R0  the type descriptor - the type_info vfptr, a spare word, and the
+//          decorated name, which is the string the runtime actually compares
+//   ??_R1  where one class sits inside another: how many bases it contains,
+//          then mdisp/pdisp/vdisp and the attributes
+//   ??_R2  the array of those, this class first and then up the chain
+//   ??_R3  the hierarchy over that array, carrying its length
+//   ??_R4  the complete-object locator, which names the first and the fourth
+//          and sits one word in front of the vftable
+//
+// **Not PUBLIC, for the reason the throw chain records**: cl puts each in a
+// COMDAT, MASM cannot say COMDAT, and a public copy collides with cl's. The
+// runtime matches on the descriptor's name string, so file-local is enough.
+void MasmCodeGen::emitClassRtti(const Program &program) {
+    if (program.rtti.empty()) return;
+    std::string &o = out_;
+
+    // The chain of every class named, closed and deduplicated: a class's array
+    // lists its bases' descriptors, so a base needs the full set of records
+    // even when nothing in this file names it.
+    std::vector<const Type *> all;
+    for (std::size_t i = 0; i < program.rtti.size(); i++)
+        for (const Type *k = program.rtti[i]; k != nullptr; k = k->base()) {
+            bool had = false;
+            for (std::size_t j = 0; j < all.size(); j++) if (all[j] == k) had = true;
+            if (!had) all.push_back(k);
+        }
+
+    for (std::size_t i = 0; i < all.size(); i++) {
+        MicrosoftRtti n;
+        std::string why;
+        if (!microsoftClassRttiNames(all[i], &n, &why)) continue;
+
+        int contained = 0;
+        for (const Type *k = all[i]->base(); k != nullptr; k = k->base())
+            contained++;
+
+        o += ".data$r SEGMENT READONLY ALIGN(8) 'DATA'\n";
+        o += n.descriptor + " DQ ??_7type_info@@6B@\n";
+        o += "  DQ 0\n";
+        o += "  DB '" + n.decorated + "', 00H\n";
+
+        // Where this class sits inside itself: at the top, never virtual. Those
+        // four numbers are constant because a class with a second base is
+        // refused - its first base is always at offset zero.
+        o += n.baseDescriptor + " DD imagerel " + n.descriptor + "\n";
+        o += "  DD 0" + std::to_string(contained) + "H\n";
+        o += "  DD 00H\n";              // mdisp
+        o += "  DD 0ffffffffH\n";       // pdisp - -1, there is no vbtable
+        o += "  DD 00H\n";              // vdisp
+        o += "  DD 040H\n";             // attributes
+        o += "  DD imagerel " + n.hierarchy + "\n";
+
+        o += n.array + " DD imagerel " + n.baseDescriptor + "\n";
+        for (const Type *k = all[i]->base(); k != nullptr; k = k->base()) {
+            MicrosoftRtti b;
+            if (!microsoftClassRttiNames(k, &b, &why)) break;
+            o += "  DD imagerel " + b.baseDescriptor + "\n";
+        }
+        o += "  DD 00H\n";
+
+        o += n.hierarchy + " DD 00H\n";
+        o += "  DD 00H\n";              // attributes - no MI, no virtual bases
+        o += "  DD 0" + std::to_string(contained + 1) + "H\n";
+        o += "  DD imagerel " + n.array + "\n";
+
+        // The locator names itself, which is how the runtime recovers the image
+        // base every other field is relative to.
+        o += n.locator + " DD 01H\n";
+        o += "  DD 00H\n";              // the vfptr's offset in the object
+        o += "  DD 00H\n";              // cdOffset
+        o += "  DD imagerel " + n.descriptor + "\n";
+        o += "  DD imagerel " + n.hierarchy + "\n";
+        o += "  DD imagerel " + n.locator + "\n";
+        o += ".data$r ENDS\n";
+    }
+}
+
 void MasmCodeGen::emitThrowInfo(const Program &program) {
     if (program.thrown.empty()) return;
     std::string &o = out_;
-    o += "\nEXTRN ??_7type_info@@6B@:QWORD\n";
     for (std::size_t i = 0; i < program.thrown.size(); i++) {
         const Type *t = program.thrown[i];
         MicrosoftThrow n;
@@ -790,10 +883,49 @@ void MasmCodeGen::run(const Program &program) {
             continue;
         mine.push_back(n.info);
     }
+    // **And every class descriptor this file defines**, for the same reason:
+    // the spelling writes an EXTERN for each name a call mentions, and these
+    // are mentioned by the `lea` in front of every __RTDynamicCast while being
+    // laid down a few lines above it. The chain is walked because a base's
+    // descriptor is defined here too even when nothing names it.
+    for (std::size_t i = 0; i < program.rtti.size(); i++)
+        for (const Type *k = program.rtti[i]; k != nullptr; k = k->base()) {
+            MicrosoftRtti n;
+            std::string why;
+            if (!microsoftClassRttiNames(k, &n, &why)) break;
+            // **All five, not the descriptor alone.** The descriptor is the one
+            // a `lea` mentions, so it was the only one that had to be here while
+            // only instructions recorded a reference. Data records one now, and
+            // a vtable's first word is the locator - so the locator, the
+            // hierarchy, the base array and the base descriptor are named by
+            // data laid down in this very file and would otherwise be declared
+            // EXTERN and defined, which ml64 calls a symbol redefinition.
+            mine.push_back(n.descriptor);
+            mine.push_back(n.baseDescriptor);
+            mine.push_back(n.array);
+            mine.push_back(n.hierarchy);
+            mine.push_back(n.locator);
+        }
     masm_.predefine(mine);
     // **Before the code, not after it.** The base run() flushes what it has built
     // when it finishes, so anything appended afterwards goes to a buffer nobody
     // reads. MASM makes two passes, so a `lea` of a ThrowInfo above resolves.
+    // `??_7type_info@@6B@` heads every type descriptor, thrown or cast alike,
+    // and ml64 wants it declared once however many ask for it.
+    if (!program.thrown.empty() || !program.rtti.empty())
+        out_ += "\nEXTRN ??_7type_info@@6B@:QWORD\n";
+    // **A pure virtual's slot names a routine no object file here defines.**
+    // GNU as takes an undeclared symbol and leaves it to the linker; ml64 will
+    // not, and answers `A2006: undefined symbol : _purecall`. Declared once
+    // however many slots hold it, and only when one does.
+    for (std::size_t g = 0; g < program.globals.size(); g++) {
+        bool found = false;
+        const std::vector<GlobalPiece> &pieces = program.globals[g].init;
+        for (std::size_t i = 0; i < pieces.size(); i++)
+            if (pieces[i].symbol == "_purecall") { found = true; break; }
+        if (found) { out_ += "\nEXTRN _purecall:PROC\n"; break; }
+    }
+    emitClassRtti(program);
     emitThrowInfo(program);
     X86_64Linux::run(program);
 }

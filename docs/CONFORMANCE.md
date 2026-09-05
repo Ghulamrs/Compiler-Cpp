@@ -9,31 +9,43 @@ the ladder in `CLAUDE.md`, and it is refused by name when a program reaches
 for it. This page is only for things that compile and are wrong, or compile
 and are right by accident.
 
-## An enumeration is not a distinct type
+## An enumeration has its own name but not its own value set
 
-`enum Colour { Red, Green, Blue };` makes `Colour` a type name, and it names
-`int`. The standard makes it a distinct type with its own values.
+**The half that is fixed is the ABI.** `enum Colour { Red, Green, Blue };`
+makes `Colour` a distinct `Type` carrying its qualified name, and the manglers
+spell it — measured against clang, four shapes on both ABIs:
 
-What that costs, concretely:
+```
+void a(Colour)               _Z1a6Colour              ?a@@YAXW4Colour@@@Z
+void b(cc::BinaryOp)         _Z1bN2cc8BinaryOpE       ?b@@YAXW4BinaryOp@cc@@@Z
+void d(Colour, Colour)       _Z1d6ColourS_            ?d@@YAXW4Colour@@0@Z
+```
+
+Before that, every one of them came out `i` and `H`, so no cxx1 object naming
+an enumeration could link against one from another compiler. It is also what
+made a file-by-file differential against a clang build possible at all.
+
+**The half that is missing is the checking.** Underneath it is still
+`Kind::Int`, so every conversion path sees an integer:
 
 ```cpp
 enum Colour { Red, Green, Blue };
 int n = 1;
 Colour c = n;        // cxx1 accepts. C++ requires a cast.
-int m = Green;       // both accept: an enum converts to int
 c = 47;              // cxx1 accepts. C++ does not.
+int m = Green;       // both accept: an enum converts to int
 sizeof(Colour)       // 4 here; implementation-defined but need not be int's size
 ```
 
 So a program that treats an enumeration as a small set of named integers
-compiles and behaves correctly. A program that relies on the compiler
-*refusing* a wrong assignment gets no help.
+compiles, links and behaves correctly, and its symbols are right. A program
+that relies on the compiler *refusing* a wrong assignment still gets no help.
 
-Fixing it means a `Kind::Enum` carrying its enumerators, a conversion rule in
-both directions, and overload resolution eventually having to rank those
-conversions — so it is held until the type system needs to be opened anyway,
-rather than done twice. Inherited from Compiler-C, where C's own rules made it
-very nearly correct.
+Finishing it means a `Kind::Enum` carrying its enumerators, a conversion rule
+in both directions, and overload resolution ranking those conversions. That was
+held back deliberately rather than done half-way under time pressure: the ABI
+was what blocked a differential build, and opening the type system is its own
+round with its own risk to the suite.
 
 ## `wchar_t` is not a distinct type
 
@@ -373,3 +385,80 @@ with refusals of correct code.
 unwinding - which is a program relying on it to crash - keeps running instead.
 Nothing that relies on the *promise* being true is affected, because a program
 that keeps its promise cannot tell the difference.
+
+## An un-elided call result is not destroyed when an exception passes through
+
+[class.temporary]/4 destroys a temporary at the end of the full expression it
+was made in, and [except.ctor]/1 destroys it during unwinding if the full
+expression does not finish. cxx1 does both now for a class temporary and for a
+by-value argument copy: each carries a guard flag the cleanup pad reads, so one
+region can cover a whole statement and still destroy exactly what exists at the
+point the exception left it.
+
+**The object a call returns is the exception, and it is marked unguarded.**
+Setting a flag after the call means wrapping the `Call` node, and the two
+elision paths find their candidate by `dynamic_cast`-ing to it - so wrapping
+would silently turn the elision off, which is a worse trade. In practice
+elision routes that object into the slot of whatever consumes it, and those
+slots are guarded, so `two(make(7), make(2))` balances. What is left uncovered
+is an un-elided result temporary with a throw later in the same full
+expression:
+
+```cpp
+int f(A a, int n);
+f(make(1), boom());     // make(1)'s result leaks if boom() throws
+```
+
+It is a leak rather than a wrong answer, and bounded by the frame. Fixing it
+means letting a `Call` carry the flag to set on return - a field on the node
+and a line in each of the three code generators - and it was deliberately not
+folded into the change that guarded the other two, which touched the exception
+tables on every target and wanted its own verification.
+
+`tests/cases/temporary-unwind.cpp` pins the four shapes that do balance.
+
+### And on x86_64-windows, a copy made for a call that is never entered
+
+The Microsoft ABI puts the destruction of a by-value class parameter on the
+**callee**, where Itanium puts it on the caller. So where an argument's
+constructor throws after an earlier argument was already copied into its
+parameter, nobody destroys that copy on this target: the caller does not own
+it, and the callee is never reached.
+
+```cpp
+int two(A p, A q);
+two(A(1), A(99));       // A(99)'s constructor throws; A(1)'s copy leaks
+```
+
+Measured on the Windows box: `live 1` there against `live 0` on both Itanium
+targets and on clang. Telling "the callee was entered" from "it was not" is a
+state change at the call instruction itself, and cxx1's cleanup regions are
+statement-granular - so this is the one place the guard flag cannot answer.
+Clearing the guard after the call over-destroys instead, which was measured
+too: the callee's own regions destroy the parameter on the way out, and the
+caller's pad then destroys it again.
+
+The shape is named in `temporary-unwind.cpp` and left out of it rather than
+skipped, so that the case says the same thing on all three targets.
+## Inside a namespace, an unqualified name finds the global one first
+
+[basic.lookup.unqual] searches the nearest enclosing scope first, so inside
+`namespace cc` a written `Lexer` should be `cc::Lexer` where one exists, and
+only otherwise the global `::Lexer`. `findTypedef` looks in the flat type table
+before it tries `qualifyForLookup`, so the global wins.
+
+```cpp
+struct Lexer { int k; };
+namespace cc {
+    struct Lexer { int other; };
+    struct Parser { Lexer *p; };   // cxx1: ::Lexer. clang: cc::Lexer
+}
+```
+
+It makes `::` redundant here rather than wrong - a program that writes
+`::Lexer` gets what it asked for - and it is why
+`tests/cases/global-scope-qualifier.cpp` writes `cc::Lexer` where it means the
+nearer one. Reversing the order changes how every unqualified name inside a
+namespace resolves, which wants a round of its own rather than a line in a
+change about something else.
+

@@ -40,6 +40,8 @@ endif
 # The compiler is src/; the library it happens to ship is a separate thing that
 # a program may ignore, replace with -I, or never reach for at all.
 INCDIR   = $(CURDIR)/lib
+# The C++ headers, which wrap the C ones above rather than replacing them.
+CXXINCDIR = $(CURDIR)/include
 # -pthread and not -lpthread: it sets the flags std::thread needs at compile
 # time as well as naming the library, and getting only the library gives a
 # binary that links and then misbehaves when it runs its threads.
@@ -51,10 +53,11 @@ INCDIR   = $(CURDIR)/lib
 # anyway, so a Mac build will not catch that kind of slip - g++ on the box
 # will, which is the reason to build there before believing it.
 CXXFLAGS = -std=c++14 -O2 -g -Wall -Wextra -Werror -pedantic -pthread \
-           -DCXX1_INCLUDE_DIR='"$(INCDIR)"'
+           -DCXX1_INCLUDE_DIR='"$(INCDIR)"' \
+           -DCXX1_CXX_INCLUDE_DIR='"$(CXXINCDIR)"'
 # src/backend holds one file per platform: the sizes its types measure, the ABI
 # facts the front end has to know, and the code generator when there is one.
-# src/parser holds the nine files one class is split over - see its Parser.cpp.
+# src/parser holds the eleven files one class is split over - see its Parser.cpp.
 #
 # **A basename may not repeat across these three directories.** Objects here go
 # under obj/ mirroring src/, so a collision would be harmless - but msvc/

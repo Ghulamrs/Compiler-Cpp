@@ -374,6 +374,8 @@ bool Parser::templateDeclaration() {
 
     std::string qualifier;
     decl.name = templatedName(decl.params, &decl.isClass, &qualifier);
+    // Where it was written, for the manglers - the table's key stays bare.
+    decl.ns = namespacePrefix();
     at_ = decl.afterParams;
     const bool defined = skipTemplatedDefinition();
 
@@ -471,6 +473,7 @@ bool Parser::explicitSpecialization() {
     classInstantiationTag_ = tag;
     classInstantiationOf_ = name;
     instantiatingArgs_ = args;
+    instantiatingNamespace_ = primary->second.ns;
     const Type *made = structOrUnionSpecifier(kind, isClass);
     classInstantiationTag_.clear();
     classInstantiationOf_.clear();
@@ -761,7 +764,15 @@ void Parser::instantiatePending() {
                 std::vector<PendingBody> later;
                 for (std::size_t b = 0; b < specializations_[i].bodies.size(); b++) {
                     const PendingBody &body = specializations_[i].bodies[b];
-                    (memberIsUsed(body.key) ? now : later).push_back(body);
+                    // **This overload, not this name.** Every constructor of
+                    // a class shares one key, so asking the key replays them
+                    // all as soon as any is called.
+                    const bool wanted =
+                        body.which != PendingBody::npos() &&
+                        body.which < functions_.size()
+                            ? functions_[body.which].used
+                            : memberIsUsed(body.key);
+                    (wanted ? now : later).push_back(body);
                 }
                 specializations_[i].bodies = later;
 
@@ -1351,8 +1362,10 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     // out: both read only the template's name and its argument list.
     if (patternOnly_) {
         Type *shallow = types_.structType(Kind::Struct, tag);
-        if (!shallow->isSpecialization())
+        if (!shallow->isSpecialization()) {
             shallow->setSpecialization(decl.name, args);
+            shallow->setTemplateNamespace(decl.ns);
+        }
         // Registered so that `Box<T>::get` reads: the declarator's qualified
         // path looks the class up by name, and this is the only name it has.
         // The tag holds a `$` and so cannot collide with anything written.
@@ -1390,9 +1403,27 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
                            partial ? usePacks : packs, &undo);
 
     at_ = partial ? decl.partials[which].bodyAt : decl.afterParams;
+    // **A specialization is not a member of whatever class asked for it.**
+    // `inner<K> held_;` inside `outer<K>` instantiates `inner<int>` while
+    // `outer<int>`'s body is being read, and the class context still in effect
+    // made the new class nested: it took the tag `outer<int>::inner<int>`, a
+    // name nothing else forms, so its constructor and destructor were declared
+    // under one name and emitted under none. `vector` inside `map` is that
+    // shape, and it is the shape of any container built out of another.
+    //
+    // The enclosing namespace is deliberately left alone - a template declared
+    // in `std` specializes into `std` - and only the class nesting is dropped.
+    std::vector<const Type *> outerClasses;
+    outerClasses.swap(classStack_);
+    const Type *outerCurrent = currentClass_;
+    currentClass_ = nullptr;
+    const std::string outerInline = inlineOwner_;
+    inlineOwner_.clear();
+
     classInstantiationTag_ = tag;
     if (partial) classInstantiationOf_ = decl.name;
     instantiatingArgs_ = args;
+    instantiatingNamespace_ = decl.ns;
     heldForSpecialization_.clear();
     const bool wasDeferring = deferSpecializationBodies_;
     deferSpecializationBodies_ = true;
@@ -1404,6 +1435,9 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     classInstantiationTag_.clear();
     classInstantiationOf_.clear();
     instantiatingArgs_.clear();
+    classStack_.swap(outerClasses);
+    currentClass_ = outerCurrent;
+    inlineOwner_ = outerInline;
     deferSpecializationBodies_ = wasDeferring;
     std::vector<PendingBody> bodies;
     bodies.swap(heldForSpecialization_);
@@ -1439,7 +1473,25 @@ ExprPtr Parser::templateCall(Program *program) {
     const std::string name = peek().text;
     const std::size_t pos = peek().pos;
     const TemplateDecl decl = templates_[name];
-    if (decl.isClass) refuseTemplateId();
+    if (decl.isClass) {
+        // **`vector<int>()` is a temporary, not an instantiation this cannot
+        // do.** The type is made perfectly well; what was missing is reading a
+        // template-id where a plain class name already reaches
+        // `classTemporary`. `std::vector<IRInstr>().swap(v)` is the idiom that
+        // wants it - the shortest way to empty a vector and give its buffer
+        // back.
+        const std::size_t save = at_;
+        at_++;
+        if (peek().is("<")) {
+            const Type *cls = instantiateClass(decl, pos);
+            if (cls != nullptr && cls->isStructOrUnion() && peek().is("(")) {
+                at_++;
+                return classTemporary(cls, pos);
+            }
+        }
+        at_ = save;
+        refuseTemplateId();
+    }
     at_++;
 
     // **No argument list, so they come from the call.** The arguments are parsed

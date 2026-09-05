@@ -1,0 +1,60 @@
+// <cstdio> - The C input and output functions, under `std::`.
+//
+// The same shape as <cstring>: lib/stdio.h wrapped, every name it declares
+// named here, and nothing added. What is *not* here is anything to do with
+// `std::cout` - that is <ostream> and <iostream>, which are classes and are
+// built on top of this rather than beside it.
+//
+// **`FILE` is named but never opened by this header.** It is an incomplete
+// struct reached only through a pointer, so `std::FILE *` is all a program can
+// hold, and that is all the stream headers need from it.
+//
+// `stdin`, `stdout` and `stderr` are macros in lib/stdio.h and stay macros: a
+// macro cannot be pulled into a namespace, and the standard permits them to be
+// macros for exactly this reason. So they are spelled without `std::`.
+#ifndef _CXX1_CSTDIO
+#define _CXX1_CSTDIO
+
+#include <stdio.h>
+
+namespace std {
+
+using ::FILE;
+using ::size_t;
+
+using ::clearerr;
+using ::fclose;
+using ::feof;
+using ::ferror;
+using ::fflush;
+using ::fopen;
+using ::freopen;
+using ::fgetc;
+using ::fgets;
+using ::fprintf;
+using ::fputc;
+using ::fputs;
+using ::fread;
+using ::fscanf;
+using ::fseek;
+using ::ftell;
+using ::fwrite;
+using ::getc;
+using ::getchar;
+using ::perror;
+using ::printf;
+using ::putc;
+using ::putchar;
+using ::puts;
+using ::remove;
+using ::rename;
+using ::rewind;
+using ::scanf;
+using ::sprintf;
+using ::sscanf;
+using ::tmpfile;
+using ::ungetc;
+
+}  // namespace std
+
+#endif

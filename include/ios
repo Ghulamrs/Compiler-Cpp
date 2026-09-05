@@ -1,0 +1,36 @@
+// <ios> - the pieces both directions share: the size type and the open modes.
+//
+// **`ios` is a bag of constants and nothing else.** The standard makes it a
+// base class carrying the stream's state, formatting flags and locale; there
+// are no flags and no locale here, and the state lives in `ostream` and
+// `istream` as a plain `int`. What a program actually reaches for from this
+// header is `std::ios::binary`, and that is what is here.
+//
+// The constants are `static const int` with their values written in the class,
+// which needs no definition anywhere and gets no symbol - the value is folded
+// in wherever it is read.
+#ifndef _CXX1_IOS
+#define _CXX1_IOS
+
+namespace std {
+
+// The count `write` and `getline` take. The standard makes it signed and wide
+// enough for a file offset, which is `long` on every target here.
+typedef long streamsize;
+
+class ios {
+public:
+    // The open modes, as the standard names them. The values are this
+    // implementation's own - nothing outside may depend on them, and a program
+    // that writes `std::ios::binary` rather than `4` never sees one.
+    static const int in     = 1;
+    static const int out    = 2;
+    static const int ate    = 4;
+    static const int app    = 8;
+    static const int trunc  = 16;
+    static const int binary = 32;
+};
+
+}  // namespace std
+
+#endif

@@ -111,7 +111,7 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
                            std::to_string(args.size()) + " arguments");
         const int slot = allocateFrameSlot(plain);
         if (destructorOf(plain) != nullptr)
-            pendingTemps_.push_back(std::make_pair(slot, plain));
+            pendingTemps_.push_back(Temporary{ slot, plain, 0 });
         ExprPtr obj(Var::local("$tmp", slot));
         obj->setType(plain);
         // Expiring, whichever of the three shapes below answers - the same
@@ -164,10 +164,263 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
                        "taking these arguments - the one that matches is " +
                        (ctor.access == Access::Private ? "private" : "protected"));
     const bool zeroFirst = valueInit && ctor.implicit;
+    return constructTemporary(plain, ctor, std::move(args), zeroFirst, pos);
+}
 
+// **The conversion function on `from` that answers something usable.** The
+// mirror of the converting constructor: that one is a constructor of the
+// *target*, this one a member of the *source*. Where `to` is given, an exact
+// answer wins and anything a standard conversion can finish is taken otherwise;
+// where it is null - a condition, `!`, `&&` - any scalar will do and `bool` is
+// preferred, which is what a contextual conversion asks for.
+//
+// Two that could each serve is an ambiguity and answers null, the same rule and
+// for the same reason as the constructor search.
+const Parser::Signature *Parser::conversionFunction(const Type *from,
+                                                    const Type *to) {
+    const Type *plain = from->unqualified();
+    if (!plain->isStructOrUnion()) return nullptr;
+
+    // **Walked over the signature table and not over a member list**, because
+    // there is no member list: the table is keyed by `Class::name`, so a class's
+    // conversions cannot be asked for without already knowing what they convert
+    // to. A class has very few, and this runs only where a class stands where a
+    // scalar was wanted.
+    const Signature *best = nullptr;
+    bool exact = false;
+    for (const Type *c = plain; c != nullptr; c = c->base()) {
+        for (std::size_t k = 0; k < functions_.size(); k++) {
+            const Signature &f = functions_[k];
+            if (f.owner != c->tag()) continue;
+            if (!isConversionName(f.name) || !f.params.empty()) continue;
+            const Type *gives = f.returns;
+            if (to == nullptr) {
+                if (!gives->unqualified()->isScalar()) continue;
+                if (gives->isBool()) return &f;          // the one asked for
+                if (best != nullptr && !exact) return nullptr;
+                if (best == nullptr) best = &f;
+                continue;
+            }
+            if (gives->unqualified() == to->unqualified()) {
+                if (exact) return nullptr;               // two exact answers
+                best = &f;
+                exact = true;
+                continue;
+            }
+            if (exact) continue;
+            if (!gives->unqualified()->isScalar() || !to->isScalar()) continue;
+            if (best != nullptr) return nullptr;
+            best = &f;
+        }
+    }
+    return best;
+}
+
+// **The one conversion this class has to a number or a pointer**, or null when
+// it has none or has more than one. Not the same question as the contextual
+// conversion above, and the difference is the whole of a bug this caught:
+// [conv]/3 says a condition wants *bool*, so a class with `operator bool` and
+// `operator int` converts unambiguously there - and [over.match.oper]/9 offers
+// the built-in operators *every* conversion the class has, so the same class in
+// `a + 1` is ambiguous and clang refuses it. Preferring bool in both places
+// answered 2 where the program has no meaning.
+const Parser::Signature *Parser::soleNumericConversion(const Type *from) {
+    const Type *plain = from->unqualified();
+    if (!plain->isStructOrUnion()) return nullptr;
+    const Signature *only = nullptr;
+    for (const Type *c = plain; c != nullptr; c = c->base())
+        for (std::size_t k = 0; k < functions_.size(); k++) {
+            const Signature &f = functions_[k];
+            if (f.owner != c->tag()) continue;
+            if (!isConversionName(f.name) || !f.params.empty()) continue;
+            if (!f.returns->unqualified()->isScalar()) continue;
+            if (only != nullptr) return nullptr;
+            only = &f;
+        }
+    return only;
+}
+
+// **A class where a number or a pointer is wanted**, converted by its own
+// conversion function - a condition, `!`, `&&`, `||`, `?:`. [conv]/3 calls this
+// the contextual conversion to bool; here any scalar the class offers will do,
+// with bool preferred, because what the operand is then used for is a test
+// against zero either way.
+ExprPtr Parser::contextualScalar(ExprPtr e, std::size_t pos, const char *what) {
+    if (e->type() != nullptr && e->type()->unqualified()->isStructOrUnion()) {
+        if (const Signature *how = conversionFunction(e->type(), nullptr)) {
+            const Type *object = e->type();
+            std::vector<ExprPtr> none;
+            e = memberCallWith(std::move(e), object, how->name, pos,
+                               std::move(none));
+        }
+    }
+    requireScalar(*e, pos, what);
+    return e;
+}
+
+// **[over.ics.user]: the constructor that could make `to` out of `from`.**
+// One parameter, not `explicit`, and not a copy of `to` itself - copying is not
+// converting, and letting it count here would make every argument of the right
+// type look like a conversion. Two candidates is an ambiguity and answers null:
+// the standard refuses such a call, and so does this by finding nothing.
+const Parser::Signature *Parser::convertingConstructor(const Type *to,
+                                                       const Expr &from) {
+    const Type *plain = to->unqualified();
+    if (!plain->isStructOrUnion()) return nullptr;
+    const std::vector<std::size_t> *set = overloadsOf(constructorKey(plain->tag()));
+    if (set == nullptr) return nullptr;
+
+    const Signature *found = nullptr;
+    for (std::size_t k = 0; k < set->size(); k++) {
+        const Signature &c = functions_[(*set)[k]];
+        if (c.isExplicit || c.params.size() != 1) continue;
+        const Type *want = c.params[0];
+        const Type *bare = want->isReference() ? want->pointee()->unqualified()
+                                               : want->unqualified();
+        if (bare == plain) continue;                 // the copy constructor
+        if (rankArgument(from, want) == Rank::None) continue;
+        if (found != nullptr) return nullptr;        // ambiguous, so neither
+        found = &c;
+    }
+    return found;
+}
+
+// **The conversion an argument needs to become the parameter's class**, or null
+// where none is needed or possible. A reference parameter takes one only where
+// it is const: a temporary has nowhere to live otherwise, which is the rule that
+// stops `f(string &)` accepting a literal.
+ExprPtr Parser::userConversion(const Type *param, ExprPtr &arg, std::size_t pos) {
+    const Type *want = param->isReference() ? param->pointee() : param;
+    const Type *plain = want->unqualified();
+    if (!plain->isStructOrUnion()) return nullptr;
+    if (param->isReference() && !want->isConst()) return nullptr;
+    if (arg->type() == nullptr) return nullptr;
+    if (arg->type()->unqualified() == plain) return nullptr;
+
+    const Signature *ctor = convertingConstructor(plain, *arg);
+    if (ctor == nullptr) return nullptr;
+    markUsed(ctor);
+
+    std::vector<ExprPtr> one;
+    one.push_back(std::move(arg));
+    return constructTemporary(plain, *ctor, std::move(one), false, pos);
+}
+
+// **A temporary an arm of a `?:` made belongs to that arm.** The other arm did
+// not build it, so nothing may destroy it - and a guard set at the end of the
+// arm says so, being reached only if the arm ran. Most temporaries carry one
+// already, from their own construction; what this catches is the object a call
+// returns, which cannot be marked where it is built without wrapping the `Call`
+// node that the elision paths find by `dynamic_cast`.
+//
+// The arm's value is an int the conditional discards, so the mark can follow it.
+ExprPtr Parser::markArmTemporaries(ExprPtr arm, std::size_t from,
+                                   std::size_t to) {
+    for (std::size_t k = from; k < to && k < pendingTemps_.size(); k++) {
+        if (pendingTemps_[k].flag != 0) continue;
+        if (destructorOf(pendingTemps_[k].type) == nullptr) continue;
+        pendingTemps_[k].flag = guardFlag();
+        ExprPtr mark(new Comma(std::move(arm),
+                               setGuard(pendingTemps_[k].flag, 1)));
+        mark->setType(types_.intType());
+        arm = std::move(mark);
+    }
+    return arm;
+}
+
+// **The right operand of `&&` or `||` may not run at all**, and a temporary it
+// would have built must not be destroyed when it did not. Same guard a `?:` arm
+// takes - but this operand's *value* is what the comparison uses, so it is kept
+// in a slot of its own and handed back after the guards are set.
+ExprPtr Parser::markSkippableTemporaries(ExprPtr operand, std::size_t from,
+                                         std::size_t to) {
+    std::vector<std::size_t> needed;
+    for (std::size_t k = from; k < to && k < pendingTemps_.size(); k++)
+        if (pendingTemps_[k].flag == 0 &&
+            destructorOf(pendingTemps_[k].type) != nullptr)
+            needed.push_back(k);
+    if (needed.empty()) return operand;
+
+    const Type *vt = operand->type();
+    const int slot = allocateFrameSlot(vt);
+    ExprPtr into(Var::local("$sc", slot));
+    into->setType(vt);
+    ExprPtr chain(new Assign(std::move(into), std::move(operand)));
+    chain->setType(vt);
+    for (std::size_t i = 0; i < needed.size(); i++) {
+        pendingTemps_[needed[i]].flag = guardFlag();
+        ExprPtr mark(new Comma(std::move(chain),
+                               setGuard(pendingTemps_[needed[i]].flag, 1)));
+        mark->setType(types_.intType());
+        chain = std::move(mark);
+    }
+    ExprPtr back(Var::local("$sc", slot));
+    back->setType(vt);
+    ExprPtr all(new Comma(std::move(chain), std::move(back)));
+    all->setType(vt);
+    return all;
+}
+
+// **Copy-initialise `cls` into a slot the caller owns**, as one expression of
+// type int - the copy constructor where there is one, the bytes where the copy
+// is trivial, which are the two answers a declaration gives. The guard is set
+// after, because from there the object exists.
+ExprPtr Parser::buildInto(const Type *cls, int slot, ExprPtr value, int guard,
+                          std::size_t pos) {
+    const Type *ptr = types_.pointerTo(cls);
+    if (ExprPtr made = userConversion(cls, value, pos)) value = std::move(made);
+
+    ExprPtr built;
+    const Signature *cc = copyConstructorOf(cls);
+    const Signature *mv = moveConstructorOf(cls);
+    const Signature *use = (!isLvalue(*value) && mv != nullptr) ? mv : cc;
+    if (use != nullptr) {
+        markUsed(use);
+        ExprPtr where(Var::local("$cond", slot));
+        where->setType(cls);
+        ExprPtr at(new Unary('&', std::move(where)));
+        at->setType(ptr);
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(at));
+        args.push_back(std::move(value));
+        std::vector<const Type *> params;
+        params.push_back(ptr);
+        params.push_back(use->params[0]);
+        built = completeCall(cls->tag(), use->symbol, nullptr,
+                             types_.get(Kind::Void), params, false, pos,
+                             std::move(args));
+    } else {
+        ExprPtr where(Var::local("$cond", slot));
+        where->setType(cls);
+        built.reset(new Assign(std::move(where), std::move(value)));
+        built->setType(cls);
+    }
+
+    ExprPtr mark;
+    if (guard != 0) mark.reset(new Comma(std::move(built), setGuard(guard, 1)));
+    else {
+        ExprPtr zero(new Num(0LL));
+        zero->setType(types_.intType());
+        mark.reset(new Comma(std::move(built), std::move(zero)));
+    }
+    mark->setType(types_.intType());
+    return mark;
+}
+
+// **A temporary of `plain`, built by `ctor`, from arguments already parsed.**
+// The tail of `T(...)` with the reading taken off the front, so that an implicit
+// conversion - which has an argument but no tokens - builds the same thing the
+// written form does. One shape, not two: the alternative was a second copy of
+// this in the conversion path, which is the house bug.
+ExprPtr Parser::constructTemporary(const Type *plain, const Signature &ctor,
+                                   std::vector<ExprPtr> args, bool zeroFirst,
+                                   std::size_t pos) {
     const int slot = allocateFrameSlot(plain);
-    if (destructorOf(plain) != nullptr)
-        pendingTemps_.push_back(std::make_pair(slot, plain));
+    int guard = 0;
+    if (destructorOf(plain) != nullptr) {
+        guard = guardFlag();
+        pendingTemps_.push_back(Temporary{ slot, plain, guard });
+    }
 
     const Type *ptr = types_.pointerTo(plain);
     ExprPtr obj(Var::local("$tmp", slot));
@@ -195,6 +448,15 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
         }
     }
 
+    // The object exists from the moment its constructor returns, and a cleanup
+    // pad may run at any point after that - so the flag is set here rather
+    // than the pad assuming the whole statement built everything it will.
+    if (guard != 0) {
+        ExprPtr mark(new Comma(std::move(call), setGuard(guard, 1)));
+        mark->setType(types_.intType());
+        call = std::move(mark);
+    }
+
     // **A dereference of a pointer, not the object beside a comma.** `isGlvalue`
     // gives a comma its right operand's value category, so the parser would let
     // anyone take its address and no backend can. `*(ctor(&tmp), &tmp)` they know.
@@ -216,6 +478,159 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
 // ---------------------------------------------------------------- new and delete
 // **The four operator functions are called by name, and the names were measured**
 // at -O0 on all three targets. The platform's own: a cxx1 `new` meets clang's.
+// **`dynamic_cast<T *>(p)` - the one cast that asks the object.** Every other
+// cast is answered from the types written down; this one reads the vtable and
+// walks the inheritance graph the type_info objects carry, so all the compiler
+// emits is the question: the two `_ZTI`s and a call.
+//
+// The shape is clang's, measured: a null pointer casts to a null pointer
+// without asking, because `__dynamic_cast` reads the vtable through the pointer
+// it is given and would fault. The hint is -1, "unspecified" in the ABI, which
+// is always correct - clang computes the offset where it can prove one, and
+// that is a speed difference and not an answer difference.
+ExprPtr Parser::dynamicCast(std::size_t pos) {
+    expect("<");
+    StorageClass sc;
+    const Type *to = specifiers(&sc);
+    to = declarator(to, true).type;
+    if (!atClosingAngle())
+        src_.fail(peek().pos, "expected '>' to close 'dynamic_cast<'");
+    takeClosingAngle();
+    expect("(");
+    ExprPtr v = expr();
+    expect(")");
+
+    if (to->isReference())
+        src_.fail(pos, "'dynamic_cast' to a reference is not supported yet - it "
+                       "has no null to return, so a failure throws "
+                       "'std::bad_cast', and there is no C++ standard library "
+                       "here to throw it from; the pointer form works and "
+                       "answers with a null");
+    if (!to->isPointer() || !to->pointee()->unqualified()->isStructOrUnion())
+        src_.fail(pos, "'dynamic_cast' casts to a pointer to a class, and '" +
+                       to->describe() + "' is not one");
+
+    const Type *from = v->type();
+    if (!from->isPointer() || !from->pointee()->unqualified()->isStructOrUnion())
+        src_.fail(pos, "'dynamic_cast' needs a pointer to a class to ask about, "
+                       "and this is '" + from->describe() + "'");
+
+    const Type *source = from->pointee()->unqualified();
+    const Type *target = to->pointee()->unqualified();
+    // [expr.dynamic.cast]/6: the operand's class must be polymorphic, because
+    // the answer is read out of the vtable and a class without one has nothing
+    // to read.
+    if (!source->polymorphic())
+        src_.fail(pos, "'" + source->describe() + "' has no virtual function, "
+                       "so an object of it carries nothing that says what it "
+                       "really is - 'dynamic_cast' has nothing to ask");
+    // **[expr.dynamic.cast]/5: an upcast is not a question.** If the target is
+    // the operand's own class, or a public base of it, the answer follows from
+    // the types and the object is never asked - which is also why the runtime
+    // cannot be used for it: libc++abi's `__dynamic_cast` is written for the
+    // other direction and answers null here. That is how this was found, on a
+    // `dynamic_cast<Base *>(b)` that came back null and was then dereferenced.
+    if (publicBaseOffset(source, target) >= 0)
+        return convert(std::move(v), to);
+
+    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+
+    // The operand is wanted twice - once to test against null and once to hand
+    // to the runtime - and it is any expression, so it goes into a slot and
+    // both readers use that.
+    const int slot = allocateFrameSlot(voidPtr);
+    const std::string temp = ".dyn" + std::to_string(newTemps_++);
+    ExprPtr held(Var::local(temp, slot));
+    held->setType(voidPtr);
+    ExprPtr save(new Assign(std::move(held), std::move(v)));
+    save->setType(voidPtr);
+
+    const bool ms = target_.microsoftNames();
+
+    // **The name of the object that describes a class, on whichever ABI.**
+    // Itanium reads a `_ZTI` hung off the back of the vtable; the Microsoft
+    // runtime reads a `??_R0` type descriptor reached through the locator in
+    // front of it. Either may be absent for the same reason - a class with more
+    // than one base is not describable here - and that is refused where the
+    // reader asked for it rather than at the class, which is legal and works
+    // for everything else.
+    auto describe = [&](const Type *cls) {
+        std::string sym;
+        if (ms) {
+            MicrosoftRtti names;
+            std::string why;
+            if (cls->bases().size() <= 1 &&
+                microsoftClassRttiNames(cls, &names, &why))
+                sym = names.descriptor;
+        } else {
+            sym = emitClassTypeInfo(cls, cls->tag(), pos);
+        }
+        if (sym.empty())
+            src_.fail(pos, "'" + cls->describe() + "' has more than one base, "
+                           "and describing that to the run time needs a shape "
+                           "carrying every base's offset and flags - "
+                           "__vmi_class_type_info on Itanium, a multiple-"
+                           "inheritance hierarchy on Microsoft - which is not "
+                           "supported yet. A single base works");
+        return sym;
+    };
+
+    auto typeInfoAddress = [&](const std::string &sym) {
+        Var *ti = Var::global(sym);
+        ti->setSymbol(sym);
+        ExprPtr ref(ti);
+        ref->setType(types_.get(Kind::Char));
+        ExprPtr addr(new Unary('&', std::move(ref)));
+        addr->setType(voidPtr);
+        return addr;
+    };
+
+    const std::string sourceName = describe(source);
+    const std::string targetName = describe(target);
+
+    std::vector<ExprPtr> args;
+    ExprPtr object(Var::local(temp, slot));
+    object->setType(voidPtr);
+    args.push_back(std::move(object));
+
+    // **The two runtimes take their arguments in a different order and a
+    // different number**, which is the whole of the difference at the call.
+    // Microsoft: (p, the vfptr's offset in the object, source, target, is this
+    // a reference?). Itanium: (p, source, target, a hint at where the source
+    // sits inside the target - -1 being "unspecified", which is always right).
+    if (ms) {
+        ExprPtr delta(new Num(0LL));
+        delta->setType(types_.get(Kind::Int));
+        args.push_back(std::move(delta));
+    }
+    args.push_back(typeInfoAddress(sourceName));
+    args.push_back(typeInfoAddress(targetName));
+    if (ms) {
+        ExprPtr isReference(new Num(0LL));
+        isReference->setType(types_.get(Kind::Int));
+        args.push_back(std::move(isReference));
+    } else {
+        ExprPtr hint(new Num(-1LL));
+        hint->setType(types_.get(Kind::LongLong));
+        args.push_back(std::move(hint));
+    }
+
+    ExprPtr asked = runtimeCall(ms ? "__RTDynamicCast" : "__dynamic_cast",
+                                to, std::move(args));
+
+    ExprPtr none(new Num(0LL));
+    none->setType(to);
+    ExprPtr test(Var::local(temp, slot));
+    test->setType(voidPtr);
+    ExprPtr chosen(new Conditional(std::move(test), std::move(asked),
+                                   std::move(none)));
+    chosen->setType(to);
+
+    ExprPtr whole(new Comma(std::move(save), std::move(chosen)));
+    whole->setType(to);
+    return whole;
+}
+
 ExprPtr Parser::runtimeCall(const char *symbol, const Type *returns,
                             std::vector<ExprPtr> args) {
     std::vector<int> argSlots(args.size(), 0);
@@ -402,6 +817,7 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     // The initialiser, and only the forms that need no constructor; anything else
     // is refused by name rather than half-built. A class with constructors is
     // built by calling one, here as much as on the stack.
+    checkNotAbstract(made, pos, "the object 'new' would make");
     const bool constructed = made->isStructOrUnion() && !made->tag().empty() &&
                              overloadsOf(constructorKey(made->tag())) != nullptr;
     std::vector<ExprPtr> ctorArgs;

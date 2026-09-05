@@ -576,6 +576,13 @@ public:
     bool hasThis() const { return hasThis_; }
     void setHasThis(bool t) { hasThis_ = t; }
 
+    // **Implicitly inline** - [dcl.inline]/6 - so the definition may appear in
+    // several translation units and the linker has to fold the copies rather
+    // than reject them. The backends say so with `.weak` and its neighbours;
+    // without it, two units that include one class collide on every member.
+    bool isInline() const { return isInline_; }
+    void setInline(bool v) { isInline_ = v; }
+
     // A second name for the same code, emitted as an extra label in front of it.
     // Itanium gives a constructor C1 for a complete object and C2 for a base and
     // clang emits both; empty for everything else, Microsoft included.
@@ -604,6 +611,7 @@ public:
     void setHasLandingPads(bool b) { landingPads_ = b; }
 private:
     bool hasThis_ = false;
+    bool isInline_ = false;
     std::string name_;
     std::string symbol_;
     std::string alias_;
@@ -641,6 +649,21 @@ struct Global {
     bool isStatic;
 
     bool isConst;
+
+    // **One 8-byte pointer laid down immediately before this object's label.**
+    // The Microsoft ABI puts a complete-object locator in *front* of a vftable
+    // and the table's symbol names the word after it, so the object and the
+    // symbol do not start in the same place. Empty for everything else, which
+    // is every object on every other target. Defaulted, so that the six other
+    // places that build a Global positionally do not have to say so.
+    std::string prefixWord = std::string();
+
+    // **Folded rather than rejected**, for an object several translation units
+    // each define: a vtable, a typeinfo and its name string. clang marks all
+    // three weak, and without it two units that share a polymorphic class
+    // collide on every one of them. Defaulted, like `prefixWord`, so the
+    // places that build a Global positionally need not say so.
+    bool isInline = false;
 };
 
 struct StringLit {
@@ -657,4 +680,10 @@ struct Program {
     // wants a chain of four objects per thrown type in the object file where
     // Itanium names one the library carries. Collected by the parser.
     std::vector<const Type *> thrown;
+    // **The classes this file needs a Microsoft run-time description for**,
+    // which only that backend reads: five objects per class where Itanium has
+    // two, and the base chain of each is walked when they are emitted. Itanium
+    // needs no such list because its type_info is an ordinary global the parser
+    // can push as it goes.
+    std::vector<const Type *> rtti;
 };

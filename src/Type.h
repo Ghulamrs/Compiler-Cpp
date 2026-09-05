@@ -89,6 +89,10 @@ struct Member {
     int width = 0;
     int bitOffset = 0;
     Access access = Access::Public;
+    // **[dcl.stc]/9: a `mutable` member is writable through a const object.**
+    // It is a property of the member and not of its type, which is why it sits
+    // here rather than in the qualifiers.
+    bool isMutable = false;
 
     bool isBitField() const { return width != 0; }
 };
@@ -173,7 +177,14 @@ public:
     // default access - and in what a diagnostic should call it. "struct Account"
     // for something written as a class sends the reader after a missing line.
     bool declaredClass() const { return cls().isClass_; }
-    void setDeclaredClass(bool c) { isClass_ = c; }
+    void setDeclaredClass(bool c) { isClass_ = c; classKeySet_ = true; }
+    // **A declaration records the keyword too, where no definition has.**
+    // Microsoft spells V for a class and U for a struct, so a translation unit
+    // that sees only `class D;` must still say V - it wrote U, and two units of
+    // one correct program then asked the linker for two different symbols.
+    // A definition still wins, which is what lets `class X;` and `struct X { }`
+    // be the one type the standard says they are.
+    void noteClassKey(bool c) { if (!classKeySet_) { isClass_ = c; } }
 
     // **A class written inside another one.** `tag()` is the qualified name, every
     // table being keyed by it; `localName()` is the component both ABIs spell, and
@@ -198,12 +209,27 @@ public:
     // A class made by instantiating a class template. The name and arguments
     // are kept because the tag - "Box<int,3>" - is the parser's key and not
     // anything a linker has ever seen.
+    // The enumeration's qualified name, empty for every other type. Read by
+    // the manglers and by `describe`, and by nothing that decides behaviour.
+    const std::string &enumTag() const { return tag_; }
+    bool isEnumeration() const { return kind_ == Kind::Int && !tag_.empty(); }
     bool isSpecialization() const { return !cls().templateName_.empty(); }
     const std::string &templateName() const { return cls().templateName_; }
     const std::vector<TemplateArg> &templateArgs() const { return cls().templateArgs_; }
     void setSpecialization(std::string name, std::vector<TemplateArg> args) {
         templateName_ = std::move(name);
         templateArgs_ = std::move(args);
+    }
+    // **The namespace the template was declared in**, kept beside the bare
+    // name rather than folded into it: `templateName_` is also the key
+    // `templates_` is looked up by, and that map is keyed unqualified on
+    // purpose so `std::vector` finds `vector`. Only the manglers read this -
+    // `std::vector<int>` is `St6vectorIiE` and not `3vectorIiE`.
+    const std::string &templateNamespace() const {
+        return cls().templateNamespace_;
+    }
+    void setTemplateNamespace(std::string ns) {
+        templateNamespace_ = std::move(ns);
     }
     const Type *enclosing() const {
         return cls().enclosing_;
@@ -221,6 +247,13 @@ public:
     // or in a base, which decides the layout before the members are placed.
     bool polymorphic() const { return cls().polymorphic_; }
     void setPolymorphic(bool p) { polymorphic_ = p; }
+
+    // **A class with a pure virtual its own table has not filled in.** No
+    // object of one may exist - the slot holds the runtime's trap, so a call
+    // through it would find nothing - which is why this is refused where an
+    // object would be made rather than where the call would happen.
+    bool abstract() const { return cls().abstract_; }
+    void setAbstract(bool a) { abstract_ = a; }
 
     // **Whether copying this class is a function call rather than a move of bytes**,
     // which both platform ABIs make a question about how it is *passed*. Measured
@@ -337,13 +370,16 @@ private:
     // "Box<int,3>" there, which no ABI writes: Itanium wants `3BoxIiLi3EE`
     // and Microsoft `?$Box@H$02@`, both built from these two.
     std::string templateName_;
+    std::string templateNamespace_;
     std::vector<TemplateArg> templateArgs_;
     const Type *enclosing_ = nullptr;
     Access nestedAccess_ = Access::Public;
     bool isClass_ = false;
+    bool classKeySet_ = false;
     bool memberFn_ = false;
     int dataSize_ = 0;
     bool polymorphic_ = false;
+    bool abstract_ = false;
     bool nonTrivialCopy_ = false;
     bool hasDestructor_ = false;
     std::vector<BaseSpec> bases_;
@@ -381,6 +417,14 @@ public:
     const Type *packExpansion(const Type *of);
 
     Type *structType(Kind kind, const std::string &tag);
+    // **An enumeration, which is an `int` that remembers its name.** The
+    // standard makes it a distinct type; here it is `Kind::Int` in every
+    // respect that matters to code generation - size, alignment, the
+    // conversions, the arithmetic - and carries its tag so the *manglers* can
+    // spell it. `void f(Colour)` is `_Z1f6Colour`, not `_Z1fi`, and without
+    // that no cxx1 object can link against one from another compiler.
+    // docs/CONFORMANCE.md records what is still missing: the type checking.
+    Type *enumType(const std::string &tag);
     Type *anonymousStruct(Kind kind);
 
     const Type *voidType() const   { return get(Kind::Void); }

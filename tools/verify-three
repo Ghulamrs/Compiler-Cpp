@@ -34,7 +34,8 @@ STATUS=0
 COPYFILE_DISABLE=1 tar -C "$ROOT" --no-xattrs -czf "$TAR" \
     --exclude .git --exclude obj --exclude obj-msvc --exclude winout \
     --exclude 'tests/out-*' --exclude '*.exe' --exclude .DS_Store \
-    src tests lib tools docs msvc ide Makefile CLAUDE.md README.md build 2>/dev/null
+    src tests lib include tools docs msvc ide Makefile CLAUDE.md README.md build \
+    2>/dev/null
 
 # **The Linux build goes through `./build`, which caps it.** That script runs
 # make inside a 300 MB cgroup scope and says so plainly when no cgroup is

@@ -142,6 +142,13 @@ int rename(const char *, const char *);
 // setbuf and setvbuf are omitted only because nothing here has needed them; add
 // them the day something does.
 
+// The descriptor behind a stream. Spelled with a leading underscore because
+// that is what the Microsoft CRT calls it and this is what <io.h>'s _setmode
+// is given; POSIX's `fileno` is the same function under the name a program
+// targeting glibc would write, and both are declared so that either spelling
+// links on the platform that has it.
+int _fileno(FILE *stream);
+int fileno(FILE *stream);
 
 }  // extern "C"
 #endif

@@ -87,6 +87,12 @@ private:
         // only about who may pick it. Written after `access` on purpose: the members up
         // to there are filled positionally by every `Signature{...}` in the parser.
         bool isExplicit = false;
+        // **A static member function is a member in every way but the one that
+        // matters at a call**: it is named inside the class, it obeys access,
+        // it overloads against the others - and it has no `this`. Recorded so
+        // that the one question a call asks, "does this need an object?", has a
+        // field to read rather than `owner` being made to mean two things.
+        bool isStaticMember = false;
         // **`noexcept` on this function**, which in C++11 is not part of its
         // type - so it changes no name and no overload set, and is recorded
         // only so that the `noexcept(e)` operator can answer.
@@ -110,6 +116,11 @@ private:
         std::string symbol;
         std::vector<const Type *> params;
         bool constThis;
+        // **A pure virtual holds a slot it has no function for.** The entry is
+        // the runtime's own trap, and a class with one of these still in its
+        // table is abstract. An override replaces the entry and clears this,
+        // which is what makes the derived class concrete.
+        bool pure = false;
     };
     std::map<std::string, std::vector<VSlot> > vtables_;
     // Whether a slot is the one a member with this name and parameter list overrides.
@@ -136,9 +147,26 @@ private:
         // specialization's bodies are gated on it: clang instantiates a member function
         // of a class template only where something calls one.
         std::string key;
+        // **And which overload under that key**, because a constructor shares
+        // its key with every other constructor of the class. Gated on the name
+        // alone, `vector<T> v;` marked the key used and every constructor's
+        // body was replayed with it - so `explicit vector(size_type n)`, whose
+        // body says `T()`, was compiled for a `T` that has no default
+        // constructor and the class would not instantiate at all.
+        // `npos` where the declaration added no signature, which falls back to
+        // the key.
+        std::size_t which;
+        static std::size_t npos() { return (std::size_t)-1; }
     };
     std::vector<PendingBody> pendingBodies_;
     void replayInlineBodies(std::vector<PendingBody> mine);
+    // **[dcl.inline]/6: a member defined inside its class is implicitly
+    // inline**, and so is every member of a template specialization - which is
+    // to say, everything that reaches `topLevel` through a *replay*. An inline
+    // definition may appear in several translation units, so the linker has to
+    // fold the copies rather than reject them, and this is what tells the
+    // backends to say so.
+    bool replayingInline_ = false;
     void skipBracedBlock();
 
     // ---- Rung 5.1: the template table, and nothing instantiated ----
@@ -157,6 +185,9 @@ private:
     // tokens, so where they begin is the thing worth keeping.
     struct TemplateDecl {
         std::string name;
+        // The namespace it was declared in, `std::` included. Carried to the
+        // specialization for the manglers alone - see Type::templateNamespace.
+        std::string ns;
         std::vector<TemplateParam> params;
         bool isClass = false;
         bool defined = false;
@@ -202,6 +233,33 @@ private:
         std::vector<Partial> partials;
     };
     std::map<std::string, TemplateDecl> templates_;
+    // **A template is keyed by its bare name, and named by either spelling.**
+    // `std::pair<int, char>` and, from inside `std` or under a directive that
+    // opens it, `pair<int, char>` are the same template - so the qualified form
+    // drops the namespaces in front of the name before it looks. Registering
+    // under the qualified name instead would be tidier and is a bigger change:
+    // twelve sites read this table, two of them by a key stored on a Type.
+    //
+    // The limit that comes with the bare key, written down because it is real:
+    // two namespaces cannot each have a template of the same name. That was
+    // already true before either spelling could find one, so this widens what
+    // can be *named* without widening what can be *declared*.
+    std::map<std::string, TemplateDecl>::const_iterator
+    findTemplate(const std::string &written) const {
+        std::map<std::string, TemplateDecl>::const_iterator it =
+            templates_.find(written);
+        if (it != templates_.end()) return it;
+        const std::string::size_type cut = written.rfind("::");
+        if (cut == std::string::npos) return templates_.end();
+        return templates_.find(written.substr(cut + 2));
+    }
+    // Whether a name, either spelling, is a class template - which is the one
+    // question the type and expression paths both have to ask.
+    bool isClassTemplate(const std::string &written) const {
+        std::map<std::string, TemplateDecl>::const_iterator it =
+            findTemplate(written);
+        return it != templates_.end() && it->second.isClass;
+    }
 
     // ---- Rung 5.2: function templates, explicit arguments ----
     // One specialization that has been asked for. The body is not written where the
@@ -278,6 +336,9 @@ private:
     // Both are handed between instantiateClass and the one call to
     // structOrUnionSpecifier it makes, everything in between being the class path.
     std::vector<TemplateArg> instantiatingArgs_;
+    // The template's namespace, travelling the same short distance for the
+    // same reason - the manglers want it and nothing else does.
+    std::string instantiatingNamespace_;
     std::vector<PendingBody> heldForSpecialization_;
     // Set while a template's declaration is read as a *pattern*, with
     // Kind::TemplateParam in place of the arguments. A class template met there must
@@ -412,8 +473,25 @@ private:
                            std::vector<long long> *values,
                            std::vector<TemplateArg> *args,
                            std::vector<std::vector<const Type *> > *packs = nullptr);
-    bool isTemplateName(const std::string &name) const {
-        return templates_.find(name) != templates_.end();
+    // **A name declared as an object is not a template name.**
+    // [basic.lookup.unqual] gives the nearest declaration, and `findTemplate`
+    // above deliberately keys every template by its bare name so that
+    // `std::vector` finds `vector` - which means an *unqualified* `count`
+    // found `std::count` from anywhere, with no using-directive in sight.
+    // Including <algorithm> then broke any program with a local called
+    // `count`, `find`, `swap`, `min`, `sort`, `fill`, `copy` or a dozen more.
+    //
+    // Asking whether the name is a variable in scope is the whole fix: a
+    // declaration that near always wins, and a program that has both a
+    // template and an object of one name in one scope is ill-formed anyway.
+    // `qualified` where a `N::` was consumed before the name: there the
+    // namespace was named outright and nothing local can be meant, so the
+    // shadow test would be wrong - `std::count(...)` beside a local `count`
+    // is exactly what a program writes.
+    bool isTemplateName(const std::string &name, bool qualified = false) const {
+        if (templates_.find(name) == templates_.end()) return false;
+        if (qualified) return true;
+        return findLocal(name) == nullptr && findGlobal(name) == nullptr;
     }
     bool templateDeclaration();
     void templateParameters(std::vector<TemplateParam> &params);
@@ -447,6 +525,8 @@ private:
     // ordinary class and the template's own name for a specialization.
     std::string inlineOwnerName_;
 
+    std::string emitClassTypeInfo(const Type *cls, const std::string &tag,
+                                  std::size_t pos);
     void emitVtable(const Type *cls, const std::string &tag, std::size_t pos);
     // **Emitting a vtable uses everything the table points at.** The `used` flag
     // otherwise only ever comes from a call, and a slot holding a function's address is
@@ -496,7 +576,11 @@ private:
     // How well one argument matches one parameter, in the order [over.ics.scs] ranks
     // them - the values are compared, so do not reorder this enum. **Identity and
     // Qualification are both "Exact Match" and still not equal**: [over.ics.rank]/3.2.1.
-    enum class Rank { Identity, Qualification, Promotion, Conversion, Ellipsis, None };
+    // **UserDefined sits below every standard conversion and above the
+    // ellipsis** - [over.ics.rank]/2: a sequence with a converting constructor
+    // in it is worse than any sequence without one, however bad that one is.
+    enum class Rank { Identity, Qualification, Promotion, Conversion,
+                      UserDefined, Ellipsis, None };
     // `ranksObjectA`/`B` say whether that candidate's rank vector opens with an
     // implicit object parameter, which is how a rank position is mapped back to
     // the parameter it came from - a member and a non-member operator are ranked
@@ -681,6 +765,13 @@ private:
 
     bool atTypeName() const;
     const Type *findTypedef(const std::string &name) const;
+    // **`::Lexer` - the global scope and nothing nearer**, which is the whole
+    // of what a leading `::` asks for. A direct look in the one table is
+    // exactly that: a class or typedef at file scope is keyed by its bare
+    // name, one in a namespace by its qualified name, and a class local to a
+    // function lives in `localTypes_` - so this reaches the first and neither
+    // of the others.
+    const Type *findGlobalTypedef(const std::string &name) const;
     void declareTypeName(const std::string &name, const Type *type);
     const EnumConst *findEnum(const std::string &name) const;
     const Type *memberTypeWalk(const Type *t);
@@ -764,21 +855,38 @@ private:
     // this list read backwards at the right moments. The struct itself is defined beside
     // the jump records above, which keep copies of it.
     std::vector<Alive> alive_;
+    // Temporaries this full expression has made for by-value class arguments. **They are
+    // destroyed at the end of the full expression and not when the call they were made
+    // for returns** - [class.temporary], visible in `printf("%d", useD(d))`.
+    // **A temporary, and the flag that says whether it exists yet.** A cleanup
+    // pad may run at any point inside the full expression - including before
+    // this temporary was built, which is why the pad cannot simply destroy
+    // everything the statement will eventually make. The flag is set the
+    // moment the constructor returns and cleared where the object is
+    // destroyed, so the pad asks rather than assumes.
+    struct Temporary {
+        int slot;
+        const Type *type;
+        int flag;
+    };
     // `except` is the frame offset of an object not to destroy - the one being returned,
     // which the caller destroys instead. And a cleanup region's landing pad: destroy
     // alive_[from..to), last first, and hand the exception back to the unwinder.
     StmtPtr cleanupPad(std::size_t from, std::size_t to, int pointerSlot,
+                       const std::vector<Temporary> &temps,
                        std::size_t pos);
     // The block's statements with each stretch that has objects alive turned
     // into a cleanup region of its own.
     std::vector<StmtPtr> wrapMsCleanups(
         std::vector<StmtPtr> body,
         const std::vector<std::pair<std::size_t, std::size_t> > &built,
-        std::size_t aliveAtEntry, std::size_t pos);
+        std::size_t aliveAtEntry, std::size_t pos,
+        const std::vector<Temporary> &temps = std::vector<Temporary>());
     std::vector<StmtPtr> wrapCleanups(
         std::vector<StmtPtr> body,
         const std::vector<std::pair<std::size_t, std::size_t> > &built,
-        std::size_t aliveAtEntry, std::size_t pos);
+        std::size_t aliveAtEntry, std::size_t pos,
+        const std::vector<Temporary> &temps = std::vector<Temporary>());
     // `to` bounds the top of the range, for a cleanup pad that must destroy
     // only what existed at its point in the block.
     void emitDestructors(std::vector<StmtPtr> &into, std::size_t from,
@@ -794,25 +902,58 @@ private:
     // and reached by all three of `C::n`, `obj.n` and `p->n`.
     std::string staticMemberSymbol(const std::string &cls, const std::string &name,
                                    const Type *t, Access access, std::size_t pos);
+    // Whether a call to this function has to be given an object. A member's
+    // `owner` used to answer it on its own, and a static member is exactly the
+    // case where the two questions come apart.
+    static bool needsThis(const Signature &sig) {
+        return !sig.owner.empty() && !sig.isStaticMember;
+    }
+    // Whether any function under this key is a static member. A call written
+    // `C::f(...)` means one only if it is - `Base::f(...)` on an ordinary
+    // member is a different construct and must not be taken for this one.
+    bool hasStaticMemberNamed(const std::string &key) const {
+        const std::vector<std::size_t> *set = overloadsOf(key);
+        if (set == nullptr) return false;
+        for (std::size_t i = 0; i < set->size(); i++)
+            if (functions_[(*set)[i]].isStaticMember) return true;
+        return false;
+    }
     void declareStaticMember(const std::string &cls, Type *owner,
                              const Declared &d, Access access);
     void defineStaticMember(Declared &d, Program &program);
     ExprPtr staticMemberRef(const Type *owner, const Type::StaticMember &s,
                             const std::string &cls, std::size_t pos);
     void declareMember(const std::string &cls, const Declared &d, bool constThis,
-                       Access access, bool inUnion, bool isVirtual);
+                       Access access, bool inUnion, bool isVirtual,
+                       bool isStatic = false, bool isPure = false);
+    // The entry a pure virtual's slot holds: the runtime routine that reports a
+    // call reaching a function the class never defined. Both measured -
+    // `__cxa_pure_virtual` from clang, `_purecall` from cl.
+    // **An object of an abstract class cannot exist**, so this is asked
+    // wherever one would be made rather than where a pure virtual would be
+    // called. `what` names the thing being declared.
+    void checkNotAbstract(const Type *t, std::size_t pos, const std::string &what);
+    const char *pureVirtualSymbol() const {
+        return target_.microsoftNames() ? "_purecall" : "__cxa_pure_virtual";
+    }
     std::string memberSymbol(const std::string &cls, const std::string &name,
                              const Type *fn, Access access, bool constThis,
-                             std::size_t pos, bool isVirtual = false);
+                             std::size_t pos, bool isVirtual = false,
+                             bool isStatic = false);
     // `S a[4];` - the default constructor once per element. Separate from
     // constructLocal because that one builds a single object and names the
     // class through d.type, which for an array is the array.
     StmtPtr constructLocalArray(const Declared &d, int offset, int indexSlot);
     ExprPtr memberCall(ExprPtr object, const Type *cls, const std::string &name,
                        std::size_t pos);
+    // `forceOwner` names the class a *qualified* call reached - `b.Base::f()`
+    // or, inside a member, `Base::f()`. [expr.call]/1: naming the function with
+    // a qualified-id suppresses the dispatch, so the base's version runs even
+    // where the object overrides it, and the lookup does not walk further up.
     ExprPtr memberCallWith(ExprPtr object, const Type *cls,
                            const std::string &name, std::size_t pos,
-                           std::vector<ExprPtr> args);
+                           std::vector<ExprPtr> args,
+                           const Type *forceOwner = nullptr);
     // The class up the chain that declares this member function, searching
     // every base rather than only the first.
     const Type *findMemberOwner(const Type *cls, const std::string &name) const;
@@ -825,6 +966,12 @@ private:
     // Whether the class being parsed, or the one whose member function is
     // being parsed, is this class or something derived from it.
     bool insideClass(const Type *cls) const;
+    // **[class.access]/6: a member's own definition may name its class's
+    // private types, and the return type is written before the `C::` that
+    // says whose member it is.** `VM::Value VM::pop()` reads the type first,
+    // when nothing yet says this is a member of VM - so the declarator ahead
+    // is asked instead.
+    bool definesMemberOf(const Type *cls, std::size_t from) const;
     // `Point::Point(` and `Outer::Inner::~Inner(` have no type before the
     // name and the name IS a type, so the specifier list has to decline them.
     bool atUntypedMemberDefinition() const;
@@ -832,6 +979,12 @@ private:
     int thisOffset_ = 0;
     const Type *enumSpecifier();
     bool atDeclarationStart() const;
+    // Where a written qualified type name ends, **past a template argument
+    // list**: `qualifiedTypeEnd` stops at the `<`, because for its own purpose
+    // the name is what matters. Both callers here want the token *after* the
+    // whole type - `std::vector<int>()` is a temporary and
+    // `std::vector<int>::size_type` is a member.
+    std::size_t qualifiedTypeEndPastArgs() const;
     const Type *specifiers(StorageClass *storage, Qualifiers *quals = nullptr);
     const Type *unqualifiedSpecifiers(StorageClass *storage, Qualifiers *quals);
 
@@ -867,7 +1020,12 @@ private:
     // Does the code being parsed have a member's-eye view of this class? Inside a lambda
     // that is the class it was *written in* and not the closure - [expr.prim.lambda]/7 -
     // and both access checks have to ask the same question or they disagree.
-    bool insideAccessOf(const Type *cls) const;
+    // `access` is the member's, because **protected** reaches further than
+    // private does: [class.access.base]/5 lets a derived class name a
+    // protected member of its base, and "are we inside that class" alone
+    // cannot say so. Defaulted to Private, which is the stricter question.
+    bool insideAccessOf(const Type *cls,
+                        Access access = Access::Private) const;
     // A name that is a *capture of the lambda around this one*: by the time an inner
     // lambda is read, that capture is a member of the outer closure. Answers the
     // expression that reads it, or null. Asked at lookup and where the closure is built.
@@ -890,6 +1048,16 @@ private:
     std::map<std::size_t, MadeLambda> lambdaAt_;
 
     std::string operatorName();
+    // **The type a conversion function converts to**, set by operatorName when
+    // it reads one and read by the caller straight after. A conversion
+    // function's *return* type is its name, which is the one place those two
+    // are the same thing, and this is how the name reader hands it over.
+    const Type *conversionTarget_ = nullptr;
+    // Whether a member name is a conversion function's. The punctuation forms
+    // are `operator+` with no space; this one is `operator bool`, with one.
+    static bool isConversionName(const std::string &name) {
+        return name.compare(0, 9, "operator ") == 0;
+    }
     std::string declaredName(const char *what);
 
     // [class.friend]. **A friend is not a member**: the declaration is written inside the
@@ -1000,6 +1168,41 @@ private:
     StmtPtr microsoftThrow(ExprPtr value, std::size_t pos);
     // A call to something in the runtime, named by its symbol and needing no
     // declaration - the same shape callAllocator has used for operator new.
+    // A temporary built by a named constructor from arguments already parsed.
+    ExprPtr constructTemporary(const Type *plain, const Signature &ctor,
+                               std::vector<ExprPtr> args, bool zeroFirst,
+                               std::size_t pos);
+    // **[over.ics.user]: the one converting constructor that could make `to`
+    // out of `from`**, or null. Non-explicit, one parameter, and not the copy
+    // constructor - a copy is not a conversion. Two of them is an ambiguity and
+    // answers null, because guessing is worse than refusing.
+    const Signature *convertingConstructor(const Type *to, const Expr &from);
+    // The conversion function on `from` giving `to`, or - with `to` null - any
+    // scalar, `bool` first. The mirror of the constructor above.
+    const Signature *conversionFunction(const Type *from, const Type *to);
+    // A class where a number or a pointer is wanted, converted by its own.
+    ExprPtr contextualScalar(ExprPtr e, std::size_t pos, const char *what);
+    // The single conversion to a scalar, or null where there are none or two -
+    // which the built-in operators need and a condition does not.
+    const Signature *soleNumericConversion(const Type *from);
+    // **Only one user-defined conversion may appear in a sequence** -
+    // [over.ics.user]/1 - so this is the rule and not only a guard against the
+    // recursion that asking about a constructor's own parameter would start.
+    int rankingConversion_ = 0;
+    // The conversion itself, or null when none is needed or possible.
+    ExprPtr userConversion(const Type *param, ExprPtr &arg, std::size_t pos);
+    // **Copy-initialise a class into a slot somebody else owns**, as one
+    // expression. `constructTemporary` and `materialiseCopy` each allocate a
+    // slot of their own, and both arms of a `?:` have to build into one.
+    ExprPtr buildInto(const Type *cls, int slot, ExprPtr value, int guard,
+                      std::size_t pos);
+    // Give every temporary an arm made a guard, set at the end of that arm, so
+    // the arm that did not run leaves them clear and nothing destroys them.
+    ExprPtr markArmTemporaries(ExprPtr arm, std::size_t from, std::size_t to);
+    // The same, for an operand `&&` or `||` may skip; the operand's value is
+    // kept and handed back, since the comparison is what reads it.
+    ExprPtr markSkippableTemporaries(ExprPtr operand, std::size_t from,
+                                     std::size_t to);
     ExprPtr runtimeCall(const char *symbol, const Type *returns,
                         std::vector<ExprPtr> args);
     ExprPtr callAllocator(const char *itanium, const char *microsoft,
@@ -1014,12 +1217,37 @@ private:
                              const Type *ptr, ExprPtr body);
     ExprPtr materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
                             const std::string &what,
-                            std::vector<std::pair<int, const Type *> > &destroy);
-    // Temporaries this full expression has made for by-value class arguments. **They are
-    // destroyed at the end of the full expression and not when the call they were made
-    // for returns** - [class.temporary], visible in `printf("%d", useD(d))`.
-    std::vector<std::pair<int, const Type *> > pendingTemps_;
+                            std::vector<Temporary> &destroy);
+    std::vector<Temporary> pendingTemps_;
+    // The temporaries each statement of the block being parsed made, so that
+    // the cleanup regions can name them. Emptied by whoever opens the regions.
+    std::vector<Temporary> statementTemps_;
+    // **Where a function body's cleanup regions start**, which on Windows is
+    // before its by-value parameters: the callee destroys those there, and an
+    // exception leaving the body has to reach them. The normal path is not
+    // moved - a `return` and falling off the end already unwind them.
+    std::size_t bodyCleanupFrom_ = 0;
+    int guardFlag();
+    // **Every guard starts clear, and the one place that is true of every path
+    // is the function's entry.** `endFullExpression` clears the guards in
+    // front of its own expression, but a declaration flushes through
+    // `flushTemporaries`, which runs *after* the statements it is destroying
+    // for and cannot place anything in front of them. Cleared once here and
+    // again as each object is destroyed, a guard is false whenever its
+    // temporary does not exist - including on the arm of a `?:` that never ran.
+    std::vector<int> guardSlots_;
+    ExprPtr setGuard(int flag, int value);
+    // **Taking over a call's result slot takes over its destruction too.** The
+    // call registered the slot it allocated as a temporary; whoever redirects
+    // the result into storage of its own owns the object from then on, so the
+    // old entry has to go or a destructor runs on a slot nothing built.
+    void claimCallResult(Call &c, int slot);
     ExprPtr endFullExpression(ExprPtr e);
+    // Drop the temporary this expression yields from the pending list, because
+    // its ownership is leaving the frame. `return` is the only caller.
+    // Answers whether it found one, which is what tells `return` that the
+    // operand *is* the object going out rather than something to copy from.
+    bool releaseTemporary(const Expr &value);
     void flushTemporaries(std::vector<StmtPtr> &into);
     ExprPtr completeCall(const std::string &name, const std::string &symbol,
                          ExprPtr callee, const Type *returns,
@@ -1043,6 +1271,26 @@ private:
     std::vector<std::string> namespaceStack_;
     // Namespaces named by a `using namespace` still open here, innermost last.
     std::vector<std::string> usingNamespaces_;
+    // **A using-declaration is an alias, not a table.** `using N::f;` says that
+    // the name it declares here - `f`, under whatever namespace encloses it -
+    // means `N::f`, so it is one qualified name against another and a namespace
+    // stays a prefix and a search, exactly as namespaceStack_ says.
+    std::map<std::string, std::string> usingDeclarations_;
+    // **An unnamed namespace is a named one that nothing outside can name.**
+    // It is opened under this tag so the prefix machinery is unchanged, and
+    // everything declared inside is given internal linkage instead - which is
+    // what [basic.link]/4 buys and the only part a single program can observe.
+    bool inUnnamedNamespace_ = false;
+    // **The body being read belongs to a static member.** `currentClass_` is
+    // set for one, so without this a `this` in it finds the class and falls
+    // back to a stale thisOffset_ - reading whatever the last member function
+    // left there, which is a wrong answer no suite would see.
+    bool inStaticMember_ = false;
+    // Whether a declaration here has internal linkage: written `static`, or
+    // inside an unnamed namespace, which says the same thing about a name.
+    bool internalLinkage(StorageClass sc) const {
+        return sc == StorageStatic || inUnnamedNamespace_;
+    }
     // Every namespace ever opened, by full path. A qualified name has to be
     // told from a class's - `N::f` and `S::f` are written the same and mean
     // different lookups - and this is what tells them apart.
@@ -1058,9 +1306,17 @@ private:
     // name itself. `exists` says which table to ask, functions and variables differing.
     std::string qualifyForLookup(const std::string &name,
                                  bool (Parser::*exists)(const std::string &) const) const;
+    // The name a using-declaration redirects `key` to, following a chain of them
+    // and stopping at a fixed depth so that `using A::x;` and `using B::x;`
+    // written into a cycle cannot hang the parser instead of failing a lookup.
+    std::string followUsingDeclaration(const std::string &key) const;
     bool hasFunctionNamed(const std::string &key) const;
     bool hasGlobalNamed(const std::string &key) const;
     bool hasTypeNamed(const std::string &key) const;
+    bool hasEnumNamed(const std::string &key) const;
+    // An enumerator named through the class it was written in, and through
+    // that class's bases - the mirror of lookupInClass for the enum table.
+    const EnumConst *enumInClass(const Type *cls, const std::string &name) const;
     std::size_t qualifiedTypeEnd() const;
     std::vector<std::string> lookupKeys(const std::string &name,
                                         const Type *left,
@@ -1222,6 +1478,15 @@ private:
     StmtPtr caseLabel();
     StmtPtr gotoLabel();
     StmtPtr declaration();
+    // **A declaration in a condition** - [stmt.select]/2 and [stmt.iter]/2.
+    // It has one declarator and an initialiser, and a `)` where a declaration
+    // has its `;`, so the tail of declarationBody is told to stop rather than
+    // a second declaration parser being written.
+    bool conditionDecl_ = false;
+    std::string conditionName_;
+    bool atConditionDeclaration() const;
+    ExprPtr ifConditionDeclaration(std::vector<StmtPtr> &setup);
+    ExprPtr whileConditionDeclaration();
     void resolveGotos();
 
     bool staticAssertion();
@@ -1277,6 +1542,10 @@ private:
     std::size_t boundAt_ = 0;
     ExprPtr staticCast(std::size_t pos);
     ExprPtr constCast(std::size_t pos);
+    ExprPtr dynamicCast(std::size_t pos);
+    // A function named but not called, as a pointer to it; null if `key`
+    // names no function. Shared by the bare and the qualified spelling.
+    ExprPtr functionAsValue(const std::string &key, std::size_t pos);
     ExprPtr reinterpretCast(std::size_t pos);
     ExprPtr unary();
     ExprPtr postfix();

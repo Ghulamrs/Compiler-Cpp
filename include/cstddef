@@ -1,0 +1,25 @@
+// <cstddef> - Types, and nothing that does anything.
+//
+// **This is the header the whole layer rests on**, and the one that made a
+// using-declaration worth building: `namespace std { using ::size_t; }` is the
+// natural spelling of what it does, and no other spelling is as honest. A
+// typedef repeated inside `std` would be a second type that happens to agree,
+// and the two would be different types to an overload.
+//
+// Derived from lib/stddef.h: every name that header declares is named here, and
+// the two are checked against each other by the case that includes both.
+#ifndef _CXX1_CSTDDEF
+#define _CXX1_CSTDDEF
+
+#include <stddef.h>
+
+namespace std {
+
+// The types first: a function below may be declared in terms of one.
+using ::ptrdiff_t;
+using ::size_t;
+
+
+}  // namespace std
+
+#endif

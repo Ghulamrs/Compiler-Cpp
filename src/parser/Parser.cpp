@@ -139,6 +139,34 @@ bool Parser::insideClass(const Type *cls) const {
     return false;
 }
 
+// **Does the declarator after `from` define a member of `cls`?** The scan stops
+// at the first `(` or `;` at depth zero, which bounds it to this declaration,
+// and takes the longest prefix of `A::B::` names that is a type - so
+// `Outer::Inner::f` asks about `Outer::Inner` rather than about `Outer`. A
+// class nested inside `cls` counts, because its members reach `cls`'s private
+// names exactly as `cls`'s own do.
+bool Parser::definesMemberOf(const Type *cls, std::size_t from) const {
+    if (cls == nullptr) return false;
+    for (std::size_t k = from; ; k++) {
+        const Token &t = peekAt(k);
+        if (t.kind == TokenKind::End) return false;
+        if (t.is("(") || t.is(";") || t.is("{") || t.is("=")) return false;
+        if (t.kind != TokenKind::Ident || !peekAt(k + 1).is("::")) continue;
+
+        // The longest run of `Ident ::` starting here that names a type.
+        std::string name = t.text;
+        const Type *best = nullptr;
+        for (std::size_t j = k; peekAt(j).kind == TokenKind::Ident &&
+                                peekAt(j + 1).is("::"); j += 2) {
+            if (j != k) name += "::" + peekAt(j).text;
+            if (const Type *found = findTypedef(name)) best = found;
+        }
+        if (best != nullptr)
+            for (const Type *c = best; c != nullptr; c = c->enclosing())
+                if (c == cls) return true;
+    }
+}
+
 const std::string *Parser::localOwnerOf(const std::string &tag) const {
     auto it = localClassOwner_.find(tag);
     return it == localClassOwner_.end() ? nullptr : &it->second;
@@ -159,19 +187,52 @@ bool Parser::hasTypeNamed(const std::string &key) const {
 // **Unqualified lookup inside a namespace, and it is a search and not a rule.**
 // The enclosing namespaces innermost outwards, then what `using namespace` has
 // opened, then the name as written - [basic.lookup.unqual] closely enough.
+// **A using-declaration is followed here and nowhere else.** Every lookup that
+// forms a candidate key asks this first, so the one rule serves `std::size_t`
+// written out and `size_t` found by the search alike. The hop count is a guard,
+// not a limit: a chain longer than this is a cycle, and a cycle must fail a
+// lookup rather than hang the parser.
+std::string Parser::followUsingDeclaration(const std::string &key) const {
+    std::string at = key;
+    for (int hops = 0; hops < 16; hops++) {
+        auto it = usingDeclarations_.find(at);
+        if (it == usingDeclarations_.end()) break;
+        at = it->second;
+    }
+    return at;
+}
+
 std::string Parser::qualifyForLookup(const std::string &name,
                                      bool (Parser::*exists)(const std::string &) const) const {
-    if (name.find("::") != std::string::npos) return name;
+    // Written qualified, so there is nothing to search - but `std::size_t` may
+    // still be a name a using-declaration put in `std`, and only the alias says
+    // what it stands for.
+    if (name.find("::") != std::string::npos) {
+        const std::string aliased = followUsingDeclaration(name);
+        return aliased != name && (this->*exists)(aliased) ? aliased : name;
+    }
     for (std::size_t i = namespaceStack_.size(); i-- > 0; ) {
         std::string prefix;
         for (std::size_t k = 0; k <= i; k++) prefix += namespaceStack_[k] + "::";
-        if ((this->*exists)(prefix + name)) return prefix + name;
-    }
-    for (std::size_t i = usingNamespaces_.size(); i-- > 0; ) {
-        const std::string key = usingNamespaces_[i] + "::" + name;
+        const std::string key = followUsingDeclaration(prefix + name);
         if ((this->*exists)(key)) return key;
     }
+    for (std::size_t i = usingNamespaces_.size(); i-- > 0; ) {
+        const std::string key =
+            followUsingDeclaration(usingNamespaces_[i] + "::" + name);
+        if ((this->*exists)(key)) return key;
+    }
+    // **Last, the name as written**, which is where a using-declaration at file
+    // scope is found: it declares an unqualified name and there is no prefix to
+    // put in front of it.
+    const std::string aliased = followUsingDeclaration(name);
+    if (aliased != name && (this->*exists)(aliased)) return aliased;
     return name;
+}
+
+const Type *Parser::findGlobalTypedef(const std::string &name) const {
+    auto it = typedefIndex_.find(name);
+    return it == typedefIndex_.end() ? nullptr : typedefs_[it->second].type;
 }
 
 const Type *Parser::findTypedef(const std::string &name) const {
@@ -223,9 +284,47 @@ void Parser::declareTypeName(const std::string &name, const Type *type) {
     typedefs_.push_back(TypedefName{ name, type });
 }
 
+bool Parser::hasEnumNamed(const std::string &key) const {
+    return enumIndex_.find(key) != enumIndex_.end();
+}
+
+const Parser::EnumConst *Parser::enumInClass(const Type *cls,
+                                             const std::string &name) const {
+    for (const Type *c = cls; c != nullptr; c = c->enclosing()) {
+        auto it = enumIndex_.find(c->tag() + "::" + name);
+        if (it != enumIndex_.end()) return &enums_[it->second];
+        for (const Type::BaseSpec &b : c->bases())
+            if (const EnumConst *e = enumInClass(b.type, name)) return e;
+    }
+    return nullptr;
+}
+
+// **An enumerator is named through what encloses it**, the same as a class -
+// `Layout::StepBase`, `n::Red` - so the scopes findTypedef walks are walked
+// here too. Without this an enum in a class or a namespace was findable only
+// by the bare name it was written with, and `n::Kind` found nothing at all.
 const Parser::EnumConst *Parser::findEnum(const std::string &name) const {
     auto it = enumIndex_.find(name);
-    return it == enumIndex_.end() ? nullptr : &enums_[it->second];
+    if (it != enumIndex_.end()) return &enums_[it->second];
+
+    const std::string key = qualifyForLookup(name, &Parser::hasEnumNamed);
+    if (key != name) {
+        auto q = enumIndex_.find(key);
+        if (q != enumIndex_.end()) return &enums_[q->second];
+    }
+
+    for (std::size_t i = classStack_.size(); i-- > 0; )
+        if (const EnumConst *e = enumInClass(classStack_[i], name)) return e;
+    if (currentClass_ != nullptr)
+        if (const EnumConst *e = enumInClass(currentClass_, name)) return e;
+    if (!inlineOwner_.empty()) {
+        auto owner = typedefIndex_.find(inlineOwner_);
+        if (owner != typedefIndex_.end())
+            if (const EnumConst *e =
+                    enumInClass(typedefs_[owner->second].type, name))
+                return e;
+    }
+    return nullptr;
 }
 
 // `Point::Point(`, `Outer::Inner::Inner(` and `Outer::Inner::~Inner(` - a
@@ -265,6 +364,10 @@ bool Parser::atTypeName() const {
                                      "decltype" };
     for (const char *k : t)
         if (peek().is(k)) return true;
+    // `::Lexer *p;` declares a p - the leading `::` says where to look and
+    // nothing else, so the question is about the name after it.
+    if (peek().is("::") && peekAt(1).kind == TokenKind::Ident)
+        return findGlobalTypedef(peekAt(1).text) != nullptr;
     if (peek().kind != TokenKind::Ident) return false;
     // `Box<int> b;` declares a variable, so the name has to answer yes here -
     // but only with a `<` after it, since the bare name is not a type.
@@ -290,8 +393,30 @@ std::size_t Parser::qualifiedTypeEnd() const {
          k += 2) {
         q += "::" + peekAt(k + 1).text;
         if (findTypedef(q) != nullptr) typeEnd = k + 2;
+        // **`std::vector<int> v;` - the name stops at a class template too.**
+        // A template is not a type until its arguments are given, so the `<`
+        // is part of the question: without it `std::vector` names nothing that
+        // could be declared, and with it the whole thing is a type. Read as a
+        // typedef only, a qualified template name was not a declaration at all
+        // and the statement went to the expression path, which reported the
+        // template "was not declared in 'std'".
+        if (peekAt(k + 2).is("<") && isClassTemplate(q)) typeEnd = k + 2;
     }
     return typeEnd;
+}
+
+std::size_t Parser::qualifiedTypeEndPastArgs() const {
+    std::size_t after = qualifiedTypeEnd();
+    if (after == 0 || !peekAt(after).is("<")) return after;
+    // By depth, counting a `>>` as two - which is how the lexer hands it over.
+    int depth = 0;
+    for (;; after++) {
+        const Token &t = peekAt(after);
+        if (t.kind == TokenKind::End) return 0;
+        if (t.is("<")) depth++;
+        else if (t.is(">")) { if (--depth == 0) return after + 1; }
+        else if (t.is(">>")) { depth -= 2; if (depth <= 0) return after + 1; }
+    }
 }
 
 bool Parser::atDeclarationStart() const {
@@ -309,9 +434,27 @@ bool Parser::atDeclarationStart() const {
             // where the name *stops* at one. `Outer::Inner x;` declares an x;
             // `Outer::Inner::shared = 1;` goes on past the type and assigns.
             const std::size_t typeEnd = qualifiedTypeEnd();
-            return typeEnd != 0 && !peekAt(typeEnd).is("::");
+            if (typeEnd == 0 || peekAt(typeEnd).is("::")) return false;
+            // **`std::vector<int>().swap(v);` is a statement**, and an empty
+            // pair after the type is what says so: a declaration needs a name
+            // between the type and the `(`, so `T ();` could only be a function
+            // declaration with no name, which is not a thing. `int (*p)();`
+            // has a `*` there and is unaffected.
+            //
+            // The walk above stops at the `<` of a template-id, so the
+            // argument list is stepped over first - by depth, and counting a
+            // `>>` as two, which is how the lexer hands it over.
+            const std::size_t after = qualifiedTypeEndPastArgs();
+            if (after == 0) return true;
+            return !(peekAt(after).is("(") && peekAt(after + 1).is(")"));
         }
     }
+
+    // The same empty pair, for a type named without a qualifier: `P().get();`
+    // is the temporary and not a declaration of anything.
+    if (peek().kind == TokenKind::Ident && peekAt(1).is("(") &&
+        peekAt(2).is(")") && findTypedef(peek().text) != nullptr)
+        return false;
 
     // `constexpr` beside the storage classes, and here rather than in atTypeName:
     // it is a decl-specifier that names no type, so a statement starting with it
@@ -347,6 +490,11 @@ void Parser::skipBracedBlock() {
 void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     if (mine.empty()) return;
     const std::size_t resume = at_;
+    // Everything replayed here was written inside a class body, so every
+    // definition it produces is implicitly inline - restored rather than
+    // cleared, because a replay can happen inside another one.
+    const bool outerInline = replayingInline_;
+    replayingInline_ = true;
     // **A replay is a nested parse of a different function**, in the middle of
     // whatever asked for the class. Everything `topLevel` sets up per function goes
     // back afterwards - the enclosing locals, parameters and frame size included.
@@ -395,6 +543,7 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     lambdaCount_ = outerLambdaCount;
     functionName_ = outerName;
     atFunctionBody_ = outerAtBody;
+    replayingInline_ = outerInline;
     at_ = resume;
 }
 

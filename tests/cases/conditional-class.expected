@@ -1,0 +1,7 @@
+local T   live 0  balanced 1
+local F   live 0  balanced 1
+ret T     live 0  balanced 1
+ret F     live 0  balanced 1
+scalar 5 9
+scalar    live 0  balanced 1
+loop      live 0  balanced 1

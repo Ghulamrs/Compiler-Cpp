@@ -33,6 +33,23 @@ bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem);
 // **What the Microsoft ABI wants before it will let you throw**: not one pointer
 // but a chain of four objects each naming the next - _TI1H, _CTA1H,
 // _CT??_R0H@84, ??_R0H@8 - measured from cl. Fundamental types only.
+// The five names the Microsoft ABI wants for a class's run-time description -
+// the type descriptor, the base-class descriptor, the array of those, the class
+// hierarchy over it, and the complete-object locator that sits one word in
+// front of the vftable. `decorated` is the string inside the type descriptor,
+// which is what the runtime actually compares.
+struct MicrosoftRtti {
+    std::string descriptor;      // ??_R0?AUBase@@@8
+    std::string decorated;       // .?AUBase@@
+    std::string baseDescriptor;  // ??_R1A@?0A@EA@Base@@8
+    std::string array;           // ??_R2Base@@8
+    std::string hierarchy;       // ??_R3Base@@8
+    std::string locator;         // ??_R4Base@@6B@
+};
+
+bool microsoftClassRttiNames(const Type *cls, MicrosoftRtti *out,
+                             std::string *problem);
+
 struct MicrosoftThrow {
     std::string descriptor;
     std::string catchable;
@@ -135,3 +152,10 @@ std::string itaniumDataName(const std::string &name, bool internal);
 // ABIs write as a scope list rather than part of the name, so the parser's two
 // call sites cannot concatenate. Measured: `_ZTVN1N1BE` and `??_7B@N@@6B@`.
 std::string vtableSymbol(const std::string &tag, bool microsoft);
+
+// A class's Itanium type_info, the string it points at, and the text of that
+// string - one encoding under two prefixes, the same nested form the vtable
+// symbol uses. `_ZTI4Base`, `_ZTS4Base`, and "4Base".
+std::string itaniumClassNameString(const std::string &tag);
+std::string itaniumClassTypeInfoSymbol(const std::string &tag);
+std::string itaniumClassTypeNameSymbol(const std::string &tag);

@@ -1,0 +1,33 @@
+// <cctype> - The character classification functions, under `std::`.
+//
+// Every one takes an `int` and not a `char`, which is not a wrapper's choice
+// but C's: the argument is a character *or* EOF, and a `char` cannot hold
+// both. A lexer passing a signed char with the top bit set is the classic way
+// to reach undefined behaviour through this header, in any implementation.
+//
+// Derived from lib/ctype.h: every name that header declares is named here, and
+// the two are checked against each other by the case that includes both.
+#ifndef _CXX1_CCTYPE
+#define _CXX1_CCTYPE
+
+#include <ctype.h>
+
+namespace std {
+
+using ::isalnum;
+using ::isalpha;
+using ::iscntrl;
+using ::isdigit;
+using ::isgraph;
+using ::islower;
+using ::isprint;
+using ::ispunct;
+using ::isspace;
+using ::isupper;
+using ::isxdigit;
+using ::tolower;
+using ::toupper;
+
+}  // namespace std
+
+#endif
