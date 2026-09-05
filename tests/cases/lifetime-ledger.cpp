@@ -19,10 +19,11 @@
 // leaves elision any freedom - there is no return by value in this case for
 // exactly that reason.
 //
-// One shape is deliberately absent and is not an oversight: a class whose
-// *written* destructor has a member or a base to destroy. cxx1 does not run
-// those, the ledger reports live=1 where clang reports live=0, and the case
-// for it belongs with the fix rather than here.
+// The shape this case was first written without is here now: a class whose
+// *written* destructor has a member and a base to destroy. cxx1 ran neither
+// until [class.dtor]/8's member walk was shared with the written path, and
+// the ledger reported live=1 where clang reported live=0 while both printed
+// the same thing.
 #include "lifetime.h"
 
 // Every special member is defined **out of line**. Written inside the class
@@ -44,9 +45,25 @@ struct M {
 M::M() { lfBuilt(this, "M"); }
 M::~M() { lfGone(this, "M"); }
 
-// No destructor written, so the implicit one runs the member's - the path
-// that works. Its written twin is the shape held back above.
+// No destructor written, so the implicit one runs the member's.
 struct H { M m; };
+
+// And the written twin, with a base as well as a member: the body runs, then
+// the members in reverse, then the bases in reverse. [class.dtor]/8.
+struct Base {
+    Base();
+    ~Base();
+};
+Base::Base() { lfBuilt(this, "Base"); }
+Base::~Base() { lfGone(this, "Base"); }
+
+struct Written : Base {
+    M m;
+    Written();
+    ~Written();
+};
+Written::Written() { lfBuilt(this, "Written"); }
+Written::~Written() { lfGone(this, "Written"); }
 
 struct V {
     int n;
@@ -66,6 +83,7 @@ int main() {
     { A a; }
     { A b; A c; }
     { H h; }
+    { Written w; }
     { V a(3); printf("%d\n", use(a)); }
     { V a(4); V b(a); printf("%d\n", b.n); }
     printf("%d\n", peek(V(9)));

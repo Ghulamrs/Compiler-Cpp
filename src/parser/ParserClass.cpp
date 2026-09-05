@@ -1247,26 +1247,18 @@ void Parser::declareImplicitDestructor(const std::string &tag, const Type *type,
 // Its body: the members this class added, in the reverse of the order they were
 // declared, then the bases in the reverse of theirs. A base's own destructor deals
 // with the members it brought, which is why they are skipped here.
-void Parser::synthesizeDestructor(std::size_t which) {
-    const std::string cls = functions_[which].owner;
-    const std::size_t pos = functions_[which].pos;
-    const std::string symbol = functions_[which].symbol;
-    const bool isVirtual = functions_[which].isVirtual;
-    const Type *type = findTypedef(cls);
-    if (type == nullptr || !type->isStructOrUnion()) return;
-
-    const int savedFrame = frameSize_;
-    frameSize_ = 0;
-    const Type *self = types_.pointerTo(type);
-    std::vector<Param> params;
-    const int thisSlot = allocateFrameSlot(self);
-    params.push_back(Param{ self, thisSlot });
-
-    std::vector<StmtPtr> body;
-
-    const std::vector<Type::BaseSpec> &bs = type->bases();
+// **[class.dtor]/8: after the body, a destructor destroys the class's
+// non-static data members in reverse declaration order, then its bases in
+// reverse.** This is the member half, and it is shared because it was not:
+// the destructor the *compiler* writes walked the members from the start and
+// the one the *program* writes never did, so `struct D { P x; ~D() { } };`
+// destroyed nothing it held. A class with a written destructor and a
+// std::string member leaked the string, and no output comparison could see it.
+std::vector<StmtPtr> Parser::memberDestructors(const std::string &cls,
+                                               const Type *type, int thisSlot,
+                                               std::size_t pos) {
+    std::vector<StmtPtr> out;
     const std::vector<Member> &ms = type->members();
-
     for (std::size_t n = ms.size(); n-- > 0; ) {
         if (memberFromBase(type, ms[n])) continue;
 
@@ -1322,9 +1314,40 @@ void Parser::synthesizeDestructor(std::size_t which) {
         }
 
         StmtPtr one(new ExprStmt(destructorCall(std::move(address), *dtor, pos)));
-        body.push_back(mt->isArray()
+        out.push_back(mt->isArray()
                        ? eachElement(indexSlot, count, std::move(one))
                        : std::move(one));
+    }
+
+    return out;
+}
+
+void Parser::synthesizeDestructor(std::size_t which) {
+    const std::string cls = functions_[which].owner;
+    const std::size_t pos = functions_[which].pos;
+    const std::string symbol = functions_[which].symbol;
+    const bool isVirtual = functions_[which].isVirtual;
+    const Type *type = findTypedef(cls);
+    if (type == nullptr || !type->isStructOrUnion()) return;
+
+    const int savedFrame = frameSize_;
+    frameSize_ = 0;
+    const Type *self = types_.pointerTo(type);
+    std::vector<Param> params;
+    const int thisSlot = allocateFrameSlot(self);
+    params.push_back(Param{ self, thisSlot });
+
+    std::vector<StmtPtr> body;
+
+    const std::vector<Type::BaseSpec> &bs = type->bases();
+
+    // The members, then the bases below - [class.dtor]/8's order. The member
+    // half is shared with the destructor the program writes, which is where it
+    // was missing.
+    {
+        std::vector<StmtPtr> mine = memberDestructors(cls, type, thisSlot, pos);
+        for (std::size_t i = 0; i < mine.size(); i++)
+            body.push_back(std::move(mine[i]));
     }
 
     for (std::size_t n = bs.size(); n-- > 0; ) {

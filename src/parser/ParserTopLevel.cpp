@@ -1032,6 +1032,22 @@ void Parser::topLevel(Program &program) {
         body = StmtPtr(new Block(std::move(withVptr)));
     }
 
+    // **[class.dtor]/8: a written destructor destroys the class's members too**,
+    // after its body and before its bases. The destructor the *compiler* writes
+    // walked them from the start and this one never did, so `struct D { P x;
+    // ~D() { } };` ran ~D and destroyed nothing it held - a class with a written
+    // destructor and a std::string member leaked the string, silently, because
+    // a leak does not change what a program prints.
+    if (memberOf != nullptr && d.name == "~" + localOf(d.qualifier)) {
+        std::vector<StmtPtr> withMembers;
+        withMembers.push_back(std::move(body));
+        std::vector<StmtPtr> mine =
+            memberDestructors(d.qualifier, memberOf, thisOffset_, d.pos);
+        for (std::size_t i = 0; i < mine.size(); i++)
+            withMembers.push_back(std::move(mine[i]));
+        body = StmtPtr(new Block(std::move(withMembers)));
+    }
+
     // **A constructor runs the base's first and a destructor runs it last**, which is
     // the order the standard fixes and clang emits. The base's C2 and D2 are what is
     // called, and on Windows there is one name for each, called directly.

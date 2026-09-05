@@ -6133,6 +6133,46 @@ the language being told the truth.
 of them `x86_64-windows`, each by exactly one replaced line - checked, not
 assumed, which before the golden existed was not something anybody could say.
 
+## A written destructor destroyed nothing the class held
+
+**[class.dtor]/8: after the body has run, a destructor destroys the class's
+non-static data members in reverse declaration order, then its bases in
+reverse.** That walk existed in exactly one place - the destructor the
+*compiler* writes - and the destructor the *program* writes had only the base
+half:
+
+```cpp
+struct B { ~B() { printf("~B "); } };
+struct M { ~M() { printf("~M "); } };
+struct D : B { M m; ~D() { printf("~D "); } };   // clang ~D ~M ~B, cxx1 ~D ~B
+```
+
+So any class with `~C() { }` and a `std::string` member leaked the string, and
+no base and no inheritance were needed - `struct D { P x; ~D() { } };` is
+enough. It is the constructor bug of "A base's members were built twice" in
+its mirror: one walk that two paths need, written into one of them.
+
+**Mended by sharing the walk rather than copying it.** `memberDestructors` is
+the member half lifted out of `synthesizeDestructor`, and both callers use it -
+the written path inserting it after the body and before the bases, which is
+[class.dtor]/8's own order. Bases were already there and are untouched.
+
+**The emit golden reports 0 of 627 files changed**, and that is the finding
+rather than a reassurance: not one case in the suite has a class with a
+written destructor *and* a member that needs destroying. That is exactly why
+354 green cases never saw it, and why `tests/cases/lifetime-ledger.cpp` now
+carries the shape - a written destructor with both a member and a base, which
+reported `live=1` against clang's `live=0` while printing identical output.
+
+**Found by a Fable 5.1 review** (`docs/audit-2026-09-06.html` V-01, root R2),
+and it is the defect that made the case for fixing the oracle first: the
+program prints the same characters either way.
+
+**One neighbour is not this and stays open.** `G a = make(4); G b(a);` for a
+class returned by value still reports `live=1 phantom=1`, identically before
+and after this fix, so it is a root of its own rather than a remainder of this
+one.
+
 ## Three scopes, and they were being asked in nearly the reverse order
 
 **[basic.lookup.unqual]/1 and [basic.scope.hiding]/1: the nearest declaration

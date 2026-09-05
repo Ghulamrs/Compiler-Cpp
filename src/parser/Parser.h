@@ -914,6 +914,11 @@ private:
     void declareImplicitDestructor(const std::string &tag, const Type *type,
                                    std::size_t pos);
     void synthesizeDestructor(std::size_t which);
+    // [class.dtor]/8's member half, shared by the destructor the compiler
+    // writes and the one the program writes.
+    std::vector<StmtPtr> memberDestructors(const std::string &cls,
+                                           const Type *type, int thisSlot,
+                                           std::size_t pos);
     // The deleting destructor, which no program writes: it runs the
     // destructor and then frees. Itanium calls it D0 and Microsoft ??_G, and
     // it is what a `delete` through a base pointer reaches.

@@ -188,7 +188,7 @@ SFINAE and variadic packs. What is left:
   resolution picks the non-static one — the arguments have been read by then,
   and there is no honest way back to the call that takes an object.
   `src/parser/ParserExpr.cpp:1221`. A static member function on its own works.
-- **a member function of a union** — `src/parser/ParserClass.cpp:2067`
+- **a member function of a union** — `src/parser/ParserClass.cpp:2090`
 - **`friend class X;`** — one named function can be befriended.
   `src/parser/ParserType.cpp:457`
 - **befriending one member function of another class** —
@@ -239,7 +239,7 @@ SFINAE and variadic packs. What is left:
   `src/parser/ParserExpr.cpp:470`
 - **an inline variable** — `inline` on a variable is a C++17 feature; C++11
   has `inline` only on functions, where it works. `src/parser/ParserTopLevel.cpp:231`
-- **a braced default argument** — `src/parser/ParserClass.cpp:2649`,
+- **a braced default argument** — `src/parser/ParserClass.cpp:2672`,
   `src/parser/ParserTopLevel.cpp:566`
 - **a braced member initialiser** — `src/parser/ParserType.cpp:830`
 - **an initialiser for an array of a class** —
@@ -260,7 +260,7 @@ it is written:
 - **a file-scope object with a constructor** —
   `src/parser/ParserTopLevel.cpp:298`
 - **a static data member of a class with a constructor** —
-  `src/parser/ParserClass.cpp:1981`
+  `src/parser/ParserClass.cpp:2004`
 - **a static reference** — `src/parser/ParserStmt.cpp:349`
 - **a reference at file scope** — `src/parser/ParserTopLevel.cpp:281`
 
@@ -364,7 +364,7 @@ beside it goes in the same commit.
 | `0b101`, a binary literal | C++14 | `src/Lexer.cpp:250` |
 | `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1407` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:184` |
-| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2637`, `src/parser/ParserTopLevel.cpp:510` |
+| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2660`, `src/parser/ParserTopLevel.cpp:510` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:442` |
 | a variable template | C++14 | `src/parser/ParserTemplate.cpp:336` |
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:659`, `src/parser/ParserStmt.cpp:180`, `src/parser/ParserTopLevel.cpp:292` |
