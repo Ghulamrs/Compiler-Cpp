@@ -450,6 +450,28 @@ bool Parser::atDeclarationStart() const {
         }
     }
 
+    // **A leading class template-id as a qualifier**: `CNeeds<(N==3)>::check()`
+    // is a static-member call, a statement, where `CNeeds<3>::Inner x;` would be
+    // a declaration. Stepping past the argument list by depth, a member after the
+    // `::` that is followed by `(` is a call or a nested-type temporary - an
+    // expression either way - so it does not begin a declaration.
+    if (peek().kind == TokenKind::Ident && peekAt(1).is("<") &&
+        isClassTemplate(peek().text)) {
+        std::size_t after = 1;
+        int depth = 0;
+        for (;; after++) {
+            const Token &t = peekAt(after);
+            if (t.kind == TokenKind::End) { after = 0; break; }
+            if (t.is("<")) depth++;
+            else if (t.is(">")) { if (--depth == 0) { after++; break; } }
+            else if (t.is(">>")) { depth -= 2; if (depth <= 0) { after++; break; } }
+        }
+        if (after != 0 && peekAt(after).is("::") &&
+            peekAt(after + 1).kind == TokenKind::Ident &&
+            peekAt(after + 2).is("("))
+            return false;
+    }
+
     // The same empty pair, for a type named without a qualifier: `P().get();`
     // is the temporary and not a declaration of anything.
     if (peek().kind == TokenKind::Ident && peekAt(1).is("(") &&

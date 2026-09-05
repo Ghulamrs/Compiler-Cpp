@@ -3451,6 +3451,30 @@ operator's. Captures by reference then need 7.4's story about lifetime, and a
 generic lambda would want `auto` in a parameter, which is C++14 and out of
 scope.
 
+## A class template-id as a qualifier in an expression
+
+**`CNeeds<(N == 3)>::check()`** - the template-id is instantiated and a static
+member of it is reached with no object. It reached `refuseTemplateId` before,
+because `templateCall`'s class branch only handled `Box<int>()` - a temporary -
+and anything else was refused. Now a `::` after the template-id is a qualified
+member access, keyed on the instantiated tag exactly as `C::check()` is, and
+only a *static* member is reachable this way, a non-static one needing an
+object.
+
+**The statement parser had to be told first.** `CNeeds<(N==3)>::check();`
+opens with a class-template name, so `atTypeName` called it a type and the
+declaration path read `CNeeds<1>::check` as a nested type - which failed in
+`memberTypeWalk` rather than falling through to an expression. A leading
+class-template-id whose member after the `::` is followed by `(` is a call or a
+nested-type temporary, an expression either way, so `atDeclarationStart` steps
+past the argument list by depth and answers no.
+
+**This is the compile-time-check idiom, and it works because the false case does
+not.** `CNeeds<true>` is defined with a `check`, `CNeeds<false>` is only
+declared - so `CNeeds<(N==3)>::check()` is well-formed exactly when N is 3, a
+`static_assert` written before there was one, and the dimension mismatch is the
+missing member rather than a wrong answer.
+
 ## Function-template overloading, and deducing a non-type parameter
 
 **Off the ladder, and what the Vector Exercise's operators stop at.** `a + b`

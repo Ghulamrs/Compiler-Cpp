@@ -1650,6 +1650,53 @@ ExprPtr Parser::templateCall(Program *program) {
                 at_++;
                 return classTemporary(cls, pos);
             }
+            // **`CNeeds<(N == 3)>::check()` - a static member through a
+            // template-id.** The class is made; what follows the `::` is a
+            // qualified access to a member of it, keyed on the instantiated tag
+            // the same way `C::check()` is. Only a *static* member is reachable
+            // with no object - which is the whole of the CNeeds dimension check:
+            // CNeeds<true> is defined and CNeeds<false> is not, so the false one
+            // has no `check` and the call is ill-formed, as it should be.
+            if (cls != nullptr && cls->isStructOrUnion() && peek().is("::")) {
+                at_++;
+                const std::size_t mpos = peek().pos;
+                const std::string member = declaredName("a member name");
+                const std::string key = cls->tag() + "::" + member;
+                if (peek().is("(")) {
+                    at_++;
+                    std::vector<ExprPtr> callArgs;
+                    parseArguments(callArgs);
+                    if (overloadsOf(key) == nullptr)
+                        src_.fail(mpos, "'" + cls->describe() + "' has no static "
+                                        "member function '" + member + "' - only "
+                                        "a static member is reachable through a "
+                                        "template-id with no object");
+                    const Signature &sig = resolveOverload(key, callArgs, mpos);
+                    applyDefaults(sig, callArgs, mpos);
+                    if (needsThis(sig))
+                        src_.fail(mpos, "'" + key + "' is not a static member "
+                                        "function, so it has to be called on an "
+                                        "object");
+                    if (sig.access != Access::Public) {
+                        const Type *ownerType = findTypedef(sig.owner);
+                        if (ownerType == nullptr ||
+                            (!insideAccessOf(ownerType, sig.access) &&
+                             !isFriendOf(ownerType))) {
+                            const char *how = sig.access == Access::Private
+                                                  ? "private" : "protected";
+                            src_.fail(mpos, "'" + key + "' is " + how + " in '" +
+                                            sig.owner + "'");
+                        }
+                    }
+                    return completeCall(key, sig.symbol, nullptr, sig.returns,
+                                        sig.params, sig.variadic, mpos,
+                                        std::move(callArgs), false);
+                }
+                if (const Type::StaticMember *sm = cls->findStaticMember(member))
+                    return staticMemberRef(cls, *sm, cls->tag(), mpos);
+                src_.fail(mpos, "'" + cls->describe() + "' has no static member '" +
+                                member + "'");
+            }
         }
         at_ = save;
         refuseTemplateId();
