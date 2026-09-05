@@ -3451,6 +3451,38 @@ operator's. Captures by reference then need 7.4's story about lifetime, and a
 generic lambda would want `auto` in a parameter, which is C++14 and out of
 scope.
 
+## A replayed body inherited the enclosing function's live objects
+
+**`alive_` belongs to the function being parsed, not to the one the replay
+interrupted**, and `replayInlineBodies` put back seventeen pieces of
+per-function state without it. So a lambda's `operator()` - which is parsed by
+replaying its tokens through the ordinary member-definition path - began with
+the *enclosing* function's constructed objects still listed, and its `return`
+emitted their destructors against its own frame.
+
+**What that looked like.** `std::vector<int> v; auto f = [](int a, int b) {
+return a > b; }; f(5, 2);` aborted. The addresses say why: `v` sits at
+`x29-8` of main and the lambda's `b` at `x29-8` of the closure's own frame, so
+`~vector` ran *inside* the lambda with `this` pointing at the lambda's second
+parameter - and read `items_` out of the arguments, `0x5_00000002` being the
+5 and the 2 packed together. `free` was then handed that.
+
+**It was a silent wrong answer far more often than a crash.** Any destructor
+that only reads its members ran twice, once on the wrong object, and said
+nothing; only one that frees turned it into an abort. A lambda in a function
+holding *any* destructible object was enough, which is ordinary code - and the
+344-case suite had no case of that shape, so it had been there since lambdas
+landed. Found by compiling a four-line program that sorts a vector with a
+lambda comparator; confirmed against `b8203cb`, so it predates this round.
+
+**`pendingTemps_` goes with it**, being the same list for temporaries, and
+`bodyCleanupFrom_` the bound the unwind regions read. All three are cleared for
+the replay and put back after, exactly as the other seventeen are.
+`tests/cases/lambda-after-destructible.cpp` pins what the destructor is handed
+rather than how many constructors ran: destroyed once, after the lambda, with
+its own address - and it reports `destroyed=2 wrongObject=1` on the compiler
+before the fix.
+
 ## Three small steps the exercise needed: array references, computed arguments, the cast that was not one
 
 **A reference-to-array parameter binds without decay.** `const double (&)[N]`

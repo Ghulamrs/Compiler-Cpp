@@ -540,6 +540,19 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     const int outerLambdaCount = lambdaCount_;   // lambdaRetSeq_ never resets
     const std::string outerName = functionName_;
     const bool outerAtBody = atFunctionBody_;
+    // **The objects the enclosing function still owes destructors to are not
+    // this body's.** `alive_` and `pendingTemps_` are read by every `return` and
+    // by the end of every full expression, so a body replayed here - a lambda's
+    // operator(), a member written inside its class - emitted the *enclosing*
+    // function's destructors against its own frame: `v`'s ~V ran inside the
+    // lambda, with `this` pointing at the lambda's parameter. Cleared for the
+    // replay and put back after, like everything else per-function above.
+    const std::vector<Alive> outerAlive = alive_;
+    const std::vector<Temporary> outerPending = pendingTemps_;
+    const std::size_t outerBodyCleanup = bodyCleanupFrom_;
+    alive_.clear();
+    pendingTemps_.clear();
+    bodyCleanupFrom_ = 0;
     for (std::size_t i = 0; i < mine.size(); i++) {
         at_ = mine[i].start;
         inlineOwner_ = mine[i].tag;
@@ -565,6 +578,9 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     lambdaCount_ = outerLambdaCount;
     functionName_ = outerName;
     atFunctionBody_ = outerAtBody;
+    alive_ = outerAlive;
+    pendingTemps_ = outerPending;
+    bodyCleanupFrom_ = outerBodyCleanup;
     replayingInline_ = outerInline;
     at_ = resume;
 }

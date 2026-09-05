@@ -1,0 +1,3 @@
+cmp=1
+alive tag=1
+destroyed=1 wrongObject=0
