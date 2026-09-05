@@ -77,6 +77,22 @@ bool microsoftMemberName(const std::string &cls, const Type *clsType,
                          const Type *fn, char access, bool constThis,
                          std::string *out, std::string *problem);
 
+// A member *function template* specialization: the member name with its own
+// template arguments, inside the class. Itanium inserts `I args E` after the
+// member name and encodes the return type; Microsoft writes `??$name@args@`
+// then the class scope. Measured: _ZNK1S3getILi7EEEiv, ??$get@$06@S@@QEBAHXZ.
+bool itaniumMemberTemplateName(const std::string &cls, const Type *clsType,
+                               const std::string &name, const Type *fn,
+                               const std::vector<TemplateArg> &args,
+                               bool constThis,
+                               std::string *out, std::string *problem);
+
+bool microsoftMemberTemplateName(const std::string &cls, const Type *clsType,
+                                 const std::string &name, const Type *fn,
+                                 const std::vector<TemplateArg> &args,
+                                 char access, bool constThis,
+                                 std::string *out, std::string *problem);
+
 // A member function of a class defined inside a function body: both ABIs wrap the
 // enclosing function's whole name round the ordinary one, `owner` being that
 // name. One with no decorated name is `4main` to Itanium and `?main@@9` to cl.

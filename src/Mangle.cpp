@@ -234,6 +234,30 @@ public:
         if (fn->isVariadicFn()) out += "z";
     }
 
+    // A member function *template* specialization: `_ZNK1S3getILi7EEEiv`. Like
+    // memberFunction, but the member name is followed by its own arguments
+    // `I...E`, and - as every template specialization does - the return type is
+    // encoded, or two members differing only in return would share a symbol.
+    void memberFunctionTemplate(const std::string &cls, const Type *clsType,
+                                const std::string &name, const Type *fn,
+                                const std::vector<TemplateArg> &args,
+                                bool constThis) {
+        conversionTo_ = fn->returns();
+        out = "_ZN";
+        if (constThis) out += "K";
+        prefix(clsType, cls);
+        writtenName(name, false);
+        out += 'I';
+        for (std::size_t i = 0; i < args.size(); i++) templateArgument(args[i]);
+        out += 'E';
+        out += "E";
+        type(fn->returns());
+        const std::vector<const Type *> &params = fn->params();
+        if (params.empty() && !fn->isVariadicFn()) { out += "v"; return; }
+        for (const Type *p : params) type(p);
+        if (fn->isVariadicFn()) out += "z";
+    }
+
     // _ZN4PolyaSERKS_ - the class, then `aS` where a member function writes the
     // length and letters of its name, then E and the parameters. There is no return
     // type in an Itanium function name, and the class is candidate zero.
@@ -671,6 +695,29 @@ public:
             out += constThis ? 'B' : 'A';
         }
         out += 'A';               // __cdecl
+        returnType(fn->returns());
+        const std::vector<const Type *> &params = fn->params();
+        if (params.empty() && !fn->isVariadicFn()) { out += "XZ"; return; }
+        for (const Type *p : params) argument(p);
+        out += fn->isVariadicFn() ? "ZZ" : "@Z";
+    }
+
+    // A member function *template* specialization: `??$get@$06@S@@QEBAHXZ`.
+    // `??$` then the member name with its arguments as one template-id, then
+    // the class scope, then an ordinary member from there.
+    void memberFunctionTemplate(const std::string &cls, const Type *clsType,
+                                const std::string &name, const Type *fn,
+                                const std::vector<TemplateArg> &args,
+                                char access, bool constThis) {
+        out = "??$";
+        templateId(name, args);
+        scopeOf(clsType, cls);
+        out += access;
+        if (access != 'S' && access != 'K' && access != 'C') {
+            out += 'E';
+            out += constThis ? 'B' : 'A';
+        }
+        out += 'A';
         returnType(fn->returns());
         const std::vector<const Type *> &params = fn->params();
         if (params.empty() && !fn->isVariadicFn()) { out += "XZ"; return; }
@@ -1269,6 +1316,30 @@ bool microsoftMemberName(const std::string &cls, const Type *clsType,
                          std::string *out, std::string *problem) {
     Microsoft m;
     m.memberFunction(cls, clsType, name, fn, access, constThis);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
+bool itaniumMemberTemplateName(const std::string &cls, const Type *clsType,
+                               const std::string &name, const Type *fn,
+                               const std::vector<TemplateArg> &args,
+                               bool constThis,
+                               std::string *out, std::string *problem) {
+    Itanium m;
+    m.memberFunctionTemplate(cls, clsType, name, fn, args, constThis);
+    if (!m.ok) { *problem = m.problem; return false; }
+    *out = m.out;
+    return true;
+}
+
+bool microsoftMemberTemplateName(const std::string &cls, const Type *clsType,
+                                 const std::string &name, const Type *fn,
+                                 const std::vector<TemplateArg> &args,
+                                 char access, bool constThis,
+                                 std::string *out, std::string *problem) {
+    Microsoft m;
+    m.memberFunctionTemplate(cls, clsType, name, fn, args, access, constThis);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
     return true;

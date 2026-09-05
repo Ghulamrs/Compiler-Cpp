@@ -259,8 +259,59 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     while (!peek().is("}")) {
         if (peek().kind == TokenKind::End) src_.fail(pos, "unclosed '{'");
 
-        if (peek().is("template"))
-            src_.fail(peek().pos, "a member template is not supported yet");
+        // **A member function template.** Recorded against the concrete class
+        // and held; its body is replayed with the member's parameters bound - and
+        // the class's, for a member of a class template - when a call names them,
+        // v.head<3>(). A member *class* template or a variable one is still refused.
+        if (peek().is("template")) {
+            if (tag.empty())
+                src_.fail(peek().pos, "a member template needs a named class");
+            TemplateDecl mt;
+            mt.isMember = true;
+            mt.start = at_;
+            at_++;
+            if (!peek().is("<"))
+                src_.fail(peek().pos, "explicit instantiation in a class is not "
+                                      "supported yet");
+            templateParameters(mt.params);
+            mt.afterParams = at_;
+            mt.pos = peek().pos;
+            if (peek().is("struct") || peek().is("class") || peek().is("union"))
+                src_.fail(peek().pos, "a member class template is not supported "
+                                      "yet - only member function templates are");
+            // The member's name: the identifier at depth 0 immediately before
+            // the parameter list's '(' - the return type's own '<...>' is nested.
+            std::string mname;
+            int depth = 0;
+            for (std::size_t i = at_; i < tokens_.size(); i++) {
+                const Token &t = tokens_[i];
+                if (depth == 0 && t.is("(")) break;
+                if (depth == 0 && t.is(";")) break;
+                if (t.is("<") || t.is("(") || t.is("[")) depth++;
+                else if (t.is(">") || t.is(")") || t.is("]")) depth--;
+                else if (depth == 0 && t.kind == TokenKind::Ident) mname = t.text;
+            }
+            if (mname.empty())
+                src_.fail(mt.pos, "a member function template needs a name");
+            mt.name = mname;
+            mt.memberAccess = access;
+            mt.ownerTag = tag;
+            mt.ownerType = nullptr;    // filled at instantiation from the tag
+            // A member of a class template: capture the class's own parameters
+            // and this instantiation's binding, so both layers bind at replay.
+            mt.classParams = instantiatingParams_;
+            mt.classBinding = instantiatingBinding_;
+            mt.classValues = instantiatingValues_;
+            at_ = mt.afterParams;
+            mt.defined = skipTemplatedDefinition();
+            if (!mt.defined)
+                src_.fail(mt.pos, "a member function template declared inside "
+                                  "its class must be defined there too - an "
+                                  "out-of-line member template is not supported "
+                                  "yet");
+            memberTemplates_[tag + "::" + mname] = mt;
+            continue;
+        }
 
         // **A using-declaration in a class is a different rule from one at
         // namespace scope**, which this compiler has: here it redeclares a base

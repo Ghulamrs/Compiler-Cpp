@@ -237,8 +237,49 @@ private:
             std::size_t pos = 0;
         };
         std::vector<Partial> partials;
+
+        // ---- A member function template ----
+        // `template <int M> CVector<M> head() const { ... }` written inside a
+        // class. `isMember` marks it; `ownerTag`/`ownerType` are the concrete
+        // class it belongs to (`CVector<3>` for an instantiation, `S` for a
+        // plain class). `afterParams` points at the member's return type - the
+        // token after the member template's own `>`. For a member of a class
+        // template, `classParams`/`classBinding`/`classValues` carry the class's
+        // own parameters and the arguments this instantiation bound them to, so
+        // both layers - the class's N and the member's M - are re-established
+        // when the body is replayed at the call.
+        bool isMember = false;
+        Access memberAccess = Access::Public;
+        std::string ownerTag;
+        const Type *ownerType = nullptr;
+        std::vector<TemplateParam> classParams;
+        std::vector<const Type *> classBinding;
+        std::vector<long long> classValues;
     };
     std::map<std::string, TemplateDecl> templates_;
+    // Member function templates, keyed by "<ownerTag>::<member>". A separate
+    // table from templates_, which is keyed by a bare name and strips
+    // namespaces - a member template is owned by a concrete class, not named.
+    std::map<std::string, TemplateDecl> memberTemplates_;
+    // Set one-shot while a member-template specialization's body is replayed
+    // through declareMember: the source member name, the display name with its
+    // arguments ("head<3>"), and those arguments, so declareMember keys and
+    // mangles the specialization rather than the plain member.
+    bool memberTemplateInst_ = false;
+    std::string memberTemplateOf_;
+    std::string memberTemplateName_;
+    std::vector<TemplateArg> memberTemplateArgs_;
+    Access memberTemplateAccess_ = Access::Public;
+    bool isMemberTemplate(const Type *obj, const std::string &name) const {
+        return obj != nullptr &&
+               memberTemplates_.count(obj->unqualified()->tag() + "::" + name) != 0;
+    }
+    ExprPtr memberTemplateCall(ExprPtr object, const Type *obj,
+                               const std::string &name, std::size_t pos);
+    const Signature *instantiateMemberTemplate(
+        const TemplateDecl &mt, const std::vector<const Type *> &binding,
+        const std::vector<long long> &values,
+        const std::vector<TemplateArg> &args, std::size_t pos);
     // **A template is keyed by its bare name, and named by either spelling.**
     // `std::pair<int, char>` and, from inside `std` or under a directive that
     // opens it, `pair<int, char>` are the same template - so the qualified form
@@ -345,6 +386,13 @@ private:
     // The template's namespace, travelling the same short distance for the
     // same reason - the manglers want it and nothing else does.
     std::string instantiatingNamespace_;
+    // The class template's own parameters and the arguments this instantiation
+    // bound them to, travelling the same short distance so a member function
+    // template declared in the body can capture them - it needs the class's N
+    // re-established beside its own M when its body is replayed at a call.
+    std::vector<TemplateParam> instantiatingParams_;
+    std::vector<const Type *> instantiatingBinding_;
+    std::vector<long long> instantiatingValues_;
     std::vector<PendingBody> heldForSpecialization_;
     // Set while a template's declaration is read as a *pattern*, with
     // Kind::TemplateParam in place of the arguments. A class template met there must

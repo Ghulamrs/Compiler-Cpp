@@ -1616,6 +1616,12 @@ ExprPtr Parser::postfix() {
             deref->setType(obj);
             n = std::move(deref);
             std::string name = declaredName("a member name");
+            // **A member function template**, `p->head<3>()` - told from `<` as
+            // a comparison only because the member is a registered template.
+            if (peek().is("<") && isMemberTemplate(obj, name)) {
+                n = memberTemplateCall(std::move(n), obj, name, pos);
+                continue;
+            }
             if (consume("(")) { n = memberCall(std::move(n), obj, name, pos); continue; }
             // **`p->count` where count is static** names the one shared
             // object, and the expression on the left is still evaluated -
@@ -1667,6 +1673,11 @@ ExprPtr Parser::postfix() {
                                n->type()->describe() + "'");
             const Type *obj = n->type();
             std::string name = declaredName("a member name");
+            // **A member function template**, `v.head<3>()`.
+            if (peek().is("<") && isMemberTemplate(obj, name)) {
+                n = memberTemplateCall(std::move(n), obj, name, pos);
+                continue;
+            }
             if (consume("(")) { n = memberCall(std::move(n), obj, name, pos); continue; }
             // **`p->count` where count is static** names the one shared
             // object, and the expression on the left is still evaluated -

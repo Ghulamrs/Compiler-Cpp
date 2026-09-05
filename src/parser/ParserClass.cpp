@@ -2049,6 +2049,7 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
 
     const Type *fn = d.type;
     checkOperatorDeclarable(d.name, fn->params().size(), true, d.pos);
+
     std::string key = cls + "::" + d.name;
     std::vector<std::size_t> &set = functionIndex_[key];
 

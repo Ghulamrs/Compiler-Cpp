@@ -494,6 +494,9 @@ bool Parser::explicitSpecialization() {
     const Type *made = structOrUnionSpecifier(kind, isClass);
     classInstantiationTag_.clear();
     classInstantiationOf_.clear();
+    instantiatingParams_.clear();
+    instantiatingBinding_.clear();
+    instantiatingValues_.clear();
     instantiatingArgs_.clear();
 
     declareTypeName(tag, made);
@@ -1508,6 +1511,9 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     if (partial) classInstantiationOf_ = decl.name;
     instantiatingArgs_ = args;
     instantiatingNamespace_ = decl.ns;
+    instantiatingParams_ = useParams;
+    instantiatingBinding_ = useBinding;
+    instantiatingValues_ = useValues;
     heldForSpecialization_.clear();
     const bool wasDeferring = deferSpecializationBodies_;
     deferSpecializationBodies_ = true;
@@ -1682,3 +1688,115 @@ void Parser::refuseTemplateId() {
                    " template, and instantiating one is not supported yet");
 }
 
+
+// **A member function template call, v.head<3>().** The arguments are read
+// against the member's own parameter list, the specialization is made if it is
+// new - its body replayed with the class's parameters and the member's both
+// bound - and then it is called like an ordinary non-virtual member: a member
+// template can never be virtual, so there is no slot to read.
+ExprPtr Parser::memberTemplateCall(ExprPtr object, const Type *obj,
+                                   const std::string &name, std::size_t pos) {
+    const Type *plain = obj->unqualified();
+    const TemplateDecl mt = memberTemplates_[plain->tag() + "::" + name];
+
+    std::vector<const Type *> binding;
+    std::vector<long long> values;
+    std::vector<TemplateArg> args;
+    std::vector<std::vector<const Type *> > packs;
+    templateArguments(mt, &binding, &values, &args, &packs);
+
+    const Signature *sig = instantiateMemberTemplate(mt, binding, values, args, pos);
+    if (sig == nullptr)
+        src_.fail(pos, "'" + plain->describe() + "::" + name + "' could not be "
+                       "instantiated with these template arguments");
+
+    if (!peek().is("("))
+        src_.fail(peek().pos, "'" + name + "' is a member function template, "
+                              "and naming one without calling it is not "
+                              "supported yet");
+    at_++;
+    std::vector<ExprPtr> callArgs;
+    parseArguments(callArgs);
+
+    // A copy, since applyDefaults and completeCall read it while the arguments
+    // can grow functions_ out from under a reference.
+    const Signature chosen = *sig;
+    applyDefaults(chosen, callArgs, pos);
+
+    if (obj->isConst() && !chosen.constThis)
+        src_.fail(pos, "'" + name + "' is not a const member function, and this "
+                       "object is const");
+
+    const Type *pointee = chosen.constThis ? types_.withConst(plain) : plain;
+    const Type *thisType = types_.pointerTo(pointee);
+    ExprPtr addr(new Unary('&', std::move(object)));
+    addr->setType(thisType);
+
+    std::vector<const Type *> full;
+    full.push_back(thisType);
+    for (std::size_t i = 0; i < chosen.params.size(); i++)
+        full.push_back(chosen.params[i]);
+
+    std::vector<ExprPtr> all;
+    all.push_back(std::move(addr));
+    for (std::size_t i = 0; i < callArgs.size(); i++)
+        all.push_back(std::move(callArgs[i]));
+
+    return completeCall(name, chosen.symbol, nullptr, chosen.returns, full,
+                        chosen.variadic, pos, std::move(all), true);
+}
+
+// The specialization these arguments ask for, made if it is new. The body is
+// replayed *synchronously* - a member template is always used when called, so
+// there is nothing to defer and gate - through the inline-member path, which
+// saves and restores the enclosing function's whole state. declareMember is
+// told, through memberTemplateInst_, to key and mangle the function it reads as
+// this specialization rather than as a plain member.
+const Parser::Signature *Parser::instantiateMemberTemplate(
+    const TemplateDecl &mt, const std::vector<const Type *> &binding,
+    const std::vector<long long> &values,
+    const std::vector<TemplateArg> &args, std::size_t pos) {
+    const std::string display = specializationKey(mt.name, args);   // head<3>
+    const std::string key = mt.ownerTag + "::" + display;
+    if (const std::vector<std::size_t> *had = overloadsOf(key))
+        return &functions_[(*had)[0]];
+    if (!mt.defined)
+        src_.fail(pos, "'" + mt.ownerTag + "::" + mt.name + "' is declared but "
+                       "not defined, so there is nothing to instantiate");
+
+    std::vector<Shadow> undo;
+    // The class's parameters first (N), then the member's own (M) - two layers,
+    // the whole reason a member template records the class's binding.
+    if (!mt.classParams.empty())
+        bindTemplateParameters(mt.classParams, mt.classBinding, mt.classValues,
+                               std::vector<std::vector<const Type *> >(), &undo);
+    bindTemplateParameters(mt.params, binding, values,
+                           std::vector<std::vector<const Type *> >(), &undo);
+
+    const bool wasInst = memberTemplateInst_;
+    const std::string wasOf = memberTemplateOf_;
+    const std::string wasName = memberTemplateName_;
+    const std::vector<TemplateArg> wasArgs = memberTemplateArgs_;
+    memberTemplateInst_ = true;
+    memberTemplateOf_ = mt.name;
+    memberTemplateName_ = display;
+    memberTemplateArgs_ = args;
+    memberTemplateAccess_ = mt.memberAccess;
+
+    std::vector<PendingBody> one(1);
+    one[0].tag = mt.ownerTag;
+    one[0].start = mt.afterParams;
+    one[0].local = mt.ownerTag;
+    one[0].key = key;
+    one[0].which = PendingBody::npos();
+    replayInlineBodies(one);
+
+    memberTemplateInst_ = wasInst;
+    memberTemplateOf_ = wasOf;
+    memberTemplateName_ = wasName;
+    memberTemplateArgs_ = wasArgs;
+    unbindTemplateParameters(undo);
+
+    const std::vector<std::size_t> *had = overloadsOf(key);
+    return had != nullptr ? &functions_[(*had)[0]] : nullptr;
+}

@@ -586,6 +586,36 @@ void Parser::topLevel(Program &program) {
     const Signature *member = nullptr;
     if (memberOf != nullptr) {
         std::string key = d.qualifier + "::" + d.name;   // "Point::~Point" too
+        // **A member function template specialization declares itself here.**
+        // Its declaration was never registered as a plain member - the class
+        // body held the template and skipped it - so, on first sight, the
+        // signature is built now, keyed and mangled by the member name plus its
+        // own template arguments (head<3>), and then defined by the code below.
+        if (memberTemplateInst_ && d.name == memberTemplateOf_) {
+            key = d.qualifier + "::" + memberTemplateName_;
+            if (overloadsOf(key) == nullptr) {
+                const Type *fnType =
+                    types_.functionType(d.type, params, variadic);
+                const char code = memberTemplateAccess_ == Access::Public ? 'Q'
+                                : memberTemplateAccess_ == Access::Protected ? 'I'
+                                                                             : 'A';
+                std::string sym, why;
+                const bool ok = target_.microsoftNames()
+                    ? microsoftMemberTemplateName(d.qualifier, memberOf, d.name,
+                          fnType, memberTemplateArgs_, code, constThis, &sym, &why)
+                    : itaniumMemberTemplateName(d.qualifier, memberOf, d.name,
+                          fnType, memberTemplateArgs_, constThis, &sym, &why);
+                if (!ok)
+                    src_.fail(d.pos, "'" + key + "' cannot be given a name the "
+                                     "linker can hold: " + why);
+                functionIndex_[key].push_back(functions_.size());
+                functions_.push_back(Signature{
+                    memberTemplateName_, sym, d.type, params, variadic, false,
+                    d.pos, false, d.qualifier, constThis,
+                    memberTemplateAccess_, false });
+                functions_.back().fromTemplate = true;
+            }
+        }
         if (const std::vector<std::size_t> *set = overloadsOf(key)) {
             for (std::size_t k = 0; k < set->size() && member == nullptr; k++) {
                 const Signature &f = functions_[(*set)[k]];

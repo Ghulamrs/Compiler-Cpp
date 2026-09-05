@@ -3451,6 +3451,64 @@ operator's. Captures by reference then need 7.4's story about lifetime, and a
 generic lambda would want `auto` in a parameter, which is C++14 and out of
 scope.
 
+## Member function templates, and the two binding layers
+
+**A member function template is a template written inside a class**, `template
+<int M> CVector<M> head() const`, called with explicit arguments, `v.head<3>()`.
+It is core C++11 and was refused by name until now - the `template` keyword
+reached the class-body member loop as something that is not a type. Off the
+ladder, and the gate the Vector Exercise's CVector stops at.
+
+**A member template is not a member and not a free template**, which is the
+whole of the storage decision. It is kept in `memberTemplates_`, keyed by the
+*concrete* class it belongs to - `"CVector<3>::head"` for an instantiation,
+`"S::head"` for a plain class - beside the class-body loop that would have
+declared an ordinary member. The declaration is recorded and its body skipped,
+the same shape a free template uses.
+
+**The crux is two binding layers.** `v.head<3>()` on a `CVector<4>` wants N=4
+(the class's parameter) and M=3 (the member's) both in force when the body is
+replayed - and the replay happens at the *call*, long after the class was made.
+So the member template records the class's own parameters and the arguments this
+instantiation bound them to, captured from `instantiatingParams_`/`Binding_`/
+`Values_` while the class body was being read. At the call,
+`instantiateMemberTemplate` binds the class's layer first and the member's
+second, then replays.
+
+**The replay is synchronous**, through `replayInlineBodies` - which saves and
+restores the enclosing function's whole state, since a member-template call sits
+in the middle of another function's expression. There is nothing to defer and
+gate the way a free template's body is: a member template is always *used* when
+it is called, so deduction's "made before it can be ranked" problem does not
+arise.
+
+**The inline-member replay reads a definition, not a declaration**, so the
+member template declares itself on the way through. The class body held the
+template and skipped it, so no ordinary member was ever declared - and the
+member-definition path in `topLevel`, reaching a body it has no declaration
+for, builds the signature then and there, keyed and mangled by the member name
+plus its own arguments (`head<3>`). `memberTemplateInst_` and its fields are the
+one-shot sign that this is happening.
+
+**The mangling splits the way it always does: Itanium the pattern, Microsoft the
+substituted signature.** Microsoft is exact on every member-template name -
+`??$get@$06@S@@QEBAHXZ`, `??$head@$02@?$V@$03@@QEBA?AU?$V@$02@@XZ`, measured
+against cl. Itanium is exact wherever the signature mentions no parameter -
+`_ZNK1S3getILi7EEEiv` for `int get()`, measured against clang - and diverges
+where it does: clang writes the *pattern* (`_ZNK1VILi4EE4headILi3EEES_IXT_EEv`,
+the return `V<M>` spelled `S_IXT_EE` with M as the expression `T_`), where cxx1
+writes the *substituted* signature (`S_ILi3EE`, V<3>). Carrying the pattern
+through the member-template mangler, and spelling a non-type parameter as
+`XT_E`, is the same split free function templates already make and is not yet
+made here for members - the one recorded divergence, in
+`template-member.nonames`, and the whole program runs correctly on all three
+targets regardless, since the substituted name is unique per specialization and
+consistent across cxx1's own object files.
+
+**Refused by name**: a member *class* template, an *out-of-line* member template
+definition, explicit instantiation inside a class, and a member template whose
+arguments would have to be *deduced* from the call rather than written.
+
 ## Operator overloading, and why the names came first
 
 **Off the ladder, and the reason it is next.** The ladder was never a map of
