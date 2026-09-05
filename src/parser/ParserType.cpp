@@ -429,6 +429,11 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         if (peek().is("friend")) {
             const std::size_t fpos = peek().pos;
             at_++;
+            // **The replay begins after `friend`, not at it** - the same rule
+            // `virtual` follows: the keyword is written on the declaration
+            // inside the class and nowhere else, so a body replayed from it
+            // would hand `specifiers()` a keyword it has no rule for.
+            const std::size_t friendStart = at_;
             if (tag.empty())
                 src_.fail(fpos, "an anonymous class has no name to grant "
                                 "friendship with");
@@ -461,19 +466,29 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 src_.fail(peek().pos, "'const' here would say the function has "
                                       "a 'this' to leave alone, and a friend "
                                       "is not a member function");
-            if (peek().is("{"))
-                src_.fail(peek().pos, "a friend function defined inside the "
-                                      "class is not supported yet - declare it "
-                                      "here and define it outside, where its "
-                                      "body is parsed like any other");
+            const bool friendHasBody = peek().is("{");
+            const std::size_t fsigAt = functions_.size();
             declareFunction(fd.name, fd.type, fparams, fvariadic, false, fd.pos,
                             false);
+            // **A friend defined here is held and replayed as a free function.**
+            // [class.friend]/6 makes such a definition implicitly inline, which
+            // is what a replay produces anyway. It is drained with this class -
+            // its tokens are inside it - but with no owner, so the ordinary
+            // free-function path reads it.
+            if (friendHasBody) {
+                PendingBody held{ tag, friendStart, std::string(), fd.name,
+                                  signatureAddedUnder(fd.name, fsigAt) };
+                held.freeFunction = true;
+                pendingBodies_.push_back(held);
+            }
             // **The grant is to this function, not to its name.** Recording
             // the name would befriend every overload of it, including ones
             // declared later that the class never saw.
             friends_[tag].push_back(
                 lookupSignature(fd.name, fparams, fvariadic, fd.pos).symbol);
-            expect(";");
+            // A definition ends at its '}' and has no ';' to consume.
+            if (friendHasBody) skipBracedBlock();
+            else expect(";");
             continue;
         }
 

@@ -579,8 +579,11 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     staticSymbols_.clear();
     for (std::size_t i = 0; i < mine.size(); i++) {
         at_ = mine[i].start;
-        inlineOwner_ = mine[i].tag;
-        inlineOwnerName_ = mine[i].local.empty() ? mine[i].tag : mine[i].local;
+        // A friend's body is written inside the class and belongs outside it,
+        // so it is replayed with no owner to supply a `Class::` it must not have.
+        inlineOwner_ = mine[i].freeFunction ? std::string() : mine[i].tag;
+        inlineOwnerName_ = mine[i].freeFunction ? std::string()
+                         : (mine[i].local.empty() ? mine[i].tag : mine[i].local);
         topLevel(*current_);
         inlineOwner_.clear();
         inlineOwnerName_.clear();

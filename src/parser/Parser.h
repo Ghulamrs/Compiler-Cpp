@@ -156,6 +156,12 @@ private:
         // `npos` where the declaration added no signature, which falls back to
         // the key.
         std::size_t which;
+        // **A friend defined inside the class is not a member of it.**
+        // [class.friend]: the function belongs to the enclosing namespace and
+        // the class only grants it access, so its body is replayed with no
+        // owner - as an ordinary free function - though it is held and drained
+        // with the class it was written in, which is where its tokens are.
+        bool freeFunction = false;
         static std::size_t npos() { return (std::size_t)-1; }
     };
     std::vector<PendingBody> pendingBodies_;

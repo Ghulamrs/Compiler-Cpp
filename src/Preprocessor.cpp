@@ -4,6 +4,21 @@
 #include <cstdio>
 #include <cstdlib>
 
+// **The same header reached two ways is one file.** `#pragma once` is keyed by
+// the resolved path, and `-Idir` plus a relative include can spell one file two
+// ways - so the name is put through the platform's own resolver first. Falling
+// back to the spelling as written is safe: the worst it costs is reading a
+// header twice, which is what happened before the pragma was honoured at all.
+static std::string canonicalPath(const std::string &p) {
+    char buf[4096];
+#ifdef _WIN32
+    if (_fullpath(buf, p.c_str(), sizeof buf) != nullptr) return std::string(buf);
+#else
+    if (realpath(p.c_str(), buf) != nullptr) return std::string(buf);
+#endif
+    return p;
+}
+
 namespace {
 
 bool identStart(char c) {
@@ -857,6 +872,10 @@ void Preprocessor::directive(const std::string &line, int fileIndex, int lineNo)
                  " - looked in " + where);
         }
 
+        // A file that said `#pragma once` is read once, however often it is
+        // named - the whole of what the pragma promises.
+        if (pragmaOnce_.count(canonicalPath(path)) != 0) return;
+
         files_.push_back(path);
         int index = static_cast<int>(files_.size()) - 1;
         depth_++;
@@ -898,7 +917,13 @@ void Preprocessor::directive(const std::string &line, int fileIndex, int lineNo)
         return;
     }
 
-    if (what == "pragma") return;
+    if (what == "pragma") {
+        // The file that wrote it is not read again, whoever includes it next.
+        if (trim(rest) == "once" && fileIndex >= 0 &&
+            static_cast<std::size_t>(fileIndex) < files_.size())
+            pragmaOnce_.insert(canonicalPath(files_[fileIndex]));
+        return;
+    }
     if (what.empty()) return;
 
     fail(fileIndex, lineNo, line, nameStart, "unknown directive '#" + what + "'");
