@@ -187,6 +187,17 @@ void Parser::bindTemplateParameters(const std::vector<TemplateParam> &params,
             if (it != typedefIndex_.end()) { s.had = true; s.was = it->second; }
             typedefIndex_[p.name] = typedefs_.size();
             typedefs_.push_back(TypedefName{ p.name, binding[i] });
+        } else if (i < binding.size() && binding[i] != nullptr &&
+                   binding[i]->kind() == Kind::TemplateParam) {
+            // **A non-type parameter read as a pattern**, the same signal a pack
+            // uses: its binding is a Kind::TemplateParam rather than a value, so
+            // `V<N>` reads as a reference to N instead of folding to a number.
+            s.isParamRef = true;
+            auto it = nonTypePatternParams_.find(p.name);
+            if (it != nonTypePatternParams_.end()) {
+                s.hadParamRef = true; s.paramRefWas = it->second;
+            }
+            nonTypePatternParams_[p.name] = binding[i]->length();
         } else {
             auto it = enumIndex_.find(p.name);
             if (it != enumIndex_.end()) { s.had = true; s.was = it->second; }
@@ -212,6 +223,9 @@ void Parser::unbindTemplateParameters(const std::vector<Shadow> &undo) {
         if (s.isType) {
             if (s.had) typedefIndex_[s.name] = s.was;
             else       typedefIndex_.erase(s.name);
+        } else if (s.isParamRef) {
+            if (s.hadParamRef) nonTypePatternParams_[s.name] = s.paramRefWas;
+            else               nonTypePatternParams_.erase(s.name);
         } else {
             if (s.had) enumIndex_[s.name] = s.was;
             else       enumIndex_.erase(s.name);
@@ -423,6 +437,23 @@ bool Parser::templateDeclaration() {
     }
 
     decl.defined = defined;
+    // **Function templates overload; class templates do not.** A function
+    // template of a name already seen is another overload, kept beside the
+    // first; a call tries each by deduction. A class template of a name already
+    // a class template is still refused - overloading a class template is
+    // partial specialization, which is a different path.
+    if (!decl.isClass) {
+        if (decl.defined) fnTemplates_[decl.name].push_back(decl);
+        auto it = templates_.find(decl.name);
+        if (it == templates_.end()) {
+            templates_[decl.name] = decl;
+        } else if (decl.defined && !it->second.defined && !it->second.isClass) {
+            decl.outOfLine = it->second.outOfLine;
+            it->second = decl;
+        }
+        return true;
+    }
+
     // A template may be declared and then defined. The definition is the one
     // worth keeping, since instantiating is replaying its tokens - but any
     // out-of-line members gathered against the declaration come with it.
@@ -433,11 +464,10 @@ bool Parser::templateDeclaration() {
         decl.outOfLine = it->second.outOfLine;
         it->second = decl;
     } else if (decl.defined) {
-        // **One template per name, and the second is refused rather than dropped.**
-        // This table holds one entry per name, so a second definition used to
-        // replace nothing and simply disappear - a silently missing overload.
         src_.fail(decl.pos, "'" + decl.name + "' is already a template, and "
-                            "two templates of one name are not supported yet");
+                            "two class templates of one name are not supported "
+                            "yet - a specialization is written 'template <> "
+                            "struct " + decl.name + "<...>'");
     }
     return true;
 }
@@ -706,12 +736,27 @@ void Parser::templateArguments(const TemplateDecl &decl,
                 src_.fail(p.pos, "a non-type template parameter of type '" +
                                  p.type->describe() + "' is not supported yet - "
                                  "it must be an integer type");
-            const long long v = constantExpression("a template argument");
-            binding->push_back(p.type);
-            values->push_back(v);
-            a.isType = false;
-            a.type = p.type;
-            a.value = v;
+            // **`V<N>` while a signature is read for deduction**: a bare name
+            // that is a pattern non-type parameter is a reference to it, not a
+            // value to fold. Anything else is an ordinary constant expression.
+            if (peek().kind == TokenKind::Ident &&
+                nonTypePatternParams_.count(peek().text) != 0 &&
+                (peekAt(1).is(",") || peekAt(1).is(">") || peekAt(1).is(">>"))) {
+                a.isType = false;
+                a.isParam = true;
+                a.paramIndex = nonTypePatternParams_[peek().text];
+                a.type = p.type;
+                binding->push_back(p.type);
+                values->push_back(0);
+                at_++;
+            } else {
+                const long long v = constantExpression("a template argument");
+                binding->push_back(p.type);
+                values->push_back(v);
+                a.isType = false;
+                a.type = p.type;
+                a.value = v;
+            }
         }
         args->push_back(a);
     }
@@ -755,25 +800,34 @@ Parser::instantiate(const TemplateDecl &decl,
                     const std::vector<long long> &values,
                     const std::vector<TemplateArg> &args, std::size_t pos,
                     const std::vector<std::vector<const Type *> > &packs) {
-    const std::string key = specializationKey(decl.name, args);
-
-    if (const std::vector<std::size_t> *had = overloadsOf(key))
-        return functions_[(*had)[0]];
-
     if (!decl.defined)
         src_.fail(pos, "'" + decl.name + "' is declared but never defined, so "
                        "there is nothing to instantiate");
-
 
     std::string name;
     const Type *fn = readTemplateDeclaration(decl, binding, values, &name,
                                              nullptr, &packs);
 
+    // **Two function-template overloads can share a name and arguments and
+    // differ only in signature** - operator*(V<N>, double) and operator*(double,
+    // V<N>) both key operator*<3> without the parameter types, so the second was
+    // deduped to the first and the wrong one called. The key carries the
+    // substituted parameters; the mangled symbol is separate and unaffected.
+    const std::string display = specializationKey(decl.name, args);
+    std::string key = display;
+    for (std::size_t i = 0; i < fn->params().size(); i++)
+        key += "#" + fn->params()[i]->describe();
+
+    if (const std::vector<std::size_t> *had = overloadsOf(key))
+        return functions_[(*had)[0]];
+
+    // **The pattern the Itanium name is spelled from** keeps every parameter as
+    // a reference to itself - a type parameter as Kind::TemplateParam, a non-type
+    // one as the param-ref `V<N>` reads to - so the return and arguments come out
+    // T_ and V<XT_E> the way clang spells them, not the substituted int and V<3>.
     std::vector<const Type *> pattern(decl.params.size());
     for (std::size_t i = 0; i < decl.params.size(); i++)
-        pattern[i] = decl.params[i].type == nullptr
-                         ? types_.templateParam(static_cast<int>(i))
-                         : binding[i];
+        pattern[i] = types_.templateParam(static_cast<int>(i));
     std::string patternName;
     const Type *patternFn =
         readTemplateDeclaration(decl, pattern, values, &patternName);
@@ -806,7 +860,7 @@ Parser::instantiate(const TemplateDecl &decl,
     const std::size_t at = functions_.size();
     functionIndex_[key].push_back(at);
     functionIndex_[decl.name].push_back(at);
-    functions_.push_back(Signature{ key, symbol, fn->returns(), fn->params(),
+    functions_.push_back(Signature{ display, symbol, fn->returns(), fn->params(),
                                     fn->isVariadicFn(), false, pos, false,
                                     std::string(), false, Access::Public });
     functions_.back().fromTemplate = true;
@@ -962,7 +1016,7 @@ const Type *Parser::deduceAutoFrom(const Type *declared, const Type *from,
                                    const std::string &name, std::size_t pos) {
     std::vector<const Type *> binding(1, static_cast<const Type *>(nullptr));
     std::string why;
-    if (!deduceOne(declared, from, &binding, &why) || binding[0] == nullptr)
+    if (!deduceOne(declared, from, &binding, nullptr, &why) || binding[0] == nullptr)
         src_.fail(pos, "'" + name + "' is declared '" + declared->describe() +
                        "' and its initialiser is '" + from->describe() +
                        "', which does not fit: " + why);
@@ -984,6 +1038,7 @@ const Type *Parser::decayedType(const Type *a) const {
 // about the type and not about a table: one reached here binds.
 bool Parser::deduceOne(const Type *pattern, const Type *arg,
                        std::vector<const Type *> *binding,
+                       std::vector<long long> *values,
                        std::string *why) const {
     // **A reference parameter looks *through* itself and keeps the argument's
     // qualifier; everything else decays.** `const T &` binding an `int`
@@ -1031,16 +1086,38 @@ bool Parser::deduceOne(const Type *pattern, const Type *arg,
         for (std::size_t i = 0; i < pattern->templateArgs().size(); i++) {
             const TemplateArg &p = pattern->templateArgs()[i];
             const TemplateArg &a = arg->templateArgs()[i];
+            // **A non-type argument: `V<N>` against `V<3>` gives N=3.** The
+            // pattern carries N as a parameter reference; the argument carries a
+            // value, and the value is what N is deduced to be.
+            if (p.isParam) {
+                if (a.isType || a.isParam) {
+                    *why = "'" + arg->describe() + "' does not give a value for a "
+                           "non-type parameter here";
+                    return false;
+                }
+                const std::size_t j = static_cast<std::size_t>(p.paramIndex);
+                if (j < binding->size()) {
+                    if ((*binding)[j] != nullptr && values != nullptr &&
+                        (*values)[j] != a.value) {
+                        *why = "a non-type parameter is deduced two different "
+                               "values";
+                        return false;
+                    }
+                    (*binding)[j] = a.type;
+                    if (values != nullptr) (*values)[j] = a.value;
+                }
+                continue;
+            }
             if (!p.isType || !a.isType) continue;
-            if (!deduceOne(p.type, a.type, binding, why)) return false;
+            if (!deduceOne(p.type, a.type, binding, values, why)) return false;
         }
         return true;
     }
 
     if (pattern->isPointer() && arg->isPointer())
-        return deduceOne(pattern->pointee(), arg->pointee(), binding, why);
+        return deduceOne(pattern->pointee(), arg->pointee(), binding, values, why);
     if (pattern->isArray() && arg->isArray())
-        return deduceOne(pattern->pointee(), arg->pointee(), binding, why);
+        return deduceOne(pattern->pointee(), arg->pointee(), binding, values, why);
 
     // Nothing to deduce here. A parameter written out in full does not have to match
     // exactly - an ordinary conversion may still get the argument there - so this is
@@ -1052,18 +1129,13 @@ bool Parser::deduceOne(const Type *pattern, const Type *arg,
 // name may be both a template and an ordinary function: deduction not
 // working is then not an error, it is one fewer candidate.
 bool Parser::deduceTemplateArguments(const TemplateDecl &decl,
-                                     const std::vector<ExprPtr> &args,
+                                     const std::vector<const Type *> &argTypes,
                                      std::vector<const Type *> *binding,
+                                     std::vector<long long> *values,
                                      std::vector<std::vector<const Type *> > *packs,
                                      std::string *why) {
     packs->assign(decl.params.size(), std::vector<const Type *>());
-    for (std::size_t i = 0; i < decl.params.size(); i++)
-        if (decl.params[i].type != nullptr) {
-            *why = "'" + decl.params[i].name + "' is a non-type parameter, "
-                   "and only a type is deduced from a call - write the "
-                   "arguments out";
-            return false;
-        }
+    values->assign(decl.params.size(), 0);
 
     std::vector<const Type *> pattern(decl.params.size());
     for (std::size_t i = 0; i < decl.params.size(); i++)
@@ -1078,24 +1150,24 @@ bool Parser::deduceTemplateArguments(const TemplateDecl &decl,
     const bool hasPack = !decl.params.empty() && decl.params.back().isPack;
     const std::size_t fixed = hasPack ? fn->params().size() - 1
                                       : fn->params().size();
-    if (hasPack ? args.size() < fixed : args.size() != fixed) {
+    if (hasPack ? argTypes.size() < fixed : argTypes.size() != fixed) {
         *why = "it takes " + std::string(hasPack ? "at least " : "") +
                std::to_string(fixed) + " argument(s) and this call gives " +
-               std::to_string(args.size());
+               std::to_string(argTypes.size());
         return false;
     }
 
     binding->assign(decl.params.size(), nullptr);
     for (std::size_t i = 0; i < fixed; i++)
-        if (!deduceOne(fn->params()[i], args[i]->type(), binding, why)) {
+        if (!deduceOne(fn->params()[i], argTypes[i], binding, values, why)) {
             *why = "'" + decl.params[i < decl.params.size() ? i : 0].name +
                    "' cannot be worked out from this call: " + *why;
             return false;
         }
     if (hasPack) {
         std::vector<const Type *> members;
-        for (std::size_t i = fixed; i < args.size(); i++)
-            members.push_back(decayedType(args[i]->type()));
+        for (std::size_t i = fixed; i < argTypes.size(); i++)
+            members.push_back(decayedType(argTypes[i]));
         (*packs)[decl.params.size() - 1] = members;
     }
     for (std::size_t i = 0; i < binding->size(); i++) {
@@ -1595,41 +1667,25 @@ ExprPtr Parser::templateCall(Program *program) {
         std::vector<ExprPtr> callArgs;
         parseArguments(callArgs);
 
-        std::vector<const Type *> deduced;
-        std::vector<std::vector<const Type *> > deducedPacks;
-        std::string why;
-        if (!deduceTemplateArguments(decl, callArgs, &deduced, &deducedPacks,
-                                     &why)) {
-            // Not an error while an ordinary function of this name might still take
-            // the call - it is one fewer candidate. With no such function it is the
-            // whole answer, and saying why beats "not declared".
-            if (overloadsOf(name) == nullptr)
-                src_.fail(pos, "'" + name + "' is a function template and " + why);
-        } else {
-            std::vector<long long> values(decl.params.size(), 0);
-            std::vector<TemplateArg> args;
-            for (std::size_t i = 0; i < deduced.size(); i++) {
-                TemplateArg a;
-                a.isType = true;
-                if (decl.params[i].isPack) {
-                    a.isPack = true;
-                    a.pack = deducedPacks[i];
-                } else {
-                    a.type = deduced[i];
-                }
-                args.push_back(a);
-            }
-            // **[temp.deduct]/8, which is what SFINAE is.** Substituting deduced
-            // arguments may make something ill-formed, and that removes the
-            // specialization rather than ending the compile. A body is not in it.
-            try {
-                Trial trial(this);
-                instantiate(decl, deduced, values, args, pos, deducedPacks);
-            } catch (const SubstitutionFailure &f) {
-                if (overloadsOf(name) == nullptr)
-                    src_.fail(pos, "'" + name + "' is a function template and "
-                                   "its arguments do not substitute: " + f.why);
-            }
+        std::vector<const Type *> argTypes;
+        for (std::size_t i = 0; i < callArgs.size(); i++)
+            argTypes.push_back(callArgs[i]->type());
+
+        // **Every function template of this name is a candidate.** Each that
+        // deduces is instantiated; overload resolution then ranks the
+        // specializations with any ordinary functions.
+        instantiateViableTemplates(name, argTypes, pos);
+
+        // Nothing deduced and no ordinary function - so say why the template
+        // failed, which beats "not declared". With more than one overload the
+        // first is representative enough for the message.
+        if (overloadsOf(name) == nullptr) {
+            std::vector<const Type *> b;
+            std::vector<long long> v;
+            std::vector<std::vector<const Type *> > p;
+            std::string why;
+            deduceTemplateArguments(decl, argTypes, &b, &v, &p, &why);
+            src_.fail(pos, "'" + name + "' is a function template and " + why);
         }
 
         const Signature &sig = resolveOverload(name, callArgs, pos);
@@ -1643,7 +1699,11 @@ ExprPtr Parser::templateCall(Program *program) {
     std::vector<std::vector<const Type *> > packs;
     templateArguments(decl, &binding, &values, &args, &packs);
 
-    instantiate(decl, binding, values, args, pos, packs);
+    // **A copy, not a reference**: `sig.params` is handed to `completeCall`, and
+    // parsing the arguments can declare a function and move `functions_`. The key
+    // now carries the signature, so the specialization is taken from the return
+    // rather than looked up by a key the caller would have to rebuild.
+    const Signature sig = instantiate(decl, binding, values, args, pos, packs);
     if (!peek().is("("))
         src_.fail(peek().pos, "'" + name + "' is a function template, and "
                               "naming one without calling it is not supported "
@@ -1653,19 +1713,10 @@ ExprPtr Parser::templateCall(Program *program) {
     std::vector<ExprPtr> callArgs;
     parseArguments(callArgs);
 
-    // Looked up by key rather than held across the arguments: an argument may
-    // itself be a call that instantiates something, and a reference into
-    // functions_ does not survive the vector growing.
-    const std::string key = specializationKey(decl.name, args);
-    const std::size_t which = (*overloadsOf(key))[0];
-    // Written out rather than deduced, so no ranking chose it and nothing
-    // else will mark it - and a specialization is defined only where it was
-    // chosen. Saying so here is what makes this call get a body.
-    functions_[which].used = true;
-    // A copy, not a reference: `sig.params` is handed to `completeCall` and
-    // read for the length of it, and what that call does with the arguments
-    // can declare a function and move `functions_` out from under it.
-    const Signature sig = functions_[which];
+    // Written out rather than deduced, so no ranking chose it and nothing else
+    // will mark it - a specialization is defined only where it was chosen.
+    for (std::size_t i = 0; i < functions_.size(); i++)
+        if (functions_[i].symbol == sig.symbol) { functions_[i].used = true; break; }
     return completeCall(sig.name, sig.symbol, nullptr, sig.returns, sig.params,
                         sig.variadic, pos, std::move(callArgs));
 }
@@ -1799,4 +1850,48 @@ const Parser::Signature *Parser::instantiateMemberTemplate(
 
     const std::vector<std::size_t> *had = overloadsOf(key);
     return had != nullptr ? &functions_[(*had)[0]] : nullptr;
+}
+
+// **Function templates as overload-resolution candidates.** Every function
+// template of this name is tried against the argument types; each that deduces
+// is instantiated into functions_ under the name, where the ordinary ranking
+// then chooses among the specializations and any non-template functions. A
+// substitution failure - [temp.deduct]/8 - drops that one template rather than
+// ending the compile, which is what lets two templates of one name coexist and
+// the wrong one simply not apply.
+void Parser::instantiateViableTemplates(const std::string &name,
+                                        const std::vector<const Type *> &argTypes,
+                                        std::size_t pos) {
+    std::map<std::string, std::vector<TemplateDecl> >::const_iterator it =
+        fnTemplates_.find(name);
+    if (it == fnTemplates_.end()) return;
+    const std::vector<TemplateDecl> overloads = it->second;
+    for (std::size_t k = 0; k < overloads.size(); k++) {
+        const TemplateDecl &decl = overloads[k];
+        std::vector<const Type *> binding;
+        std::vector<long long> values;
+        std::vector<std::vector<const Type *> > packs;
+        std::string why;
+        if (!deduceTemplateArguments(decl, argTypes, &binding, &values, &packs,
+                                     &why))
+            continue;
+        std::vector<TemplateArg> args;
+        for (std::size_t i = 0; i < binding.size(); i++) {
+            TemplateArg a;
+            if (decl.params[i].type != nullptr) {
+                a.isType = false; a.type = decl.params[i].type; a.value = values[i];
+            } else if (decl.params[i].isPack) {
+                a.isType = true; a.isPack = true; a.pack = packs[i];
+            } else {
+                a.isType = true; a.type = binding[i];
+            }
+            args.push_back(a);
+        }
+        try {
+            Trial trial(this);
+            instantiate(decl, binding, values, args, pos, packs);
+        } catch (const SubstitutionFailure &) {
+            // This template does not apply; the others still might.
+        }
+    }
 }

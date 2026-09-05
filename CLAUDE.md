@@ -3451,6 +3451,53 @@ operator's. Captures by reference then need 7.4's story about lifetime, and a
 generic lambda would want `auto` in a parameter, which is C++14 and out of
 scope.
 
+## Function-template overloading, and deducing a non-type parameter
+
+**Off the ladder, and what the Vector Exercise's operators stop at.** `a + b`
+for a class template reaches `template <int N> V<N> operator+(V<N>, V<N>)`, and
+`v * s` against `s * v` needs *two* `operator*` templates of one name. Three
+things were missing and are here now: a non-type parameter deduced from a
+class-template argument, function templates as overload-resolution candidates,
+and more than one template of a name.
+
+**Non-type deduction rests on a symbolic argument.** `V<N>` in a pattern is a
+class-template-id whose argument is not a value but a *reference to* parameter
+N - `TemplateArg::isParam`. Matching that pattern against a concrete `V<3>` is
+what works N out: [temp.deduct.type], `deduceOne`'s specialization case reads
+the value 3 out of the argument where the pattern holds a parameter. The
+parameter is bound this way, rather than to a value, whenever a signature is
+read as a pattern - `nonTypePatternParams_` records it, the same
+Kind::TemplateParam signal a pack already used.
+
+**That one primitive also spells the Itanium name.** A non-type parameter
+argument is written `XT_E` - the parameter as the expression `T_` - so
+`V<N>` comes out `1VIXT_EE` and `operator+<3>` is `_ZplILi3EE1VIXT_EES1_S1_`,
+measured against clang. An operator template spells its operator code (`pl`,
+not `9operator+`) and, like a named template, takes substitution candidate
+zero; Microsoft writes `??$?H...`, the code where a named template-id writes
+its name. This is the same `XT_E` the member-template mangling still wants -
+implemented here for free templates, where the pattern signature is already
+read.
+
+**Templates join overload resolution through one door.**
+`instantiateViableTemplates(name, argTypes)` tries every function template of
+the name, instantiates each that deduces - a substitution failure just drops
+one - and the specializations land in `functions_` under the name, where the
+ordinary ranking chooses. It is called from `resolveOperator` (so `a + b`
+reaches an operator template) and from the deduced call path (so `f(x)` tries
+every overload). Class templates do not go through it: they do not overload.
+
+**The key had to learn the signature.** `operator*(V<N>, double)` and
+`operator*(double, V<N>)` both instantiate at N=3 and both keyed `operator*<3>`
+- so the second was deduped to the first and the wrong one called. The
+specialization key carries the substituted parameter types now
+(`operator*<3>#V<3>#double`); the mangled symbol already distinguished them and
+is unchanged, and the key is internal, the displayed name staying `operator*<3>`.
+
+**Refused by name**: two *class* templates of one name (that is partial
+specialization); and a non-type parameter that appears in no parameter, so a
+call has nothing to work it out from - the message names the parameter.
+
 ## Member function templates, and the two binding layers
 
 **A member function template is a template written inside a class**, `template

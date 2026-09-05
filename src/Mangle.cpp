@@ -347,12 +347,22 @@ public:
     void templateFunction(const std::string &name, const Type *pattern,
                           const std::vector<TemplateArg> &args, bool internal) {
         out = internal ? "_ZL" : "_Z";
-        out += std::to_string(name.size());
-        out += name;
-
-        // **The template name is substitution candidate zero.** Measured: `void
-        // f4(T, T)` with T=int is _Z2f4IiEvT_S0_, and the second T_ is S0_, index
-        // one - the only thing written before the arguments is the name.
+        // **An operator template spells its code, not the name**, and the code is
+        // not a substitution candidate - `operator+<3>` is _ZplILi3EE..., where a
+        // named template's name is candidate zero. Measured against clang.
+        // **The template name is substitution candidate zero** - measured on
+        // `void f4(T, T)` at T=int, _Z2f4IiEvT_S0_, the second T_ being S0_. An
+        // operator template spells its code, not a length-and-letters name, but
+        // it takes the candidate slot all the same: `operator+<3>` is
+        // _ZplILi3EE1VIXT_EES1_S1_, where S1_ is index two, so V<XT_E> is the
+        // second candidate after `pl`.
+        const std::string spelling = operatorSpelling(name);
+        if (const OperatorCode *op = findOperator(spelling))
+            out += itaniumOperatorCode(*op, pattern->params().size() == 1);
+        else {
+            out += std::to_string(name.size());
+            out += name;
+        }
         Sub self;
         self.name = name;
         subs_.push_back(self);
@@ -377,6 +387,15 @@ public:
             out += 'J';
             for (std::size_t i = 0; i < a.pack.size(); i++) type(a.pack[i]);
             out += 'E';
+            return;
+        }
+        // **A non-type parameter as an argument, `V<N>` in a pattern**: written
+        // as the expression `X T_ E` - the parameter spelled `T_`, `T0_`, `T1_`
+        // for indices 0, 1, 2. Measured: _ZNK1VILi4EE4headILi3EEES_IXT_EEv.
+        if (a.isParam) {
+            out += "XT";
+            if (a.paramIndex > 0) out += std::to_string(a.paramIndex - 1);
+            out += "_E";
             return;
         }
         if (a.isType) { type(a.type); return; }
@@ -823,7 +842,18 @@ public:
         std::vector<const Type *> outerArgs;
         outerNames.swap(names_);
         outerArgs.swap(args_);
-        pushName(name);
+        // **An operator template-id spells the operator code, not the name**, and
+        // takes no name back-reference: `operator+<3>` is ??$?H$02@..., where ?H
+        // is the code that ??H writes with the leading ?? already spent on ??$.
+        const OperatorCode *op = findOperator(operatorSpelling(name));
+        if (isConversionFunction(name)) {
+            out += "?B";
+        } else if (op != nullptr) {
+            out += '?';
+            out += op->microsoft;
+        } else {
+            pushName(name);
+        }
         for (std::size_t i = 0; i < args.size(); i++) templateArgument(args[i]);
         out += '@';               // closes the template-id
         names_.swap(outerNames);

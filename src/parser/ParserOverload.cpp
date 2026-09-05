@@ -492,6 +492,17 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
                                                const Expr &left,
                                                const Expr *right,
                                                std::size_t pos) {
+    // **A non-member operator may be a function template.** Deduce and
+    // instantiate every one that applies before ranking, so `a + b` for a class
+    // template reaches `template <int N> V<N> operator+(V<N>, V<N>)`. The
+    // specializations land in functions_ and are ranked with everything else.
+    {
+        std::vector<const Type *> argTypes;
+        argTypes.push_back(left.type());
+        if (right != nullptr) argTypes.push_back(right->type());
+        instantiateViableTemplates(name, argTypes, pos);
+    }
+
     // A unary operator is the same question with one operand: a member takes it as
     // its implicit object and writes no parameter, a non-member writes one. One
     // rank each way, so the comparison is the same comparison.

@@ -1,8 +1,12 @@
-// Two templates of one name. The table holds one entry per name, so the
-// second used to replace nothing and simply disappear - a silently missing
-// overload, which is the outcome this compiler refuses loudest. Overloading
-// function templates is its own step; until then the reader is told where it
-// stopped rather than finding out from a call that went somewhere else.
-template <class T> T f(T x) { return x; }
-template <class T> T f(T x, T y) { (void)x; return y; }
-int main() { return f(1); }
+// **Two function templates of one name overload.** Each is a candidate; a call
+// deduces against every one and overload resolution ranks the specializations
+// with any ordinary functions. Two *class* templates of one name are still
+// refused - that is partial specialization, a different path. Measured against
+// clang -std=c++11 -pedantic-errors.
+extern "C" int printf(const char *, ...);
+template <class T> T pick(T x) { return x; }
+template <class T> T pick(T x, T y) { return x + y; }
+int main() {
+    printf("%d %d\n", pick(7), pick(3, 4));
+    return 0;
+}

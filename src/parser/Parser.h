@@ -257,6 +257,18 @@ private:
         std::vector<long long> classValues;
     };
     std::map<std::string, TemplateDecl> templates_;
+    // **Function templates overload; class templates do not.** Every function
+    // template of a name is kept here, so a call can try each by deduction and
+    // let overload resolution rank the specializations. templates_ still holds
+    // the first (or the class template) for the lookup machinery.
+    std::map<std::string, std::vector<TemplateDecl> > fnTemplates_;
+    // Try every function template named `name` against these argument types,
+    // instantiating each that deduces - a substitution failure just drops that
+    // one. The resulting specializations land in functions_ under `name`, where
+    // ordinary overload resolution ranks them.
+    void instantiateViableTemplates(const std::string &name,
+                                    const std::vector<const Type *> &argTypes,
+                                    std::size_t pos);
     // Member function templates, keyed by "<ownerTag>::<member>". A separate
     // table from templates_, which is keyed by a bare name and strips
     // namespaces - a member template is owned by a concrete class, not named.
@@ -443,6 +455,11 @@ private:
         std::size_t was = 0;
         std::vector<const Type *> hadPack;
         std::vector<std::string> hadNames;
+        // A non-type parameter bound as a pattern reference rather than a value
+        // - `N` in `V<N>` while a signature is read for deduction.
+        bool isParamRef = false;
+        bool hadParamRef = false;
+        int paramRefWas = 0;
     };
     // **A pack while a specialization is being read**: the types it was given and, once
     // its function parameters have been made, the names they were given. `rest` becomes
@@ -452,6 +469,10 @@ private:
         std::vector<std::string> names;
     };
     std::map<std::string, PackBinding> packs_;
+    // While a signature is read as a pattern for deduction, a non-type
+    // parameter is bound here - name to its index - rather than to a value, so
+    // `V<N>` reads as a reference to parameter N instead of folding to a number.
+    std::map<std::string, int> nonTypePatternParams_;
     // `Ts... rest` in a parameter list. Answers false where the tokens are
     // not that; otherwise reads it and adds what it expands to.
     bool packParameter(std::vector<const Type *> *types,
@@ -491,12 +512,16 @@ private:
     // Deduction: the arguments worked out from the call rather than written.
     // Answers false and fills `why` when some parameter cannot be deduced.
     bool deduceTemplateArguments(const TemplateDecl &decl,
-                                 const std::vector<ExprPtr> &args,
+                                 const std::vector<const Type *> &argTypes,
                                  std::vector<const Type *> *binding,
+                                 std::vector<long long> *values,
                                  std::vector<std::vector<const Type *> > *packs,
                                  std::string *why);
+    // `values` receives a deduced non-type argument (the 3 in V<3>); it may be
+    // null where only type parameters can occur (the `auto` path).
     bool deduceOne(const Type *pattern, const Type *arg,
-                   std::vector<const Type *> *binding, std::string *why) const;
+                   std::vector<const Type *> *binding,
+                   std::vector<long long> *values, std::string *why) const;
     // An argument's type as a parameter sees it: an array or function becomes
     // a pointer and the top-level qualifier goes, which is [temp.deduct.call]
     // and also just what passing something does.

@@ -45,7 +45,7 @@ a grep is not.
 than they fire. `template <>` at `src/parser/ParserTemplate.cpp:38` is refused
 where a template parameter list is expected, while
 `template <> struct Box<int> { … };` compiles; the functional-cast temporary at
-`src/parser/ParserOverload.cpp:652` is refused during overload ranking, while
+`src/parser/ParserOverload.cpp:663` is refused during overload ranking, while
 `take(P(4))` and `P q = P(3);` compile. Both were checked with a program before
 this sentence was written, and the same habit is the reason `pending[]` had
 eight keywords in it that were implemented.
@@ -110,7 +110,7 @@ that was not written. This is a library sized to what has been asked of it
 rather than to the standard, and the distance between those two is not small.
 It is also why a *language* feature is refused in one place: `auto` from a
 braced initialiser deduces an `initializer_list`, which there is no library for
-— `src/parser/ParserTemplate.cpp:950`.
+— `src/parser/ParserTemplate.cpp:1004`.
 
 A conforming C++ implementation is a compiler **and** a library. cxx1 is a
 language translator with three code generators. Read every claim about C++11
@@ -151,7 +151,7 @@ SFINAE and variadic packs. What is left:
   definition**, one written outside its class —
   `src/parser/ParserType.cpp:308`; **explicit instantiation inside a class** —
   `src/parser/ParserType.cpp:274`; and a member function template **named
-  without being called** — `src/parser/ParserTemplate.cpp:1714`. A member
+  without being called** — `src/parser/ParserTemplate.cpp:1765`. A member
   template whose arguments would have to be **deduced** from the call, rather
   than written, is not reached: the call finds no such member and says so.
 - **an unnamed template parameter** — `src/parser/ParserTemplate.cpp:52`,
@@ -159,25 +159,27 @@ SFINAE and variadic packs. What is left:
 - **a non-type parameter pack** — a pack of types is supported.
   `src/parser/ParserTemplate.cpp:63`
 - **a non-type template parameter that is not an integer type** —
-  `src/parser/ParserTemplate.cpp:706`
-- **two templates of one name** — the single feature between cxx1 and the
-  `enable_if` overload idiom. `src/parser/ParserTemplate.cpp:439`
+  `src/parser/ParserTemplate.cpp:736`
+- **two class templates of one name** — function templates overload (a call
+  deduces against each and overload resolution ranks the specializations), but
+  two *class* templates of one name is partial specialization, a different
+  path. `src/parser/ParserTemplate.cpp:467`
 - **an explicit specialization of a *function* template** — the class form
-  works. `src/parser/ParserTemplate.cpp:454`
+  works. `src/parser/ParserTemplate.cpp:484`
 - **`template <>` where a parameter list is expected** —
   `src/parser/ParserTemplate.cpp:38`
-- **explicit instantiation** — `src/parser/ParserTemplate.cpp:326`
+- **explicit instantiation** — `src/parser/ParserTemplate.cpp:340`
 - **a template that is neither a class nor a function** —
-  `src/parser/ParserTemplate.cpp:266`
+  `src/parser/ParserTemplate.cpp:280`
 - **a constructor or destructor of a class template written outside the class**
-  — `src/parser/ParserTemplate.cpp:342`
+  — `src/parser/ParserTemplate.cpp:356`
 - **naming a function template without calling it** —
-  `src/parser/ParserTemplate.cpp:1592`, `src/parser/ParserTemplate.cpp:1648`
+  `src/parser/ParserTemplate.cpp:1664`, `src/parser/ParserTemplate.cpp:1708`
 - **naming a member through a template's argument list**, `A<int>::n` — a
   `typedef` for the instantiation reaches it.
-  `src/parser/ParserTemplate.cpp:1682`
+  `src/parser/ParserTemplate.cpp:1733`
 - **instantiating a template that was only declared** —
-  `src/parser/ParserTemplate.cpp:1686`
+  `src/parser/ParserTemplate.cpp:1737`
 - **`sizeof` of a template parameter in a signature** — the linker name would
   have to spell the expression. `src/parser/ParserExpr.cpp:1931`
 
@@ -280,7 +282,7 @@ it is written:
 - **`va_arg` of an aggregate** — `src/parser/ParserExpr.cpp:676`
 - **a functional-cast temporary reached through overload ranking** — a
   converting constructor is not tried at a call.
-  `src/parser/ParserOverload.cpp:652`
+  `src/parser/ParserOverload.cpp:663`
 
 ## `new` and `delete`
 
@@ -360,7 +362,7 @@ beside it goes in the same commit.
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:184` |
 | `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2618`, `src/parser/ParserTopLevel.cpp:474` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:406` |
-| a variable template | C++14 | `src/parser/ParserTemplate.cpp:309` |
+| a variable template | C++14 | `src/parser/ParserTemplate.cpp:323` |
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:642`, `src/parser/ParserStmt.cpp:180`, `src/parser/ParserTopLevel.cpp:271` |
 | `static_assert` with no message | C++17 | `src/parser/ParserConst.cpp:31` |
 | `namespace N::M { }` | C++17 | `src/parser/ParserTopLevel.cpp:92` |
@@ -411,7 +413,7 @@ judgement in a program. They are named here instead:
 - `src/parser/ParserType.cpp:172` — a base class that is not yet defined. An
   ordinary error: a derived object contains its base, so the base has to be
   complete.
-- `src/Mangle.cpp:590`, `src/Mangle.cpp:1099` — a type with no Itanium or
+- `src/Mangle.cpp:609`, `src/Mangle.cpp:1129` — a type with no Itanium or
   Microsoft linkage name. Internal: reaching either means a type was built that
   the mangler was never taught, which is a bug in this compiler and not a
   statement about the language.

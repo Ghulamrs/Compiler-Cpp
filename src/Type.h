@@ -62,6 +62,12 @@ struct TemplateArg {
     const Type *type = nullptr;
     bool isType = true;
     long long value = 0;
+    // **A non-type argument that is a reference to a template parameter**, the
+    // `N` in the pattern `V<N>`. It stands for parameter `paramIndex` rather
+    // than a value - what deduction matches against a concrete `V<3>` to work
+    // out N=3, and what Itanium spells `XT_E`.
+    bool isParam = false;
+    int paramIndex = 0;
     // **A pack argument is a list, not a type.** Itanium spells one `J...E`
     // and Microsoft lists its members inline with `$$V` for an empty one, so
     // both need the members rather than anything standing for them.
