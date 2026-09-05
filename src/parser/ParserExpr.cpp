@@ -285,7 +285,7 @@ ExprPtr Parser::staticCast(std::size_t pos) {
         ExprPtr c(new Cast(to, std::move(v)));
         return c;
     }
-    return convert(std::move(v), to);
+    return convert(std::move(v), to, true);
 }
 
 

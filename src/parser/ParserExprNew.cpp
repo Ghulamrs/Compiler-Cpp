@@ -177,7 +177,8 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
 // Two that could each serve is an ambiguity and answers null, the same rule and
 // for the same reason as the constructor search.
 const Parser::Signature *Parser::conversionFunction(const Type *from,
-                                                    const Type *to) {
+                                                    const Type *to,
+                                                    bool allowExplicit) {
     const Type *plain = from->unqualified();
     if (!plain->isStructOrUnion()) return nullptr;
 
@@ -193,6 +194,7 @@ const Parser::Signature *Parser::conversionFunction(const Type *from,
             const Signature &f = functions_[k];
             if (f.owner != c->tag()) continue;
             if (!isConversionName(f.name) || !f.params.empty()) continue;
+            if (f.isExplicit && !allowExplicit) continue;
             const Type *gives = f.returns;
             if (to == nullptr) {
                 if (!gives->unqualified()->isScalar()) continue;
@@ -247,7 +249,7 @@ const Parser::Signature *Parser::soleNumericConversion(const Type *from) {
 // against zero either way.
 ExprPtr Parser::contextualScalar(ExprPtr e, std::size_t pos, const char *what) {
     if (e->type() != nullptr && e->type()->unqualified()->isStructOrUnion()) {
-        if (const Signature *how = conversionFunction(e->type(), nullptr)) {
+        if (const Signature *how = conversionFunction(e->type(), nullptr, true)) {
             const Type *object = e->type();
             std::vector<ExprPtr> none;
             e = memberCallWith(std::move(e), object, how->name, pos,

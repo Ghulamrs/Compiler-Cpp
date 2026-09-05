@@ -2186,6 +2186,9 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
                                     Access::Public });
     functions_.back().isNoexcept = pendingNoexcept_;
     pendingNoexcept_ = false;
+    if (pendingExplicitConversion_ && isConversionName(instantiationName(name)))
+        functions_.back().isExplicit = true;
+    pendingExplicitConversion_ = false;
     if (!pendingDefaults_.empty())
         defaultArgs_[functions_.back().symbol] = pendingDefaults_;
     pendingDefaults_.clear();

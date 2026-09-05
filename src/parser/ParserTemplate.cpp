@@ -1460,9 +1460,23 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     // **Asked after the partial is chosen, not before.** A variadic template is
     // very often declared and never defined, every definition it has being a
     // specialization: there is a body to replay whenever one of them matched.
-    if (!partial && !decl.defined)
-        src_.fail(pos, "'" + decl.name + "' is declared but never defined, so "
-                       "there is nothing to instantiate");
+    // **Declared but not defined is an incomplete type, not an error.**
+    // [basic.types]/5: naming one is legal - a function's return type or
+    // parameter, a pointer to it - and only an operation that needs it complete
+    // (a member, `sizeof`, laying out an object) requires the definition, and
+    // that operation fails on its own where it is written. A conversion operator
+    // returning a forward-declared class template is the shape that needs this:
+    // the class is defined in a header the declaring one has not reached. The
+    // shallow type is interned by tag, so the real instantiation - if the
+    // definition does arrive later - completes this very object.
+    if (!partial && !decl.defined) {
+        Type *shallow = types_.structType(Kind::Struct, tag);
+        if (!shallow->isSpecialization()) {
+            shallow->setSpecialization(decl.name, args);
+            shallow->setTemplateNamespace(decl.ns);
+        }
+        return shallow;
+    }
 
     const std::size_t resume = at_;
     std::vector<Shadow> undo;

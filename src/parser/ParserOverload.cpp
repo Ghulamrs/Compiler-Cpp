@@ -50,7 +50,9 @@ const Type *Parser::usualArithmetic(const Type *a, const Type *b) const {
 // Defined below, beside the conversion rules it belongs with.
 int publicBaseOffset(const Type *derived, const Type *base);
 
-ExprPtr Parser::convert(ExprPtr e, const Type *to) const {
+static bool publiclyDerivedFrom(const Type *derived, const Type *base);
+
+ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
     if (e->type() == to) return e;
 
     // **A class converted by its own conversion function**, which is where a
@@ -60,13 +62,31 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to) const {
     if (e->type() != nullptr && e->type()->unqualified()->isStructOrUnion() &&
         !to->unqualified()->isStructOrUnion()) {
         Parser *self = const_cast<Parser *>(this);
-        if (const Signature *how = self->conversionFunction(e->type(), to)) {
+        if (const Signature *how = self->conversionFunction(e->type(), to, allowExplicit)) {
             const Type *object = e->type();
             std::vector<ExprPtr> none;
             ExprPtr got = self->memberCallWith(std::move(e), object, how->name,
                                                0, std::move(none));
             return got->type() == to ? std::move(got)
                                      : convert(std::move(got), to);
+        }
+    }
+
+    // **A class converted to another class by its own conversion function**,
+    // [class.conv.fct] - the same one rule as above, only the target is a class
+    // too: `operator B()` on an A makes a B. A base subobject is a different
+    // thing (offset 0, no call) and is left to the pointer/reference paths
+    // below, so only a genuinely unrelated target reaches the operator here.
+    if (e->type() != nullptr && e->type()->unqualified()->isStructOrUnion() &&
+        to->unqualified()->isStructOrUnion() &&
+        e->type()->unqualified() != to->unqualified() &&
+        !publiclyDerivedFrom(e->type()->unqualified(), to->unqualified())) {
+        Parser *self = const_cast<Parser *>(this);
+        if (const Signature *how = self->conversionFunction(e->type(), to, allowExplicit)) {
+            const Type *object = e->type();
+            std::vector<ExprPtr> none;
+            return self->memberCallWith(std::move(e), object, how->name,
+                                        0, std::move(none));
         }
     }
 
@@ -737,7 +757,8 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
     // one user-defined conversion in a sequence, so what the function answers is
     // finished by a standard conversion and no further.
     if (ft->unqualified()->isStructOrUnion() &&
-        !to->unqualified()->isStructOrUnion() &&
+        ft->unqualified() != to->unqualified() &&
+        !publiclyDerivedFrom(ft->unqualified(), to->unqualified()) &&
         const_cast<Parser *>(this)->conversionFunction(ft, to) != nullptr)
         return;
 

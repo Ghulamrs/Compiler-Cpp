@@ -20,7 +20,7 @@ ExprPtr Parser::castExpr() {
             expect(")");
             ExprPtr v = decay(castExpr());
             if (to->isVoid()) return ExprPtr(new Cast(to, std::move(v)));
-            return convert(std::move(v), to);
+            return convert(std::move(v), to, true);   // a cast allows explicit
         }
         at_ = save;
     }

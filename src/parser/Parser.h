@@ -1099,7 +1099,7 @@ private:
     const Type *arraySuffix(const Type *base, std::size_t pos);
     const Type *promote(const Type *t) const;
     const Type *usualArithmetic(const Type *a, const Type *b) const;
-    ExprPtr convert(ExprPtr e, const Type *to) const;
+    ExprPtr convert(ExprPtr e, const Type *to, bool allowExplicit = false) const;
     const Type *unsignedVersion(const Type *t) const;
 
     ExprPtr decay(ExprPtr e);
@@ -1185,7 +1185,8 @@ private:
     const Signature *convertingConstructor(const Type *to, const Expr &from);
     // The conversion function on `from` giving `to`, or - with `to` null - any
     // scalar, `bool` first. The mirror of the constructor above.
-    const Signature *conversionFunction(const Type *from, const Type *to);
+    const Signature *conversionFunction(const Type *from, const Type *to,
+                                        bool allowExplicit = false);
     // A class where a number or a pointer is wanted, converted by its own.
     ExprPtr contextualScalar(ExprPtr e, std::size_t pos, const char *what);
     // The single conversion to a scalar, or null where there are none or two -
@@ -1501,6 +1502,9 @@ private:
     // and cleared by whichever declare* call follows. The same shape `pendingDefaults_`
     // uses: the places that parse one are not the places that build a Signature.
     bool pendingNoexcept_ = false;
+    // Set when `explicit operator T()` is seen, consumed by the next
+    // declareFunction of a conversion name, which stamps the signature.
+    bool pendingExplicitConversion_ = false;
     // How many potentially-throwing things the expression being parsed has
     // reached. `noexcept(e)` reads it; nothing else does.
     int mayThrow_ = 0;

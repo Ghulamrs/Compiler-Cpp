@@ -319,13 +319,16 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // has to be refused everywhere except a `static_cast` and a condition,
         // and accepting the word while ignoring that is a claim the compiler
         // cannot support.
+        // **`explicit` on a conversion function**, [class.conv.fct]. Recorded
+        // for the conversion signature declareFunction is about to create; an
+        // explicit conversion is then a candidate only in a cast or a condition,
+        // never an implicit conversion. `isExplicit` is cleared so the "neither"
+        // complaint below does not fire on a declaration this one handled.
         if (isExplicit && peek().is("operator") &&
-            peekAt(1).kind != TokenKind::Punct)
-            src_.fail(explicitAt, "'explicit' on a conversion function is "
-                                  "C++11 and is not supported yet - the "
-                                  "conversion itself works, and an explicit one "
-                                  "would have to be refused everywhere except a "
-                                  "static_cast and a condition");
+            peekAt(1).kind != TokenKind::Punct) {
+            pendingExplicitConversion_ = true;
+            isExplicit = false;
+        }
 
         // Anything else it was written on: neither a constructor, which the
         // branch above read, nor a conversion function.
