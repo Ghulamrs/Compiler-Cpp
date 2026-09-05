@@ -322,6 +322,9 @@ bool Parser::foldDouble(const Expr &e, const Target &target, long double *out,
         }
         if (const GlobalSym *g = findGlobal(v->name()))
             if (g->isConstantDouble) { *out = g->constantDouble; return true; }
+        // As in fold(): a static member lives under its symbol, not in globals_.
+        if (const StaticConst *sc = findStaticConst(v->symbol()))
+            if (sc->dknown) { *out = sc->dvalue; return true; }
         return false;
     }
     if (const Num *n = dynamic_cast<const Num *>(&e)) {

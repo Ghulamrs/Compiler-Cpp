@@ -4889,6 +4889,66 @@ and x86_64-windows - 200 of 200 on each, byte-identical to a clang, g++ or cl
 build of the same sources. The whole undertaking that this file has recorded
 since "A base's members were built twice" is finished.
 
+## A static member defined out of line is worth its value when read
+
+**[expr.const]/3 makes a const object of integral type a constant expression
+when it is read**, and every compiler folds a const *floating* one the same
+way even though the letter of C++11 does not - which is what let Vincenty's
+`const double b = (1 - f) * a;` compile. That read-back was taught to `Local`
+and to `GlobalSym`, and a **static data member is in neither**: it is kept in
+`Type::StaticMember`, deliberately apart from `members()` so that nothing
+walking a layout has to learn to skip it, and it never enters `globals_`.
+
+So the same three lines one door over were refused:
+
+```cpp
+struct S { static const double k; };
+const double S::k = 2.5;
+const double t = S::k * 2.0;   // expected a constant initialiser
+```
+
+**The integral twin was refused too, and harder** - `const int S::n = 4;` then
+`int a[S::n];` was *"expected an array length"*, which is [expr.const]/3's own
+ground. What worked was every shape that does not need a constant: the same
+member read in a local, or inside a member function, and the in-class
+`static const int k = 5;`, which is `folded` on the StaticMember and has no
+storage at all. One missing lookup, two evaluators.
+
+**Keyed by the linkage symbol and not by the written name.** A base's static
+member may be named through a derived class - `Derived::k` for `S`'s - and
+`staticMemberRef` builds the `Var` with the name as written while the symbol
+is the same object either way. `staticConsts_` is a parser table beside
+`defaultArgs_`, which is keyed the same way and for the same reason; the
+alternative was a `const_cast` into `Type`, whose `cls()` is const by design
+after the findMember bug.
+
+**The object still has storage and an address**, which is the whole difference
+from `folded`: only what it is worth when read is answered here, and
+`&S::k` is unchanged. The case takes those addresses for a second reason -
+clang folds a const every reader of which is a constant expression and emits
+no symbol, so without them the names suite reports symbols cxx1 has and clang
+has not, which is a question about emission wearing the shape of a mangling
+bug. That is the third time this file has had to say so.
+
+**Found by walking one door over from a fix that passed everything.** The
+floating read-back had its own case, the whole suite was green on three
+boxes, and it compiled the real program it was written for. Six lines written
+ten minutes later found the neighbour it missed, and then a probe of the
+*definition's* spellings found one more.
+
+**`static` on the definition is refused now**, and it was accepted before.
+[class.static.data]/2 puts the keyword on the declaration inside the class:
+at namespace scope it would give the object internal linkage, which the
+member it defines cannot have, so `static double S::x = 0;` says two things
+at once. clang refuses it; cxx1 defined the object and dropped the keyword.
+It is not an exclusion - this is code C++11 itself forbids, so it belongs in
+neither `EXCLUSIONS.md` nor `CONFORMANCE.md`, and the site count stays 105.
+
+Fifteen shapes measured against clang, all agreeing, in
+`tests/cases/static-member-const-folds.cpp` and
+`static-member-static-refused.cpp`. The emit golden reports **0 of 627 files
+changed**, so nothing that compiled before is emitted differently.
+
 ## A static member has no `this`, and one line of Compiler++ was that
 
 **The call-with-arguments fault was a static member function returning a class

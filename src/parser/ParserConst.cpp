@@ -109,6 +109,11 @@ bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
         }
         if (const GlobalSym *g = findGlobal(v->name()))
             if (g->isConstantValue) { *out = g->constantValue; return true; }
+        // A static member is not in globals_ - it is kept apart from the
+        // member list so nothing walking a layout has to skip it - so the
+        // read-back asks the table keyed by its symbol.
+        if (const StaticConst *sc = findStaticConst(v->symbol()))
+            if (sc->known) { *out = sc->value; return true; }
         return false;
     }
     // **A call to a constexpr function.** C++11 lets its body be one return statement,

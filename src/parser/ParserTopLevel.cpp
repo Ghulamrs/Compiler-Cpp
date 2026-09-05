@@ -243,6 +243,15 @@ void Parser::topLevel(Program &program) {
     // is the same question the class body asks about a member.
     if (!d.qualifier.empty() && !peek().is("(") && d.paramsAt == 0 &&
         !d.type->isFunction()) {
+        // **`static` belongs to the declaration inside the class, not to this
+        // definition** - [class.static.data]/2. At namespace scope the keyword
+        // would give the object internal linkage, which the member it defines
+        // cannot have, so writing it here says two different things at once.
+        if (sc == StorageStatic)
+            src_.fail(scPos, "'static' can only be written on the declaration "
+                             "inside '" + d.qualifier + "' - the definition of "
+                             "'" + d.qualifier + "::" + d.name + "' is written "
+                             "without it");
         defineStaticMember(d, program);
         return;
     }

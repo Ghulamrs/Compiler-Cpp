@@ -1038,6 +1038,21 @@ private:
     void declareStaticMember(const std::string &cls, Type *owner,
                              const Declared &d, Access access);
     void defineStaticMember(Declared &d, Program &program);
+    // **What a static member *defined* out of line is worth when read** - the
+    // [expr.const]/3 read-back a namespace-scope const already makes. Keyed by
+    // the linkage symbol and not by the written name, because a base's static
+    // member may be named through a derived class and the two spellings differ.
+    // The object still has storage and an address; only its value is answered.
+    struct StaticConst {
+        bool known = false;   long long value = 0;
+        bool dknown = false;  long double dvalue = 0;
+    };
+    std::map<std::string, StaticConst> staticConsts_;
+    const StaticConst *findStaticConst(const std::string &symbol) const {
+        std::map<std::string, StaticConst>::const_iterator i =
+            staticConsts_.find(symbol);
+        return i == staticConsts_.end() ? nullptr : &i->second;
+    }
     ExprPtr staticMemberRef(const Type *owner, const Type::StaticMember &s,
                             const std::string &cls, std::size_t pos);
     void declareMember(const std::string &cls, const Declared &d, bool constThis,

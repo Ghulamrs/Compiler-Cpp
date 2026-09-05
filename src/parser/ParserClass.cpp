@@ -1987,6 +1987,25 @@ void Parser::defineStaticMember(Declared &d, Program &program) {
     bool hasInit = false;
     if (consume("=") || atBracedInitialiser(d.name)) {
         Init in = parseInitialiser();
+        // Read while the initialiser tree is still in scope, as the
+        // namespace-scope path does: flattenInit answers in bytes rather than
+        // in the value the read-back wants. A const static member defined here
+        // has storage and is still worth its value when read.
+        if (s->type->isConst()) {
+            StaticConst rec;
+            long long iv = 0;
+            if (constantInitialiser(s->type, in, &iv)) {
+                rec.known = true; rec.value = iv;
+            }
+            if (s->type->isFloating() && !in.isList && in.value != nullptr) {
+                bool p53 = false, x87 = false;
+                long double dv = 0;
+                if (foldDouble(*in.value, target_, &dv, &p53, &x87)) {
+                    rec.dknown = true; rec.dvalue = dv;
+                }
+            }
+            if (rec.known || rec.dknown) staticConsts_[s->symbol] = rec;
+        }
         flattenInit(s->type, in, 0, pieces);
         hasInit = true;
     }
