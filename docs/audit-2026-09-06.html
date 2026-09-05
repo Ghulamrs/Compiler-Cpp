@@ -1,0 +1,726 @@
+<title>cxx1 Defect Register</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Spectral:wght@500;600&display=swap">
+
+<style>
+:root {
+  --ground: #f2f4f7;
+  --surface: #ffffff;
+  --surface-2: #e9edf2;
+  --ink: #151a22;
+  --ink-2: #39424f;
+  --muted: #5d6878;
+  --rule: #d7dde5;
+  --rule-2: #c3ccd7;
+  --accent: #2f4b7c;
+  --accent-2: #4a6a9e;
+  --crit: #a12f2a;
+  --crit-bg: #f6e8e6;
+  --high: #96651a;
+  --high-bg: #f6efe0;
+  --med: #35695f;
+  --med-bg: #e4efec;
+  --ok: #35695f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0e1218;
+    --surface: #151b23;
+    --surface-2: #1d242e;
+    --ink: #e7ebf1;
+    --ink-2: #c2cad6;
+    --muted: #929cac;
+    --rule: #262f3b;
+    --rule-2: #35404f;
+    --accent: #8aabdd;
+    --accent-2: #a7c1e9;
+    --crit: #e58175;
+    --crit-bg: #2c1c1b;
+    --high: #d8a55a;
+    --high-bg: #2a2318;
+    --med: #74b8a8;
+    --med-bg: #172623;
+    --ok: #74b8a8;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #0e1218;
+  --surface: #151b23;
+  --surface-2: #1d242e;
+  --ink: #e7ebf1;
+  --ink-2: #c2cad6;
+  --muted: #929cac;
+  --rule: #262f3b;
+  --rule-2: #35404f;
+  --accent: #8aabdd;
+  --accent-2: #a7c1e9;
+  --crit: #e58175;
+  --crit-bg: #2c1c1b;
+  --high: #d8a55a;
+  --high-bg: #2a2318;
+  --med: #74b8a8;
+  --med-bg: #172623;
+  --ok: #74b8a8;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  margin: 0;
+  padding: 0 1.25rem 5rem;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 60rem; margin: 0 auto; }
+
+/* ---------- masthead ---------- */
+
+.masthead {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 3.5rem 0 2rem;
+  border-bottom: 2px solid var(--ink);
+}
+.eyebrow {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+h1 {
+  font-family: Spectral, Georgia, serif;
+  font-weight: 600;
+  font-size: clamp(2.1rem, 5.5vw, 3.1rem);
+  line-height: 1.1;
+  letter-spacing: -0.015em;
+  margin: 0;
+  text-wrap: balance;
+}
+.standfirst {
+  font-family: Spectral, Georgia, serif;
+  font-size: clamp(1.05rem, 2.2vw, 1.22rem);
+  line-height: 1.55;
+  color: var(--ink-2);
+  max-width: 44rem;
+  margin: 0;
+}
+
+.meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 1rem 1.5rem;
+  padding-top: 0.5rem;
+}
+.meta div { display: flex; flex-direction: column; gap: 0.15rem; }
+.meta dt, .meta .k {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.meta .v {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.86rem;
+  color: var(--ink);
+}
+
+/* ---------- verdict ---------- */
+
+.verdict {
+  margin: 2.5rem 0 0;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--crit);
+  padding: 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.verdict p { margin: 0; max-width: 46rem; }
+.verdict .lead {
+  font-family: Spectral, Georgia, serif;
+  font-size: 1.18rem;
+  line-height: 1.5;
+}
+.counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: 1rem;
+  border-top: 1px solid var(--rule);
+  padding-top: 1.25rem;
+}
+.count .n {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 2rem;
+  font-weight: 600;
+  line-height: 1;
+  display: block;
+}
+.count .l {
+  font-size: 0.8rem;
+  color: var(--muted);
+  display: block;
+  margin-top: 0.4rem;
+  line-height: 1.35;
+}
+.count.crit .n { color: var(--crit); }
+.count.high .n { color: var(--high); }
+.count.ok .n { color: var(--ok); }
+
+/* ---------- sections ---------- */
+
+section { margin-top: 3.5rem; }
+
+h2 {
+  font-family: Spectral, Georgia, serif;
+  font-weight: 600;
+  font-size: 1.6rem;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.5rem;
+  text-wrap: balance;
+}
+h2 .num {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.8rem;
+  color: var(--accent);
+  margin-right: 0.7rem;
+  vertical-align: 0.22em;
+  letter-spacing: 0.06em;
+}
+.section-note {
+  color: var(--muted);
+  max-width: 46rem;
+  margin: 0 0 1.75rem;
+  font-size: 0.95rem;
+}
+
+/* ---------- legend ---------- */
+
+.legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+.legend div {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  padding: 0.85rem 1rem;
+  font-size: 0.88rem;
+  color: var(--ink-2);
+}
+.legend strong {
+  display: block;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-bottom: 0.3rem;
+}
+
+/* ---------- findings ---------- */
+
+.finding {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--rule-2);
+  padding: 1.35rem 1.5rem;
+  margin-bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+.finding.crit { border-left-color: var(--crit); }
+.finding.high { border-left-color: var(--high); }
+.finding.med  { border-left-color: var(--med); }
+
+.f-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem 0.85rem; }
+.fid {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.f-title {
+  font-family: Spectral, Georgia, serif;
+  font-size: 1.13rem;
+  font-weight: 600;
+  line-height: 1.35;
+  flex: 1 1 22rem;
+  min-width: 0;
+  text-wrap: balance;
+}
+.tag {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  padding: 0.22rem 0.5rem;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.tag.crit { color: var(--crit); background: var(--crit-bg); }
+.tag.high { color: var(--high); background: var(--high-bg); }
+.tag.med  { color: var(--med);  background: var(--med-bg); }
+.tag.repro { color: var(--accent); background: transparent; }
+
+.finding p { margin: 0; color: var(--ink-2); font-size: 0.95rem; }
+.finding p.why { max-width: 48rem; }
+
+/* evidence */
+
+.ev { display: grid; grid-template-columns: 1fr; gap: 0.6rem; }
+.prog {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+  padding: 0.75rem 0.9rem;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--ink);
+}
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+@media (max-width: 34rem) { .pair { grid-template-columns: 1fr; } }
+.side {
+  border: 1px solid var(--rule);
+  padding: 0.65rem 0.85rem;
+  overflow-x: auto;
+}
+.side .k {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.67rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 0.3rem;
+}
+.side .v {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
+  display: block;
+}
+.side.want .v { color: var(--ok); }
+.side.got .v { color: var(--crit); font-weight: 500; }
+
+.site {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: var(--muted);
+  border-top: 1px dashed var(--rule-2);
+  padding-top: 0.7rem;
+}
+.site b { color: var(--ink-2); font-weight: 500; }
+
+code, .mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.88em;
+  background: var(--surface-2);
+  padding: 0.08em 0.3em;
+  border-radius: 2px;
+}
+p code { white-space: nowrap; }
+
+/* ---------- tables ---------- */
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--rule); background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; min-width: 34rem; }
+th, td { text-align: left; padding: 0.65rem 0.9rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 500;
+  background: var(--surface-2);
+}
+tbody tr:last-child td { border-bottom: none; }
+td.mono-cell {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+/* ---------- lists ---------- */
+
+ul.plain { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.55rem; }
+ul.plain li {
+  padding-left: 1.15rem;
+  position: relative;
+  color: var(--ink-2);
+  font-size: 0.95rem;
+}
+ul.plain li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 0.45rem;
+  height: 1px;
+  background: var(--accent);
+}
+ol.steps { padding-left: 0; margin: 0; list-style: none; counter-reset: s; display: flex; flex-direction: column; gap: 1rem; }
+ol.steps li {
+  counter-increment: s;
+  display: grid;
+  grid-template-columns: 2.1rem 1fr;
+  gap: 0.9rem;
+  align-items: start;
+}
+ol.steps li::before {
+  content: counter(s);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--accent);
+  border: 1px solid var(--rule-2);
+  width: 2.1rem;
+  height: 2.1rem;
+  display: grid;
+  place-items: center;
+}
+ol.steps strong { color: var(--ink); }
+ol.steps p { margin: 0.15rem 0 0; color: var(--ink-2); font-size: 0.93rem; }
+
+.pending {
+  background: var(--high-bg);
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--high);
+  padding: 1.1rem 1.35rem;
+  font-size: 0.93rem;
+  color: var(--ink-2);
+}
+.pending strong { color: var(--ink); }
+
+footer {
+  margin-top: 4rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.85rem;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+a { color: var(--accent); }
+a:focus-visible, :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Added for this record: the two sections a reader must not skim past. */
+h2.crit-head { color: var(--crit); }
+h2.crit-head::after { background: var(--crit); }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <span class="eyebrow">Compiler review &middot; Fable 5.1 panel of three &middot; 6 September 2026</span>
+  <h1>cxx1 Defect Register</h1>
+  <p class="standfirst">Three reviewers went at the C++11 compiler along three axes, under one rule: a finding without a program that runs is not a finding. Four suites pass on all three machines; about eighty-five defects are confirmed underneath them, they collapse into five roots, and the worst of them is four lines of ordinary C++ that no output comparison could ever have caught.</p>
+  <div class="meta">
+    <div><span class="k">Tree</span><span class="v">Compiler-Cpp @ 2f60e2e</span></div>
+    <div><span class="k">Source language</span><span class="v">ISO C++14</span></div>
+    <div><span class="k">Accepted language</span><span class="v">ISO C++11, exactly</span></div>
+    <div><span class="k">Targets</span><span class="v">darwin / linux / windows</span></div>
+    <div><span class="k">Oracle</span><span class="v">clang++ -x c++ -std=c++11<br>-pedantic-errors</span></div>
+    <div><span class="k">Panel</span><span class="v">3 of 3 reported</span></div>
+  </div>
+</header>
+
+<p class="lead">This file is a <b>frozen record</b> and is not to be edited as things are fixed. Its value is that it is dated: a later reader can tell what was true on 6 September 2026 from what is true now only if nobody quietly brings it up to date. Fixes are recorded in CLAUDE.md, in the table the 2026-09-01 audit already uses. A second review gets a third file beside these two.</p>
+
+<div class="counts">
+  <div class="count"><span class="n">306</span><span class="l">programs run<br>by review C</span></div>
+  <div class="count crit"><span class="n">~85</span><span class="l">distinct defects<br>across three axes</span></div>
+  <div class="count crit"><span class="n">9</span><span class="l">re-verified by hand<br>against the same build</span></div>
+  <div class="count high"><span class="n">27</span><span class="l">over-acceptances<br>ill-formed code taken</span></div>
+  <div class="count ok"><span class="n">5</span><span class="l">roots the findings<br>collapse into</span></div>
+</div>
+
+<h2>What was asked, and why it worked this time</h2>
+
+<p class="lead">Fable 5 and 5.1 had reviewed this tree repeatedly and returned nothing actionable. The difference here is the brief, not the reviewer. Each of the three was given a named defect <i>shape</i> drawn from bugs this compiler had actually shipped, a demand that every claim arrive as a program with both compilers' real output, and an instruction to report negative results honestly. A brief that says &ldquo;review this compiler&rdquo; returns prose. A brief that demands a failing program returns either a bug or a clean bill, and both are worth having.</p>
+
+<p class="lead">The target was stated as <b>exactly ISO C++11 &mdash; no overstepping and no understepping</b>, so both directions count as defects: code C++11 requires that cxx1 refuses or miscompiles, and code C++11 forbids that cxx1 accepts. Reviewers were warned that the oracle is not the standard: clang under <code>-std=c++11</code> back-ports some C++14 relaxations, and where the two disagree the ISO text governs. No finding below rests on a back-ported relaxation.</p>
+
+<h2>The five roots</h2>
+
+<p class="lead">The eighty-five are not eighty-five independent bugs. Fixing these five closes roughly forty of them, and the ordering below is by silence and ordinariness &mdash; a wrong answer in code anybody writes outranks a refusal in code nobody writes.</p>
+
+<table>
+<tr><th>Root</th><th>Closes</th><th>Shape of the fix</th></tr>
+<tr><td><b>R1</b> &nbsp;Unqualified lookup asks the tables in the wrong order &mdash; globals before members, enumerators before locals</td><td class="mono-cell">~6, three of them silent</td><td>one function; [basic.lookup.unqual]/1 and [basic.scope.hiding]/1 say the nearest declaration wins</td></tr>
+<tr><td><b>R2</b> &nbsp;A <i>user-written</i> destructor never destroys the class's members or bases</td><td class="mono-cell">2, plus link failures</td><td>the implicit destructor already walks them; the written path does not</td></tr>
+<tr><td><b>R3</b> &nbsp;Lambda capture by value of a class or an array</td><td class="mono-cell">2, both silent</td><td>capture builds a bytewise copy instead of calling the copy constructor</td></tr>
+<tr><td><b>R4</b> &nbsp;Eight nested-parse doors, each with its own hand-written save list</td><td class="mono-cell">most of review A</td><td>one RAII guard replacing eight lists</td></tr>
+<tr><td><b>R5</b> &nbsp;Access checks written as <code>currentClass_ != cls</code> at sites predating <code>insideAccessOf</code></td><td class="mono-cell">6 of review B</td><td>route every check through the helper that knows about closures and derivation</td></tr>
+</table>
+
+<h2 class="crit-head">Verified by hand</h2>
+
+<p class="lead">These nine were re-run against the same binary rather than taken on a reviewer's word, because an agent's report is a hypothesis until it is reproduced. All nine reproduce. Programs are shown as run.</p>
+
+<div class="finding crit">
+  <div class="f-head">
+    <span class="fid">V-01</span>
+    <span class="f-title">A user-written destructor never destroys the class's data members</span>
+    <span class="tag crit">Silent leak</span><span class="tag repro">Verified</span>
+  </div>
+  <div class="ev">
+    <div class="prog">struct P { int n; P() : n(5) {} ~P() { printf("-%d ", n); } };
+struct D { P x; ~D() { printf("~D "); } };
+int main() { { D d; } printf("\n"); }</div>
+    <div class="pair">
+      <div class="side want"><span class="k">clang -std=c++11</span><span class="v">~D -5</span></div>
+      <div class="side got"><span class="k">cxx1</span><span class="v">~D</span></div>
+    </div>
+  </div>
+  <p class="why">[class.dtor]/8: after the body has run, a destructor calls the destructors for the class's non-static data members, then its bases. The <i>implicit</i> destructor does this; a <i>written</i> one does not &mdash; the same implicit-path-only shape as the constructor bug already recorded in CLAUDE.md under &ldquo;A base's members were built twice&rdquo;. Any class with <code>~C() { }</code> and a <code>std::string</code> member leaks it. No base, no mem-initialiser and no inheritance are needed to reach it.</p>
+  <p class="site"><b>Root:</b> R2 &mdash; the member and base walk lives only in the synthesised destructor</p>
+</div>
+
+<div class="finding crit">
+  <div class="f-head">
+    <span class="fid">V-02</span>
+    <span class="f-title">A data member is hidden by a global of the same name</span>
+    <span class="tag crit">Silent wrong value</span><span class="tag repro">Verified</span>
+  </div>
+  <div class="ev">
+    <div class="prog">int k = 10;
+struct S { int k; S() : k(3) {} int get() { return k; } };
+int main() { S s; printf("%d\n", s.get()); }</div>
+    <div class="pair">
+      <div class="side want"><span class="k">clang -std=c++11</span><span class="v">3</span></div>
+      <div class="side got"><span class="k">cxx1</span><span class="v">10</span></div>
+    </div>
+  </div>
+  <p class="why">[class.mfct.non-static]/3 and [basic.lookup.unqual]/8: inside a member function an unqualified name that names a member is transformed to <code>(*this).name</code>. The member path is consulted only when <code>findGlobal(name) == nullptr</code>, so any class whose member shares a name with any global anywhere in the program silently reads the wrong object. It is also why a captured <code>[k]</code> reads the global rather than the member.</p>
+  <p class="site"><b>src/parser/ParserExpr.cpp:1316-1317</b> &mdash; members reached only if no global answers &nbsp;&middot;&nbsp; <b>Root:</b> R1</p>
+</div>
+
+<div class="finding crit">
+  <div class="f-head">
+    <span class="fid">V-03</span>
+    <span class="f-title">An enumerator hides a local variable and a function parameter</span>
+    <span class="tag crit">Silent wrong value</span><span class="tag repro">Verified</span>
+  </div>
+  <div class="ev">
+    <div class="prog">enum { A = 1, K = 2 };
+int f(int K) { return K; }
+int main() { int A = 5; printf("%d %d\n", A, f(7)); }</div>
+    <div class="pair">
+      <div class="side want"><span class="k">clang -std=c++11</span><span class="v">5 7</span></div>
+      <div class="side got"><span class="k">cxx1</span><span class="v">1 2</span></div>
+    </div>
+  </div>
+  <p class="why">[basic.scope.hiding]/1: the nearest declaration hides the outer one. <code>findEnum</code> is asked before locals, before parameters and before members, so an enumerator wins against all three. Five lines, no diagnostic, wrong values.</p>
+  <p class="site"><b>src/parser/ParserExpr.cpp:1306</b> &mdash; asked before <code>objectRef</code> at 1311 &nbsp;&middot;&nbsp; <b>Root:</b> R1</p>
+</div>
+
+<div class="finding crit">
+  <div class="f-head">
+    <span class="fid">V-04</span>
+    <span class="f-title">An array captured by value reads garbage</span>
+    <span class="tag crit">Silent wrong value</span><span class="tag repro">Verified</span>
+  </div>
+  <div class="ev">
+    <div class="prog">int main() {
+    int arr[3] = {1, 2, 3};
+    auto f = [arr]() { return arr[0] + arr[2]; };
+    printf("%d\n", f());
+}</div>
+    <div class="pair">
+      <div class="side want"><span class="k">clang -std=c++11</span><span class="v">4</span></div>
+      <div class="side got"><span class="k">cxx1</span><span class="v">1611359764</span></div>
+    </div>
+  </div>
+  <p class="why">[expr.prim.lambda]/21 (C++11 numbering): a by-copy capture of an array copies the array. A <code>struct</code> captured the same way is correct, so the defect is specific to the array element walk. Three lines of ordinary C++.</p>
+  <p class="site"><b>Root:</b> R3</p>
+</div>
+
+<div class="finding crit">
+  <div class="f-head">
+    <span class="fid">V-05</span>
+    <span class="f-title">A class captured by value is copied bytewise, and the closure's copy is never destroyed</span>
+    <span class="tag crit">Silent leak</span><span class="tag repro">Verified</span>
+  </div>
+  <div class="ev">
+    <div class="prog">struct T { int *p;
+    T(int x) : p(new int(x)) { printf("ctor "); }
+    T(const T &amp;o) : p(new int(*o.p)) { printf("copy "); }
+    ~T() { printf("dtor "); } };
+int main() { T a(7); auto f = [a]() { return *a.p; }; printf("%d ", f()); }</div>
+    <div class="pair">
+      <div class="side want"><span class="k">clang -std=c++11</span><span class="v">ctor copy 7 dtor dtor</span></div>
+      <div class="side got"><span class="k">cxx1</span><span class="v">ctor 7 dtor</span></div>
+    </div>
+  </div>
+  <p class="why">The copy constructor never runs and the closure's member is never destroyed &mdash; two objects exist where clang has two and destroys two, and here the second was never built as an object at all. For a class that owns memory the two copies share a pointer, so the surviving one is a use-after-free waiting for the other's destructor.</p>
+  <p class="site"><b>Root:</b> R3</p>
+</div>
+
+<div class="finding crit">
+  <div class="f-head">
+    <span class="fid">V-06</span>
+    <span class="f-title">A lambda's return-type deduction leaks <code>alive_</code>, and a destructor runs on a slot nothing constructed</span>
+    <span class="tag crit">Silent</span><span class="tag repro">Verified</span>
+  </div>
+  <div class="ev">
+    <div class="prog">struct S { int v; S(int n) : v(n) { printf("ctor %d\n", n); }
+           ~S() { printf("dtor %d\n", v); } };
+int main() { auto f = []() { S s(3); return s.v; };
+             int r = f(); printf("r=%d\n", r); }</div>
+    <div class="pair">
+      <div class="side want"><span class="k">clang -std=c++11</span><span class="v">ctor 3 / dtor 3 / r=3</span></div>
+      <div class="side got"><span class="k">cxx1</span><span class="v">ctor 3 / dtor 3 / r=3 / <b>dtor 1</b></span></div>
+    </div>
+  </div>
+  <p class="why">This is the original <code>alive_</code> bug, one door over. <code>deduceLambdaReturn</code> parses the statements before the lambda's <code>return</code> for real, in the enclosing function, and restores only <code>locals_</code>, <code>scopeStarts_</code> and <code>at_</code>. The entry pushed onto <code>alive_</code> is never popped, survives into the enclosing function, and <code>main</code>'s exit destroys an object that was never constructed. [class.dtor]/11.</p>
+  <p class="site"><b>src/parser/ParserExprLambda.cpp:103-117</b> &nbsp;&middot;&nbsp; <b>Root:</b> R4</p>
+</div>
+
+<div class="finding crit">
+  <div class="f-head">
+    <span class="fid">V-07</span>
+    <span class="f-title"><code>break</code> inside a lambda inside a loop segfaults the compiler</span>
+    <span class="tag crit">Compiler crash</span><span class="tag repro">Verified</span>
+  </div>
+  <div class="ev">
+    <div class="prog">for (int i = 0; i &lt; 3; i++) {
+    auto f = [](int a) { if (a &gt; 1) break; return a; };
+    total += f(i);
+}</div>
+    <div class="pair">
+      <div class="side want"><span class="k">clang -std=c++11</span><span class="v">error: 'break' statement not in<br>loop or switch statement</span></div>
+      <div class="side got"><span class="k">cxx1</span><span class="v">exit 139 &mdash; segmentation fault</span></div>
+    </div>
+  </div>
+  <p class="why">[stmt.break]/1: <code>break</code> shall occur only within an iteration or switch statement <i>of the same function</i>. <code>loopDepth_</code> and <code>breakMarks_</code> are not cleared for the replayed body, so the lambda believes it is inside <code>main</code>'s loop and the code generator dereferences a mark belonging to another frame. The <code>switch</code> sibling accepts a stray <code>case</code> and fails in the assembler instead.</p>
+  <p class="site"><b>src/parser/Parser.cpp:512-648</b> &mdash; not in the save list &nbsp;&middot;&nbsp; <b>Root:</b> R4</p>
+</div>
+
+<div class="finding high">
+  <div class="f-head">
+    <span class="fid">V-08</span>
+    <span class="f-title">A private member of a base is reachable from a derived class, by all three spellings</span>
+    <span class="tag high">Over-acceptance</span><span class="tag repro">Verified</span>
+  </div>
+  <div class="ev">
+    <div class="prog">struct B { int x; };            // private in a class; reached as
+struct D : B { int f(); };      // x, this-&gt;x and o.x alike</div>
+    <div class="pair">
+      <div class="side want"><span class="k">clang -std=c++11</span><span class="v">error: 'x' is a private<br>member of 'B'</span></div>
+      <div class="side got"><span class="k">cxx1</span><span class="v">accepts &mdash; 3 3 3</span></div>
+    </div>
+  </div>
+  <p class="why">[class.access.base]/5. Members copied down into the derived class keep <code>Access::Private</code> but carry no record of the naming class, so <code>checkAccessible</code> asks <code>insideAccessOf</code> with the <i>object's</i> class while <code>currentClass_</code> is the derived one. The implicit-<code>this</code> path performs no access check whatever. The private member <i>function</i> case behaves the same way.</p>
+  <p class="site"><b>src/parser/ParserType.cpp:232-234</b>, <b>ParserExprCall.cpp:674</b>, <b>ParserExpr.cpp:1316-1332</b> &nbsp;&middot;&nbsp; <b>Root:</b> R5</p>
+</div>
+
+<div class="finding high">
+  <div class="f-head">
+    <span class="fid">V-09</span>
+    <span class="f-title">A <code>[this]</code> capture drops the constness of <code>this</code></span>
+    <span class="tag high">Over-acceptance</span><span class="tag repro">Verified</span>
+  </div>
+  <div class="ev">
+    <div class="prog">// inside a const member function, a lambda writes the object
+int f() const { auto g = [this]() { n = 9; }; g(); return n; }</div>
+    <div class="pair">
+      <div class="side want"><span class="k">clang -std=c++11</span><span class="v">error: cannot assign to<br>non-static data member within<br>const member function</span></div>
+      <div class="side got"><span class="k">cxx1</span><span class="v">accepts &mdash; 5 9</span></div>
+    </div>
+  </div>
+  <p class="why">[expr.prim.lambda]/18: the captured <code>this</code> has the type it has in the enclosing function &mdash; <code>const S *</code> in a const member function. The three ordinary member paths (<code>.</code>, <code>-&gt;</code>, implicit) all propagate the object's const correctly; the captured pointer is built unqualified, so a const member function mutates its own object twice with no diagnostic.</p>
+  <p class="site"><b>src/parser/ParserExprLambda.cpp:452-453</b> &mdash; <code>types_.pointerTo(outer-&gt;second)</code>, unqualified</p>
+</div>
+
+<h2>Review A &mdash; per-function state across a nested parse</h2>
+
+<p class="lead">The axis: cxx1 re-enters parsing from a saved token index in <b>eight</b> places, each with its own hand-written list of state to save and restore, each written separately. That is how the shipped <code>alive_</code> bug happened. The reviewer classified every per-function field of <code>class Parser</code> as saved, provably-safe, or unsafe, and reproduced every member of the third class.</p>
+
+<table>
+<tr><th>Door</th><th>Saves</th><th>Verdict</th></tr>
+<tr><td><code>replayInlineBodies</code></td><td class="mono-cell">31 fields</td><td>misses 6: <code>loopDepth_</code>/<code>breakMarks_</code>, <code>switchDepth_</code>/<code>switches_</code>, <code>inTryBody_</code>, <code>inMsHandler_</code>, <code>mayThrow_</code>, <code>conditionDecl_</code></td></tr>
+<tr><td><code>deduceLambdaReturn</code></td><td class="mono-cell">3 fields</td><td><b>the worst door</b> &mdash; <code>alive_</code>, <code>labels_</code>/<code>gotos_</code>, <code>functionHasTry_</code>, <code>functionHasPads_</code>, <code>functionTypeIndex_</code>, <code>usingNamespaces_</code> all leak out</td></tr>
+<tr><td><code>applyDefaults</code></td><td class="mono-cell">locals, scopes, names</td><td>not <code>namespaceStack_</code>, not <code>currentClass_</code> &mdash; a default argument is read in the caller's scope</td></tr>
+<tr><td><code>memberInitialiser</code></td><td class="mono-cell"><code>locals_</code>, <code>at_</code></td><td>not <code>namespaceStack_</code></td></tr>
+<tr><td><code>deduceAuto</code></td><td class="mono-cell"><code>at_</code></td><td>keeps <code>pendingTemps_</code> from a parse that built nothing</td></tr>
+<tr><td><code>sizeof</code> / <code>decltype</code> / <code>noexcept</code> operand</td><td class="mono-cell"><code>at_</code> / <code>mayThrow_</code></td><td>same &mdash; unevaluated operands register temporaries that are later destroyed</td></tr>
+<tr><td><code>instantiateClass</code></td><td class="mono-cell">class stack, bindings</td><td>not <code>angleSplit_</code> &mdash; <code>Box&lt;Box&lt;int&gt;&gt;</code> fails to parse</td></tr>
+<tr><td><code>instantiateMemberTemplate</code></td><td class="mono-cell">one-shots, then delegates</td><td>inherits all of <code>replayInlineBodies</code>' omissions</td></tr>
+</table>
+
+<p class="lead">Consequences reproduced beyond V-06 and V-07: an enclosing function's own <code>catch</code> can never be selected when a lambda in it contains a <code>try</code> (the program hangs to the CPU limit); a link failure from a missing <code>.gcc_except_table</code>; <code>noexcept(e)</code> answering <code>false</code> for a non-throwing member template; valid programs refused because a label, a <code>try</code>, or a condition declaration in a lambda is attributed to the enclosing function; and a block-scope <code>using namespace</code> inside a lambda leaking out to the enclosing function, which is over-acceptance.</p>
+
+<p class="lead">Three defects found on the way that are not about nested parses: V-02 above; <code>(int(x)) + 1</code> read as a C-style cast of <code>+1</code>, giving <code>1</code> where clang gives <code>6</code> ([dcl.name]/1 &mdash; a type-id has no declarator-id); and a <code>static</code> local inside a lambda emitted with the symbol <code>operator().n</code>, which the assembler rejects.</p>
+
+<h2>Review B &mdash; a rule implemented at N&minus;1 of N sites</h2>
+
+<p class="lead">The axis: this compiler's dominant defect shape. Twenty-one findings, twelve over-acceptance and nine understepping. Beyond V-02, V-03, V-08 and V-09, the ones that change what a correct program does:</p>
+
+<table>
+<tr><th>Finding</th><th>Rule</th><th>Effect</th></tr>
+<tr><td>Leaving a <code>catch</code> handler by <code>return</code>, <code>break</code>, <code>continue</code> or <code>goto</code> never calls <code>__cxa_end_catch</code></td><td class="mono-cell">[except.handle]/16</td><td>silent &mdash; the runtime's caught-exception chain is left set and the exception object never freed</td></tr>
+<tr><td>Bases and members already built are not destroyed when a constructor body throws</td><td class="mono-cell">[except.ctor]/2</td><td>silent leak &mdash; the unwind regions are built from <code>alive_</code>, which subobjects never enter</td></tr>
+<tr><td>An implicit derived destructor names an implicit base destructor that is never emitted</td><td class="mono-cell">&mdash;</td><td>link failure; the same shape as audit finding A-02</td></tr>
+<tr><td>Temporaries made in a mem-initialiser list are never destroyed</td><td class="mono-cell">[class.temporary]/4</td><td>leak &mdash; the NSDMI path flushes, the hand-built list path does not</td></tr>
+<tr><td><code>fold</code> has no floating lane, so <code>constexpr double</code>, <code>int a[(int)2.5]</code> and <code>static_assert(d &gt; 1.0)</code> are all refused</td><td class="mono-cell">[expr.const]/3</td><td>the two constant evaluators disagree about what is a constant</td></tr>
+<tr><td>A lambda in a member function cannot see the class's static members, enumerators, typedefs or nested classes</td><td class="mono-cell">[expr.prim.lambda]/7</td><td>valid code refused &mdash; the tables walk <code>currentClass_</code>, which is the closure</td></tr>
+<tr><td>Local enumerations and local typedefs live in flat, file-wide tables</td><td class="mono-cell">[basic.scope.local]</td><td>the same enumerator name in two functions is &ldquo;declared twice&rdquo;</td></tr>
+<tr><td>No access check on destructors at all; none on <code>new S(1)</code>, on a converting constructor, on a private member template, or on a pointer to a private member function</td><td class="mono-cell">[class.access]/1</td><td>over-acceptance at five sites of one set</td></tr>
+<tr><td><code>.*</code> and <code>-&gt;*</code> on a const object yield a non-const lvalue</td><td class="mono-cell">[expr.mptr.oper]/6</td><td>over-acceptance &mdash; writes through a const object</td></tr>
+</table>
+
+<h2>Review C &mdash; 306 differential programs</h2>
+
+<p class="lead">The axis: empirical, not by reading. 156 valid programs and 150 deliberately ill-formed ones, with <b>both the verdict and the output</b> diffed &mdash; a harness that only diffs the output of programs which compiled is structurally blind to over-acceptance, which is why the ill-formed half exists. All eight header-only probes agreed, and every header-involving hit was reduced to a header-free program before being reported.</p>
+
+<div class="counts">
+  <div class="count"><span class="n">156</span><span class="l">valid programs<br>~23 defects</span></div>
+  <div class="count"><span class="n">150</span><span class="l">ill-formed programs<br>27 over-accepted</span></div>
+  <div class="count ok"><span class="n">9</span><span class="l">C++14 forms probed<br>all correctly refused</span></div>
+</div>
+
+<p class="lead">Beyond V-01, V-04 and V-05: a member function taking <code>T&amp;&amp;</code> given a call's prvalue is handed a different object from the one destroyed (a double free with an owning class); a lambda whose body returns a class from a call runs a destructor on an unbuilt slot, and aborts for <code>[](const std::string &amp;s) { return s + "!"; }</code>; a two-dimensional array member of class type has only its first row constructed; any polymorphic class template emits an unassemblable <code>_ZTS</code> symbol spelled from the tag rather than the mangled template-id.</p>
+
+<p class="lead">Fourteen shapes of ordinary valid code are refused without being named in <code>EXCLUSIONS.md</code>. Two deserve singling out: parenthesised direct-init of a scalar &mdash; <code>int z(5);</code> &mdash; on which <b>the repository's own <code>&lt;utility&gt;</code> depends</b>, so <code>std::swap</code> on two <code>int</code>s fails inside the header; and <code>[=]</code>/<code>[&amp;]</code> inside a member function not implicitly capturing <code>this</code>.</p>
+
+<p class="lead">Of the 27 over-acceptances, three are already in <code>CONFORMANCE.md</code>. The rest are not, and the ones a real program reaches are: a class with a reference or <code>const</code> member accepting default construction ([class.ctor]/5 deletes it); a duplicate data member; a constructor with a return type; <code>auto a = 1, b = 2.0;</code>; a lambda with inconsistent return types; <code>operator+(int, int)</code> at namespace scope; an <code>explicit operator bool</code> used in copy-initialisation; and a virtual function &ldquo;overridden&rdquo; with an incompatible return type. Every C++14 form probed &mdash; <code>0b101</code>, <code>1'000</code>, generic lambdas, return-type deduction, init-captures, NSDMI aggregates, <code>[[deprecated]]</code>, variable templates, <code>decltype(auto)</code> &mdash; is correctly refused.</p>
+
+<h2 class="crit-head">The finding about the method, not the compiler</h2>
+
+<p class="lead">Compiler++ compiles under cxx1 and matches a clang build on all 200 comparisons, on all three targets. It does so under a compiler that <b>leaks every data member of every class with a written destructor</b> (V-01). It passes because a leak does not change what reaches stdout.</p>
+
+<p class="lead">That is not a gap in the corpus, which can be widened; it is a gap in the <i>oracle</i>. Output comparison &mdash; the method this entire tree rests on, from <code>run.sh</code> through <code>verify-three</code> to the 200-case Compiler++ differential &mdash; cannot see a leak, a double free that happens after the last print, a destructor running on an unbuilt slot, or any corruption that does not reach the output before the program ends. Four suites were green on three machines throughout everything above.</p>
+
+<p class="lead">CLAUDE.md already prescribes the remedy for one case and does not generalise it: <code>return-copy-balance.cpp</code> and <code>move-only.cpp</code> count <i>live objects</i> rather than constructor calls, precisely because elision makes counts meaningless while a leak or a double free moves the balance and nothing else does. V-01, V-05, and review B's constructor-throw and mem-initialiser leaks are all invisible to output and all visible to a live-object count. <b>Fixing the oracle should come before fixing the compiler</b>, or the suites will keep certifying this class of defect as green.</p>
+
+<h2>Negative results</h2>
+
+<p class="lead">Recorded because a review that reports only hits cannot be sized. Review A tried and cleared: <code>pendingTemps_</code> and <code>localTypes_</code> through the deduction parse, a default argument shadowed by a caller's local, a lambda in a default argument called from two functions, a lambda in a member initialiser with two constructors, <code>inlineOwner_</code> through a nested-class replay, and a static local in an ordinary inline member. Review B cleared roughly twenty-five shapes including [class.protected] through a base-typed object, const propagation through all three member paths, private conversion functions and operators from outside, ten scope-exit shapes with identical destructor traces, and by-value copies for every call form but the mem-initialiser. Review C's live-balance comparisons agreed for exceptions through destructible frames, virtual calls in constructors and destructors, multiple-inheritance construction order, operator overloading with temporaries, <code>?:</code> and <code>&amp;&amp;</code>/<code>||</code> temporaries, member templates, variadics, SFINAE, and all eight header programs.</p>
+
+<p class="lead">One harness trap is worth passing on: <code>-w</code> silently disables clang's <code>-pedantic-errors</code> diagnostics, which mis-scored six C++14 forms as accepted until it was removed and everything re-run.</p>
+
+<footer>
+  <p>Programs for every finding are in the reviewers' scratch directories as run. Fixes are tracked in CLAUDE.md, not here &mdash; this file is dated and stays as written.</p>
+</footer>
+
+</div>
