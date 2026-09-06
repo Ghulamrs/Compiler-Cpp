@@ -6372,6 +6372,44 @@ parameter and a local against an enumerator, a member against a global reached
 directly and through both kinds of capture, a local against a member, a class
 enumerator against a global, and a local against a class enumerator.
 
+## Dynamic initialisation, the one thing four refusals are all waiting for
+
+**Not started, and scoped here so the next attempt begins from a measurement.**
+[basic.start.init]/2 runs the constructor of a namespace-scope object before
+`main`, and cxx1 runs none - which is one missing mechanism behind four
+separate refusals, each of which names it:
+
+    src/parser/ParserStmt.cpp     a static local with a constructor
+    src/parser/ParserClass.cpp    a static data member of class type
+    src/parser/ParserTopLevel.cpp a file-scope object with a constructor
+    src/parser/ParserTopLevel.cpp a reference at file scope
+
+**Three parts, and the second is why this is a rung and not a fix.**
+
+*The parser* synthesises a function holding the constructions in declaration
+order and stops refusing at those four sites. `Program` needs a field for it;
+`thrown` and `rtti` are the precedent, both being lists one backend reads.
+
+*The three backends* get it run, and each spells it differently: `.init_array`
+on ELF, `__mod_init_func` on Mach-O, `.CRT$XCU` on Windows. Measure each
+against clang or cl before writing it, as every other ABI answer here was.
+
+*Destruction* is [basic.start.term], in reverse, through `__cxa_atexit`.
+Not optional and not a later step: without it every such object leaks, and
+`tests/cases/lifetime.h` now catches exactly that.
+
+**The shortcut to refuse: calling the init function from the top of `main`.**
+One place instead of three, and it would make a program work tonight. It is
+also wrong - initialisation would happen after another translation unit's, and
+after anything the runtime starts before `main` - and it would look like
+success. That is the shape of defect this compiler's whole method exists to
+find, so it is not the way in.
+
+**What it unblocks**, beyond the four refusals: `rotrix_main.cpp` of the C++
+Vector Exercise, whose `CRotrixConstants<Tag>::Identity3 = CRotrix()` is a
+static data member of class type. The other three of that exercise's four
+programs compile and print byte-for-byte what clang prints.
+
 ## The object ledger, because printing cannot show a leak
 
 **Every suite here compares what a program prints, and three failures leave

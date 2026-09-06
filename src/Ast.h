@@ -329,6 +329,16 @@ class ExprStmt final : public Stmt {
 public:
     explicit ExprStmt(ExprPtr e) : expr_(std::move(e)) {}
     const Expr &expr() const { return *expr_; }
+    // **Handing the expression back out.** Some setup is built as statements
+    // because its usual home is a statement list - filling the backing array
+    // of an `initializer_list` is the case this exists for - and the same
+    // setup is sometimes needed where only an expression fits, a braced list
+    // written as the argument of a temporary. A comma is what an expression
+    // can carry, so the statements are unwrapped into one. The statement is
+    // left empty afterwards and must be dropped rather than walked: nothing
+    // here keeps one, and `expr()` on a released statement would dereference
+    // null.
+    ExprPtr release() { return std::move(expr_); }
     void accept(Visitor &v) const override { v.visit(*this); }
 private:
     ExprPtr expr_;

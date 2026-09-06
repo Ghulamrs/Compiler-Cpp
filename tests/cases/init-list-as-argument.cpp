@@ -10,12 +10,14 @@
 // `initializer_list<Row>` is known too, so `{ {1, 2}, {3, 4} }` builds a Row
 // per inner brace.
 //
-// What is still refused, and named rather than approximated: the same braces in
-// a functional-cast temporary, `Row({1, 2})` as an expression. Building the
-// list emits statements that fill a backing array, and an expression has
-// nowhere to put them - it would need them folded into a comma, which is an
-// AST change rather than a parser one. init-list-as-argument-temporary-refused
-// pins that.
+// The same braces in a functional-cast temporary, `Row({1, 2})` as an
+// expression, work too, and took the AST change the first attempt stopped at.
+// Building the list emits statements that fill a backing array, and an
+// expression has nowhere to put them; every one of those statements is an
+// ExprStmt by construction, so each hands its expression back - ExprStmt::
+// release - and they are folded into a comma in front of the list. A comma is
+// an lvalue when its right operand is, which is what lets the constructor
+// still take the list.
 #include <initializer_list>
 extern "C" int printf(const char *, ...);
 
@@ -41,6 +43,9 @@ int main(void) {
     Row two({1, 2});                    // two
     Grid nested({ {1, 2}, {3, 4} });    // a list of lists
     Row braced{5, 6};                   // the spelling that always worked
-    printf("%d %d %d %d %d\n", one.a, two.a, two.b, nested.total, braced.b);
+    // And as a temporary, where the setup has to become a comma.
+    const int viaTemp = Grid({ {2, 3}, {4, 5} }).total;
+    printf("%d %d %d %d %d %d\n", one.a, two.a, two.b, nested.total, braced.b,
+           viaTemp);
     return 0;
 }

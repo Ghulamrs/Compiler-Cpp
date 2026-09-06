@@ -97,22 +97,51 @@ ExprPtr Parser::zeroChain(const Expr &root, const Type *type) {
 
 ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
     const Type *plain = cls->unqualified();
-    // **A braced list as the argument of a temporary**, `Row({1, 2})`, is
-    // [over.match.list]'s pick made in a place with nowhere to put the setup:
-    // building an initializer_list emits statements that declare a backing
-    // array and fill it, and an expression has no statement list to receive
-    // them. The declaration form `Row r({1, 2})` is built and works. Refused
-    // by name rather than by `expected an expression`, which named nothing.
+    std::vector<ExprPtr> args;
+    bool builtArgs = false;
+
+    // **A braced list as the argument of a temporary**, `Row({1, 2})` -
+    // [over.match.list]'s pick, made where only an expression fits. Building an
+    // initializer_list emits statements that declare a backing array and fill
+    // it, and the declaration form has a statement list to receive them where
+    // this has none. They are folded into a comma instead: every one of them is
+    // an ExprStmt by construction - buildInitializerList and emitInit make
+    // nothing else - so each hands its expression back and they are sequenced
+    // in front of the list. A comma is an lvalue when its right operand is,
+    // which is what lets the list still be taken by the constructor.
     if (peek().is("{")) {
         const Type *ilType = nullptr;
-        if (initializerListConstructor(plain, &ilType) != nullptr)
-            src_.fail(pos, "a braced list is not supported yet as the argument "
-                           "of a temporary - '" + plain->describe() + "({...})' "
-                           "here; a declaration takes one, so name a variable "
-                           "of that type and use that");
+        if (initializerListConstructor(plain, &ilType) != nullptr) {
+            std::vector<StmtPtr> setup;
+            Init in = parseInitialiser();
+            ExprPtr list = buildInitializerList(ilType, in, pos, setup);
+            expect(")");
+            ExprPtr chain;
+            for (std::size_t i = 0; i < setup.size(); i++) {
+                ExprStmt *one = dynamic_cast<ExprStmt *>(setup[i].get());
+                if (one == nullptr)
+                    src_.fail(pos, "this braced list needs setup an expression "
+                                   "cannot carry - name a variable of type '" +
+                                   plain->describe() + "' and initialise it "
+                                   "with the braces instead");
+                ExprPtr e = one->release();
+                const Type *t = e->type();
+                if (chain == nullptr) { chain = std::move(e); continue; }
+                ExprPtr joined(new Comma(std::move(chain), std::move(e)));
+                joined->setType(t);
+                chain = std::move(joined);
+            }
+            if (chain != nullptr) {
+                const Type *lt = list->type();
+                ExprPtr seq(new Comma(std::move(chain), std::move(list)));
+                seq->setType(lt);
+                list = std::move(seq);
+            }
+            args.push_back(std::move(list));
+            builtArgs = true;      // the ')' is consumed above
+        }
     }
-    std::vector<ExprPtr> args;
-    parseArguments(args);
+    if (!builtArgs) parseArguments(args);
 
     const std::string key = constructorKey(plain->tag());
     if (overloadsOf(key) != nullptr)

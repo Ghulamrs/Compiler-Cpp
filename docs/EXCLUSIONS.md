@@ -123,11 +123,11 @@ What is left of it:
 
 - **`dynamic_cast` to a reference** — it has no null to answer with, so a
   failure throws `std::bad_cast`, and there is no C++ standard library here to
-  throw it from. `src/parser/ParserExprNew.cpp:582`
+  throw it from. `src/parser/ParserExprNew.cpp:611`
 - **`dynamic_cast` naming a class with more than one base** — that wants
   `__vmi_class_type_info`, a third shape carrying the bases' offsets and flags.
   Such a class still compiles and its vtable still works; only the cast is
-  refused. `src/parser/ParserExprNew.cpp:647`
+  refused. `src/parser/ParserExprNew.cpp:676`
 - **`typeid`** — in the keyword table below. Nothing emits a `type_info` for a
   *fundamental* type either; a class's is what landed.
 
@@ -231,12 +231,6 @@ SFINAE and variadic packs. What is left:
   which is value-initialisation; and a braced list handed to a class that
   declares a `std::initializer_list` constructor, which is built through it.
   `src/parser/ParserStmt.cpp:188`, `src/parser/ParserInit.cpp:38`
-- **a braced list as the argument of a temporary**, `Row({1, 2})` — the same
-  `[over.match.list]` pick a *declaration* makes, in a place with nowhere to put
-  the setup: building an `initializer_list` emits statements that fill a backing
-  array, and an expression has no statement list to receive them. The
-  declaration form, `Row r({1, 2})` and its nested `{ {1,2}, {3,4} }`, is built
-  and works. `src/parser/ParserExprNew.cpp:109`
 - **`T{...}` with a value in the braces** — list-initialisation written as an
   expression; write the value in parentheses. The empty pair is read: `T{}`
   value-initialises, as `T()` does. `src/parser/ParserExpr.cpp:465`
@@ -297,17 +291,17 @@ it is written:
 ## `new` and `delete`
 
 - **placement new**, and a parenthesised type-id after `new` —
-  `src/parser/ParserExprNew.cpp:855`
+  `src/parser/ParserExprNew.cpp:884`
 - **more than one value in a new-expression** —
-  `src/parser/ParserExprNew.cpp:942`
+  `src/parser/ParserExprNew.cpp:971`
 - **`new T[n]` of a class with a constructor** —
-  `src/parser/ParserExprNew.cpp:909`
+  `src/parser/ParserExprNew.cpp:938`
 - **`new T[n][m]`** — only the first dimension may be given.
-  `src/parser/ParserExprNew.cpp:883`
-- **`new T{...}`** — `src/parser/ParserExprNew.cpp:935`
-- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:1155`
+  `src/parser/ParserExprNew.cpp:912`
+- **`new T{...}`** — `src/parser/ParserExprNew.cpp:964`
+- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:1184`
 - **`delete[]` of a type with a destructor** — the count `new[]` would have
-  recorded is not written. `src/parser/ParserExprNew.cpp:1223`
+  recorded is not written. `src/parser/ParserExprNew.cpp:1252`
 
 ## Statements, exceptions and control
 
