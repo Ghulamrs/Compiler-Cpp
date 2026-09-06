@@ -397,6 +397,15 @@ StmtPtr Parser::rangeForStatement(int scope) {
     expect(":");
 
     const std::size_t rpos = peek().pos;
+    // **A braced list as the range is an `initializer_list`** -
+    // [stmt.ranged] binds the range to `auto &&`, and for braces that makes
+    // one of those. There is no such class here, so the list has no type to
+    // take begin() and end() from.
+    if (peek().is("{"))
+        src_.fail(rpos, "a range-based 'for' over a braced list is not "
+                        "supported yet - the list would be an "
+                        "'std::initializer_list', which this compiler has no "
+                        "library for; name an array and loop over that");
     ExprPtr range = expr();
     expect(")");
 

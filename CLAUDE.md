@@ -6814,12 +6814,30 @@ of being handed a sentence with nothing after "and".
 The first grid was 46 C++11 features. The second added 59 - the preprocessor,
 deeper templates, and the C++98 core a real program leans on - and found seven
 more invisible gaps, **two of them C++98**: an anonymous union and a function
-try block. The others are `S{0,0}` as an expression, an anonymous enum inside a
-class template, a captureless lambda converting to a function pointer, a
-range-for over a braced list, and this one. One probe was the sweep's own
-fault rather than the compiler's: `0x1p0` is a C++17 hex float and clang
-refuses it under C++11 too, which is what validating every probe against the
-oracle is for.
+try block. The others are `S{0,0}` as an expression, an enumerator of a class
+template, a captureless lambda converting to a function pointer, and a
+range-for over a braced list. One probe was the sweep's own fault rather than
+the compiler's: `0x1p0` is a C++17 hex float and clang refuses it under C++11
+too, which is what validating every probe against the oracle is for.
+
+**All six were closed, and one of them was not a refusal.** Both grids now read
+63 compiling, 41 refused by name and **none invisible**, over 104 probes.
+
+**The enumerator was a two-line fix wearing a gap's clothes.** It looked like
+an anonymous-enum problem and was not: `S<int>::N` failed for a *named* enum
+too, while a plain class answered fine. The branch that resolves a member
+through a template-id qualifier asked for a static member function, then a
+static data member, and never for an enumerator - and `enumInClass` is exactly
+that lookup, sitting one line away. So the probe that looked like the smallest
+of the seven was the only one with a real feature behind it, and the message it
+had been giving - "has no static member 'N'" - was true and useless.
+
+**The other five are refusals, and two of them are C++98.** An anonymous union,
+whose members would have to become members of the class around it and share its
+storage; and a function try block, whose handler covers the mem-initialisers as
+well as the body - which is the whole reason the construct exists, and what a
+`try` written inside the body cannot do. Neither is on the ladder, neither was
+listed, and the C++11 grid had no reason to ask about either.
 
 ## A C++11 feature refused as C++14, and the sweep that found it
 

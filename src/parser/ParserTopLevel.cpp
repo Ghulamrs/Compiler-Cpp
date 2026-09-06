@@ -1114,6 +1114,16 @@ void Parser::topLevel(Program &program) {
     // be defined inside one, and its member functions are defined from there.
     const std::size_t paramsFrom = alive_.size() - aliveParams;
 
+    // **A function try block wraps the whole body, mem-initialisers
+    // included** - [except.pre] - so a handler for it catches what a base or
+    // member constructor threw, which no region built here can express.
+    if (peek().is("try"))
+        src_.fail(peek().pos, "a function try block - 'int f() try { } "
+                              "catch (...) { }' - is not supported yet: its "
+                              "handler covers the mem-initialisers as well as "
+                              "the body, so a 'try' inside the body is not the "
+                              "same thing");
+
     atFunctionBody_ = true;
     bodyCleanupFrom_ = paramsFrom;
     // A class can be defined inside a function and its members defined from

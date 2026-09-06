@@ -588,6 +588,17 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             // the keyword, because the type it answers with is `int` and there
             // is nothing in that to recognise.
             if (wasEnum) { at_++; continue; }
+            // **An anonymous union's members are members of the class
+            // around it** - [class.union] - so they take its storage and are
+            // named without going through it. Nothing here flattens a member
+            // list into the enclosing one, and it is C++98 rather than a
+            // C++11 gap, which is why the sweep that found it was the wider.
+            if (base->kind() == Kind::Union && base->tag().empty())
+                src_.fail(peek().pos, "an anonymous union is not supported "
+                                      "yet: its members would have to become "
+                                      "members of the class around it, "
+                                      "sharing storage - give the union a "
+                                      "name and reach them through it");
             if (!base->isStructOrUnion() || base->tag().empty())
                 src_.fail(peek().pos, "this declares nothing - a member needs a "
                                       "name");

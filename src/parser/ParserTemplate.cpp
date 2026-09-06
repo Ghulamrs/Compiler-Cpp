@@ -2119,8 +2119,17 @@ ExprPtr Parser::templateIdMember(const Type *cls, std::size_t pos) {
     }
     if (const Type::StaticMember *sm = cls->findStaticMember(member))
         return staticMemberRef(cls, *sm, cls->tag(), mpos);
-    src_.fail(mpos, "'" + cls->describe() + "' has no static member '" +
-                    member + "'");
+    // **An enumerator of the specialization is reached the same way**, and is
+    // a value rather than an object - so there is nothing to take the address
+    // of and the number is the whole of it. A plain class already answered
+    // here; a template-id qualifier asked only about static members.
+    if (const EnumConst *e = enumInClass(cls, member)) {
+        ExprPtr n(new Num(e->value));
+        n->setType(types_.intType());
+        return n;
+    }
+    src_.fail(mpos, "'" + cls->describe() + "' has no static member or "
+                    "enumerator called '" + member + "'");
 }
 
 // **A member function template as an overload-resolution candidate.** The same

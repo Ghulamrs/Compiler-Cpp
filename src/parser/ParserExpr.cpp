@@ -1409,6 +1409,15 @@ ExprPtr Parser::primary(Program *program) {
         if (ExprPtr f = functionAsValue(
                 qualifyForLookup(name, &Parser::hasFunctionNamed), pos))
             return f;
+        // **`S{...}` is list-initialisation written as an expression** - the
+        // same rule a declaration's braces meet, one syntax over. Without this
+        // the type name falls through as an undeclared *object*, which sends
+        // the reader looking for a variable that was never meant to exist.
+        if (peek().is("{") && findTypedef(name) != nullptr)
+            src_.fail(pos, "'" + name + "{...}' is list-initialisation, and "
+                           "that is not supported yet - '" + name +
+                           "(...)' calls a constructor here, and a plain "
+                           "struct is built by naming its members");
         src_.fail(pos, "'" + name + "' was not declared");
     }
 
