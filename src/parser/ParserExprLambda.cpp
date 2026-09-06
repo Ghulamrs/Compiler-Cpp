@@ -35,20 +35,47 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     i++;
     if (i < bodyTo && tokens_[i].is(";")) return types_.get(Kind::Void);
 
-    const std::size_t resume = at_;
-    // The parameters have to be in scope for the expression and nothing else of
-    // the enclosing function, so the locals are put aside as a default argument
-    // does it. **`this` is the exception**: a member is reached through it.
+    // **This is a nested parse of a different function and was saving three
+    // fields of it.** The statements before the `return` are read for real, in
+    // the middle of the enclosing function, so everything per-function has to
+    // go back - `alive_` above all, whose entry survived into the enclosing
+    // function and had `main` destroy an object nothing constructed. The same
+    // omission `replayInlineBodies` had, in the door beside it, and the reason
+    // there is one capture list for all of them now.
+    const FunctionState outer = captureFunctionState();
+    // **`this` is the exception**: a member is reached through it, and the body
+    // may name one, so it is carried across the clear.
     const Local *hadThis = findLocal("this");
     Local keptThis;
     const bool haveThis = hadThis != nullptr;
     if (haveThis) keptThis = *hadThis;
 
-    std::vector<Local> outer;
-    outer.swap(locals_);
+    // **This door is not `clearFunctionState`'s kind.** A replayed body is a
+    // different function and starts with nothing; this parse happens *inside*
+    // the enclosing function - its closures are numbered in that function's
+    // sequence and named after it, and a nested `[=]` reaches its captures.
+    // So the identity stays and only what the body *accumulates* is emptied,
+    // which is exactly the set that was leaking out of here.
+    locals_.clear();
     if (haveThis) locals_.push_back(keptThis);
-    std::vector<std::size_t> starts;
-    starts.swap(scopeStarts_);
+    scopeStarts_.clear();
+    alive_.clear();
+    pendingTemps_.clear();
+    bodyCleanupFrom_ = 0;
+    labels_.clear();
+    gotos_.clear();
+    functionHasPads_ = false;
+    functionHasTry_ = false;
+    functionTypeIndex_ = 0;
+    inTryBody_ = false;
+    inMsHandler_ = false;
+    mayThrow_ = 0;
+    loopDepth_ = 0;
+    switchDepth_ = 0;
+    switches_.clear();
+    breakMarks_.clear();
+    conditionDecl_ = false;
+    conditionName_.clear();
     enterScope();
 
     // The captures are in scope in the body as well as the parameters - by the
@@ -112,9 +139,11 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
 
     leaveScope();                                       // parameters and body
     leaveScope();                                       // the captures
-    locals_.swap(outer);
-    scopeStarts_.swap(starts);
-    at_ = resume;
+    // The numbers handed out during the deduction stay handed out: restoring
+    // the count would let the real parse reuse a tag this one already declared.
+    const int made = lambdaCount_;
+    restoreFunctionState(outer);
+    if (made > lambdaCount_) lambdaCount_ = made;
     return found;
 }
 
@@ -321,6 +350,11 @@ ExprPtr Parser::lambdaExpression() {
     }
     const int size = members.empty() ? 1 : alignTo(at, widest);
     closure->complete(members, size, widest);
+    // **A closure is a class and gets the members a class gets.** Without this
+    // it had no implicit destructor, so a captured object with one was never
+    // destroyed - [expr.prim.lambda]/21 makes a by-copy capture a member like
+    // any other, and [class.dtor]/8 destroys it with the closure.
+    declareImplicitSpecials(tag, closure, pos);
 
     // `operator()`, declared as a const member of it.
     Declared d;
@@ -416,6 +450,65 @@ ExprPtr Parser::buildClosure(const MadeLambda &made, std::size_t pos) {
             chain = std::move(joined);
             continue;
         }
+        // **An array captured by value is copied element by element.**
+        // [expr.prim.lambda]/21 copies the array; `decay` handed the member a
+        // pointer to the original instead, and since the member *is* the
+        // array the closure then read whatever the frame held - `[arr]` and
+        // `[=]` alike returned garbage. An Assign cannot do it either: an
+        // array is not assignable, which is why the copy constructor copies an
+        // array member with a loop rather than with one store.
+        if (made.types[i]->isArray()) {
+            // Flattened to the innermost element, so `int g[2][3]` is six
+            // copies rather than two of a row: the decayed pointer to a
+            // multi-dimensional array steps by rows, and casting it to the
+            // element type is what makes the arithmetic step by elements.
+            const Type *elem = made.types[i];
+            long long count = 1;
+            while (elem->isArray()) {
+                if (elem->length() < 0)
+                    src_.fail(pos, "'" + made.names[i] + "' has no length, so "
+                                   "capturing it by value cannot say how many "
+                                   "elements to copy - capture it by reference");
+                count *= elem->length();
+                elem = elem->pointee();
+            }
+            const Type *elemPtr = types_.pointerTo(elem);
+            for (long long k = 0; k < count; k++) {
+                ExprPtr owner(Var::local(name, off));
+                owner->setType(made.type);
+                ExprPtr d(new MemberAccess(std::move(owner), made.names[i],
+                                           made.offsets[i], 0, 0));
+                d->setType(made.types[i]);
+                ExprPtr dp(new Cast(elemPtr, decay(std::move(d))));
+                dp->setType(elemPtr);
+                ExprPtr kn(new Num(k));
+                kn->setType(types_.intType());
+                // Through `arithmetic`, never a bare Binary: pointer scaling
+                // lives there, and a hand-built `+ k` would step by bytes.
+                ExprPtr de(new Unary('*', arithmetic(BinOp::Add, std::move(dp),
+                                                     std::move(kn), pos)));
+                de->setType(elem);
+
+                ExprPtr from = objectRef(made.names[i]);
+                if (from == nullptr) from = outerCaptureAccess(made.names[i]);
+                ExprPtr sp(new Cast(elemPtr, decay(std::move(from))));
+                sp->setType(elemPtr);
+                ExprPtr kn2(new Num(k));
+                kn2->setType(types_.intType());
+                ExprPtr se(new Unary('*', arithmetic(BinOp::Add, std::move(sp),
+                                                     std::move(kn2), pos)));
+                se->setType(elem);
+
+                ExprPtr one(new Assign(std::move(de), std::move(se)));
+                one->setType(elem);
+                if (chain == nullptr) { chain = std::move(one); continue; }
+                ExprPtr joined(new Comma(std::move(chain), std::move(one)));
+                joined->setType(elem);
+                chain = std::move(joined);
+            }
+            continue;
+        }
+
         dst->setType(made.types[i]);
         ExprPtr store(new Assign(std::move(dst), decay(std::move(src))));
         store->setType(made.types[i]);

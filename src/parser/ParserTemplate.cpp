@@ -1022,8 +1022,17 @@ const Type *Parser::deduceAuto(const Type *declared, const std::string &name,
                               "supported yet - it deduces an "
                               "initializer_list, which this compiler has no "
                               "library for");
-    ExprPtr init = assign();
-    const Type *from = init->type();
+    // **Read for its type and rewound**, so this reading built nothing: the
+    // real one happens below, from the same tokens. Whatever it registered for
+    // destruction goes back with the token position, or the initialiser's own
+    // temporary is destroyed twice - once here for an object that was never
+    // constructed.
+    const Type *from = nullptr;
+    {
+        Discarded held(this);
+        ExprPtr init = assign();
+        from = init->type();
+    }
     at_ = resume;
 
     return deduceAutoFrom(declared, from, name, pos);
@@ -1595,6 +1604,13 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     currentClass_ = nullptr;
     const std::string outerInline = inlineOwner_;
     inlineOwner_.clear();
+    // **The `>>` mark is one slot and this parse can spend it.** [temp.names]/3
+    // splits the first `>` of a `>>` by leaving `angleSplit_` at that token
+    // without advancing; a body replayed here contains angle brackets of its
+    // own, so `Box<Box<int>>` instantiated the inner class between the halves
+    // and the outer list met a mark that had been used. Saved and put back,
+    // as `Trial` already does for the same field and the same reason.
+    const std::size_t outerAngle = angleSplit_;
 
     classInstantiationTag_ = tag;
     if (partial) classInstantiationOf_ = decl.name;
@@ -1611,6 +1627,7 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     const Type *made = partial
         ? structOrUnionSpecifier(Kind::Struct, false)
         : specifiers(&sc, &quals);
+    angleSplit_ = outerAngle;
     classInstantiationTag_.clear();
     classInstantiationOf_.clear();
     instantiatingArgs_.clear();

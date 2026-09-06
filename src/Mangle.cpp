@@ -765,7 +765,10 @@ public:
     void constructor(const std::string &cls, const Type *clsType, const Type *fn,
                      char access) {
         out = "??0";
-        scopeOf(clsType, cls);
+        // A class written in a function body carries its owner, and the
+        // scope has to say so or two functions' `struct L` are one symbol.
+        scopeOf(clsType, cls,
+                clsType != nullptr ? clsType->localOwner() : std::string());
         out += access;
         out += "EAA";
         out += '@';               // a constructor returns nothing to say
@@ -777,7 +780,10 @@ public:
 
     void destructor(const std::string &cls, const Type *clsType, char access) {
         out = "??1";
-        scopeOf(clsType, cls);
+        // A class written in a function body carries its owner, and the
+        // scope has to say so or two functions' `struct L` are one symbol.
+        scopeOf(clsType, cls,
+                clsType != nullptr ? clsType->localOwner() : std::string());
         out += access;
         out += "EAA";
         out += "@XZ";
@@ -787,7 +793,10 @@ public:
     // `this` and answers `this`.
     void deletingDestructor(const std::string &cls, const Type *clsType) {
         out = "??_G";
-        scopeOf(clsType, cls);
+        // A class written in a function body carries its owner, and the
+        // scope has to say so or two functions' `struct L` are one symbol.
+        scopeOf(clsType, cls,
+                clsType != nullptr ? clsType->localOwner() : std::string());
         out += "UEAAPEAXI@Z";
     }
 
@@ -1394,6 +1403,25 @@ bool microsoftCopyAssignName(const std::string &cls, const Type *clsType,
     return true;
 }
 
+// **A class defined in a function body wraps its whole ordinary name in the
+// enclosing function's** - `_ZZL3onevEN1LC2Ev`. itaniumLocalMemberName does
+// this for a named member and nothing did it for a constructor or a
+// destructor, so two functions each declaring `struct L` produced one
+// `_ZN1LC1Ev` for two different types: the assembler refused the second
+// definition, and a program C++11 accepts would not compile at all.
+static void itaniumWrapLocal(const Type *clsType, std::string *out) {
+    if (clsType == nullptr) return;
+    const std::string &owner = clsType->localOwner();
+    if (owner.empty()) return;
+    if (out->compare(0, 2, "_Z") != 0) return;
+    // No mangled name to take apart - `main`, or `extern "C"` - is written as
+    // a plain length-and-letters component, as itaniumLocalMemberName does.
+    const std::string function = owner.compare(0, 2, "_Z") == 0
+                               ? owner.substr(2)
+                               : std::to_string(owner.size()) + owner;
+    *out = "_ZZ" + function + "E" + out->substr(2);
+}
+
 bool itaniumDestructorName(const std::string &cls, const Type *clsType,
                            bool complete, std::string *out) {
     // A destructor takes nothing and returns nothing, so there is nothing to
@@ -1402,6 +1430,7 @@ bool itaniumDestructorName(const std::string &cls, const Type *clsType,
     Itanium m;
     m.destructor(cls, clsType, complete ? '1' : '2');
     *out = m.out;
+    itaniumWrapLocal(clsType, out);
     return true;
 }
 
@@ -1409,7 +1438,9 @@ std::string itaniumDeletingDestructorName(const std::string &cls,
                                           const Type *clsType) {
     Itanium m;
     m.destructor(cls, clsType, '0');
-    return m.out;
+    std::string out = m.out;
+    itaniumWrapLocal(clsType, &out);
+    return out;
 }
 
 std::string microsoftDeletingDestructorName(const std::string &cls,
@@ -1433,6 +1464,7 @@ bool itaniumConstructorName(const std::string &cls, const Type *clsType,
     m.constructor(cls, clsType, fn, complete);
     if (!m.ok) { *problem = m.problem; return false; }
     *out = m.out;
+    itaniumWrapLocal(clsType, out);
     return true;
 }
 

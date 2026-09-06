@@ -991,6 +991,89 @@ private:
         const Type *type;
         int flag;
     };
+
+    // **Everything that belongs to the function currently being parsed.**
+    // cxx1 re-enters parsing from a saved token index in eight places - a
+    // held inline body, a lambda's return-type deduction, a default argument,
+    // a member's own initialiser, `auto` deduction, the operand of `sizeof` /
+    // `decltype` / `noexcept`, a class instantiation, a member template - and
+    // each door had its own hand-written list of what to put back. Each list
+    // was written separately, and that is exactly how `alive_` came to be
+    // missing from one of them: a lambda in a function holding any
+    // destructible object emitted the *enclosing* function's destructors
+    // against its own frame. Six more fields were still missing when a review
+    // went looking. One struct, so a door cannot save some of it and forget
+    // the rest.
+    //
+    // What is deliberately NOT here: the monotonic counters (`refTemps_`,
+    // `strings_`, `caseIds_`, `lambdaRetSeq_`), whose whole job is to stay
+    // unique across a restore, and `inUnnamedNamespace_`, which is linkage for
+    // the file rather than state for a function.
+    struct FunctionState {
+        std::size_t at = 0;
+        std::string currentFunction, currentFunctionName, functionName;
+        std::map<std::string, const Type *> localTypes;
+        std::vector<Local> locals;
+        std::vector<::Local> fnVars;
+        std::vector<std::size_t> scopeStarts;
+        std::vector<int> blocks, blockStack;
+        std::vector<LabelDef> labels, gotos;
+        int frameSize = 0, thisOffset = 0;
+        const Type *currentClass = nullptr;
+        const Type *returnType = nullptr;
+        int lambdaCount = 0;
+        bool atFunctionBody = false;
+        std::vector<Alive> alive;
+        std::vector<Temporary> pendingTemps;
+        std::size_t bodyCleanupFrom = 0;
+        bool functionHasPads = false, functionHasTry = false;
+        int functionTypeIndex = 0;
+        bool variadicBody = false, inStaticMember = false, inParams = false;
+        std::vector<std::string> staticSymbols;
+        std::vector<std::size_t> pendingDefaults;
+        bool pendingNoexcept = false;
+        bool replayingInline = false;
+        // The six a review found still missing, each with a program that
+        // reached it: `break` and `case` written in a lambda inside a loop or
+        // a switch were accepted and segfaulted the compiler; a `try` in the
+        // enclosing function made a lambda inherit its two refusals; a
+        // condition declaration made any body replayed inside it refuse; and
+        // `noexcept(e)` answered false for a member template that cannot throw.
+        int loopDepth = 0, switchDepth = 0;
+        std::vector<SwitchCtx> switches;
+        std::vector<std::size_t> breakMarks;
+        bool inTryBody = false, inMsHandler = false;
+        int mayThrow = 0;
+        bool conditionDecl = false;
+        std::string conditionName;
+        // Block-scope, and a lambda's body is its own block: a using-directive
+        // written in one reached the end of the enclosing function.
+        std::vector<std::string> usingNamespaces;
+    };
+    // **A parse whose result is discarded must put back what it accumulated.**
+    // The operand of `sizeof`, `decltype` and `noexcept` is unevaluated -
+    // [expr.sizeof]/1, [dcl.type.simple]/4, [expr.unary.noexcept]/2 - and
+    // `auto` reads its initialiser twice, rewinding between. A call registers
+    // its result slot for destruction, so each of those left one on the list
+    // and the next full expression destroyed a slot nothing had built: the
+    // live-object count went negative, silently, in `auto a = make(3).v;`.
+    // A nested class reaches the enclosing class's private members, which is
+    // what lets this be RAII rather than a line at four call sites.
+    struct Discarded {
+        Parser *p;
+        std::vector<Temporary> temps;
+        std::vector<Alive> alive;
+        explicit Discarded(Parser *pp)
+            : p(pp), temps(pp->pendingTemps_), alive(pp->alive_) {}
+        ~Discarded() { p->pendingTemps_ = temps; p->alive_ = alive; }
+        Discarded(const Discarded &) = delete;
+        Discarded &operator=(const Discarded &) = delete;
+    };
+
+    FunctionState captureFunctionState() const;
+    void restoreFunctionState(const FunctionState &s);
+    void clearFunctionState();
+
     // `except` is the frame offset of an object not to destroy - the one being returned,
     // which the caller destroys instead. And a cleanup region's landing pad: destroy
     // alive_[from..to), last first, and hand the exception back to the unwinder.
@@ -1163,6 +1246,14 @@ private:
     // cannot say so. Defaulted to Private, which is the stricter question.
     bool insideAccessOf(const Type *cls,
                         Access access = Access::Private) const;
+    // **Accessibility asked from a named class rather than from the one being
+    // parsed.** The implicit special members are synthesised while a class is
+    // being *completed*, so `currentClass_` is not reliably the class they
+    // belong to and insideAccessOf cannot answer for them: they tested
+    // `access != Public` flat, and [class.access.base]/5 lets a derived class
+    // use a *protected* member of its base - which is exactly how a base with
+    // a protected default constructor is meant to be built.
+    bool accessibleFrom(const Type *from, const Type *owner, Access a) const;
     // A name that is a *capture of the lambda around this one*: by the time an inner
     // lambda is read, that capture is a member of the outer closure. Answers the
     // expression that reads it, or null. Asked at lookup and where the closure is built.
@@ -1400,6 +1491,13 @@ private:
     // out. `pendingDefaults_` carries them to declare(); `defaultArgs_` keys them.
     std::vector<std::size_t> pendingDefaults_;
     std::map<std::string, std::vector<std::size_t> > defaultArgs_;
+    // **[dcl.fct.default]/5 reads a default in the scope of its declaration**,
+    // and the scope is more than the locals this already hid: a default in
+    // `namespace N` naming N's own `k` found the *caller's* `::k` instead, and
+    // one naming its class's enumerator was not found at all. Recorded beside
+    // the token positions, because by the time it is re-read the parser is
+    // wherever the call was written.
+    std::map<std::string, std::vector<std::string> > defaultArgNamespace_;
     // Past one default argument: to the ',' or ')' that ends it, counting
     // brackets so that a call or a subscript inside it keeps its commas.
     void skipDefaultArgument();

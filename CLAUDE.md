@@ -6133,6 +6133,161 @@ the language being told the truth.
 of them `x86_64-windows`, each by exactly one replaced line - checked, not
 assumed, which before the golden existed was not something anybody could say.
 
+## Access control asked from the wrong class, in both directions
+
+**Seven access checks were written `currentClass_ != cls`**, each before
+`insideAccessOf` existed, and two of them refused ordinary code:
+
+```cpp
+class Base { protected: static const int shared; Base(); };
+struct Derived : Base { int get() { return shared; } };   // refused
+```
+
+[class.access.base]/5 lets a derived class name a *protected* member of its
+base, and `insideAccessOf` knew it - its `derivesFrom` clause is exactly that
+rule - while seven sites asked the question themselves. Routing them through
+the helper fixed the static member and not the constructor, and the reason is
+worth keeping: **the implicit special members are synthesised while a class is
+being *completed***, so `currentClass_` is not reliably the class they belong
+to. `accessibleFrom(from, owner, access)` is the second helper, asking from a
+class named outright rather than from the one being parsed. A base with a
+protected default constructor - the shape that says *derive from me, do not
+build me directly* - could not be derived from at all until it existed.
+
+**And the same rule missing in the other direction let ill-formed code
+through.** A base's private member was readable from a derived class by all
+three spellings, and the cause was in the layout rather than in the check: a
+base's data members are copied down into the derived class's list - that
+flattening *is* the layout - carrying their access but no record of **whose**
+they were, so the check asked whether it was inside the class the member was
+reached *through*, which it was. `Member::declaredIn` is that record.
+
+**Two things went wrong writing it, and both are the house shape.** I added a
+fallback permitting access from the class it was reached through, which
+re-permits precisely what [class.access.base]/1 forbids - `this->x` passed
+while `x` still failed, which is how it was caught. And the third spelling, an
+unqualified `x` inside a member function, called no access check at all: three
+ways to name a member and the rule written into two of them. The diagnostic
+also named the class it was reached through, sending a reader to a class whose
+source never mentions the member; it names the declaring one now.
+
+**`new S(1)` reached a private constructor** that `S s(1);` on the line above
+is refused for - the eighth site, and the one no sweep of `currentClass_ !=`
+would have found, because it had no check to write wrongly.
+
+`tests/cases/access-through-base.cpp` is the understepping half, two levels
+deep; `private-base-member-refused.cpp` and `new-private-constructor-refused.cpp`
+are the overstepping half.
+
+## Eight nested-parse doors, and one list between them
+
+**cxx1 re-enters parsing from a saved token index in eight places**, and each
+door wrote its own list of per-function state to save and put back. Each list
+was written separately, which is exactly how `alive_` came to be missing from
+one of them - a lambda in a function holding any destructible object emitted
+the *enclosing* function's destructors against its own frame. A review found
+**six more fields still missing from that same list**, and a worse door beside
+it.
+
+`captureFunctionState` / `restoreFunctionState` / `clearFunctionState` are the
+one list now. A per-function field added to the parser is added there and
+nowhere else. What is deliberately outside it: the monotonic counters
+(`refTemps_`, `strings_`, `caseIds_`, `lambdaRetSeq_`), whose whole job is to
+stay unique across a restore, and `inUnnamedNamespace_`, which is linkage for
+the file rather than state for a function.
+
+| door | had been saving | what leaked |
+| --- | --- | --- |
+| `replayInlineBodies` | 31 fields | `loopDepth_`/`breakMarks_`, `switchDepth_`/`switches_`, `inTryBody_`, `inMsHandler_`, `mayThrow_`, `conditionDecl_` |
+| `deduceLambdaReturn` | 3 fields | `alive_`, `labels_`/`gotos_`, `functionHasTry_`, `functionHasPads_`, `functionTypeIndex_`, `frameSize_` |
+| `deduceAuto`, `sizeof`, `decltype`, `noexcept` | `at_` only | `pendingTemps_` - a discarded parse registered a temporary that was later destroyed though nothing built it |
+| `instantiateClass` | class stack, bindings | `angleSplit_` |
+| `applyDefaults` | locals, function name | `namespaceStack_`, `currentClass_` |
+
+**`deduceLambdaReturn` is not `clearFunctionState`'s kind, and treating it as
+one broke nested lambdas twice.** A replayed body is a different function and
+starts with nothing; this parse happens *inside* the enclosing function - its
+closures are numbered in that function's sequence and named after it, and a
+nested `[=]` reaches its captures. Clearing everything reset `lambdaCount_` so
+the inner closure was `$_0` again and collided, and lost the outer captures so
+`[=]` could not find them. Only what the body *accumulates* is emptied now, and
+the identity stays. **The guard was right and the clear was wrong**, which is
+worth remembering the next time a ninth door is added.
+
+**The emit golden reports 27 of 627 files changed** - the first root to change
+any existing emission, and the change is frame offsets shrinking by eight in
+the lambda and default-argument cases. `frameSize_` is restored now, so slots
+allocated during a throwaway deduction parse no longer inflate the enclosing
+function's frame. Smaller frames, identical behaviour, 357 cases green.
+
+**One finding is not claimed as fixed.** A default argument in `namespace N`
+naming N's own `k` still reads the caller's `::k`. The scope restoration above
+is correct and the class half works - a default naming its own class's
+enumerator resolves - but `findGlobal` tries the flat table *before*
+`qualifyForLookup`, so once a global `k` exists the qualified name never gets a
+chance. That is the item `docs/CONFORMANCE.md` already records as deferred, and
+it is R1's neighbour rather than this root's remainder.
+
+`tests/cases/nested-parse-state.cpp` reaches all eight fields in one program,
+with a ledger line for the `alive_` half.
+
+## A capture by value of a class or an array, and the name it exposed
+
+**[expr.prim.lambda]/21: a by-copy capture is a member of the closure**,
+initialised from the entity it names - which for a class means its copy
+constructor and for an array means copying the array. cxx1 did neither.
+
+**A class was copied bytewise and never destroyed**, and the two cancelled in
+the output: one construction, one destruction, the right number printed. Only
+the object ledger could see it, which is the case for having built the ledger
+first. The cause was not the capture code: **the closure type was completed
+and never given the special members every other class gets**, so it had no
+implicit copy constructor to call and no implicit destructor to run.
+`declareImplicitSpecials` on it is the whole fix, and fixing it at the capture
+site instead would have produced a copy that was still never destroyed - a
+leak in place of a bytewise copy.
+
+**An array was worse and needed no ledger.** `decay` handed the member a
+*pointer* to the original where the member *is* the array, so `[arr]` and
+`[=]` both returned whatever the frame held from three lines of ordinary C++.
+An `Assign` cannot mend it either - an array is not assignable, which is why
+the copy constructor copies an array member with a loop. It is an element-wise
+copy now, **flattened to the innermost element**, because the decayed pointer
+to `int[2][3]` steps by *rows* and casting it to the element type is what makes
+the arithmetic step by elements; built through `arithmetic()` and never a bare
+`Binary`, pointer scaling living there.
+
+### And that exposed a naming bug older than lambdas
+
+**Emitting a closure's implicit specials showed they had no local-name
+wrapper**, and neither did any local class's:
+
+```cpp
+static int one() { struct L { int v; L() : v(1) {} ~L() {} }; L a; return a.v; }
+static int two() { struct L { int v; L() : v(2) {} ~L() {} }; L b; return b.v; }
+```
+
+clang prints `1 2`; cxx1 said **`error: symbol '__ZN1LC1Ev' is already
+defined`**. [class.local] makes those two `L`s two types and both ABIs wrap the
+enclosing function's name round a member's for exactly that reason - but the
+wrap was applied to a *named* member and to nothing else, so a constructor and
+a destructor were spelled as though the class were at file scope. Valid C++11
+that would not compile at all, needing two local classes of one name with
+constructors in one translation unit to reach - until lambdas made local
+classes ubiquitous.
+
+**Fixed at the funnel rather than at the seven call sites** that compute a
+constructor or destructor name, that being the N-1-of-N trap this whole audit
+is made of. The `Type` already carries `localOwner()`: `itaniumWrapLocal` wraps
+the finished Itanium name the way `itaniumLocalMemberName` already wrapped a
+member's, and Microsoft's `scopeOf` already took a `localOwner` that only the
+member path was passing.
+
+`tests/cases/lambda-capture-by-value.cpp` pins the captures - every mutation
+in it happens *after* the lambdas are made, so a copy that still sees one is a
+pointer wearing a copy's type - and `local-class-two-functions.cpp` pins the
+names, `1 2 3 40`.
+
 ## A written destructor destroyed nothing the class held
 
 **[class.dtor]/8: after the body has run, a destructor destroys the class's

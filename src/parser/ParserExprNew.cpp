@@ -158,8 +158,8 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
     const bool valueInit = args.empty();
     const Signature &ctor = resolveOverload(key, args, pos);
     applyDefaults(ctor, args, pos);
-    if (ctor.access != Access::Public && currentClass_ != plain &&
-        !isFriendOf(plain))
+    if (ctor.access != Access::Public &&
+        !insideAccessOf(plain, ctor.access) && !isFriendOf(plain))
         src_.fail(pos, "'" + plain->describe() + "' has no public constructor "
                        "taking these arguments - the one that matches is " +
                        (ctor.access == Access::Private ? "private" : "protected"));
@@ -947,6 +947,16 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     if (constructed) {
         const Signature &ctor = resolveOverload(constructorKey(made->tag()),
                                                 ctorArgs, pos);
+        // **[class.access]/1 applies to a constructor a new-expression calls**,
+        // as it does to every other way of building one. Every other site
+        // checked and this one did not, so `new S(1)` reached a private
+        // constructor that `S s(1);` two lines up is refused.
+        if (!accessibleFrom(currentClass_, made, ctor.access) &&
+            !isFriendOf(made))
+            src_.fail(pos, "'" + made->describe() + "' is built here and the "
+                           "constructor that matches is " +
+                           (ctor.access == Access::Private ? "private"
+                                                           : "protected"));
         // `new V()` and not `new V`, for a class whose default constructor nobody
         // wrote: zeroed first, then built. **Read before applyDefaults**, which
         // appends to ctorArgs and would make "is the list empty" another question.

@@ -516,76 +516,125 @@ void Parser::skipBracedBlock() {
 // Each held body re-read as though it had been written outside the class. The
 // tokens are the ones already there, so the ordinary definition path runs over
 // them, and `inlineOwner_` supplies the `Class::` the source does not have.
-void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
-    if (mine.empty()) return;
-    const std::size_t resume = at_;
-    // Everything replayed here was written inside a class body, so every
-    // definition it produces is implicitly inline - restored rather than
-    // cleared, because a replay can happen inside another one.
-    const bool outerInline = replayingInline_;
-    replayingInline_ = true;
-    // **A replay is a nested parse of a different function**, in the middle of
-    // whatever asked for the class. Everything `topLevel` sets up per function goes
-    // back afterwards - the enclosing locals, parameters and frame size included.
-    const std::string outerFunction = currentFunction_;
-    const std::string outerFunctionName = currentFunctionName_;
-    const std::map<std::string, const Type *> outerLocalTypes = localTypes_;
-    const std::vector<Local> outerLocals = locals_;
-    const std::vector<::Local> outerFnVars = fnVars_;
-    const std::vector<std::size_t> outerScopeStarts = scopeStarts_;
-    const std::vector<int> outerBlocks = blocks_;
-    const std::vector<int> outerBlockStack = blockStack_;
-    const std::vector<LabelDef> outerLabels = labels_;
-    const std::vector<LabelDef> outerGotos = gotos_;
-    const int outerFrameSize = frameSize_;
-    const int outerThisOffset = thisOffset_;
-    const Type *outerClass = currentClass_;
-    // **The return type belongs to the function being read, and the replay reads a
-    // different one.** Local classes hid it, a member happening to return the same
-    // type; a lambda returning void made it visible.
-    const Type *outerReturn = returnType_;
-    const int outerLambdaCount = lambdaCount_;   // lambdaRetSeq_ never resets
-    const std::string outerName = functionName_;
-    const bool outerAtBody = atFunctionBody_;
-    // **The objects the enclosing function still owes destructors to are not
-    // this body's.** `alive_` and `pendingTemps_` are read by every `return` and
-    // by the end of every full expression, so a body replayed here - a lambda's
-    // operator(), a member written inside its class - emitted the *enclosing*
-    // function's destructors against its own frame: `v`'s ~V ran inside the
-    // lambda, with `this` pointing at the lambda's parameter. Cleared for the
-    // replay and put back after, like everything else per-function above.
-    const std::vector<Alive> outerAlive = alive_;
-    const std::vector<Temporary> outerPending = pendingTemps_;
-    const std::size_t outerBodyCleanup = bodyCleanupFrom_;
+// **Capture, clear and restore, in one place for all eight nested-parse
+// doors.** Each door used to write its own list and each list was written
+// separately; `alive_` was missing from one of them and six more fields from
+// another. Adding a per-function field to the parser now means adding it here
+// and nowhere else.
+Parser::FunctionState Parser::captureFunctionState() const {
+    FunctionState s;
+    s.at = at_;
+    s.currentFunction = currentFunction_;
+    s.currentFunctionName = currentFunctionName_;
+    s.functionName = functionName_;
+    s.localTypes = localTypes_;
+    s.locals = locals_;
+    s.fnVars = fnVars_;
+    s.scopeStarts = scopeStarts_;
+    s.blocks = blocks_;
+    s.blockStack = blockStack_;
+    s.labels = labels_;
+    s.gotos = gotos_;
+    s.frameSize = frameSize_;
+    s.thisOffset = thisOffset_;
+    s.currentClass = currentClass_;
+    s.returnType = returnType_;
+    s.lambdaCount = lambdaCount_;
+    s.atFunctionBody = atFunctionBody_;
+    s.alive = alive_;
+    s.pendingTemps = pendingTemps_;
+    s.bodyCleanupFrom = bodyCleanupFrom_;
+    s.functionHasPads = functionHasPads_;
+    s.functionHasTry = functionHasTry_;
+    s.functionTypeIndex = functionTypeIndex_;
+    s.variadicBody = variadicBody_;
+    s.inStaticMember = inStaticMember_;
+    s.inParams = inParams_;
+    s.staticSymbols = staticSymbols_;
+    s.pendingDefaults = pendingDefaults_;
+    s.pendingNoexcept = pendingNoexcept_;
+    s.replayingInline = replayingInline_;
+    s.loopDepth = loopDepth_;
+    s.switchDepth = switchDepth_;
+    s.switches = switches_;
+    s.breakMarks = breakMarks_;
+    s.inTryBody = inTryBody_;
+    s.inMsHandler = inMsHandler_;
+    s.mayThrow = mayThrow_;
+    s.conditionDecl = conditionDecl_;
+    s.conditionName = conditionName_;
+    s.usingNamespaces = usingNamespaces_;
+    return s;
+}
+
+void Parser::restoreFunctionState(const FunctionState &s) {
+    at_ = s.at;
+    currentFunction_ = s.currentFunction;
+    currentFunctionName_ = s.currentFunctionName;
+    functionName_ = s.functionName;
+    localTypes_ = s.localTypes;
+    locals_ = s.locals;
+    fnVars_ = s.fnVars;
+    scopeStarts_ = s.scopeStarts;
+    blocks_ = s.blocks;
+    blockStack_ = s.blockStack;
+    labels_ = s.labels;
+    gotos_ = s.gotos;
+    frameSize_ = s.frameSize;
+    thisOffset_ = s.thisOffset;
+    currentClass_ = s.currentClass;
+    returnType_ = s.returnType;
+    lambdaCount_ = s.lambdaCount;
+    atFunctionBody_ = s.atFunctionBody;
+    alive_ = s.alive;
+    pendingTemps_ = s.pendingTemps;
+    bodyCleanupFrom_ = s.bodyCleanupFrom;
+    functionHasPads_ = s.functionHasPads;
+    functionHasTry_ = s.functionHasTry;
+    functionTypeIndex_ = s.functionTypeIndex;
+    variadicBody_ = s.variadicBody;
+    inStaticMember_ = s.inStaticMember;
+    inParams_ = s.inParams;
+    staticSymbols_ = s.staticSymbols;
+    pendingDefaults_ = s.pendingDefaults;
+    pendingNoexcept_ = s.pendingNoexcept;
+    replayingInline_ = s.replayingInline;
+    loopDepth_ = s.loopDepth;
+    switchDepth_ = s.switchDepth;
+    switches_ = s.switches;
+    breakMarks_ = s.breakMarks;
+    inTryBody_ = s.inTryBody;
+    inMsHandler_ = s.inMsHandler;
+    mayThrow_ = s.mayThrow;
+    conditionDecl_ = s.conditionDecl;
+    conditionName_ = s.conditionName;
+    usingNamespaces_ = s.usingNamespaces;
+}
+
+// A body parsed behind one of these doors is a *different* function, so it
+// starts with none of the enclosing one's state rather than a copy of it.
+// `at_` is left alone: the caller has just pointed it at what to read.
+void Parser::clearFunctionState() {
+    currentFunction_.clear();
+    currentFunctionName_.clear();
+    functionName_.clear();
+    localTypes_.clear();
+    locals_.clear();
+    fnVars_.clear();
+    scopeStarts_.clear();
+    blocks_.clear();
+    blockStack_.clear();
+    labels_.clear();
+    gotos_.clear();
+    frameSize_ = 0;
+    thisOffset_ = 0;
+    currentClass_ = nullptr;
+    returnType_ = nullptr;
+    lambdaCount_ = 0;
+    atFunctionBody_ = false;
     alive_.clear();
     pendingTemps_.clear();
     bodyCleanupFrom_ = 0;
-    // **The exception state is per-function too, and `topLevel` clears it after
-    // it emits** - so a replay in the middle of a body cleared the *enclosing*
-    // function's. `functionHasTry_` guards the refusal of a `try` beside a local
-    // with a destructor: cleared by a lambda written between them, the pair was
-    // accepted and reached the assembler as an undefined LSDA label.
-    // `functionHasPads_` decides whether the prologue names a personality
-    // routine at all. `staticSymbols_` is what catches two static locals of one
-    // name. None is the replayed body's business, and none is the enclosing
-    // function's to lose. `inUnnamedNamespace_` is deliberately not here: it is
-    // linkage for the whole file, not state for one function.
-    const bool outerHasPads = functionHasPads_;
-    const bool outerHasTry = functionHasTry_;
-    const int outerTypeIndex = functionTypeIndex_;
-    const bool outerVariadic = variadicBody_;
-    const bool outerInStatic = inStaticMember_;
-    const bool outerInParams = inParams_;
-    const std::vector<std::string> outerStatics = staticSymbols_;
-    // **A default argument belongs to the declaration that wrote it.**
-    // `pendingDefaults_` is handed from the parameter list to whichever declare
-    // consumes it, so a body replayed here - which re-reads its own declaration
-    // - must not start holding the previous one's, nor leave its own behind for
-    // the next: a constructor with a default followed by a friend was read as a
-    // friend whose first parameter had one, and refused for the second having
-    // none. `pendingNoexcept_` is the same hand-off for the specification.
-    const std::vector<std::size_t> outerDefaults = pendingDefaults_;
-    const bool outerNoexcept = pendingNoexcept_;
     functionHasPads_ = false;
     functionHasTry_ = false;
     functionTypeIndex_ = 0;
@@ -595,6 +644,31 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     staticSymbols_.clear();
     pendingDefaults_.clear();
     pendingNoexcept_ = false;
+    loopDepth_ = 0;
+    switchDepth_ = 0;
+    switches_.clear();
+    breakMarks_.clear();
+    inTryBody_ = false;
+    inMsHandler_ = false;
+    mayThrow_ = 0;
+    conditionDecl_ = false;
+    conditionName_.clear();
+}
+
+void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
+    if (mine.empty()) return;
+    // **One capture for the whole nested parse.** Eight doors re-enter parsing
+    // from a saved token index and each used to write its own list of what to
+    // put back; that is how `alive_` came to be missing from this one, and six
+    // more fields besides. captureFunctionState is the single list now, so a
+    // field added to the parser is added there and nowhere else.
+    const FunctionState outer = captureFunctionState();
+    clearFunctionState();
+    // A body replayed here was written inside a class body, so every definition
+    // it produces is implicitly inline. Set after the clear, not restored: a
+    // replay can happen inside another one and the inner one is inline too.
+    replayingInline_ = true;
+
     for (std::size_t i = 0; i < mine.size(); i++) {
         at_ = mine[i].start;
         // A friend's body is written inside the class and belongs outside it,
@@ -621,37 +695,7 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
         inlineOwner_.clear();
         inlineOwnerName_.clear();
     }
-    currentFunction_ = outerFunction;
-    currentFunctionName_ = outerFunctionName;
-    localTypes_ = outerLocalTypes;
-    locals_ = outerLocals;
-    fnVars_ = outerFnVars;
-    scopeStarts_ = outerScopeStarts;
-    blocks_ = outerBlocks;
-    blockStack_ = outerBlockStack;
-    labels_ = outerLabels;
-    gotos_ = outerGotos;
-    frameSize_ = outerFrameSize;
-    thisOffset_ = outerThisOffset;
-    currentClass_ = outerClass;
-    returnType_ = outerReturn;
-    lambdaCount_ = outerLambdaCount;
-    functionName_ = outerName;
-    atFunctionBody_ = outerAtBody;
-    alive_ = outerAlive;
-    pendingTemps_ = outerPending;
-    bodyCleanupFrom_ = outerBodyCleanup;
-    functionHasPads_ = outerHasPads;
-    functionHasTry_ = outerHasTry;
-    functionTypeIndex_ = outerTypeIndex;
-    variadicBody_ = outerVariadic;
-    inStaticMember_ = outerInStatic;
-    inParams_ = outerInParams;
-    staticSymbols_ = outerStatics;
-    pendingDefaults_ = outerDefaults;
-    pendingNoexcept_ = outerNoexcept;
-    replayingInline_ = outerInline;
-    at_ = resume;
+    restoreFunctionState(outer);
 }
 
 void Parser::enterScope() { scopeStarts_.push_back(locals_.size()); }

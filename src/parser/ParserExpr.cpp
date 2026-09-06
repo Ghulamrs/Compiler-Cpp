@@ -1319,6 +1319,12 @@ ExprPtr Parser::primary(Program *program) {
         if (currentClass_ != nullptr) {
             const Local *self = findLocal("this");
             if (const Member *m = currentClass_->findMember(name)) {
+                // **[class.access]/1 applies however the member is spelled**,
+                // and this path checked nothing: `x` inside a derived class
+                // reached a private member of its base where `this->x` and
+                // `d.x` were both refused. Three ways to name a member and
+                // the rule was written into two of them.
+                checkAccessible(currentClass_, *m, pos);
                 if (self == nullptr)
                     src_.fail(pos, "'" + name + "' is a member and there is no "
                                    "object here to read it from");
@@ -1423,6 +1429,9 @@ const Type *Parser::decltypeSpecifier() {
         }
     }
 
+    // Unevaluated: [dcl.type.simple]/4. The operand is read for its type and
+    // nothing in it happens, so nothing it registered may outlive the read.
+    Discarded held(this);
     ExprPtr e = expr();
     expect(")");
     const Type *t = e->type();
@@ -2025,6 +2034,8 @@ ExprPtr Parser::unary() {
         at_ += 2;
         const int outer = mayThrow_;
         mayThrow_ = 0;
+        // Unevaluated: what it accumulates goes back. [expr.unary.noexcept]/2
+        Discarded held(this);
         (void) expr();
         const bool quiet = mayThrow_ == 0;
         mayThrow_ = outer;
@@ -2046,6 +2057,9 @@ ExprPtr Parser::unary() {
             measured = declarator(measured, true).type;
             expect(")");
         } else {
+            // Unevaluated: [expr.sizeof]/1. A call in here registers a result
+            // slot for destruction and no object is ever built in it.
+            Discarded held(this);
             ExprPtr operand = unary();
             if (const MemberAccess *m = dynamic_cast<const MemberAccess *>(operand.get()))
                 if (m->isBitField())

@@ -649,6 +649,20 @@ void Parser::applyDefaults(Signature f, std::vector<ExprPtr> &args,
     const std::string outerFunctionName = currentFunctionName_;
     currentFunction_.clear();
     currentFunctionName_.clear();
+    // **And the rest of the declaration's scope**, which the locals were only
+    // part of: the namespace it was declared in, recorded beside the token
+    // positions because the parser is now wherever the *call* was written, and
+    // the class if it is a member's, so a default may name its own class's
+    // enumerator or static member. Without these a default in `namespace N`
+    // naming N's `k` found the caller's `::k` and answered 7 where clang says 5.
+    const std::vector<std::string> outerNs = namespaceStack_;
+    std::map<std::string, std::vector<std::string> >::const_iterator ns =
+        defaultArgNamespace_.find(f.symbol);
+    if (ns != defaultArgNamespace_.end()) namespaceStack_ = ns->second;
+    const Type *outerClass = currentClass_;
+    if (!f.owner.empty()) {
+        if (const Type *owner = findTypedef(f.owner)) currentClass_ = owner;
+    }
     for (std::size_t i = args.size(); i < f.params.size(); i++) {
         if (i >= it->second.size() || it->second[i] == 0)
             src_.fail(pos, "'" + f.name + "' has no default for parameter " +
@@ -661,6 +675,8 @@ void Parser::applyDefaults(Signature f, std::vector<ExprPtr> &args,
     scopeStarts_.swap(starts);
     currentFunction_ = outerFunction;
     currentFunctionName_ = outerFunctionName;
+    namespaceStack_ = outerNs;
+    currentClass_ = outerClass;
 }
 
 Parser::Signature Parser::resolveOverload(const std::string &written,

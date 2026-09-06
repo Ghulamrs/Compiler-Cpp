@@ -289,7 +289,8 @@ ExprPtr Parser::materialiseCopy(const Type *type, ExprPtr arg, std::size_t pos,
         node->setType(to);
         return node;
     }
-    if (cc->access != Access::Public && currentClass_ != cls && !isFriendOf(cls))
+    if (cc->access != Access::Public && !insideAccessOf(cls, cc->access) &&
+        !isFriendOf(cls))
         src_.fail(pos, "'" + cls->describe() + "' is passed by value as " + what +
                        ", which copies it, and its copy constructor is " +
                        (cc->access == Access::Private ? "private" : "protected"));
@@ -668,13 +669,32 @@ bool Parser::insideAccessOf(const Type *cls, Access access) const {
     return outer != closureOuter_.end() && outer->second == want;
 }
 
+bool Parser::accessibleFrom(const Type *from, const Type *owner,
+                            Access a) const {
+    if (a == Access::Public) return true;
+    if (from == nullptr || owner == nullptr) return false;
+    const Type *want = owner->unqualified();
+    if (from->unqualified() == want) return true;
+    return a == Access::Protected && derivesFrom(from->unqualified(), want);
+}
+
 void Parser::checkAccessible(const Type *object, const Member &m,
                              std::size_t pos) const {
     if (m.access == Access::Public) return;
-    if (insideAccessOf(object)) return;
-    if (isFriendOf(object)) return;
+    // **Asked about the class that declared it**, not the one it was reached
+    // through: a base's members are copied down, so a private member of `B`
+    // read through a `D` was asked about `D` and answered yes from inside `D`.
+    const Type *owner = m.declaredIn != nullptr ? m.declaredIn : object;
+    if (insideAccessOf(owner, m.access)) return;
+    if (isFriendOf(owner)) return;
+    // No fallback to the class it was reached *through*: being inside `D`
+    // grants nothing over a private member of `B`, which is the whole of
+    // [class.access.base]/1. The protected case is already answered by
+    // insideAccessOf, whose derivesFrom clause is exactly that rule.
     const char *how = m.access == Access::Private ? "private" : "protected";
-    src_.fail(pos, "'" + m.name + "' is " + how + " in '" + object->describe() +
+    // Named by the class that declared it: saying it is private in the derived
+    // class sends the reader to a class whose source does not mention it.
+    src_.fail(pos, "'" + m.name + "' is " + how + " in '" + owner->describe() +
                    "' - it can be named only from inside the class, and this "
                    "is outside it");
 }

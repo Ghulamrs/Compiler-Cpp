@@ -99,6 +99,13 @@ struct Member {
     // It is a property of the member and not of its type, which is why it sits
     // here rather than in the qualifiers.
     bool isMutable = false;
+    // **Which class declared it**, null for one the class wrote itself. A
+    // base's data members are copied down into the derived class's list -
+    // that flattening *is* the layout - and they carry their access with them
+    // but carried no record of whose they were, so an access check asked
+    // whether it was inside the *derived* class and a private member of a
+    // base was readable from it. [class.access.base]/1.
+    const Type *declaredIn = nullptr;
 
     bool isBitField() const { return width != 0; }
 };

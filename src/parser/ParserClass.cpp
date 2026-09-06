@@ -28,8 +28,8 @@ StmtPtr Parser::constructLocal(const Declared &d, int offset,
                          "write '" + d.type->describe() + " " + d.name +
                          "(...)', which asks for it by name");
 
-    if (ctor.access != Access::Public && currentClass_ != d.type->unqualified() &&
-        !isFriendOf(d.type))
+    if (ctor.access != Access::Public &&
+        !insideAccessOf(d.type, ctor.access) && !isFriendOf(d.type))
         src_.fail(d.pos, "'" + d.type->describe() + "' has no public constructor "
                          "taking these arguments - the one that matches is " +
                          (ctor.access == Access::Private ? "private" : "protected"));
@@ -891,6 +891,8 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
 
     set.push_back(functions_.size());
     if (!pendingDefaults_.empty()) defaultArgs_[out] = pendingDefaults_;
+    if (!pendingDefaults_.empty())
+        defaultArgNamespace_[out] = namespaceStack_;
     pendingDefaults_.clear();
     functions_.push_back(Signature{ cls, out, types_.get(Kind::Void), params,
                                     false, false, pos, false, cls, false, access });
@@ -1051,8 +1053,8 @@ StmtPtr Parser::constructLocalArray(const Declared &d, int offset,
         src_.fail(d.pos, "'" + plain->describe() + "' has constructors but none "
                          "that takes nothing, and an array of it has no way to "
                          "say what to pass");
-    if (ctor->access != Access::Public && currentClass_ != plain &&
-        !isFriendOf(plain))
+    if (ctor->access != Access::Public &&
+        !insideAccessOf(plain, ctor->access) && !isFriendOf(plain))
         src_.fail(d.pos, "'" + plain->describe() + "' has no public default "
                          "constructor, and an array of it needs one");
     // **Marked used, or an implicit one is declared and never emitted.** Every other
@@ -1558,7 +1560,7 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
                            base->tag() + "', which has no constructor taking "
                            "nothing - write a constructor for '" + cls + "' with "
                            "': " + base->tag() + "(...)' in its initialiser list");
-        if (ctor->access != Access::Public)
+        if (!accessibleFrom(type, base, ctor->access))
             src_.fail(pos, "'" + cls + "' cannot be built by the constructor the "
                            "compiler would write: the constructor of its base '" +
                            base->tag() + "' taking nothing is " +
@@ -1726,7 +1728,7 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
             if (cc == nullptr) cc = copyConstructorOf(base);
         }
         if (cc == nullptr) continue;              // trivial: its members copy below
-        if (cc->access != Access::Public)
+        if (!accessibleFrom(type, base, cc->access))
             src_.fail(pos, std::string("'") + cls + "' cannot be built by the " +
                            kind + " the compiler would write: the " + kind +
                            " of its base '" + base->tag() + "' is " +
@@ -2043,7 +2045,7 @@ void Parser::defineStaticMember(Declared &d, Program &program) {
 // and has no storage at all; every other is the one global the class named.
 ExprPtr Parser::staticMemberRef(const Type *owner, const Type::StaticMember &s,
                                 const std::string &cls, std::size_t pos) {
-    if (s.access != Access::Public && currentClass_ != owner->unqualified() &&
+    if (s.access != Access::Public && !insideAccessOf(owner, s.access) &&
         !isFriendOf(owner))
         src_.fail(pos, "'" + cls + "::" + s.name + "' is " +
                        (s.access == Access::Private ? "private" : "protected"));
@@ -2112,7 +2114,10 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
     if (isStatic) {
         const std::string sym = memberSymbol(cls, d.name, fn, access, false,
                                              d.pos, false, true);
-        if (!pendingDefaults_.empty()) defaultArgs_[sym] = pendingDefaults_;
+        if (!pendingDefaults_.empty()) {
+            defaultArgs_[sym] = pendingDefaults_;
+            defaultArgNamespace_[sym] = namespaceStack_;
+        }
         pendingDefaults_.clear();
         set.push_back(functions_.size());
         functions_.push_back(Signature{
@@ -2158,6 +2163,8 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
     const std::string symbol = memberSymbol(cls, d.name, fn, access, constThis,
                                             d.pos, isVirtual);
     if (!pendingDefaults_.empty()) defaultArgs_[symbol] = pendingDefaults_;
+    if (!pendingDefaults_.empty())
+        defaultArgNamespace_[symbol] = namespaceStack_;
     pendingDefaults_.clear();
     set.push_back(functions_.size());
     functions_.push_back(Signature{
@@ -2302,6 +2309,12 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
         // them.** This path cleared them, so `g`'s were re-read as the next function's
         // and `h()` returned 50. Merged rather than replaced, the union a suffix.
         if (!pendingDefaults_.empty()) {
+            // The scope this declaration was written in, for [dcl.fct.default]/5.
+            // This is the path a *definition* carrying defaults takes, and it is
+            // the one the first attempt missed: the class sites recorded it and
+            // a free function in a namespace did not, so `namespace N { int k=5;
+            // int f(int a = k); }` still read the caller's `::k`.
+            defaultArgNamespace_[f.symbol] = namespaceStack_;
             std::vector<std::size_t> &have = defaultArgs_[f.symbol];
             if (have.size() < pendingDefaults_.size())
                 have.resize(pendingDefaults_.size(), 0);
@@ -2345,8 +2358,10 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
     if (pendingExplicitConversion_ && isConversionName(instantiationName(name)))
         functions_.back().isExplicit = true;
     pendingExplicitConversion_ = false;
-    if (!pendingDefaults_.empty())
+    if (!pendingDefaults_.empty()) {
         defaultArgs_[functions_.back().symbol] = pendingDefaults_;
+        defaultArgNamespace_[functions_.back().symbol] = namespaceStack_;
+    }
     pendingDefaults_.clear();
 }
 
@@ -2588,7 +2603,8 @@ StmtPtr Parser::constructMember(const std::string &cls, const Type *type,
                   "to the list");
         chosen = *ctor;
     }
-    if (chosen.access != Access::Public && currentClass_ != mc && !isFriendOf(mc))
+    if (chosen.access != Access::Public && !insideAccessOf(mc, chosen.access) &&
+        !isFriendOf(mc))
         src_.fail(pos, implicit
             ? "'" + cls + "' cannot be built by the constructor the compiler "
               "would write: the constructor of '" + mc->tag() + "' taking "

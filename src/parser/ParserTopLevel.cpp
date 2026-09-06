@@ -817,7 +817,8 @@ void Parser::topLevel(Program &program) {
                                             "constructor of '" + mc->describe() +
                                             "' taking nothing, and it has none");
                         if (ctor->access != Access::Public &&
-                            currentClass_ != mc && !isFriendOf(mc))
+                            !insideAccessOf(mc, ctor->access) &&
+                            !isFriendOf(mc))
                             src_.fail(epos, "'" + entry + "()' would call a " +
                                             std::string(ctor->access == Access::Private
                                                         ? "private" : "protected") +

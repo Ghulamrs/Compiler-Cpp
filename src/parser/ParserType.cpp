@@ -229,6 +229,10 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         for (std::size_t i = 0; i < inherited.size(); i++) {
             Member m = inherited[i];
             m.offset += at;
+            // Whose it is, kept through the flattening: a base's private
+            // member stays the base's for the access check, however many
+            // classes down it is copied.
+            if (m.declaredIn == nullptr) m.declaredIn = b;
             if (m.access == Access::Private) m.access = Access::Private;
             else if (how == Access::Private) m.access = Access::Private;
             else if (how == Access::Protected) m.access = Access::Protected;
