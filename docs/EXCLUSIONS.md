@@ -312,17 +312,15 @@ where one object is many:
 - **a local with a destructor and a `try` in one function** — each is a range
   in the call-site table and one would have to split the other.
   `src/parser/ParserStmt.cpp:625`, `src/parser/ParserStmt.cpp:859`,
-  `src/parser/ParserStmt.cpp:1369`
+  `src/parser/ParserStmt.cpp:1399`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and
   so does a class in the condition of an `if`, where the object is built once.
   `src/parser/ParserStmt.cpp:565`
 - **a `try` inside another** — `src/parser/ParserStmt.cpp:899`
-- **catching by reference** — catch by value.
-  `src/parser/ParserStmt.cpp:950`
 - **a rethrow**, `throw;` with nothing after it —
-  `src/parser/ParserStmt.cpp:1123`
+  `src/parser/ParserStmt.cpp:1153`
 - **a dynamic exception specification**, `throw(T)` — `throw()` with nothing in
   it is `noexcept` and works. `src/parser/ParserConst.cpp:71`
 - **a range-based `for` over anything but an array** — a class would need its
@@ -342,7 +340,7 @@ where one object is many:
   class's overload set. `src/parser/ParserType.cpp:341`
 - **a using-declaration inside a block** — it would declare a name for the rest
   of the block and rank against the locals beside it.
-  `src/parser/ParserStmt.cpp:1107`. The one at namespace scope,
+  `src/parser/ParserStmt.cpp:1137`. The one at namespace scope,
   `using N::f;`, works, and so does `using namespace N;` here.
 
 ## Lambdas
@@ -403,7 +401,7 @@ guessed wrong twice.
 
 - **`return` inside a `catch` on x86_64-windows** — a handler is a funclet
   there, so leaving one early is a return of the address to carry on at.
-  `src/parser/ParserStmt.cpp:1132`
+  `src/parser/ParserStmt.cpp:1162`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation

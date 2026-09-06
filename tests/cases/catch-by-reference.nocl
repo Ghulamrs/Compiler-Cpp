@@ -1,0 +1,16 @@
+cl emits the four objects a Microsoft throw is identified by - the type
+descriptor ??_R0<T>@8, its catchable type _CT??_R0<T>@8<n>, the array of those
+_CTA1<T>, and the ThrowInfo _TI1<T> - as public COMDATs, and cxx1 emits the
+same four as file-local symbols, so they do not appear in its symbol table.
+This case throws a char, an int and a double, so it is twelve names rather
+than the four condition-declaration-unwind.nocl records for one type.
+
+That is deliberate and measured: a public copy collides with cl's at the link
+with LNK2005, and the runtime matches a type descriptor by its name string
+rather than by its address - which is the same rule that lets a throw cross a
+DLL boundary. CLAUDE.md records it under "6.5a as it actually landed".
+
+Every other name in this case agrees with cl, the handler funclets included.
+tests/names.sh compares the whole case against clang for all three targets
+with no difference at all, so nothing here is about catching by reference -
+it is what any case that throws looks like beside cl.

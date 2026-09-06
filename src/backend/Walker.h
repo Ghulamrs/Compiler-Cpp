@@ -129,6 +129,7 @@ protected:
     struct MsHandlerRow {
         std::string descriptor;   // empty for catch (...)
         int objectSlot = 0;
+        bool byReference = false;
         std::string funclet;
     };
     struct MsTryRegion {

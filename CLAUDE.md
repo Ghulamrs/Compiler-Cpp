@@ -6693,7 +6693,7 @@ the rethrow hid the catch clause:
 | --- | --- | --- |
 | `throw E(7);` | `'throw' cannot name the type of this` | `ParserExprNew.cpp:807`, Itanium; `:761`, Microsoft |
 | `catch (E e)` | `'catch' cannot name this type` | `ParserStmt.cpp:954`, `:977` |
-| `catch (const E &e)` | `catching by reference is not supported yet` | `ParserStmt.cpp:950` |
+| `catch (const E &e)` | ~~`catching by reference is not supported yet`~~ | **done** 2026-09-06, below |
 | `throw;` | `a rethrow ... is not supported yet` | `ParserStmt.cpp:1123` |
 | `try` inside a `try` | `a 'try' inside another one` | `ParserStmt.cpp:899` |
 | a destructible local beside a `try` | `a local with a destructor and a 'try' in one` | `ParserStmt.cpp:625`, `:859`, `:1369` |
@@ -6702,8 +6702,8 @@ the rethrow hid the catch clause:
 `catch (...)` compiles today, and so does the whole of rung 6 for a fundamental
 type: `throw 3; catch (int e)` runs on all three targets.
 
-**Catching by reference is the widest of the seven and the least visible from
-here**, because it is not about classes at all - `catch (const int &)` is
+**Catching by reference was the widest of the seven and the least visible from
+here**, because it is not about classes at all - `catch (const int &)` was
 refused by the same line. Every real C++ program catches by `const &`
 ([except.throw] makes catching a class by *value* a copy, and a base-class
 catch of a derived object by value slices), so this one gate stops the ordinary
@@ -6762,6 +6762,71 @@ exists); `type_info` on demand for a non-polymorphic class (the real emission
 step, both ABIs); rethrow; the three try/catch limits; `<stdexcept>` on top of
 all of it. Nothing here is on the ladder, and the two programs that asked for
 it need every one.
+
+## Catching by reference, which is a slot and not a copy
+
+**Landed 2026-09-06, the first of the seven** - it was the widest of them and
+the cheapest, being a catch-clause declarator and no table. `catch (const int
+&)` had been refused by the same line as `catch (const E &)`, so the gate shut
+the ordinary spelling of the feature even for the types cxx1 could already
+throw.
+
+**A reference holds what `__cxa_begin_catch` handed back.** That call returns
+the address of the exception object, which is the thing the reference is *to* -
+so the slot takes the pointer and every mention of the name dereferences it, as
+any reference here does. A by-value handler casts, dereferences and copies; a
+by-reference one casts and stores. Measured before it was written, and clang's
+shape is the same one:
+
+    clang    callq __cxa_begin_catch ; movq %rax, -32(%rbp) ; movl (%rax), %esi
+    cxx1     call  __cxa_begin_catch ; movq %rax, (%rdi)    ; movq (%rax), %rax
+
+**The type_info names the referent, not the reference** - [except.handle]/3
+makes a handler of type `cv T &` match exactly what `T` matches - so
+`catch (const int &)` and `catch (int)` both write `_ZTIi`, and a class caught
+by reference will name the class. That is one line, and getting it wrong would
+have produced a handler the runtime never selects rather than a diagnostic.
+
+**Microsoft says it in the handler map's adjectives word**, and the bit was
+measured rather than reasoned about: 0 for a by-value handler and **8** for a
+reference, both naming the same descriptor. `MsHandler::byReference` carries it
+from the parser to `Masm.cpp`, through `MsHandlerRow`, beside the 0x40 that
+already marked a catch-all.
+
+    by value       .long 0   # Adjectives    ??_R0H@8    CatchObjOffset 60
+    by reference   .long 8   # Adjectives    ??_R0H@8    CatchObjOffset 56
+
+**`catch (T &&)` is refused by name and is not an exclusion.**
+[except.handle]/1 forbids it: the exception object belongs to the runtime and
+outlives the handler, so there is nothing here to take apart. clang refuses the
+same program, which is why the refusal says so plainly rather than "is not
+supported yet" - and why `tools/exclusions` counts 102 sites where it counted
+103, one genuinely removed and the new one correctly not added. Same rule as
+`static double S::x`: code C++11 itself forbids belongs in neither document.
+
+**The emit golden reports 0 of 675 files changed**, 6 added - nothing that
+already compiled emits differently, and the six are the two new cases across
+three targets. `catch-by-reference.cpp` runs six shapes against clang: a const
+reference, a non-const one written through, a reference handler chosen past
+another, a `double`, an unnamed one, and a by-value handler beside them.
+**No handler in it returns**, because `return` inside a `catch` is refused on
+x86_64-windows - each writes a variable and the printing happens after, which
+is what lets the one case prove the adjectives word on the box that owns it.
+
+**And it needed the `.nocl` twin every throwing case needs**, which the first
+three-box run is what said: cl emits the four objects a Microsoft throw is
+identified by as public COMDATs and cxx1 emits them file-local, so twelve names
+- four each for the `char`, the `int` and the `double` - are cl's and not
+cxx1's. That is 6.5a's own measured decision, a public copy colliding with
+cl's at the link, and it is one-directional: nothing cxx1 emits is missing from
+cl. Recorded rather than argued with, beside
+`condition-declaration-unwind.nocl`, which records the same four for one type.
+
+**What it does not unblock is the two programs that asked for it.**
+`catcher1.cpp` and `catcher2.cpp` still stop at `#include <stdexcept>`, and
+`catch (const E &e)` for a class now reaches the *type_info* refusal rather
+than the reference one - which is the next step in the order the scoping set,
+and the sign this one landed where it was aimed.
 
 ## The object ledger, because printing cannot show a leak
 

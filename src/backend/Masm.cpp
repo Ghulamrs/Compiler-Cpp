@@ -733,9 +733,12 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
         o += "$handlerMap$" + std::to_string(k) + "$" + m;
         for (std::size_t i = 0; i < r.handlers.size(); i++) {
             const MsHandlerRow &h = r.handlers[i];
-            // 0x40 is HT_IsCatchAll, and a catch-all names no type.
+            // 0x40 is HT_IsCatchAll, and a catch-all names no type; 0x08 is
+            // HT_IsReference, which tells the runtime to put the object's
+            // address in the slot rather than a copy of it. Measured.
             o += (i == 0 ? " DD " : "  DD ");
-            o += h.descriptor.empty() ? "040H\n" : "00H\n";
+            o += h.descriptor.empty() ? "040H\n"
+                                      : (h.byReference ? "08H\n" : "00H\n");
             o += h.descriptor.empty() ? "  DD 00H\n"
                                       : "  DD imagerel " + h.descriptor + "\n";
             o += "  DD " + std::to_string(h.objectSlot == 0

@@ -938,7 +938,9 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
 
         Handler h;
         std::string caughtName;
-        const Type *caught = nullptr;
+        const Type *caught = nullptr;      // what the type_info names
+        const Type *declaredType = nullptr; // what the handler's own name is
+        bool byRef = false;
         if (consume("...")) {
             sawCatchAll = true;
         } else {
@@ -946,13 +948,23 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
             Qualifiers quals;
             const Type *base = specifiers(&sc, &quals);
             Declared d = declarator(base, true);
-            if (d.type->isReference())
-                src_.fail(d.pos, "catching by reference is not supported yet - "
-                                 "catch by value");
+            // [except.handle]/1: the exception object belongs to the runtime and
+            // outlives the handler, so there is nothing here to take apart.
+            if (d.type->isRValueReference())
+                src_.fail(d.pos, "a handler cannot catch by rvalue reference - "
+                                 "the exception object is the runtime's, so "
+                                 "catch by value or by 'const &'");
+            // **A handler of type `cv T &` matches exactly what `T` matches**
+            // - [except.handle]/3 - so the type_info names the referent with
+            // its qualifiers off, and the reference is a slot holding the
+            // pointer the runtime already has.
+            byRef = d.type->isReference();
+            declaredType = byRef ? d.type : d.type->unqualified();
+            caught = byRef ? d.type->referent()->unqualified()
+                           : d.type->unqualified();
             std::string why;
-            if (!itaniumTypeInfoName(d.type->unqualified(), &h.type, &why))
+            if (!itaniumTypeInfoName(caught, &h.type, &why))
                 src_.fail(cpos, "'catch' cannot name this type: " + why);
-            caught = d.type->unqualified();
             caughtName = d.name;
         }
         expect(")");
@@ -977,6 +989,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                     src_.fail(cpos, "'catch' cannot name this type: " + why);
                 mh.descriptor = names.descriptor;
                 mh.objectSize = caught->size(target_);
+                mh.byReference = byRef;
                 // The descriptor is emitted by the same pass that emits a thrown
                 // type's, so a type that is only ever *caught* has to join that list
                 // or the handler map would name a symbol nothing defines.
@@ -985,7 +998,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                     if (current_->thrown[k] == caught) had = true;
                 if (!had) current_->thrown.push_back(caught);
                 if (!caughtName.empty())
-                    mh.objectSlot = declare(caughtName, caught, cpos);
+                    mh.objectSlot = declare(caughtName, declaredType, cpos);
             }
             if (!peek().is("{")) src_.fail(peek().pos, "'catch' takes a block");
             const bool wasInHandler = inMsHandler_;
@@ -1005,17 +1018,32 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                                     std::move(beginArgs));
 
         if (caught != nullptr && !caughtName.empty()) {
-            const int slot = declare(caughtName, caught, cpos);
-            const Type *caughtPtr = types_.pointerTo(caught);
-            ExprPtr cast(new Cast(caughtPtr, std::move(began)));
-            cast->setType(caughtPtr);
-            ExprPtr from(new Unary('*', std::move(cast)));
-            from->setType(caught);
-            ExprPtr to(Var::local(caughtName, slot));
-            to->setType(caught);
-            ExprPtr copy(new Assign(std::move(to), std::move(from)));
-            copy->setType(caught);
-            steps.push_back(StmtPtr(new ExprStmt(std::move(copy))));
+            const int slot = declare(caughtName, declaredType, cpos);
+            // **A reference holds what __cxa_begin_catch handed back.** It
+            // returns the address of the exception object, which is the thing
+            // the reference is to - so the slot takes the pointer and every
+            // mention of the name dereferences it, as any reference does.
+            // Measured: clang stores %rax and reads through it.
+            const Type *slotType = byRef
+                ? types_.pointerTo(declaredType->referent())
+                : types_.pointerTo(caught);
+            ExprPtr cast(new Cast(slotType, std::move(began)));
+            cast->setType(slotType);
+            if (byRef) {
+                ExprPtr to(Var::local(caughtName, slot));
+                to->setType(slotType);
+                ExprPtr bind(new Assign(std::move(to), std::move(cast)));
+                bind->setType(slotType);
+                steps.push_back(StmtPtr(new ExprStmt(std::move(bind))));
+            } else {
+                ExprPtr from(new Unary('*', std::move(cast)));
+                from->setType(caught);
+                ExprPtr to(Var::local(caughtName, slot));
+                to->setType(caught);
+                ExprPtr copy(new Assign(std::move(to), std::move(from)));
+                copy->setType(caught);
+                steps.push_back(StmtPtr(new ExprStmt(std::move(copy))));
+            }
         } else {
             steps.push_back(StmtPtr(new ExprStmt(std::move(began))));
         }

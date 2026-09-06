@@ -505,6 +505,7 @@ struct MsHandler {
     std::string descriptor;    // ??_R0H@8 and the like; empty for catch (...)
     int objectSlot = 0;        // frame slot for the caught object, 0 if unnamed
     int objectSize = 0;
+    bool byReference = false;  // the slot takes the runtime's pointer, not a copy
     StmtPtr body;
 };
 
