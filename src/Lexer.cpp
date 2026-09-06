@@ -311,6 +311,20 @@ std::vector<Token> Lexer::tokenize() {
         if (identStart(c)) {
             std::size_t start = i;
             while (i < s.size() && identCont(s[i])) i++;
+            // **A literal prefix is part of the literal, not a name in front
+            // of one** - [lex.string]. Without this the prefix lexes as an
+            // identifier and the reader is told it was never declared, which
+            // says nothing about the literal it belongs to.
+            if (i < s.size() && (s[i] == '"' || s[i] == '\'')) {
+                const std::string pre = s.substr(start, i - start);
+                // `L` is not here: a wide literal is read further up and
+                // works. What is left is the C++11 set plus the raw forms.
+                if (pre == "R" || pre == "u8" || pre == "u8R" || pre == "u" ||
+                    pre == "U" || pre == "LR" || pre == "uR" || pre == "UR")
+                    src_.fail(start, "a '" + pre + "' literal is not "
+                                "supported yet - an ordinary \"...\" is a "
+                                "narrow string of char here");
+            }
             Token t;
             t.text = s.substr(start, i - start);
             t.kind = isKeyword(t.text) ? TokenKind::Keyword : TokenKind::Ident;

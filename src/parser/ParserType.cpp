@@ -25,6 +25,15 @@ const Type *Parser::memberTypeWalk(const Type *t) {
         }
         if (!t->isStructOrUnion()) break;
         const Type *found = lookupInClass(t, member);
+        // **C++11 lets `sizeof(S::m)` name a non-static data member with no
+        // object** - [expr.sizeof]/2 - so say which of the two this is: a
+        // member that exists and is not a type reads differently from a name
+        // the class does not have at all.
+        if (found == nullptr && t->findMember(member) != nullptr)
+            src_.fail(peekAt(1).pos, "naming the non-static data member '" +
+                                     member + "' without an object is C++11 "
+                                     "and is not supported yet - 'sizeof' an "
+                                     "object of the class, or its type");
         if (found == nullptr)
             src_.fail(peekAt(1).pos, "'" + t->tag() + "' has no member type "
                                      "called '" + member + "'");
@@ -40,6 +49,16 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
     std::string tag;
     if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
+
+    // **`final` on a class head forbids deriving from it** - [class]/3 - which
+    // is a check made at every later derivation rather than anything about
+    // this one, and nothing records it. Asked here so it is not read as the
+    // start of a declarator.
+    if (peek().is("final") && (peekAt(1).is("{") || peekAt(1).is(":")))
+        src_.fail(peek().pos, "'final' on a class is not supported yet: "
+                              "nothing here records that a class may not be "
+                              "derived from, so the word would be accepted "
+                              "and never checked");
 
     // **A class written inside another is named through it**: the tag becomes
     // "Outer::Inner", so it cannot collide with a global, with the single component
@@ -337,6 +356,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         // namespace scope**, which this compiler has: here it redeclares a base
         // member, changing its access or bringing an overload set into the
         // derived class's own, and neither is an alias.
+        refuseAliasDeclaration();
         if (peek().is("using"))
             src_.fail(peek().pos, "a using-declaration inside a class is not "
                                   "supported yet - it redeclares a base member "
@@ -360,6 +380,19 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         const std::size_t explicitAt = peek().pos;
         if (peek().is("explicit")) { isExplicit = true; at_++; itemStart = at_; }
 
+        // **A `constexpr` constructor makes a literal type** - one whose
+        // objects a constant expression may build. `fold` evaluates a call and
+        // has no object to build into, so the keyword is asked for here rather
+        // than read by specifiers() and then left to fail on the '('.
+        if (!tag.empty() && peek().is("constexpr") &&
+            peekAt(1).kind == TokenKind::Ident && peekAt(1).text == local &&
+            peekAt(2).is("("))
+            src_.fail(peek().pos, "a 'constexpr' constructor is not supported "
+                                  "yet: the constant evaluator folds a call to "
+                                  "a function and has no object to build, so a "
+                                  "'constexpr' object of a class type cannot be "
+                                  "made here");
+
         // A constructor has the class's own name and no return type, so it
         // has to be seen before specifiers() is asked for one - the name is a
         // registered type name by now and would be read as the type.
@@ -377,6 +410,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 skipBracedBlock();
                 continue;
             }
+            refuseDefaultedOrDeleted();
             expect(";");
             continue;
         }
@@ -737,8 +771,28 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 bool mvariadic = false;
                 parameterTypes(mparams, mvariadic);
                 d.type = types_.functionType(d.type, std::move(mparams), mvariadic);
+                // **A ref-qualifier picks the overload by the object's own
+                // value category** - `f() &` against `f() &&` - which is a
+                // rank the implicit object parameter does not carry here.
+                if (peek().is("&") || peek().is("&&"))
+                    src_.fail(peek().pos, "a ref-qualifier on a member "
+                                          "function - 'f() &' or 'f() &&' - is "
+                                          "not supported yet: the object's "
+                                          "value category does not choose an "
+                                          "overload here");
                 bool constThis = false;
                 if (consume("const")) constThis = true;
+                // **`override` and `final` are C++11 and are checks**, not
+                // declarations: the first says this must be replacing a base's
+                // virtual and the second that nothing may replace it. The
+                // slot search already knows which it is, so what is missing is
+                // the diagnostic, not the dispatch.
+                if (peek().is("override") || peek().is("final"))
+                    src_.fail(peek().pos, std::string("'") + peek().text +
+                                  "' is not supported yet: an override is "
+                                  "found by its base's slot here whether or "
+                                  "not the word is written, so this would be "
+                                  "a check rather than a change");
                 // [class.static]/1: a static member function has no `this`, so
                 // there is nothing for either of these to qualify. Refused where
                 // written - a `const` quietly dropped would change a mangled
@@ -762,6 +816,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 // here and the class's slot holds the runtime's trap instead.
                 // Only a virtual may carry it, which is what makes an abstract
                 // class abstract.
+                refuseDefaultedOrDeleted();
+
                 bool isPure = false;
                 if (peek().is("=") && peekAt(1).kind == TokenKind::Num &&
                     !peekAt(1).isFloat && peekAt(1).value == 0) {
@@ -933,8 +989,30 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
 
 const Type *Parser::enumSpecifier() {
     std::size_t pos = peek().pos;
+
+    // **A scoped enumeration is C++11 and is a type of its own** - its
+    // enumerators do not leak into the enclosing scope and do not convert to
+    // int. An enumeration here is still an int that remembers its name, which
+    // is the opposite of what `enum class` asks for, so it is refused rather
+    // than read as the unscoped one it is not.
+    if (peek().is("class") || peek().is("struct"))
+        src_.fail(peek().pos, "a scoped enumeration - 'enum class' - is not "
+                              "supported yet: an enumeration is an int that "
+                              "remembers its name here, where a scoped one is "
+                              "a distinct type whose enumerators are reached "
+                              "through it");
+
     std::string tag;
     if (peek().kind == TokenKind::Ident) { tag = peek().text; at_++; }
+
+    // **An enum-base fixes the underlying type**, `enum E : unsigned char`,
+    // which is what makes the enumeration's size and range something the
+    // program chose. Every enumeration is an int here, so a written base
+    // would be accepted and then ignored.
+    if (peek().is(":"))
+        src_.fail(peek().pos, "an enum-base - 'enum E : T' - is not supported "
+                              "yet: every enumeration is an int here, so the "
+                              "underlying type cannot be chosen");
 
     // **An enum is named through what encloses it**, the same way a class is:
     // `C::Kind` inside a class and `n::Kind` inside a namespace. The lookups
@@ -1042,6 +1120,14 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
 
     for (;;) {
         if (consume("static"))  { *storage = StorageStatic; continue; }
+        // **`extern template` suppresses an implicit instantiation** in this
+        // translation unit and promises one elsewhere. Every specialization
+        // here is emitted where it is used, so the promise cannot be kept.
+        if (peek().is("extern") && peekAt(1).is("template"))
+            src_.fail(peek().pos, "an explicit instantiation declaration - "
+                                  "'extern template' - is not supported yet: "
+                                  "a specialization is emitted wherever it is "
+                                  "used here, so there is nothing to suppress");
         if (consume("extern"))  { *storage = StorageExtern; continue; }
         if (consume("typedef")) { *storage = StorageTypedef; continue; }
         if (consume("const"))    { quals->isConst = true; continue; }
@@ -1057,6 +1143,15 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
         // **`inline` is a hint about linkage, not about the type.** It makes a
         // function's definition mergeable across translation units; nothing else
         // downstream needs it. Refused on a variable, which is a C++17 feature.
+        // **An inline namespace's members are visible in the namespace that
+        // encloses it** - [namespace.def] - which is a lookup rule rather
+        // than a spelling, and lookup here walks the enclosing scopes without
+        // one. Refused so the keyword is not read and then ignored.
+        if (peek().is("inline") && peekAt(1).is("namespace"))
+            src_.fail(peek().pos, "an inline namespace is not supported yet - "
+                                  "its members would have to be found in the "
+                                  "namespace around it, and 'namespace N { }' "
+                                  "without 'inline' works here");
         if (consume("inline")) { quals->isInline = true; continue; }
         if (consume("register")) { *storage = StorageRegister; continue; }
         if (consume("auto"))     { *storage = StorageAuto; continue; }

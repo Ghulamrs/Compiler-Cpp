@@ -1131,6 +1131,7 @@ StmtPtr Parser::statementBody() {
     // namespace scope is not: a name declared here lasts to the end of the
     // block and takes part in overload resolution against the locals beside it,
     // and neither is what the alias at namespace scope does.
+    refuseAliasDeclaration();
     if (peek().is("using"))
         src_.fail(peek().pos, "a using-declaration inside a block is not "
                               "supported yet - it declares a name for the rest "

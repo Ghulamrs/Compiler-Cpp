@@ -1833,6 +1833,12 @@ private:
     void resolveGotos();
 
     bool staticAssertion();
+    // `using X = T;` is an alias declaration and not a using-declaration, and
+    // the three places that refuse the second must not answer for the first.
+    void refuseAliasDeclaration();
+    // `= default` and `= delete` sit where `= 0` does, and a constructor
+    // reaches that position by a different door than a member function.
+    void refuseDefaultedOrDeleted();
     bool exceptionSpecification();
     // Set by exceptionSpecification() at each place a parameter list can be closed, read
     // and cleared by whichever declare* call follows. The same shape `pendingDefaults_`

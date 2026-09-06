@@ -13,6 +13,32 @@
 #include <climits>
 #include <cstring>
 
+// **An alias declaration is C++11 and is not a using-declaration** - it names
+// a type where the other names an entity, and it is what a program writes in
+// place of a typedef. Refused here so that the three using-declaration
+// refusals do not answer for it, each in a different scope.
+void Parser::refuseAliasDeclaration() {
+    if (!peek().is("using")) return;
+    if (peekAt(1).kind != TokenKind::Ident || !peekAt(2).is("=")) return;
+    src_.fail(peek().pos, "an alias declaration - 'using X = T;' - is not "
+                          "supported yet, though it is C++11: 'typedef T X;' "
+                          "says the same thing here");
+}
+
+// **`= default` and `= delete` are C++11 and sit exactly where `= 0` does.**
+// The first asks for the member the compiler would have written; the second
+// leaves a candidate that overload resolution must find and then refuse,
+// which is not the same as one that was never declared.
+void Parser::refuseDefaultedOrDeleted() {
+    if (!peek().is("=")) return;
+    const bool def = peekAt(1).is("default");
+    if (!def && !peekAt(1).is("delete")) return;
+    src_.fail(peek().pos, std::string("'= ") + (def ? "default" : "delete") +
+                          "' is not supported yet: a defaulted member is "
+                          "written with an empty body here, and a deleted one "
+                          "by declaring it private and never defining it");
+}
+
 bool Parser::staticAssertion() {
     if (!peek().is("static_assert")) return false;
     const std::size_t pos = peek().pos;

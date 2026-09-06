@@ -6796,13 +6796,21 @@ then classified by **how cxx1 answers** - not whether it compiles:
 | refused **by name** | 10 |
 | refused by a message naming no feature | **17** |
 
-The seventeen are invisible: `tools/exclusions` derives its list from refusals
+The seventeen were invisible: `tools/exclusions` derives its list from refusals
 that say "is not supported yet" or name a standard, so none of them was in
-`docs/EXCLUSIONS.md` and none could be. They collapse to nine roots -
+`docs/EXCLUSIONS.md` and none could be. They collapsed to nine roots -
 `= default` / `= delete`; the enum-base syntax and `enum class`; `override`,
 `final` and a ref-qualifier; the alias declarations; the `R"()"` and `u8""`
 literal prefixes; a `constexpr` constructor; `sizeof(S::m)`; `inline
 namespace`; and `extern template`.
+
+**All nine were given named refusals**, and the sweep now reads 19 compiling,
+27 refused by name and **none invisible**. That implemented nothing: each is a
+message where a parse error used to be, and the emit golden reports **0 of 675
+files changed**, so no program that compiled before is affected. What it bought
+is that twelve new sites are citable, `docs/EXCLUSIONS.md` runs to **115**, and
+`tools/exclusions --check` reads 0 uncited and 0 stale - the gaps are now
+things a reader can find rather than things a reader discovers.
 
 **This is the pure-virtual defect again, one level up.** That one was missing
 and unlisted *because* its refusal was a bare `expected ';'`, which is why the
@@ -6816,6 +6824,31 @@ was wanted* list, which was added so `template` would stop being called
 unsupported. Both features genuinely are unimplemented in the position the
 probe writes them, so the message implies they exist and the reader has merely
 misplaced them. That list wants a third state.
+
+### What the nine cost, and the three that were not where they looked
+
+**Two doors, one helper, twice.** `= default` and `= delete` sit exactly where
+`= 0` does - but a constructor reaches that position through
+`declareConstructor` and a member function through the declarator tail, so the
+refusal written at one door left the other saying `expected ';'`. The same
+shape for an alias declaration, which has *three* doors: file scope, a block
+and a class body, each with a using-declaration refusal that must not answer
+for it. Both are one function called from every door rather than a copy at
+each, which is this file's own rule about an invariant a person has to
+remember.
+
+**`final` is two features sharing a word.** On a member function it is a check
+on the slot search; on a class head it forbids deriving. The probe wrote both
+and only the class one fired, because it comes first - so a refusal written for
+the function alone would have looked complete and covered half the syntax.
+Neither is a keyword: `int final = 3;` still compiles, which is what a
+contextual keyword means and what a case now holds.
+
+**And `L` is not a missing prefix.** The literal-prefix refusal was written for
+the whole set and `L"ab"` kept compiling - a wide literal is read further up
+and works. Listing it would have been dead code implying a refusal that never
+fires, which is the same defect as a message naming the wrong standard, one
+size down. It is off the list and the comment says why.
 
 ### And the document had two citations swapped
 
