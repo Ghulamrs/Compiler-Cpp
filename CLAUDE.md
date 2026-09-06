@@ -6372,6 +6372,47 @@ parameter and a local against an enumerator, a member against a global reached
 directly and through both kinds of capture, a local against a member, a class
 enumerator against a global, and a local against a class enumerator.
 
+## What the 2026-09-06 register found, and where each root stands
+
+**`docs/audit-2026-09-06.html` is frozen and is not edited as things are
+fixed** - the rule the 2026-09-01 audit set, and for its reason: a later reader
+can tell what was true on the day from what is true now only if nobody quietly
+brings the report up to date. The state lives here, in the table the earlier
+audit's findings already use.
+
+Three Fable 5.1 reviewers found about eighty-five defects under four suites
+that were green on all three machines, and they collapse into five roots.
+
+| | Root | State |
+| --- | --- | --- |
+| R1 | Unqualified lookup asks the three scopes in nearly the reverse order - an enumerator hides a local and a parameter, a global hides a data member | **fixed** 2026-09-06, `f4764fb` |
+| R2 | A *written* destructor destroys none of the class's members or bases; the implicit one always did | **fixed** 2026-09-06, `7220d47` |
+| R3 | A by-value capture of a class is copied bytewise and never destroyed; of an array, reads garbage | **fixed** 2026-09-06, `e28f2a6` |
+| R4 | Eight nested-parse doors, each with its own hand-written save list; six fields missing from one and six leaking from another | **fixed** 2026-09-06, `e28f2a6` |
+| R5 | Access control asked from the wrong class, in both directions - protected base members refused, private base members reached | **fixed** 2026-09-06, `e28f2a6` |
+
+**Three defects the register does not contain were found by fixing it**, each
+one door over from a repair, and each is in the commits above: a local class's
+constructor and destructor carried no enclosing-function wrapper, so two
+functions each declaring `struct L` produced one symbol and the assembler
+refused the file - valid C++11 that predates lambdas entirely; a `Member`
+carried its access but no record of which class declared it; and a
+new-expression's constructor had no access check at all.
+
+**What the register lists and the roots do not cover** is the tail: fourteen
+refusals of ordinary code, twenty-seven over-acceptances, the `_ZTS` assembler
+failure for a polymorphic class template. Those were not worked item by item on
+purpose - fixing a root tends to close several - and the honest next step is to
+re-measure with review C's 306-program corpus rather than to assume they went
+with the roots.
+
+**One finding is explicitly not fixed and is not a remainder of any root.**
+Inside a namespace an unqualified name still finds the global one first,
+because `findGlobal` tries the flat table before `qualifyForLookup`. It is
+recorded in `docs/CONFORMANCE.md`, it is R1's neighbour rather than part of it,
+and reversing that order changes how every unqualified name in a namespace
+resolves - which wants a round of its own.
+
 ## The four oracles, measured together at c66c8d0
 
 **A compiler this size has four things to be checked against, and the day they
