@@ -240,6 +240,12 @@ private:
             std::size_t start = 0;
             std::string member;    // "get", or the class's name for a ctor
             bool destructor = false;
+            // **A static data member, not a member function.** It has an
+            // initialiser and no body, and nothing under its name ever becomes
+            // a used *function* - so the gate that replays an out-of-line
+            // member on first use cannot see it, and its definition was never
+            // emitted. Replayed whenever the specialization is.
+            bool isData = false;
         };
         std::vector<OutOfLine> outOfLine;
 
@@ -616,7 +622,10 @@ private:
     // `qualifier` is the class for that last one and empty otherwise.
     std::string templatedName(const std::vector<TemplateParam> &params,
                               bool *isClass, std::string *qualifier);
-    bool skipTemplatedDefinition();
+    // `sawInit`, when given, says the declaration ended at a `;` having passed
+    // an `=` at depth zero - which is a static data member of a class template
+    // being *defined* out of line, not a member left undefined.
+    bool skipTemplatedDefinition(bool *sawInit = nullptr);
     void skipTemplateArguments();
     // `Box<T>::Box(` or `Box<T>::~Box(` - a constructor or destructor written
     // outside its class template.

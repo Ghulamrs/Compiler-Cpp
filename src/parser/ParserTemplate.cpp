@@ -304,12 +304,18 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
 // From here to the `;` that ends the declaration, or to the `}` that closes
 // the body. Nothing inside is looked at - that is what "no instantiation"
 // means. Answers whether a body was there.
-bool Parser::skipTemplatedDefinition() {
+bool Parser::skipTemplatedDefinition(bool *sawInit) {
     bool body = false;
     int depth = 0;
+    if (sawInit != nullptr) *sawInit = false;
     for (;;) {
         if (peek().kind == TokenKind::End)
             src_.fail(peek().pos, "this template's definition is never closed");
+        // **An `=` at depth zero is an initialiser**, so what is being skipped
+        // is a definition even though it has no braces: a static data member of
+        // a class template is defined out of line as
+        // `template <class T> const R C<T>::k = R();`, which ends at a `;`.
+        if (sawInit != nullptr && depth == 0 && peek().is("=")) *sawInit = true;
         if (peek().is("{")) { depth++; body = true; at_++; continue; }
         if (peek().is("}")) {
             at_++;
@@ -422,7 +428,8 @@ bool Parser::templateDeclaration() {
     // Where it was written, for the manglers - the table's key stays bare.
     decl.ns = namespacePrefix();
     at_ = decl.afterParams;
-    const bool defined = skipTemplatedDefinition();
+    bool sawInit = false;
+    const bool defined = skipTemplatedDefinition(&sawInit);
 
     // **A member of a class template defined outside it belongs to the class**, not
     // to a template of its own. The declarator already reads a qualified name; what
@@ -438,7 +445,10 @@ bool Parser::templateDeclaration() {
                                 "template");
         // The template's own name, not the qualifier: that is the pattern's
         // internal tag and holds a `$` no reader ever wrote.
-        if (!defined)
+        // A static data member defined out of line has an initialiser and no
+        // body, and is a definition all the same - the only thing a qualified
+        // declaration at namespace scope can be.
+        if (!defined && !sawInit)
             src_.fail(decl.pos, "'" + of->templateName() + "::" + decl.name +
                                 "' is declared here and not defined - a member "
                                 "is declared inside its class");
@@ -446,6 +456,7 @@ bool Parser::templateDeclaration() {
         ool.start = decl.afterParams;
         ool.member = decl.name;
         ool.destructor = !decl.name.empty() && decl.name[0] == '~';
+        ool.isData = !defined && sawInit;
         owner->second.outOfLine.push_back(ool);
         return true;
     }
@@ -938,7 +949,10 @@ void Parser::instantiatePending() {
                 done.resize(d.outOfLine.size(), false);
                 for (std::size_t k = 0; k < d.outOfLine.size(); k++) {
                     if (done[k]) continue;
-                    if (!memberIsUsed(specializations_[i].key + "::" +
+                    // A static data member has no function to be "used", so it
+                    // is replayed with the specialization rather than on a call.
+                    if (!d.outOfLine[k].isData &&
+                        !memberIsUsed(specializations_[i].key + "::" +
                                       d.outOfLine[k].member)) continue;
                     done[k] = true;
                     outsideNow.push_back(k);

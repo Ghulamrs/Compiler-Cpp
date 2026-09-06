@@ -108,7 +108,7 @@ that was not written. This is a library sized to what has been asked of it
 rather than to the standard, and the distance between those two is not small.
 It is also why a *language* feature is refused in one place: `auto` from a
 braced initialiser deduces an `initializer_list`, which there is no library for
-— `src/parser/ParserTemplate.cpp:1031`.
+— `src/parser/ParserTemplate.cpp:1045`.
 
 A conforming C++ implementation is a compiler **and** a library. cxx1 is a
 language translator with three code generators. Read every claim about C++11
@@ -149,7 +149,7 @@ SFINAE and variadic packs. What is left:
   definition**, one written outside its class —
   `src/parser/ParserType.cpp:328`; **explicit instantiation inside a class** —
   `src/parser/ParserType.cpp:278`; and a member function template **named
-  without being called** — `src/parser/ParserTemplate.cpp:1896`. A member
+  without being called** — `src/parser/ParserTemplate.cpp:1910`. A member
   template whose arguments would have to be **deduced** from the call, rather
   than written, is not reached: the call finds no such member and says so.
 - **an unnamed template parameter** — `src/parser/ParserTemplate.cpp:52`,
@@ -157,27 +157,27 @@ SFINAE and variadic packs. What is left:
 - **a non-type parameter pack** — a pack of types is supported.
   `src/parser/ParserTemplate.cpp:63`
 - **a non-type template parameter that is not an integer type** —
-  `src/parser/ParserTemplate.cpp:750`
+  `src/parser/ParserTemplate.cpp:761`
 - **two class templates of one name** — function templates overload (a call
   deduces against each and overload resolution ranks the specializations), but
   two *class* templates of one name is partial specialization, a different
-  path. `src/parser/ParserTemplate.cpp:481`
+  path. `src/parser/ParserTemplate.cpp:492`
 - **an explicit specialization of a *function* template** — the class form
-  works. `src/parser/ParserTemplate.cpp:498`
+  works. `src/parser/ParserTemplate.cpp:509`
 - **`template <>` where a parameter list is expected** —
   `src/parser/ParserTemplate.cpp:38`
-- **explicit instantiation** — `src/parser/ParserTemplate.cpp:353`
+- **explicit instantiation** — `src/parser/ParserTemplate.cpp:359`
 - **a template that is neither a class nor a function** —
   `src/parser/ParserTemplate.cpp:293`
 - **a constructor or destructor of a class template written outside the class**
-  — `src/parser/ParserTemplate.cpp:369`
+  — `src/parser/ParserTemplate.cpp:375`
 - **naming a function template without calling it** —
-  `src/parser/ParserTemplate.cpp:1748`, `src/parser/ParserTemplate.cpp:1821`
+  `src/parser/ParserTemplate.cpp:1762`, `src/parser/ParserTemplate.cpp:1835`
 - **naming a member through a template's argument list**, `A<int>::n` — a
   `typedef` for the instantiation reaches it.
-  `src/parser/ParserTemplate.cpp:1825`
+  `src/parser/ParserTemplate.cpp:1839`
 - **instantiating a template that was only declared** —
-  `src/parser/ParserTemplate.cpp:1794`
+  `src/parser/ParserTemplate.cpp:1808`
 - **`sizeof` of a template parameter in a signature** — the linker name would
   have to spell the expression. `src/parser/ParserExpr.cpp:2106`
 
@@ -366,7 +366,7 @@ beside it goes in the same commit.
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:213` |
 | `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2703`, `src/parser/ParserTopLevel.cpp:510` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:442` |
-| a variable template | C++14 | `src/parser/ParserTemplate.cpp:336` |
+| a variable template | C++14 | `src/parser/ParserTemplate.cpp:342` |
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:659`, `src/parser/ParserStmt.cpp:180`, `src/parser/ParserTopLevel.cpp:292` |
 | `static_assert` with no message | C++17 | `src/parser/ParserConst.cpp:31` |
 | `namespace N::M { }` | C++17 | `src/parser/ParserTopLevel.cpp:92` |
