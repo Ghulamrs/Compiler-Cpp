@@ -436,11 +436,11 @@ where one object is many:
 ## Lexer and preprocessor
 
 - **GNU's named variadic macro parameter** — write `...` and use `__VA_ARGS__`.
-  `src/Preprocessor.cpp:793`
+  `src/Preprocessor.cpp:806`
 - **a literal prefix**, `R"(...)"`, `u8"..."`, `u'...'`, `U"..."` and the raw
   forms — an ordinary `"..."` is a narrow string of char here. `L` is not on
   this list: a wide literal is read further up and works.
-  `src/Lexer.cpp:338`
+  `src/Lexer.cpp:341`
 
 ## Refused because of the standard version
 
@@ -452,7 +452,7 @@ beside it goes in the same commit.
 | written | version | site |
 | --- | --- | --- |
 | `1'000`, a digit separator | C++14 | `src/Lexer.cpp:160` |
-| `0b101`, a binary literal | C++14 | `src/Lexer.cpp:264` |
+| `0b101`, a binary literal | C++14 | `src/Lexer.cpp:267` |
 | `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1449` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:213` |
 | `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2766`, `src/parser/ParserTopLevel.cpp:635` |

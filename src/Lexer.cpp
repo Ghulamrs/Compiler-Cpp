@@ -174,6 +174,9 @@ std::vector<Token> Lexer::tokenize() {
                                        "->", "++", "--", "+=", "-=", "*=", "/=", "%=",
                                        "&=", "|=", "^=",
                                        "::", ".*" };
+    static const struct { const char *digraph; const char *primary; } digraphs[] = {
+        { "<%", "{" }, { "%>", "}" }, { "<:", "[" }, { ":>", "]" }
+    };
 
     while (i < s.size()) {
         char c = s[i];
@@ -354,6 +357,31 @@ std::vector<Token> Lexer::tokenize() {
             out.push_back(std::move(t));
             continue;
         }
+
+        // [lex.pptoken]/3's exception, and the reason `Foo<::Bar>` is a
+        // template-id and not `Foo[:Bar>`: `<::` with neither `:` nor `>` after
+        // it is a `<` on its own, and only there does `<:` fail to be a `[`.
+        if (s.compare(i, 3, "<::") == 0 &&
+            (i + 3 >= s.size() || (s[i + 3] != ':' && s[i + 3] != '>'))) {
+            Token t; t.kind = TokenKind::Punct; t.text = "<"; t.pos = i;
+            out.push_back(std::move(t));
+            i++;
+            continue;
+        }
+
+        // The bracket digraphs of [lex.digraph] table 2, written as the
+        // punctuator each stands for - the same rule the eleven words get, and
+        // none of them is ambiguous: `%` and `:` both need a right operand.
+        bool matchedDigraph = false;
+        for (const auto &d : digraphs) {
+            if (s.compare(i, 2, d.digraph) != 0) continue;
+            Token t; t.kind = TokenKind::Punct; t.text = d.primary; t.pos = i;
+            out.push_back(std::move(t));
+            i += 2;
+            matchedDigraph = true;
+            break;
+        }
+        if (matchedDigraph) continue;
 
         bool matched3 = false;
         for (const char *op : three) {

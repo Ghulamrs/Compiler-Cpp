@@ -7303,14 +7303,54 @@ whose only cleanup can never be reached needs no landing pad and clang drops
 the `_Unwind_Resume` cxx1 keeps. Removing either turns the case red for a
 reason that is not about alternative tokens.
 
-### What is left of this feature
+### And the six digraphs, the other half of that table
 
-**The digraphs are not done.** `<%` `%>` `<:` `:>` are the other half of
-[lex.digraph] table 2 and are refused with `expected '{'` - generic, therefore
-unlisted, therefore the same invisible bucket. `%:` and `%:%:` are `#` and `##`
-and belong to the preprocessor, not the lexer, and `<::` carries a real
-disambiguation rule ([lex.pptoken]/3) that `Foo<::Bar>` depends on. Measured
-2026-09-06: clang accepts all of them, cxx1 none. It is its own step.
+Done the same day, as its own step. `<% %> <: :>` are `{ } [ ]` and are four
+more rows of the lexer's table; `%:` and `%:%:` are `#` and `##` and are **not
+the lexer's at all** - the `#` a program can write is a preprocessing token,
+and cxx1's preprocessor reads text rather than the lexer's tokens, so it got
+`hashLen`, which answers with the *length* of what is there so each of the four
+sites steps over the spelling it actually found rather than assuming the short
+one. The sites are the directive introducer, the directive-name scan, and `#`
+and `##` in a replacement list, twice - substitution and validation.
+
+**`%:` inside a string literal is left alone for free**, because the
+replacement-list scan already consumes a literal whole before it looks for a
+`#`. That ordering was there for `"a#b"` and is what makes `"a#b%:c"` come out
+right too.
+
+**`<::` is the one place a digraph is not one**, [lex.pptoken]/3: `<::` with
+neither `:` nor `>` after it is `<` and then `::`, which is what makes
+`Box<::Tag>` a template-id rather than `Box[:Tag>`. The exception is itself
+excluded when a `>` follows, so `<::>` is `[` `]`. Both spellings are in the
+case on purpose - **getting either one wrong breaks the other**, and a test
+with only one of them would call that a pass.
+
+Nothing else in the six is ambiguous, and the reason is worth keeping: `%` and
+`:` each need a right operand, so `%>` and `:>` can never be the end of one
+expression and the start of the next. `7 % 3` and a ternary are in the case to
+say so.
+
+## An array parameter mangles as `Q` on the Microsoft ABI, and cxx1 writes `P`
+
+Found on 2026-09-06 from the first shape of `tests/cases/digraphs.cpp`, which
+declared `int sum(const int a[], int n)` before the array parameter was taken
+out of it. **Measured on cl, the oracle of record, and clang agrees:**
+
+    int f(int a[], int n)         ?f@@YAHQEAHH@Z
+    int g(int *a, int n)          ?g@@YAHPEAHH@Z
+    int h(const int a[], int n)   ?h@@YAHQEBHH@Z
+    int k(int a[3], int n)        ?k@@YAHQEAHH@Z
+
+So the Microsoft ABI keeps the fact that a parameter was *written* as an array
+after the type has decayed to a pointer, and spells the decayed pointer `Q`
+where a pointer written as one is `P`. cxx1 writes `P` for both, so every
+function taking an array parameter has the wrong Microsoft name. Itanium has no
+such distinction and both Itanium targets agree with clang.
+
+It is not about digraphs and has not been fixed. What it needs is the written
+form carried as far as the Microsoft mangler, which is a question about where
+decay happens rather than about the mangler.
 
 ## How correctness is established
 

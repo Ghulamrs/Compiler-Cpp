@@ -29,6 +29,15 @@ bool identCont(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
 }
 
+// `#` and `##` are spelled `%:` and `%:%:` as well - [lex.digraph] table 2.
+// Answered as the length of what is there, so a caller steps over the spelling
+// it actually found rather than assuming the short one.
+static std::size_t hashLen(const std::string &s, std::size_t i, bool twice) {
+    if (s.compare(i, twice ? 2 : 1, twice ? "##" : "#") == 0) return twice ? 2 : 1;
+    if (s.compare(i, twice ? 4 : 2, twice ? "%:%:" : "%:") == 0) return twice ? 4 : 2;
+    return 0;
+}
+
 std::string trim(const std::string &s) {
     std::size_t a = 0, b = s.size();
     while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) a++;
@@ -206,10 +215,10 @@ std::string Preprocessor::substitute(const Macro &m, const std::vector<std::stri
     std::size_t i = 0;
 
     while (i < body.size()) {
-        if (body.compare(i, 2, "##") == 0) {
+        if (std::size_t paste = hashLen(body, i, true)) {
             while (!out.empty() && std::isspace(static_cast<unsigned char>(out.back())))
                 out.pop_back();
-            i += 2;
+            i += paste;
             while (i < body.size() && std::isspace(static_cast<unsigned char>(body[i]))) i++;
             if (i < body.size() && identStart(body[i])) {
                 std::size_t start = i;
@@ -233,8 +242,8 @@ std::string Preprocessor::substitute(const Macro &m, const std::vector<std::stri
             }
             continue;
         }
-        if (body[i] == '#') {
-            std::size_t j = i + 1;
+        if (std::size_t hash = hashLen(body, i, false)) {
+            std::size_t j = i + hash;
             while (j < body.size() && std::isspace(static_cast<unsigned char>(body[j]))) j++;
             std::size_t start = j;
             while (j < body.size() && identCont(body[j])) j++;
@@ -698,7 +707,11 @@ static std::string stripComments(const std::string &s) {
 }
 
 void Preprocessor::directive(const std::string &line, int fileIndex, int lineNo) {
-    std::size_t i = line.find('#') + 1;
+    // The introducer is one character or two - `#` or `%:` - and the caller has
+    // already established that one of them is the first thing on the line.
+    std::size_t i = line.find_first_not_of(" \t\v\f\r");
+    if (i == std::string::npos) i = 0;
+    i += hashLen(line, i, false);
     while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
 
     std::size_t nameStart = i;
@@ -830,9 +843,13 @@ void Preprocessor::directive(const std::string &line, int fileIndex, int lineNo)
                     }
                     continue;
                 }
-                if (m.body[q] != '#') continue;
-                if (q + 1 < m.body.size() && m.body[q + 1] == '#') { q++; continue; }
-                std::size_t r = q + 1;
+                std::size_t hash = hashLen(m.body, q, false);
+                if (!hash) continue;
+                if (std::size_t paste = hashLen(m.body, q, true)) {
+                    q += paste - 1;
+                    continue;
+                }
+                std::size_t r = q + hash;
                 while (r < m.body.size() &&
                        std::isspace(static_cast<unsigned char>(m.body[r]))) r++;
                 std::size_t startName = r;
@@ -980,7 +997,7 @@ void Preprocessor::processFile(const std::string &path, int fileIndex) {
         std::size_t first = 0;
         while (first < line.size() &&
                std::isspace(static_cast<unsigned char>(line[first]))) first++;
-        if (!inBlockComment_ && first < line.size() && line[first] == '#') {
+        if (!inBlockComment_ && first < line.size() && hashLen(line, first, false)) {
             directive(line, shownFile, lineNo);
             continue;
         }
