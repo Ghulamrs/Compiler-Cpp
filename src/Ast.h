@@ -525,6 +525,11 @@ public:
     // Itanium hands the frame a selector, Microsoft decides in the runtime and
     // calls a funclet - so one target fills the pad and the other the list.
     bool hasPad() const { return pad_ != nullptr; }
+    // **A `try` whose pad also unwinds this frame's objects.** Its call sites
+    // then need a trailing cleanup action, or phase 2 installs no pad where
+    // no handler matched and the destructors never run.
+    void setAlsoCleanup() { alsoCleanup_ = true; }
+    bool alsoCleanup() const { return alsoCleanup_; }
     const Stmt &pad() const { return *pad_; }
     int pointerSlot() const { return pointerSlot_; }
     int selectorSlot() const { return selectorSlot_; }
@@ -551,6 +556,7 @@ private:
     StmtPtr pad_;
     int pointerSlot_;
     int selectorSlot_;
+    bool alsoCleanup_ = false;
     std::vector<std::string> types_;
     std::vector<MsHandler> handlers_;
     StmtPtr cleanup_;

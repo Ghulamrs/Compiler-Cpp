@@ -408,7 +408,8 @@ std::vector<StmtPtr> Parser::wrapCleanups(
     std::vector<StmtPtr> body,
     const std::vector<std::pair<std::size_t, std::size_t> > &built,
     std::size_t aliveAtEntry, std::size_t pos,
-    const std::vector<Temporary> &temps) {
+    const std::vector<Temporary> &temps,
+    const std::vector<std::size_t> &tryAt) {
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     const int pointerSlot = allocateFrameSlot(voidPtr);
     const int selectorSlot = allocateFrameSlot(types_.intType());
@@ -422,13 +423,29 @@ std::vector<StmtPtr> Parser::wrapCleanups(
         const std::size_t from = built[k].first;
         const std::size_t to = k + 1 < built.size() ? built[k + 1].first
                                                     : body.size();
-        std::vector<StmtPtr> guarded;
-        for (std::size_t i = from; i < to; i++) guarded.push_back(std::move(body[i]));
-        if (guarded.empty()) continue;
-        out.push_back(StmtPtr(new Try(
-            std::move(guarded),
-            cleanupPad(aliveAtEntry, built[k].second, pointerSlot, temps, pos),
-            pointerSlot, selectorSlot, std::vector<std::string>())));
+        // **A region is split around every `try` in it.** The table holds
+        // sorted disjoint ranges, and a `try` is a row of its own whose pad
+        // already destroys what was alive when it was reached - so it is
+        // emitted between the pieces rather than inside one, and nothing is
+        // destroyed twice.
+        std::size_t cur = from;
+        while (cur < to) {
+            std::size_t stop = to;
+            for (std::size_t t = 0; t < tryAt.size(); t++)
+                if (tryAt[t] >= cur && tryAt[t] < stop) stop = tryAt[t];
+            std::vector<StmtPtr> guarded;
+            for (std::size_t i = cur; i < stop; i++)
+                guarded.push_back(std::move(body[i]));
+            if (!guarded.empty())
+                out.push_back(StmtPtr(new Try(
+                    std::move(guarded),
+                    cleanupPad(aliveAtEntry, built[k].second, pointerSlot,
+                               temps, pos),
+                    pointerSlot, selectorSlot, std::vector<std::string>())));
+            if (stop == to) break;
+            out.push_back(std::move(body[stop]));      // the try, uncovered
+            cur = stop + 1;
+        }
     }
     return out;
 }

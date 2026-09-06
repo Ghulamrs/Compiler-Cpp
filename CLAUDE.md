@@ -6763,6 +6763,64 @@ step, both ABIs); rethrow; the three try/catch limits; `<stdexcept>` on top of
 all of it. Nothing here is on the ladder, and the two programs that asked for
 it need every one.
 
+## A local beside a `try`, and the sort that broke unwinding
+
+**Rung 6.4 refused a destructible local and a `try` in one function** because
+"each is a range in the call-site table and one would have to split the other".
+Splitting is what happens now, for the half where the two sit side by side: the
+block records which of its own statements are `try`s, its cleanup region is
+emitted in the pieces between them, and the `try`'s pad destroys what it found
+alive when nothing matched. That last part needs a **trailing filter-0 action
+record** - phase 2 installs a pad only where the chain offers something, so
+without it the destructors would never run.
+
+**What is still refused is the overlapping half**: an object *inside* a `try`'s
+body or a handler's, and a temporary in a thrown expression. There the region
+sits inside the row rather than beside it.
+
+### The sort, which looked right and was not
+
+Relaxing the refusal made an object in a *handler* compile and catch nothing,
+because the table's rows are written in the order the regions closed and a
+handler's region closes after the `try` whose row begins earlier. Sorting the
+rows by where each range begins fixed that case, changed **14 emitted files**,
+and broke something the suite could not see.
+
+**Nested cleanup regions are listed innermost first on purpose.** The
+personality routine scans linearly and takes the *first* row whose range
+contains the address, so an inner region must come before the outer one that
+contains it. Sorting by address reversed exactly that, and unwinding through a
+nested scope then found the outer row and ran only its destructors:
+
+```cpp
+A outer("outer");
+{ A inner("inner"); boom(); }      // clang: ~inner ~outer      cxx1: ~outer
+```
+
+That is ordinary C++ - a nested block with a local, and an exception passing
+through - and it is a silent leak, not a diagnostic. **It was found by checking
+the 14 changed emissions rather than by the suites**, all four of which stayed
+green either way; `git stash` and a rebuild is what proved the regression was
+mine rather than pre-existing. The sort is reverted and the comment where it
+was says why, because it is the obvious thing to try next.
+
+**So the handler case is refused again**, by a flag of its own rather than by
+the function-wide `functionHasTry_` that used to answer for all three shapes.
+That flag was over-broad: a block elsewhere in the function is disjoint from
+the `try` and never needed refusing at all, which is what let the local beside
+it land.
+
+### And a leak I introduced and then refused
+
+With the region split, `try { throw S(1).v; }` compiled and lost the
+temporary's destructor - clang prints `~S` before the handler and cxx1 printed
+nothing. The temporary is registered on the enclosing block's list, and that
+block's region is now split *around* this statement, so nothing destroyed it.
+Refused by name rather than left to leak. **At HEAD it had been refused**, so
+this was mine; the check is `pendingTemps_` rather than `statementTemps_`,
+which is where a thrown expression's temporaries actually go and cost a wrong
+first guard.
+
 ## Class-typed exceptions, three of the seven
 
 **Landed 2026-09-06 on the two Itanium targets**, and what made them cheap is

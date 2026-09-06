@@ -1060,7 +1060,7 @@ private:
         int loopDepth = 0, switchDepth = 0;
         std::vector<SwitchCtx> switches;
         std::vector<std::size_t> breakMarks;
-        bool inTryBody = false, inMsHandler = false;
+        bool inTryBody = false, inMsHandler = false, inHandlerBody = false;
         int mayThrow = 0;
         bool conditionDecl = false;
         std::string conditionName;
@@ -1105,11 +1105,14 @@ private:
         const std::vector<std::pair<std::size_t, std::size_t> > &built,
         std::size_t aliveAtEntry, std::size_t pos,
         const std::vector<Temporary> &temps = std::vector<Temporary>());
+    // `tryAt` names the statements a region must not span: a `try` is a row of
+    // its own in the same table and destroys what it found alive itself.
     std::vector<StmtPtr> wrapCleanups(
         std::vector<StmtPtr> body,
         const std::vector<std::pair<std::size_t, std::size_t> > &built,
         std::size_t aliveAtEntry, std::size_t pos,
-        const std::vector<Temporary> &temps = std::vector<Temporary>());
+        const std::vector<Temporary> &temps = std::vector<Temporary>(),
+        const std::vector<std::size_t> &tryAt = std::vector<std::size_t>());
     // `to` bounds the top of the range, for a cleanup pad that must destroy
     // only what existed at its point in the block.
     void emitDestructors(std::vector<StmtPtr> &into, std::size_t from,
@@ -1459,6 +1462,11 @@ private:
     // own. Leaving one is a *return* of the address to carry on at, in the register a
     // return value would use, so a `return` inside a handler is refused by name.
     bool inMsHandler_ = false;
+    // Inside a handler's own block, on any target. Its statements are emitted
+    // past the try's range, but a cleanup region among them is registered
+    // after the try's row and before it in address order - which the linear
+    // scan cannot express - so an object there is refused rather than lost.
+    bool inHandlerBody_ = false;
     // Set when this function has a landing pad, so its prologue names the
     // personality routine and the table.
     bool functionHasPads_ = false;

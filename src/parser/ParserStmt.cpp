@@ -831,6 +831,7 @@ StmtPtr Parser::block() {
     // after it. A cleanup region runs from one of these to the next and destroys
     // exactly what was built by then, so an exception cannot destroy what is not.
     std::vector<std::pair<std::size_t, std::size_t> > built;
+    std::vector<std::size_t> tryAt;
     std::vector<StmtPtr> body;
     // **What this block's statements made and destroyed within themselves.**
     // A temporary lives inside one full expression, so it is never in
@@ -844,6 +845,13 @@ StmtPtr Parser::block() {
             src_.fail(peek().pos, "unclosed '{'");
         const std::size_t aliveBefore = alive_.size();
         body.push_back(atDeclarationStart() ? declaration() : statement());
+        // **A `try` is not covered by a cleanup region, it answers for
+        // itself.** Both are rows in a table of sorted disjoint ranges, so one
+        // has to split the other - and the `try`'s own pad already destroys
+        // what was alive when it was reached. A Try here came straight from
+        // `statement()`; the cleanup ones are made below, after this loop.
+        if (dynamic_cast<const Try *>(body.back().get()) != nullptr)
+            tryAt.push_back(body.size() - 1);
         for (std::size_t k = 0; k < statementTemps_.size(); k++)
             temps.push_back(statementTemps_[k]);
         statementTemps_.clear();
@@ -864,16 +872,41 @@ StmtPtr Parser::block() {
     emitDestructors(body, aliveAtEntry, peek().pos);
 
     if (!built.empty()) {
-        if (functionHasTry_ || inTryBody_)
-            src_.fail(pos, "a local with a destructor and a 'try' in one "
-                           "function is not supported yet - each is a range in "
-                           "the call-site table and one would have to split "
-                           "the other");
+        // **A `try` among these statements is split around, not refused.** It
+        // is a row of its own and its pad destroys what it found alive. What
+        // is still refused is a `try` *inside* one of them - an if, a loop, a
+        // nested block - where the region would span a row it cannot see.
+        // **Only a block inside a `try`'s body overlaps it.** A handler's
+        // statements are emitted past the range's end, and a block elsewhere
+        // in the function is disjoint from it - so neither needs refusing,
+        // and `functionHasTry_` was answering for all three.
+        // **Only the Itanium path learned to split.** A Microsoft cleanup is
+        // a funclet and a state in the FH3 tables rather than a row in a
+        // sorted list, and `wrapMsCleanups` is untouched - so that target
+        // keeps the refusal it had, function-wide, until the same work is
+        // done there.
+        const bool overlapping = target_.microsoftNames()
+                                     ? (functionHasTry_ || inTryBody_)
+                                     : ((inTryBody_ || inHandlerBody_) &&
+                                        tryAt.empty());
+        if (overlapping)
+            src_.fail(pos, target_.microsoftNames()
+                ? "a local with a destructor and a 'try' in one function is "
+                  "not supported yet for x86_64-windows - a cleanup there is "
+                  "a funclet and a state in the FH3 tables, and only the "
+                  "Itanium targets have been taught to split one around the "
+                  "other"
+                : "a local with a destructor inside a 'try' body or a handler "
+                  "is not supported yet - the cleanup region sits inside the "
+                  "row rather than beside it, and the rows are written "
+                  "innermost-first for a linear scan rather than sorted, so "
+                  "one cannot be split around the other; a local beside the "
+                  "'try' in the same block works");
         body = target_.microsoftNames()
                    ? wrapMsCleanups(std::move(body), built, regionFrom, pos,
                                     temps)
                    : wrapCleanups(std::move(body), built, regionFrom, pos,
-                                  temps);
+                                  temps, tryAt);
     }
     alive_.resize(aliveAtEntry);
     usingNamespaces_.resize(usingAtEntry);
@@ -899,6 +932,9 @@ StmtPtr Parser::statement() {
 // the pad on is built out of nodes that already existed: the selector compared in the
 // order the handlers are written, each arm begin/copy/body/end, the rest resumed.
 StmtPtr Parser::tryStatement(std::size_t pos) {
+    // What is alive when the `try` is reached: the enclosing block's cleanup
+    // region is split around this statement, so its pad answers for these.
+    const std::size_t aliveOutside = alive_.size();
     // **The two ABIs disagree about who picks the handler**, so this reads one grammar
     // and builds two shapes: Itanium's if/else chain on a selector, and Microsoft's
     // handlers kept whole for the runtime to call.
@@ -1012,9 +1048,12 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
             }
             if (!peek().is("{")) src_.fail(peek().pos, "'catch' takes a block");
             const bool wasInHandler = inMsHandler_;
+            const bool wasBody = inHandlerBody_;
             inMsHandler_ = true;
+            inHandlerBody_ = true;
             mh.body = block();
             inMsHandler_ = wasInHandler;
+            inHandlerBody_ = wasBody;
             leaveScope();
             msHandlers.push_back(std::move(mh));
             continue;
@@ -1059,7 +1098,10 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         }
 
         if (!peek().is("{")) src_.fail(peek().pos, "'catch' takes a block");
+        const bool wasBody = inHandlerBody_;
+        inHandlerBody_ = true;
         steps.push_back(block());
+        inHandlerBody_ = wasBody;
 
         ExprPtr ended = runtimeCall("__cxa_end_catch", types_.get(Kind::Void),
                                     std::vector<ExprPtr>());
@@ -1085,14 +1127,25 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         return StmtPtr(t);
     }
 
-    // Nothing matched: hand it back to the unwinder.
+    // **Nothing matched, so this frame unwinds like any other.** The objects
+    // alive when the `try` was reached are destroyed here and the exception
+    // handed back - which is what lets a destructible local share a function
+    // with a `try`: the enclosing cleanup region is split around this
+    // statement instead of covering it, and its work is done here.
     std::vector<ExprPtr> resumeArgs;
     ExprPtr again(Var::local(".ex.ptr", pointerSlot));
     again->setType(voidPtr);
     resumeArgs.push_back(std::move(again));
-    StmtPtr chain(new ExprStmt(runtimeCall("_Unwind_Resume",
-                                           types_.get(Kind::Void),
-                                           std::move(resumeArgs))));
+    std::vector<StmtPtr> resume;
+    const bool unwindsHere = aliveOutside > bodyCleanupFrom_;
+    if (unwindsHere) emitDestructors(resume, bodyCleanupFrom_, pos,
+                                     -1, aliveOutside);
+    resume.push_back(StmtPtr(new ExprStmt(
+        runtimeCall("_Unwind_Resume", types_.get(Kind::Void),
+                    std::move(resumeArgs)))));
+    Block *resumeBlock = new Block(std::move(resume));
+    resumeBlock->setScope(-1);
+    StmtPtr chain(resumeBlock);
 
     for (std::size_t i = handlers.size(); i-- > 0; ) {
         if (handlers[i].type.empty()) {          // catch (...) matches always
@@ -1111,8 +1164,12 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
 
     std::vector<StmtPtr> guarded;
     guarded.push_back(std::move(body));
-    return StmtPtr(new Try(std::move(guarded), std::move(chain), pointerSlot,
-                           selectorSlot, std::move(types)));
+    Try *t = new Try(std::move(guarded), std::move(chain), pointerSlot,
+                     selectorSlot, std::move(types));
+    // The call site needs a trailing filter-0 action, or phase 2 installs no
+    // pad where no handler matched and these destructors never run.
+    if (unwindsHere) t->setAlsoCleanup();
+    return StmtPtr(t);
 }
 
 StmtPtr Parser::statementBody() {
@@ -1179,7 +1236,23 @@ StmtPtr Parser::statementBody() {
                             std::vector<ExprPtr>())));
         }
         mayThrow_++;
+        const std::size_t tempsBefore = pendingTemps_.size();
         ExprPtr value = decay(expr());
+        // **A temporary in the thrown expression is destroyed as the exception
+        // leaves** - clang runs `~S` before the handler. It is registered on
+        // the enclosing block's list, and inside a `try` that block's cleanup
+        // region is now split around this statement, so nothing would destroy
+        // it. Refused rather than leaked: the first version of the split let
+        // this compile and lose the destructor, which is worse than saying no.
+        if (inTryBody_)
+            for (std::size_t k = tempsBefore; k < pendingTemps_.size(); k++)
+                if (destructorOf(pendingTemps_[k].type) != nullptr)
+                    src_.fail(tpos, "a temporary with a destructor in a thrown "
+                                    "expression inside a 'try' is not "
+                                    "supported yet - it is destroyed as the "
+                                    "exception leaves, and this statement sits "
+                                    "outside the region that would do it; "
+                                    "build the object in a named local first");
         expect(";");
         return throwStatement(std::move(value), tpos);
     }

@@ -82,15 +82,25 @@ protected:
         std::string end;
         std::string pad;
         std::vector<std::string> types;
+        bool cleanup = false;   // a trailing action record with filter 0
+        // **The table is read by address and written in walk order**, and the
+        // two part company as soon as a region sits in a landing pad: that
+        // code is emitted past the range it belongs to, so its row is
+        // registered after one that begins earlier. The label id is allocated
+        // where the range begins, so sorting by it restores address order.
+        int order = 0;
     };
     void callSite(const std::string &begin, const std::string &end,
                   const std::string &pad,
-                  const std::vector<std::string> &types) {
+                  const std::vector<std::string> &types,
+                  bool cleanup = false, int order = 0) {
         CallSite s;
         s.begin = begin;
         s.end = end;
         s.pad = pad;
         s.types = types;
+        s.cleanup = cleanup;
+        s.order = order;
         callSites_.push_back(s);
     }
     const std::vector<CallSite> &callSites() const { return callSites_; }

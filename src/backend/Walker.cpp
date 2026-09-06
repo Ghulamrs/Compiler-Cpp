@@ -1,5 +1,7 @@
 #include "Walker.h"
 
+#include <algorithm>
+
 #include "../Source.h"
 
 void Walker::markLine(const Stmt &n) { markLine(n.pos()); }
@@ -210,7 +212,7 @@ void Walker::visit(const Try &n) {
     n.pad().accept(*this);
     defineLabel(done);
 
-    callSite(begin, end, pad, n.types());
+    callSite(begin, end, pad, n.types(), n.alsoCleanup(), id);
 }
 
 // **The Microsoft shape, and what is missing from it is the point.** No pad, no
@@ -299,10 +301,18 @@ std::string Walker::lsdaTable(const LsdaSpelling &sp, const std::string &symbol,
     // **Every call in the function is a row, the ones outside a try included**: a
     // miss makes libc++abi call terminate. **And the action field is a byte offset
     // plus one**, not an index - each record is two bytes, so twice the count.
+    // **The rows are written in the order the regions closed, not in address
+    // order**, and that is deliberate: a region nested inside another is
+    // registered first, and the personality routine's linear scan takes the
+    // first row whose range contains the address - so the innermost wins.
+    // Sorting them by address was tried and destroyed exactly that: unwinding
+    // through a nested scope then found the outer row and ran only its
+    // destructors. See CLAUDE.md.
     int action = 1;
     std::string at = fnBegin;
-    for (std::size_t i = 0; i < callSites().size(); i++) {
-        const CallSite &c = callSites()[i];
+    const std::vector<CallSite> &rows = callSites();
+    for (std::size_t i = 0; i < rows.size(); i++) {
+        const CallSite &c = rows[i];
         o += "  .uleb128 " + at + "-" + fnBegin + "\n";
         o += "  .uleb128 " + c.begin + "-" + at + "\n";
         o += "  .byte 0\n";
@@ -313,7 +323,11 @@ std::string Walker::lsdaTable(const LsdaSpelling &sp, const std::string &symbol,
         // No handler at all is a *cleanup*: the pad runs destructors and hands
         // the exception back, and action 0 is how the table says so.
         o += "  .uleb128 " + std::to_string(c.types.empty() ? 0 : action) + "\n";
-        action += 2 * static_cast<int>(c.types.size());
+        // **A `try` inside a cleanup region carries one record more.** Its pad
+        // runs this frame's destructors when nothing matched, and phase 2
+        // installs a pad only where the chain offers something - so a filter-0
+        // record goes on the end and the next chain starts two bytes later.
+        action += 2 * static_cast<int>(c.types.size() + (c.cleanup ? 1 : 0));
         at = c.end;
     }
     o += "  .uleb128 " + at + "-" + fnBegin + "\n";
@@ -325,12 +339,19 @@ std::string Walker::lsdaTable(const LsdaSpelling &sp, const std::string &symbol,
     // The action table: a type index and the offset to the next record, 0 saying
     // there is no next, so the chain ends and the exception goes on unwinding.
     types.clear();
-    for (std::size_t i = 0; i < callSites().size(); i++) {
-        const CallSite &c = callSites()[i];
+    for (std::size_t i = 0; i < rows.size(); i++) {
+        const CallSite &c = rows[i];
         for (std::size_t k = 0; k < c.types.size(); k++) {
             o += "  .byte " + std::to_string(types.size() + 1) + "\n";
-            o += "  .byte " + std::string(k + 1 < c.types.size() ? "1" : "0") + "\n";
+            const bool more = k + 1 < c.types.size() || c.cleanup;
+            o += "  .byte " + std::string(more ? "1" : "0") + "\n";
             types.push_back(c.types[k]);
+        }
+        // Filter 0 is "cleanup": not a handler, but a reason to stop here in
+        // phase 2 and run the pad. It ends the chain.
+        if (c.cleanup && !c.types.empty()) {
+            o += "  .byte 0\n";
+            o += "  .byte 0\n";
         }
     }
     o += "  .p2align 2\n";
