@@ -192,6 +192,26 @@ StmtPtr Parser::declarationBody() {
                                      "arguments in parentheses");
                 }
             }
+            // **A braced list written as the argument**, `Row r({1, 2})`.
+            // [dcl.init]/16 makes this a direct-initialisation whose one
+            // argument is a braced-init-list, and [over.match.list] then picks
+            // the initializer_list constructor - the same one `Row r{1, 2}`
+            // reaches, written the other way. Handled here, where the target
+            // type is known: an argument's type is not known until a candidate
+            // is chosen, so parseArguments cannot build one on its own, and
+            // the braces reached it as an expression and were refused.
+            if (!listInit && peek().is("(") && peekAt(1).is("{")) {
+                const Type *ilType = nullptr;
+                if (initializerListConstructor(d.type->unqualified(), &ilType)
+                        != nullptr) {
+                    at_++;                       // the '('
+                    Init in = parseInitialiser();
+                    args.push_back(buildInitializerList(ilType, in, d.pos,
+                                                        ilSetup));
+                    expect(")");
+                    listInit = true;
+                }
+            }
             if (!listInit && consume("(")) {
                 if (peek().is(")"))
                     src_.fail(d.pos, "'" + d.name + "()' declares a function "

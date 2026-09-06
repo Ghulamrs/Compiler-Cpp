@@ -97,6 +97,20 @@ ExprPtr Parser::zeroChain(const Expr &root, const Type *type) {
 
 ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
     const Type *plain = cls->unqualified();
+    // **A braced list as the argument of a temporary**, `Row({1, 2})`, is
+    // [over.match.list]'s pick made in a place with nowhere to put the setup:
+    // building an initializer_list emits statements that declare a backing
+    // array and fill it, and an expression has no statement list to receive
+    // them. The declaration form `Row r({1, 2})` is built and works. Refused
+    // by name rather than by `expected an expression`, which named nothing.
+    if (peek().is("{")) {
+        const Type *ilType = nullptr;
+        if (initializerListConstructor(plain, &ilType) != nullptr)
+            src_.fail(pos, "a braced list is not supported yet as the argument "
+                           "of a temporary - '" + plain->describe() + "({...})' "
+                           "here; a declaration takes one, so name a variable "
+                           "of that type and use that");
+    }
     std::vector<ExprPtr> args;
     parseArguments(args);
 
