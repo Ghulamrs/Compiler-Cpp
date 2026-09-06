@@ -6372,6 +6372,34 @@ parameter and a local against an enumerator, a member against a global reached
 directly and through both kinds of capture, a local against a member, a class
 enumerator against a global, and a local against a class enumerator.
 
+## The four oracles, measured together at c66c8d0
+
+**A compiler this size has four things to be checked against, and the day they
+were all measured at once is worth writing down.** The suites are the fastest
+and the narrowest; the real programs are the slowest and the only ones that
+find what nobody thought to write a case for.
+
+| oracle | result |
+| --- | --- |
+| four suites, three boxes | run 374/0, emit 675/0, names 226/0, overload 30/0, windows cases 371/0, names vs cl 161 agreed / 0 differed |
+| C++ Vector Exercise | **4 of 4** - main, matrix_main, quat_main, rotrix_main, each byte-identical to clang |
+| Compiler++ | **129 of 129** - its sixteen sources compiled by cxx1, linked, and the compiler they make agreeing with a clang-built one on every case in its own suite |
+| the inherited C corpus | 365 ran and agreed, 58 refused, 1 wrong, of 424 - unchanged from 2026-09-02 |
+
+**The corpus is the control and the other three are the experiment.** It is
+untriaged C, it gates on nothing, and this is exactly what it is for: after
+twelve commits that reordered name lookup, changed when destructors run and
+added an init section to all three backends, the failing set did not move. A
+change that quietly broke something old would show there first and nowhere
+else.
+
+**Compiler++ is the harder oracle and the one to keep.** 129 cases of a
+compiler compiling programs is a deeper stack than any single case in
+`tests/cases/`: it links sixteen objects and runs a lexer, a parser, a bytecode
+pass and a code generator, comparing the output of the program *cxx1 built*
+against the same program built by clang. It is what found the
+base-members-built-twice bug that seven single-file probes had missed.
+
 ## Dynamic initialisation, and the four refusals that were waiting for it
 
 **Landed 2026-09-06.** [basic.start.init]/2 runs the constructor of a
@@ -7074,6 +7102,15 @@ came from Compiler-C untriaged, they are C, and this is a C++11 compiler - so
 the count is not a pass rate and `tests/c-corpus/README` says what each part of
 the failing set actually is. Measured 2026-09-02 on the Mac: 365 ran and agreed,
 58 refused, 1 wrong. What it is for is the failing set, diffed across a change.
+
+**Measured again 2026-09-06 at c66c8d0 and unchanged: 365, 58, 1.** That is a
+baseline rather than a score, and its not moving is the result. Twelve commits
+had landed in between - name lookup reordered, the written destructor's member
+walk, lambda capture of a class and an array, eight nested-parse doors behind
+one guard, access control routed through two helpers, and dynamic
+initialisation touching all three backends - and not one case that agreed now
+disagrees, nor one that was refused now compiles to something wrong. The single
+`wrong` is the one that was already there.
 
 `tests/run.sh` compiles and runs each case in `tests/cases/` on this machine
 and diffs against its `.expected`; a case with a `.error` file instead must
