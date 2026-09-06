@@ -1582,6 +1582,17 @@ private:
                         bool hasThis = false);
 
     void parameterTypes(std::vector<const Type *> &params, bool &variadic);
+    // **The Microsoft ABI mangles a parameter from before [dcl.fct]/5 deletes
+    // its top-level cv, and calls an array one a const pointer** - measured on
+    // cl. Itanium drops both, so this is a spelling and never a type.
+    const Type *parameterAsWritten(const Type *declared, const Type *adjusted);
+    // `fn` respelled for the Microsoft mangler where this function's parameters
+    // were written differently from their types, and `fn` itself otherwise.
+    // Matched on the list, and every written parameter list clears the pair
+    // first, so a stale one cannot be picked up by arity alone.
+    const Type *manglingType(const Type *fn);
+    std::vector<const Type *> writtenParams_;
+    std::vector<const Type *> writtenFor_;
 
     // **A default argument is kept as a place in the token stream, not as a parsed
     // expression**: [dcl.fct.default] evaluates it afresh at every call that leaves it

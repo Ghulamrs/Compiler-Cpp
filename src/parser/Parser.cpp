@@ -812,7 +812,7 @@ std::string Parser::functionSymbol(const std::string &name, const Type *returns,
     const Type *fn = types_.functionType(returns, params, variadic);
     std::string out, why;
     bool ok = target_.microsoftNames()
-            ? microsoftFunctionName(name, fn, internal, &out, &why)
+            ? microsoftFunctionName(name, manglingType(fn), internal, &out, &why)
             : itaniumFunctionName(name, fn, internal, &out, &why);
     if (!ok)
         src_.fail(pos, "'" + name + "' cannot be given a name the linker can "

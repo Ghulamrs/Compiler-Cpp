@@ -217,14 +217,14 @@ SFINAE and variadic packs. What is left:
   resolution picks the non-static one — the arguments have been read by then,
   and there is no honest way back to the call that takes an object.
   `src/parser/ParserExpr.cpp:1248`. A static member function on its own works.
-- **a member function of a union** — `src/parser/ParserClass.cpp:2155`
+- **a member function of a union** — `src/parser/ParserClass.cpp:2156`
 - **`friend class X;`** — one named function can be befriended.
   `src/parser/ParserType.cpp:495`
 - **befriending one member function of another class** —
   `src/parser/ParserType.cpp:507`
 - **a const member named in a mem-initialiser list** —
-  `src/parser/ParserTopLevel.cpp:929`
-- **a delegating constructor** — `src/parser/ParserTopLevel.cpp:976`
+  `src/parser/ParserTopLevel.cpp:938`
+- **a delegating constructor** — `src/parser/ParserTopLevel.cpp:985`
 - **a scoped enumeration**, `enum class` — an enumeration is an int that
   remembers its name here, where a scoped one is a distinct type whose
   enumerators are reached through it. `src/parser/ParserType.cpp:1010`
@@ -289,11 +289,11 @@ SFINAE and variadic packs. What is left:
   `src/parser/ParserExpr.cpp:471`
 - **an inline variable** — `inline` on a variable is a C++17 feature; C++11
   has `inline` only on functions, where it works. `src/parser/ParserTopLevel.cpp:232`
-- **a braced default argument** — `src/parser/ParserClass.cpp:2778`,
-  `src/parser/ParserTopLevel.cpp:691`
+- **a braced default argument** — `src/parser/ParserClass.cpp:2807`,
+  `src/parser/ParserTopLevel.cpp:694`
 - **a braced member initialiser** — `src/parser/ParserType.cpp:901`
 - **an initialiser for an array of a class** —
-  `src/parser/ParserStmt.cpp:113`, `src/parser/ParserTopLevel.cpp:947`
+  `src/parser/ParserStmt.cpp:113`, `src/parser/ParserTopLevel.cpp:956`
 - **an array of a class with a destructor** — the elements would have to be
   destroyed in reverse; an array of a class with only constructors works.
   `src/parser/ParserStmt.cpp:121`
@@ -316,7 +316,7 @@ where one object is many:
   its destructor at exit, and the destructor walk knows one object per entry.
   At file scope `src/parser/ParserTopLevel.cpp:352`, as a static local
   `src/parser/ParserStmt.cpp:107`, and as a static data member
-  `src/parser/ParserClass.cpp:2054`
+  `src/parser/ParserClass.cpp:2055`
 - **a static-duration reference bound to a temporary** — [class.temporary]/5
   gives the temporary the program's lifetime, so it would need static storage
   of its own; a named object binds. `src/parser/ParserInit.cpp:1302`
@@ -402,7 +402,7 @@ where one object is many:
   `src/parser/ParserTopLevel.cpp:562`
 - **a function try block**, `int f() try { } catch (...) { }` — its handler
   covers the mem-initialisers as well as the body, so a `try` inside the body
-  is not the same thing. C++98. `src/parser/ParserTopLevel.cpp:1121`
+  is not the same thing. C++98. `src/parser/ParserTopLevel.cpp:1130`
 - **a range-based `for` over a braced list** — the list would be an
   `std::initializer_list`, which there is no library for.
   `src/parser/ParserStmt.cpp:405`
@@ -455,7 +455,7 @@ beside it goes in the same commit.
 | `0b101`, a binary literal | C++14 | `src/Lexer.cpp:267` |
 | `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1449` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:213` |
-| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2766`, `src/parser/ParserTopLevel.cpp:635` |
+| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2793`, `src/parser/ParserTopLevel.cpp:636` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:567` |
 | a variable template | C++14 | `src/parser/ParserTemplate.cpp:385` |
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:660`, `src/parser/ParserInit.cpp:854`, `src/parser/ParserTopLevel.cpp:365` |

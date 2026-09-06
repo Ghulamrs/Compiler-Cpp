@@ -929,7 +929,8 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
                                                   : 'A';
     std::string out, why;
     bool ok = target_.microsoftNames()
-            ? microsoftConstructorName(cls, findTypedef(cls), fn, code, &out, &why)
+            ? microsoftConstructorName(cls, findTypedef(cls), manglingType(fn),
+                                       code, &out, &why)
             : itaniumConstructorName(cls, findTypedef(cls), fn, true, &out, &why);
     if (!ok)
         src_.fail(pos, "'" + cls + "::" + cls + "' cannot be given a name the "
@@ -2278,11 +2279,12 @@ std::string Parser::memberSymbol(const std::string &cls, const std::string &name
     const std::string *owner = localOwnerOf(cls);
 
     std::string out, why;
+    const Type *shown = target_.microsoftNames() ? manglingType(fn) : fn;
     bool ok = target_.microsoftNames()
             ? (owner != nullptr
                    ? microsoftLocalMemberName(*owner, cls, findTypedef(cls), name,
-                                              fn, code, constThis, &out, &why)
-                   : microsoftMemberName(cls, findTypedef(cls), name, fn, code,
+                                              shown, code, constThis, &out, &why)
+                   : microsoftMemberName(cls, findTypedef(cls), name, shown, code,
                                          constThis, &out, &why))
             : (owner != nullptr
                    ? itaniumLocalMemberName(*owner, cls, findTypedef(cls), name,
@@ -2743,10 +2745,33 @@ StmtPtr Parser::constructMember(const std::string &cls, const Type *type,
     return one;
 }
 
+const Type *Parser::parameterAsWritten(const Type *declared,
+                                       const Type *adjusted) {
+    if (!adjusted->isPointer()) return adjusted;
+    // An array of const elements is a const *array*, so isConst() answers for
+    // `const int a[]` as well - and both want the same const pointer.
+    if (declared->isArray() || declared->isConst())
+        return types_.withConst(adjusted);
+    return adjusted;
+}
+
+// **A function type is interned on its parameters, so two functions with one
+// signature are one type** - which is why the written list cannot be kept on
+// it: `f1(int a[])` and `f2(int *a)` would then be the same Q. The Microsoft
+// mangler is handed a type of its own instead, made from the written list and
+// used nowhere else.
+const Type *Parser::manglingType(const Type *fn) {
+    if (writtenParams_.empty() || writtenFor_ != fn->params()) return fn;
+    return types_.functionType(fn->returns(), writtenParams_, fn->isVariadicFn());
+}
+
 void Parser::parameterTypes(std::vector<const Type *> &params, bool &variadic) {
     expect("(");
     variadic = false;
     pendingDefaults_.clear();
+    writtenParams_.clear();
+    writtenFor_.clear();
+    std::vector<const Type *> written;
     std::size_t closed = peek().pos;
     if (consume(")")) return;
     if (peek().is("void") && peekAt(1).is(")")) { at_ += 2; return; }
@@ -2754,6 +2779,8 @@ void Parser::parameterTypes(std::vector<const Type *> &params, bool &variadic) {
     for (;;) {
         if (consume("...")) { variadic = true; expect(")"); break; }
         if (packParameter(&params, nullptr)) {
+            // A pack's members are their own types; keep the two lists level.
+            while (written.size() < params.size()) written.push_back(params[written.size()]);
             if (consume(")")) break;
             expect(",");
             continue;
@@ -2765,10 +2792,12 @@ void Parser::parameterTypes(std::vector<const Type *> &params, bool &variadic) {
         if (mentionsDeduced(pd.type))
             src_.fail(pd.pos, "a parameter's type cannot be deduced - `auto` "
                               "there is C++14, and this compiler is C++11");
+        const Type *declared = pd.type;
         if (pd.type->isArray()) pd.type = types_.pointerTo(pd.type->pointee());
         if (pd.type->isVoid())
             src_.fail(pd.pos, "'void' is only a parameter list on its own");
         params.push_back(types_.withoutConst(pd.type));
+        written.push_back(parameterAsWritten(declared, params.back()));
 
         // `int b = 3`. The tokens are left where they are and their position
         // recorded; a call that omits the argument reads them again.
@@ -2789,6 +2818,10 @@ void Parser::parameterTypes(std::vector<const Type *> &params, bool &variadic) {
     }
 
     requireDefaultsAreASuffix(pendingDefaults_, closed);
+    if (written.size() == params.size() && written != params) {
+        writtenParams_ = std::move(written);
+        writtenFor_ = params;
+    }
 }
 
 // [dcl.fct.default]/4: once a parameter has a default, every one after it must have

@@ -7331,26 +7331,73 @@ Nothing else in the six is ambiguous, and the reason is worth keeping: `%` and
 expression and the start of the next. `7 % 3` and a ternary are in the case to
 say so.
 
-## An array parameter mangles as `Q` on the Microsoft ABI, and cxx1 writes `P`
+## An array parameter mangles as `Q` on the Microsoft ABI
 
 Found on 2026-09-06 from the first shape of `tests/cases/digraphs.cpp`, which
 declared `int sum(const int a[], int n)` before the array parameter was taken
-out of it. **Measured on cl, the oracle of record, and clang agrees:**
+out of it, and fixed the same day. **Measured on cl, the oracle of record, and
+clang agrees:**
 
     int f(int a[], int n)         ?f@@YAHQEAHH@Z
     int g(int *a, int n)          ?g@@YAHPEAHH@Z
     int h(const int a[], int n)   ?h@@YAHQEBHH@Z
-    int k(int a[3], int n)        ?k@@YAHQEAHH@Z
+    int k(int *const a, int n)    ?k@@YAHQEAHH@Z
 
-So the Microsoft ABI keeps the fact that a parameter was *written* as an array
-after the type has decayed to a pointer, and spells the decayed pointer `Q`
-where a pointer written as one is `P`. cxx1 writes `P` for both, so every
-function taking an array parameter has the wrong Microsoft name. Itanium has no
-such distinction and both Itanium targets agree with clang.
+**`Q` there is "const pointer", and the rule is one rule and not two.**
+[dcl.fct]/5 adjusts a parameter written as an array to a pointer and deletes its
+top-level cv; the *type* is the adjusted one on both ABIs, and Itanium mangles
+that - `_Z1fPii` for all four above. The Microsoft ABI mangles from **before**
+the adjustment, so it keeps two facts Itanium throws away: that the parameter
+was written as an array, and that it was written const. An array parameter is
+spelled as the const pointer it would have been.
 
-It is not about digraphs and has not been fixed. What it needs is the written
-form carried as far as the Microsoft mangler, which is a question about where
-decay happens rather than about the mangler.
+### Which spelling wins is the first declaration's
+
+Measured, because it is the part a reader would guess wrong:
+
+    int p(int a[], int n);  int p(int *a, int n) { }     ?p@@YAHQEAHH@Z
+    int q(int *a, int n);   int q(int a[], int n) { }    ?q@@YAHPEAHH@Z
+
+The definition does not get a say. cxx1 has this for nothing: a function's
+symbol is computed once, in `declareFunction`, where the name is first seen, and
+a redeclaration finds the existing `Signature` and returns.
+
+### The written list cannot live on the function type
+
+That was the first attempt and `names.sh` caught it inside a minute. **A
+function type is interned on its parameters**, so `f(int a[])` and `g(int *a)`
+above are *one* `Type`; hanging the written list on it gave `g` a `Q` as well,
+and every plain-pointer parameter in the file with it. The record is worth
+keeping because the mistake looks right: the type is where a type fact belongs,
+and this is not a fact about the type.
+
+What it is instead: `Parser::manglingType(fn)` hands the Microsoft mangler **a
+function type of its own**, built from the written list and used nowhere else -
+not stored on a declaration, never compared against anything, invisible to
+Itanium. `parameterAsWritten` is the one rule that makes it, and the written
+list travels from the parameter list to the symbol in `writtenParams_` /
+`writtenFor_`, matched on the *list* rather than on arity so a stale one cannot
+be picked up. Every written parameter list clears the pair before it fills it.
+
+**Three doors, and each was found by measuring rather than by reading.** An
+ordinary member goes through `memberSymbol`; a constructor calls
+`microsoftConstructorName` itself from `declareConstructor`; a free function
+goes through `functionSymbol`. Fixing the first left the other two writing `P`,
+and the constructor was the one that looked already covered.
+
+### What is still wrong, and it is older than this
+
+**`volatile` is discarded in the declarator**, so `int *volatile p` is `R` on cl
+and `P` here, and `int *const volatile p` is `S` there and `Q` here. That is not
+a regression - both were `P` before - and it cannot be mended in the mangler:
+cxx1 has no volatile in its type system at all. Accepted-and-ignored is a fourth
+bucket beside the three the 2026-09-06 sweep sorted refusals into, and worth a
+sweep of its own.
+
+**A template parameter as an array element is refused**: `template <class T>
+int f(T a[], int n)` stops with `target: no size for this type yet`, which names
+no feature. Unrelated to the mangling and unlisted, so it is in the same
+invisible bucket the sweep was built to empty.
 
 ## How correctness is established
 

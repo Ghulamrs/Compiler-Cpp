@@ -575,6 +575,7 @@ void Parser::topLevel(Program &program) {
 
     expect("(");
     std::vector<const Type *> params;
+    std::vector<const Type *> written;
     std::vector<Param> paramSlots;
     bool variadic = false;
     std::size_t aliveParams = 0;
@@ -635,6 +636,7 @@ void Parser::topLevel(Program &program) {
                     src_.fail(pd.pos, "a parameter's type cannot be deduced - "
                                       "`auto` there is C++14, and this "
                                       "compiler is C++11");
+                const Type *declared = pd.type;
                 if (pd.type->isArray())
                     pd.type = types_.pointerTo(pd.type->pointee());
 
@@ -679,6 +681,7 @@ void Parser::topLevel(Program &program) {
                     }
                 }
                 params.push_back(types_.withoutConst(pd.type));
+                written.push_back(parameterAsWritten(declared, params.back()));
                 paramSlots.push_back(Param{ held->isReference()
                                             ? types_.pointerTo(held->referent())
                                             : held, off });
@@ -703,6 +706,12 @@ void Parser::topLevel(Program &program) {
     // Hand what this parameter list collected to whichever declare() runs below, the
     // same way parameterTypes hands over its own. **Before the prototype branch and
     // not after it**: that branch returns as soon as it has declared the function.
+    writtenParams_.clear();
+    writtenFor_.clear();
+    if (written.size() == params.size() && written != params) {
+        writtenParams_ = written;
+        writtenFor_ = params;
+    }
     bool sawDefault = false;
     for (std::size_t i = 0; i < defaults.size(); i++)
         if (defaults[i] != 0) sawDefault = true;
