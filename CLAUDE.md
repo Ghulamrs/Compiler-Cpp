@@ -6763,6 +6763,71 @@ step, both ABIs); rethrow; the three try/catch limits; `<stdexcept>` on top of
 all of it. Nothing here is on the ladder, and the two programs that asked for
 it need every one.
 
+## A C++11 feature refused as C++14, and the sweep that found it
+
+**A refusal that names the wrong standard is worse than one that names
+nothing.** `template <class T> using Ptr = T*;` is an **alias template** and is
+C++11 - [temp.alias] - and cxx1 answered "a variable template is C++14, and
+this compiler is C++11". That message has exactly the shape this tree treats as
+trustworthy: it names a feature and cites a standard version. It was wrong, and
+a reader following it would have rewritten conforming C++11 for no reason.
+
+**The cause is the token scan that recognises a variable template**, which
+tells the C++14 form from the two C++11 declarations by looking for a `(` or a
+class key before any `=`. `using Ptr = T*` has an `=` and neither, so it
+matched. The discriminator it was missing is the keyword: **an alias template
+writes `using` immediately after the parameter list and nothing else does**, so
+that question is asked before the scan. `alias-template-refused.cpp` and
+`variable-template-refused.cpp` are a pair on purpose - both begin
+`template <...>` and both reach an `=`, and the pair is what stops one message
+from claiming the other's ground.
+
+### The sweep, and what it is for
+
+**Found by a feature sweep rather than by a case**, and the distinction is the
+point: a case tests what somebody thought to write down. The sweep is one
+minimal program per C++11 feature, each checked against
+`clang++ -std=c++11 -pedantic-errors` so that it is known to be conforming, and
+then classified by **how cxx1 answers** - not whether it compiles:
+
+| | 46 probes, all valid C++11 |
+| --- | --- |
+| compiles | 19 |
+| refused **by name** | 10 |
+| refused by a message naming no feature | **17** |
+
+The seventeen are invisible: `tools/exclusions` derives its list from refusals
+that say "is not supported yet" or name a standard, so none of them was in
+`docs/EXCLUSIONS.md` and none could be. They collapse to nine roots -
+`= default` / `= delete`; the enum-base syntax and `enum class`; `override`,
+`final` and a ref-qualifier; the alias declarations; the `R"()"` and `u8""`
+literal prefixes; a `constexpr` constructor; `sizeof(S::m)`; `inline
+namespace`; and `extern template`.
+
+**This is the pure-virtual defect again, one level up.** That one was missing
+and unlisted *because* its refusal was a bare `expected ';'`, which is why the
+rule here is that a refusal names the feature. Four green suites on three
+machines and 377 cases had surfaced none of the seventeen, because every one of
+them tests a program somebody already knew to write.
+
+**Two of the ten "by name" refusals are the wrong kind of right.** `inline
+namespace` and `extern template` reach the *implemented, but not where a type
+was wanted* list, which was added so `template` would stop being called
+unsupported. Both features genuinely are unimplemented in the position the
+probe writes them, so the message implies they exist and the reader has merely
+misplaced them. That list wants a third state.
+
+### And the document had two citations swapped
+
+`docs/EXCLUSIONS.md` cited the variable-template line for **explicit
+instantiation** and the explicit-instantiation line for **a variable
+template** - each row pointing at the other's refusal. `tools/exclusions`
+cannot see it, because both are real refusal sites and the check asks whether a
+cited line refuses, not whether it refuses *that*. Found by reading the two
+messages while remapping around this fix, and it is the limit of what that
+oracle can prove: it keeps the citations live, and only a reader keeps them
+about the right thing.
+
 ## Catching by reference, which is a slot and not a copy
 
 **Landed 2026-09-06, the first of the seven** - it was the widest of them and

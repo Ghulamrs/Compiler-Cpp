@@ -363,6 +363,15 @@ bool Parser::templateDeclaration() {
     decl.afterParams = at_;
     decl.pos = peek().pos;
 
+    // **An alias template is C++11 and begins with `using`** - [temp.alias].
+    // It is asked before the scan below, which would see an '=' with no '('
+    // in front of it and call a conforming C++11 program C++14.
+    if (peek().is("using"))
+        src_.fail(peek().pos, "an alias template - 'template <class T> using "
+                              "X = ...;' - is not supported yet, though it is "
+                              "C++11: a class template with a member typedef "
+                              "says the same thing here");
+
     // **A variable template is C++14, and it is told from the two C++11
     // declarations by a token scan**: a class or function reaches '(' or a class
     // key before any '=', and an out-of-line member writes '::' before its own.

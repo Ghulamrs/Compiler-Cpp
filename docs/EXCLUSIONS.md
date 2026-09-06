@@ -108,7 +108,7 @@ that was not written. This is a library sized to what has been asked of it
 rather than to the standard, and the distance between those two is not small.
 It is also why a *language* feature is refused in one place: `auto` from a
 braced initialiser deduces an `initializer_list`, which there is no library for
-— `src/parser/ParserTemplate.cpp:1063`.
+— `src/parser/ParserTemplate.cpp:1072`.
 
 A conforming C++ implementation is a compiler **and** a library. cxx1 is a
 language translator with three code generators. Read every claim about C++11
@@ -149,7 +149,7 @@ SFINAE and variadic packs. What is left:
   definition**, one written outside its class —
   `src/parser/ParserType.cpp:328`; **explicit instantiation inside a class** —
   `src/parser/ParserType.cpp:278`; and a member function template **named
-  without being called** — `src/parser/ParserTemplate.cpp:1928`. A member
+  without being called** — `src/parser/ParserTemplate.cpp:1937`. A member
   template whose arguments would have to be **deduced** from the call, rather
   than written, is not reached: the call finds no such member and says so.
 - **an unnamed template parameter** — `src/parser/ParserTemplate.cpp:52`,
@@ -157,27 +157,30 @@ SFINAE and variadic packs. What is left:
 - **a non-type parameter pack** — a pack of types is supported.
   `src/parser/ParserTemplate.cpp:63`
 - **a non-type template parameter that is not an integer type** —
-  `src/parser/ParserTemplate.cpp:779`
+  `src/parser/ParserTemplate.cpp:788`
 - **two class templates of one name** — function templates overload (a call
   deduces against each and overload resolution ranks the specializations), but
   two *class* templates of one name is partial specialization, a different
-  path. `src/parser/ParserTemplate.cpp:510`
+  path. `src/parser/ParserTemplate.cpp:519`
 - **an explicit specialization of a *function* template** — the class form
-  works. `src/parser/ParserTemplate.cpp:527`
+  works. `src/parser/ParserTemplate.cpp:536`
 - **`template <>` where a parameter list is expected** —
   `src/parser/ParserTemplate.cpp:38`
-- **explicit instantiation** — `src/parser/ParserTemplate.cpp:376`
+- **an alias template**, `template <class T> using X = ...;` — a class
+  template with a member typedef says the same thing here.
+  `src/parser/ParserTemplate.cpp:370`
+- **explicit instantiation** — `src/parser/ParserTemplate.cpp:359`
 - **a template that is neither a class nor a function** —
   `src/parser/ParserTemplate.cpp:310`
 - **a constructor or destructor of a class template written outside the class**
-  — `src/parser/ParserTemplate.cpp:392`
+  — `src/parser/ParserTemplate.cpp:401`
 - **naming a function template without calling it** —
-  `src/parser/ParserTemplate.cpp:1780`, `src/parser/ParserTemplate.cpp:1853`
+  `src/parser/ParserTemplate.cpp:1789`, `src/parser/ParserTemplate.cpp:1862`
 - **naming a member through a template's argument list**, `A<int>::n` — a
   `typedef` for the instantiation reaches it.
-  `src/parser/ParserTemplate.cpp:1857`
+  `src/parser/ParserTemplate.cpp:1866`
 - **instantiating a template that was only declared** —
-  `src/parser/ParserTemplate.cpp:1826`
+  `src/parser/ParserTemplate.cpp:1835`
 - **`sizeof` of a template parameter in a signature** — the linker name would
   have to spell the expression. `src/parser/ParserExpr.cpp:2108`
 
@@ -312,7 +315,7 @@ where one object is many:
 - **a local with a destructor and a `try` in one function** — each is a range
   in the call-site table and one would have to split the other.
   `src/parser/ParserStmt.cpp:625`, `src/parser/ParserStmt.cpp:859`,
-  `src/parser/ParserStmt.cpp:1399`
+  `src/parser/ParserStmt.cpp:1397`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and
@@ -320,7 +323,7 @@ where one object is many:
   `src/parser/ParserStmt.cpp:565`
 - **a `try` inside another** — `src/parser/ParserStmt.cpp:899`
 - **a rethrow**, `throw;` with nothing after it —
-  `src/parser/ParserStmt.cpp:1153`
+  `src/parser/ParserStmt.cpp:1151`
 - **a dynamic exception specification**, `throw(T)` — `throw()` with nothing in
   it is `noexcept` and works. `src/parser/ParserConst.cpp:71`
 - **a range-based `for` over anything but an array** — a class would need its
@@ -340,7 +343,7 @@ where one object is many:
   class's overload set. `src/parser/ParserType.cpp:341`
 - **a using-declaration inside a block** — it would declare a name for the rest
   of the block and rank against the locals beside it.
-  `src/parser/ParserStmt.cpp:1137`. The one at namespace scope,
+  `src/parser/ParserStmt.cpp:1135`. The one at namespace scope,
   `using N::f;`, works, and so does `using namespace N;` here.
 
 ## Lambdas
@@ -368,7 +371,7 @@ beside it goes in the same commit.
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:213` |
 | `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2726`, `src/parser/ParserTopLevel.cpp:634` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:566` |
-| a variable template | C++14 | `src/parser/ParserTemplate.cpp:359` |
+| a variable template | C++14 | `src/parser/ParserTemplate.cpp:385` |
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:660`, `src/parser/ParserInit.cpp:854`, `src/parser/ParserTopLevel.cpp:364` |
 | `static_assert` with no message | C++17 | `src/parser/ParserConst.cpp:31` |
 | `namespace N::M { }` | C++17 | `src/parser/ParserTopLevel.cpp:92` |
@@ -401,7 +404,7 @@ guessed wrong twice.
 
 - **`return` inside a `catch` on x86_64-windows** — a handler is a funclet
   there, so leaving one early is a return of the address to carry on at.
-  `src/parser/ParserStmt.cpp:1162`
+  `src/parser/ParserStmt.cpp:1160`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation
