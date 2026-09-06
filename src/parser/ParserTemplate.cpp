@@ -1810,6 +1810,12 @@ ExprPtr Parser::templateCall(Program *program) {
             std::vector<std::vector<const Type *> > p;
             std::string why;
             deduceTemplateArguments(decl, argTypes, &b, &v, &p, &why);
+            // Deduction can succeed and the instantiation still fail, and then
+            // there is no reason to print - so say that rather than end the
+            // sentence on "and".
+            if (why.empty())
+                why = "no specialization of it could be made for these "
+                      "arguments";
             src_.fail(pos, "'" + name + "' is a function template and " + why);
         }
 
@@ -2062,8 +2068,11 @@ void Parser::instantiateViableTemplates(const std::string &name,
         try {
             Trial trial(this);
             instantiate(decl, binding, values, args, pos, packs);
-        } catch (const SubstitutionFailure &) {
-            // This template does not apply; the others still might.
+        } catch (const SubstitutionFailure &f) {
+            // This template does not apply; the others still might - unless
+            // what stopped it was a feature this compiler has not built, which
+            // is not [temp.deduct]/8's business and must not be swallowed.
+            if (f.unsupported) src_.fail(f.pos, f.why);
         }
     }
 }
@@ -2156,7 +2165,9 @@ void Parser::instantiateViableMemberTemplates(
     try {
         Trial trial(this);
         instantiateMemberTemplate(mt, binding, values, args, pos);
-    } catch (const SubstitutionFailure &) {
-        // This one does not apply.
+    } catch (const SubstitutionFailure &f) {
+        // This one does not apply - unless it was a refusal, which is a fact
+        // about the compiler rather than about this candidate.
+        if (f.unsupported) src_.fail(f.pos, f.why);
     }
 }

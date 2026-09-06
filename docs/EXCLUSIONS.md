@@ -149,7 +149,7 @@ SFINAE and variadic packs. What is left:
   definition**, one written outside its class —
   `src/parser/ParserType.cpp:347`; **explicit instantiation inside a class** —
   `src/parser/ParserType.cpp:297`; and a member function template **named
-  without being called** — `src/parser/ParserTemplate.cpp:1937`. A member
+  without being called** — `src/parser/ParserTemplate.cpp:1943`. A member
   template whose arguments would have to be **deduced** from the call, rather
   than written, is not reached: the call finds no such member and says so.
 - **an unnamed template parameter** — `src/parser/ParserTemplate.cpp:52`,
@@ -175,12 +175,12 @@ SFINAE and variadic packs. What is left:
 - **a constructor or destructor of a class template written outside the class**
   — `src/parser/ParserTemplate.cpp:401`
 - **naming a function template without calling it** —
-  `src/parser/ParserTemplate.cpp:1789`, `src/parser/ParserTemplate.cpp:1862`
+  `src/parser/ParserTemplate.cpp:1789`, `src/parser/ParserTemplate.cpp:1868`
 - **naming a member through a template's argument list**, `A<int>::n` — a
   `typedef` for the instantiation reaches it.
-  `src/parser/ParserTemplate.cpp:1866`
+  `src/parser/ParserTemplate.cpp:1872`
 - **instantiating a template that was only declared** —
-  `src/parser/ParserTemplate.cpp:1835`
+  `src/parser/ParserTemplate.cpp:1841`
 - **`sizeof` of a template parameter in a signature** — the linker name would
   have to spell the expression. `src/parser/ParserExpr.cpp:2108`
 - **an explicit instantiation declaration**, `extern template` — a

@@ -6763,6 +6763,64 @@ step, both ABIs); rethrow; the three try/catch limits; `<stdexcept>` on top of
 all of it. Nothing here is on the ladder, and the two programs that asked for
 it need every one.
 
+## A refusal is not a substitution failure
+
+**Every diagnostic raised inside a `Trial` is thrown rather than printed** -
+that is what makes SFINAE work here, and it is written down as the one place in
+this compiler where a failure recovers. What was not written down is that it
+recovers from *refusals* too. A feature this compiler has not built would raise
+"is not supported yet" inside a candidate's instantiation, the catch would drop
+that candidate, and the reader was told nothing about it.
+
+**The visible edge was a sentence that ended on "and".** `template <class A>
+auto f(A a) -> A;` called as `f(0)` answered
+
+    'f' is a function template and
+
+because the fallback re-runs deduction to say why it failed - and deduction had
+**succeeded**, so `why` was empty. The message is
+`"'" + name + "' is a function template and " + why`, and nothing guarded the
+empty case.
+
+**The real reason was three layers down and had nothing to do with deduction.**
+Instrumenting the catch printed it: `'f<int>#int' cannot be given a name the
+linker can hold: this type has no Itanium linkage name yet` - the *mangler*,
+refusing a deduced return type. So the candidate was dropped for a limitation
+of the compiler, the call then had no overloads, and the diagnostic invented a
+deduction failure that had not happened.
+
+**[temp.deduct]/8 is about types and expressions that are ill-formed, not about
+what an implementation has got round to.** The two template-instantiation sites
+re-raise now when the failure was a refusal; the third `Trial` - the C-style
+cast disambiguation in `(T(x) == T(y))` - keeps recovering from everything,
+because there the question is syntactic and falling back to an expression is
+the right answer.
+
+**Which failures count is the rule `tools/exclusions` already uses**, bare
+"yet" included. That was the second attempt: the conservative version -
+"not supported", "not implemented", "is C++1" - missed this very case, whose
+message says only "yet". The tool notes that bare "yet" over-matches ordinary
+diagnostics and that it can afford to; here the cost of over-matching is a
+hard error where a candidate should have been dropped, so it was measured
+rather than argued: `overload.sh` 30/0, `template-sfinae.cpp` still printing
+what it printed, and the emit golden **0 of 675 files changed**.
+
+**What this does not do is implement anything.** `f` still cannot be compiled;
+the difference is that the reader is told which limitation stopped it instead
+of being handed a sentence with nothing after "and".
+
+### And the sweep that found it was the widened one
+
+The first grid was 46 C++11 features. The second added 59 - the preprocessor,
+deeper templates, and the C++98 core a real program leans on - and found seven
+more invisible gaps, **two of them C++98**: an anonymous union and a function
+try block. The others are `S{0,0}` as an expression, an anonymous enum inside a
+class template, a captureless lambda converting to a function pointer, a
+range-for over a braced list, and this one. One probe was the sweep's own
+fault rather than the compiler's: `0x1p0` is a C++17 hex float and clang
+refuses it under C++11 too, which is what validating every probe against the
+oracle is for.
+
 ## A C++11 feature refused as C++14, and the sweep that found it
 
 **A refusal that names the wrong standard is worse than one that names
