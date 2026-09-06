@@ -209,6 +209,12 @@ StmtPtr Parser::declarationBody() {
                 args.push_back(assign());
             }
 
+            // **One argument of another class that converts to this one through
+            // a conversion function** becomes a T here - [over.ics.user], and
+            // for `T t(v)` an explicit one too, [over.match.copy]/1.
+            if (!listInit && !valueInit)
+                convertThroughConversionFunction(args, d.type, !copyInit, d.pos);
+
             // **An elided copy still needs a copy constructor that may be chosen.**
             // [class.copy]/31 selects and checks it even where the copy itself is
             // elided. Checked here: both branches below reach past `constructLocal`.

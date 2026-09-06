@@ -18,7 +18,25 @@ namespace std {
 // enough for a file offset, which is `long` on every target here.
 typedef long streamsize;
 
-class ios {
+// **[ios.base]: the flags, as one integer.** A program saves `os.flags()`,
+// writes `std::fixed` and a precision, and puts the flags back - so what is
+// handed out has to carry everything a manipulator can change. The float
+// format sits in the low byte and the conversion base above it; `fixed`
+// and `scientific` are the values <ostream>'s manipulators store, and the
+// three base constants are the bases themselves, shifted.
+class ios_base {
+public:
+    typedef int fmtflags;
+    static const int fixed      = 1;
+    static const int scientific = 2;
+    static const int floatfield = 3;
+    static const int dec        = 10 << 8;
+    static const int hex        = 16 << 8;
+    static const int oct        = 8 << 8;
+    static const int basefield  = 0xff00;
+};
+
+class ios : public ios_base {
 public:
     // The open modes, as the standard names them. The values are this
     // implementation's own - nothing outside may depend on them, and a program

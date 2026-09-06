@@ -140,6 +140,15 @@ public:
     bool isRValueReference() const { return kind_ == Kind::RValueRef; }
     const Type *referent() const { return pointee_; }
     bool isArray() const { return kind_ == Kind::Array; }
+    // The element under every array level, and whether two arrays agree at
+    // every level. A reference to an array asks both: `const double (&)[2][3]`
+    // takes a `double[2][3]`, the innermost element alone gaining const.
+    const Type *innermostElement() const {
+        const Type *t = this;
+        while (t->kind_ == Kind::Array) t = t->pointee_;
+        return t;
+    }
+    bool sameArrayShape(const Type *o) const;
     // [basic.types]/9 counts std::nullptr_t among the scalar types, which is what
     // lets `!nullptr` be written - a contextual conversion to bool. It does not
     // make `bool b = nullptr;`: [conv.bool] is direct-initialization only.

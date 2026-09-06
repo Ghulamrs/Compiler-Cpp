@@ -1003,10 +1003,29 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     // `S::operator int` entire and what this answers is what the conversion
     // makes, which is inside the name rather than in front of it.
     {
+        // **A template-id stands where a class name does**, so the scan has to
+        // step over an argument list: `V<N>::operator M<3>() const` is a
+        // conversion function of a class template defined out of line, and a
+        // scan that knew only `Name::` never reached the `operator` - the
+        // declaration then read `V<N>` as its type and the declarator was
+        // handed a `::` where a name should be.
         std::size_t k = 0;
-        if (peek().kind == TokenKind::Ident && peekAt(1).is("::"))
-            while (peekAt(k).kind == TokenKind::Ident && peekAt(k + 1).is("::"))
-                k += 2;
+        while (peekAt(k).kind == TokenKind::Ident) {
+            std::size_t j = k + 1;
+            if (peekAt(j).is("<")) {
+                int depth = 0;
+                for (;;) {
+                    if (peekAt(j).kind == TokenKind::End) break;
+                    if (peekAt(j).is("<")) depth++;
+                    else if (peekAt(j).is(">>")) depth -= 2;
+                    else if (peekAt(j).is(">")) depth--;
+                    j++;
+                    if (depth <= 0) break;
+                }
+            }
+            if (!peekAt(j).is("::")) break;
+            k = j + 1;
+        }
         if (peekAt(k).is("operator") && peekAt(k + 1).kind != TokenKind::Punct) {
             const std::size_t resume = at_;
             at_ += k;
@@ -1318,6 +1337,24 @@ const Type *Parser::arraySuffix(const Type *base, std::size_t pos) {
     return base;
 }
 
+// **The name a conversion function is filed under names a class by its tag
+// alone.** `describe()` writes `struct` or `class` by what the definition said,
+// and a member declared while the target was only forward-declared as a
+// template was keyed `operator struct X<3>` and its out-of-line definition,
+// read after the definition, `operator class X<3>` - so the definition was
+// never replayed and the link failed. The key must not depend on that.
+static std::string conversionSpelling(const Type *t) {
+    if (t->isConst() && t->unqualified() != t)
+        return t->isPointer() ? conversionSpelling(t->unqualified()) + " const"
+                              : "const " + conversionSpelling(t->unqualified());
+    if (t->isStructOrUnion()) return t->tag();
+    if (t->isPointer()) return conversionSpelling(t->pointee()) + " *";
+    if (t->isReference())
+        return conversionSpelling(t->referent()) +
+               (t->isRValueReference() ? " &&" : " &");
+    return t->describe();
+}
+
 // `operator` and then the operator itself, read where a declarator wants a name. What
 // comes back is the whole of it - "operator+" - because that is the name the
 // declaration carries on. **Everything this will not take, it refuses by name.**
@@ -1377,7 +1414,7 @@ std::string Parser::operatorName() {
             break;
         }
         conversionTarget_ = to;
-        return "operator " + to->describe();
+        return "operator " + conversionSpelling(to);
     }
     if (findOperator(spelling) == nullptr)
         src_.fail(peek().pos, "'" + spelling + "' is not an operator, so "
@@ -1417,15 +1454,13 @@ void Parser::checkOperatorDeclarable(const std::string &name, std::size_t params
     // the same. Recognised by that parameter being an int, the only shape allowed.
     if (operands == 2 && (spelling == "++" || spelling == "--")) return;
 
-    // **The compound assignments, `@=`.** [over.ass] makes each a member like
-    // plain assignment and puts no constraint on what it takes - `s += 'c'` and
-    // `s += t` are two overloads of one name. A class's `+=` is that operator
-    // alone: it is not rewritten into `+` and an assignment, which is why
-    // having `operator+` and `operator=` does not give you this one.
+    // **The compound assignments, `@=`, member or not.** [over.ass]/1 restricts
+    // plain `=` to a member and says nothing about these; [over.binary]/1 lets
+    // one be a non-member of two parameters, `operator*=(Q &, const Q &)`.
     static const char *const compound[] = {
         "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="
     };
-    if (operands == 2 && member)
+    if (operands == 2)
         for (const char *k : compound)
             if (spelling == k) return;
 

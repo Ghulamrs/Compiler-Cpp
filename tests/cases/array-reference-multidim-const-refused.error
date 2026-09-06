@@ -1,0 +1,1 @@
+'r' is 'int (&)[2][3]' and this is 'const int [2][3]'

@@ -223,6 +223,9 @@ private:
         std::string ns;
         std::vector<TemplateParam> params;
         bool isClass = false;
+        // Written `class` rather than `struct`: a specialization made while the
+        // template is only declared has to describe itself the way it was declared.
+        bool classKey = false;
         bool defined = false;
         std::size_t start = 0;
         // The token after the `>` that closed the parameter list, which is
@@ -1420,6 +1423,16 @@ private:
     int rankingConversion_ = 0;
     // The conversion itself, or null when none is needed or possible.
     ExprPtr userConversion(const Type *param, ExprPtr &arg, std::size_t pos);
+    // **[over.ics.user] through a conversion *function***: one argument of
+    // another class that converts to `cls`. An explicit one counts only in
+    // direct-initialisation, [over.match.copy]/1. Replaces the argument with
+    // the converted temporary and answers whether it did.
+    bool convertThroughConversionFunction(std::vector<ExprPtr> &args,
+                                          const Type *cls, bool directInit,
+                                          std::size_t pos);
+    bool constructorViable(const Type *cls, const std::vector<ExprPtr> &args);
+    void refuseUnrelatedClassCast(const Expr &v, const Type *to,
+                                  std::size_t pos, const char *what);
     // **Copy-initialise a class into a slot somebody else owns**, as one
     // expression. `constructTemporary` and `materialiseCopy` each allocate a
     // slot of their own, and both arms of a `?:` have to build into one.

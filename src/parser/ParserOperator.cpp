@@ -12,6 +12,7 @@
 ExprPtr Parser::castExpr() {
     if (peek().is("(")) {
         std::size_t save = at_;
+        const std::size_t openPos = peek().pos;
         at_++;
         if (atTypeName()) {
             // **`(T(2.5) == ...)` is not a cast to a function type.** A `(` after
@@ -36,6 +37,7 @@ ExprPtr Parser::castExpr() {
                 expect(")");
                 ExprPtr v = decay(castExpr());
                 if (to->isVoid()) return ExprPtr(new Cast(to, std::move(v)));
+                refuseUnrelatedClassCast(*v, to, openPos, "a cast");
                 return convert(std::move(v), to, true);   // a cast allows explicit
             }
         }
@@ -384,26 +386,56 @@ ExprPtr Parser::compound(BinOp op, ExprPtr target, ExprPtr value, std::size_t po
     requireAssignable(*target, pos, "the left of a compound assignment");
     const Type *to = target->type();
 
-    // **`a += b` is not `a = a + b` when a is a class.** Reading the target
-    // back, combining and storing is the right rewrite for a built-in operand
-    // and the wrong one for a class, where [over.match.oper] wants
-    // `operator+=` alone - so a class that has `operator+` and `operator=` and
-    // not this one cannot be written `+=` at all, and says so.
-    if (to->unqualified()->isStructOrUnion()) {
+    // **`a += b` is not `a = a + b` when a is a class.** The rewrite below is
+    // for a built-in operand; [over.match.oper] gives a class `operator+=`
+    // alone, member or non-member, ranked as one set the way `a + b`'s are.
+    const bool leftClass = to->unqualified()->isStructOrUnion();
+    const bool rightClass = value->type()->unqualified()->isStructOrUnion();
+    if (leftClass || rightClass) {
         const std::string name = std::string("operator") + binOpSpelling(op) + "=";
-        if (resolveOperator(name, *target, value.get(), pos) !=
-            OperatorChoice::Member)
+        switch (resolveOperator(name, *target, value.get(), pos)) {
+        case OperatorChoice::Member: {
+            std::vector<ExprPtr> args;
+            args.push_back(std::move(value));
+            const Type *objectType = target->type();
+            return memberCallWith(std::move(target), objectType, name, pos,
+                                  std::move(args));
+        }
+        case OperatorChoice::NonMember: {
+            std::vector<ExprPtr> args;
+            args.push_back(std::move(target));
+            args.push_back(std::move(value));
+            const Signature &sig = resolveOverload(name, args, pos);
+            return completeCall(name, sig.symbol, nullptr, sig.returns,
+                                sig.params, sig.variadic, pos, std::move(args),
+                                !sig.owner.empty());
+        }
+        case OperatorChoice::None:
+            break;
+        }
+        // A class on the left has nowhere else to go: the built-in `@=` wants
+        // an arithmetic lvalue, and a class is never one.
+        if (leftClass)
             src_.fail(pos, "'" + to->unqualified()->describe() + "' declares no "
-                           "'" + name + "' that takes this, and a compound "
-                           "assignment on a class is that operator alone - it "
-                           "is not rewritten into '" + binOpSpelling(op) +
-                           "' and an assignment the way it is for a built-in "
-                           "type");
-        std::vector<ExprPtr> args;
-        args.push_back(std::move(value));
-        const Type *objectType = target->type();
-        return memberCallWith(std::move(target), objectType, name, pos,
-                              std::move(args));
+                           "'" + name + "' that takes this, and no non-member "
+                           "one takes it either - a compound assignment on a "
+                           "class is that operator alone: it is not rewritten "
+                           "into '" + binOpSpelling(op) + "' and an assignment "
+                           "the way it is for a built-in type");
+        // **A class on the right reaches the built-in `@=` through its
+        // conversion function**, [over.match.oper]/9 with [over.built]. Converted
+        // here, so the rewrite below never goes looking for an `operator+`.
+        const Type *rt = value->type();
+        const Signature *conv = soleNumericConversion(rt);
+        if (conv == nullptr)
+            src_.fail(pos, "'" + to->describe() + "' cannot take '" +
+                           rt->describe() + "' with '" + binOpSpelling(op) +
+                           "=' - no '" + name + "' is declared for the pair, and "
+                           "the built-in one would need the class to convert to "
+                           "a number, which it does not");
+        std::vector<ExprPtr> none;
+        value = memberCallWith(std::move(value), rt, conv->name, pos,
+                               std::move(none));
     }
 
     if (ExprPtr readBack = clonePure(*target)) {

@@ -417,6 +417,7 @@ bool Parser::templateDeclaration() {
     }
 
     std::string qualifier;
+    decl.classKey = peek().is("class");
     decl.name = templatedName(decl.params, &decl.isClass, &qualifier);
     // Where it was written, for the manglers - the table's key stays bare.
     decl.ns = namespacePrefix();
@@ -881,6 +882,15 @@ Parser::instantiate(const TemplateDecl &decl,
                                     fn->isVariadicFn(), false, pos, false,
                                     std::string(), false, Access::Public });
     functions_.back().fromTemplate = true;
+    // **The defaults the pattern's parameter list just read.** Nothing in the
+    // template path recorded them, so a function template with a default
+    // argument could not be called without one: leastArguments counts the
+    // parameters that have none, so overload resolution refused the call
+    // before completeCall ever counted them.
+    if (!pendingDefaults_.empty()) {
+        defaultArgs_[symbol] = pendingDefaults_;
+        defaultArgNamespace_[symbol] = namespaceStack_;
+    }
     return functions_.back();
 }
 
@@ -1176,15 +1186,31 @@ bool Parser::deduceTemplateArguments(const TemplateDecl &decl,
     const bool hasPack = !decl.params.empty() && decl.params.back().isPack;
     const std::size_t fixed = hasPack ? fn->params().size() - 1
                                       : fn->params().size();
-    if (hasPack ? argTypes.size() < fixed : argTypes.size() != fixed) {
-        *why = "it takes " + std::string(hasPack ? "at least " : "") +
-               std::to_string(fixed) + " argument(s) and this call gives " +
+    // **A parameter with a default needs no argument.** readTemplateDeclaration
+    // above has just read the pattern's parameter list, so pendingDefaults_ says
+    // which of them have one - and they are a suffix, [dcl.fct.default]/4. This
+    // asked for an exact count, so a function template with a default argument
+    // could not be called without one: deduction refused before overload
+    // resolution or completeCall ever saw the call.
+    std::size_t least = fixed;
+    for (std::size_t i = 0; i < pendingDefaults_.size() && i < fixed; i++)
+        if (pendingDefaults_[i] != 0) { least = i; break; }
+    if (hasPack ? argTypes.size() < fixed
+                : (argTypes.size() < least || argTypes.size() > fixed)) {
+        *why = "it takes " +
+               std::string(hasPack || least < fixed ? "at least " : "") +
+               std::to_string(hasPack ? fixed : least) +
+               " argument(s) and this call gives " +
                std::to_string(argTypes.size());
         return false;
     }
+    // Only the arguments there are can be deduced from; the rest are the
+    // defaults, filled in by applyDefaults once a candidate is chosen.
+    const std::size_t deduceFrom = argTypes.size() < fixed ? argTypes.size()
+                                                           : fixed;
 
     binding->assign(decl.params.size(), nullptr);
-    for (std::size_t i = 0; i < fixed; i++)
+    for (std::size_t i = 0; i < deduceFrom; i++)
         if (!deduceOne(fn->params()[i], argTypes[i], binding, values, why)) {
             *why = "'" + decl.params[i < decl.params.size() ? i : 0].name +
                    "' cannot be worked out from this call: " + *why;
@@ -1575,6 +1601,7 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
         if (!shallow->isSpecialization()) {
             shallow->setSpecialization(decl.name, args);
             shallow->setTemplateNamespace(decl.ns);
+            shallow->noteClassKey(decl.classKey);
         }
         return shallow;
     }
@@ -1745,7 +1772,9 @@ ExprPtr Parser::templateCall(Program *program) {
             src_.fail(pos, "'" + name + "' is a function template and " + why);
         }
 
-        const Signature &sig = resolveOverload(name, callArgs, pos);
+        const Signature sig = resolveOverload(name, callArgs, pos);
+        // **A specialization's defaults, as every ordinary call reads them.**
+        applyDefaults(sig, callArgs, pos);
         return completeCall(sig.name, sig.symbol, nullptr, sig.returns,
                             sig.params, sig.variadic, pos, std::move(callArgs));
     }
@@ -1774,6 +1803,8 @@ ExprPtr Parser::templateCall(Program *program) {
     // will mark it - a specialization is defined only where it was chosen.
     for (std::size_t i = 0; i < functions_.size(); i++)
         if (functions_[i].symbol == sig.symbol) { functions_[i].used = true; break; }
+    // The same defaults, on the path where the arguments were written out.
+    applyDefaults(sig, callArgs, pos);
     return completeCall(sig.name, sig.symbol, nullptr, sig.returns, sig.params,
                         sig.variadic, pos, std::move(callArgs));
 }

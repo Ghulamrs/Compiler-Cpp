@@ -2320,6 +2320,13 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
                 have.resize(pendingDefaults_.size(), 0);
             for (std::size_t i = 0; i < pendingDefaults_.size(); i++) {
                 if (pendingDefaults_[i] == 0) continue;
+                // **The same default read twice is not a second one.** A
+                // template's pattern is read once to build the
+                // specialization's signature and again when its definition is
+                // replayed, from the same tokens - so the position recorded is
+                // identical, and [dcl.fct.default]/4's refusal of a second
+                // default is about a second *declaration*, not a re-read.
+                if (have[i] == pendingDefaults_[i]) continue;
                 if (have[i] != 0)
                     src_.fail(pos, "'" + key + "' already has a default for "
                                    "parameter " + std::to_string(i + 1) +
@@ -2584,6 +2591,26 @@ StmtPtr Parser::constructMember(const std::string &cls, const Type *type,
     if (!args.empty() && m.type->isArray())
         src_.fail(pos, "'" + m.name + "' is an array, and an initialiser list "
                        "cannot say what to pass to each element of it");
+
+    // **A trivially copyable member is copied, not constructed.** Its class
+    // declares no copy constructor - one is declared only where it has work to
+    // do - so `: first(a)` had no constructor to resolve to and resolution
+    // failed, naming the default constructor as the only candidate. It is the
+    // same lowering `X q(p);` already makes for a class with nothing to run:
+    // the byte copy every backend emits for a struct assignment. Reached by
+    // any constructor that copies a class-typed member from a parameter, which
+    // is what std::pair's own constructor does.
+    if (args.size() == 1 && !m.type->isArray() &&
+        copyConstructorOf(mc) == nullptr && moveConstructorOf(mc) == nullptr) {
+        const Type *at = args[0]->type();
+        if (at != nullptr && memberClass(at) == mc) {
+            ExprPtr dst = thisMember(thisSlot, type, m);
+            dst->setType(m.type);
+            ExprPtr store(new Assign(std::move(dst), std::move(args[0])));
+            store->setType(m.type);
+            return StmtPtr(new ExprStmt(std::move(store)));
+        }
+    }
 
     // Held by value: reading a default argument can grow `functions_`.
     Signature chosen;

@@ -86,6 +86,21 @@ public:
         return 0;
     }
 
+    // **[ios.base]/[basic.ios.members]: the state a manipulator writes, read
+    // back and put back.** Each setter answers the old value, which is what
+    // lets `os.precision(os.precision(4))` and a save-and-restore work.
+    streamsize precision() const { return prec_; }
+    streamsize precision(streamsize n) { streamsize was = prec_; prec_ = (int)n; return was; }
+    streamsize width() const { return width_; }
+    streamsize width(streamsize n) { streamsize was = width_; width_ = (int)n; return was; }
+    std::ios_base::fmtflags flags() const { return fmt_ | ((base_ == 0 ? 10 : base_) << 8); }
+    std::ios_base::fmtflags flags(std::ios_base::fmtflags f) {
+        std::ios_base::fmtflags was = flags();
+        fmt_ = f & 0xff;
+        base_ = f >> 8;
+        return was;
+    }
+
     bool good() const { return state_ == 0; }
     bool fail() const { return state_ != 0; }
     bool bad() const { return state_ != 0; }

@@ -166,6 +166,25 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
     return ExprPtr(new Cast(to, std::move(e)));
 }
 
+// **[expr.cast]/4: no cast converts between two unrelated classes on its own.**
+// A conversion function is the one road and `convert` takes it; without one
+// the bytes were reinterpreted in silence, which clang refuses.
+void Parser::refuseUnrelatedClassCast(const Expr &v, const Type *to,
+                                      std::size_t pos, const char *what) {
+    const Type *from = v.type();
+    if (from == nullptr || !from->unqualified()->isStructOrUnion() ||
+        !to->unqualified()->isStructOrUnion()) return;
+    if (from->unqualified() == to->unqualified()) return;
+    if (publicBaseOffset(from, to) > -1 || publicBaseOffset(to, from) > -1) return;
+    if (conversionFunction(from, to->unqualified(), true) != nullptr) return;
+    src_.fail(pos, std::string(what) + " from '" + from->describe() + "' to '" +
+                   to->describe() + "' - the two classes are unrelated and '" +
+                   from->unqualified()->describe() + "' has no conversion "
+                   "function to '" + to->unqualified()->describe() + "', so "
+                   "there is nothing for a cast to do but reinterpret the "
+                   "bytes, which no cast does");
+}
+
 ExprPtr Parser::decay(ExprPtr e) {
     if (!e->type()->isArray()) return e;
     const Type *to = types_.pointerTo(e->type()->pointee());
@@ -264,13 +283,17 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
         // is a qualification for a const reference and refused for a non-const
         // one that would drop it. [dcl.init.ref], [conv.qual]. An array is
         // always an lvalue, so there is no temporary to consider.
-        if (want->isArray() && given->isArray() &&
-            want->length() == given->length() &&
-            want->pointee()->unqualified() == given->pointee()->unqualified()) {
-            const bool wantConst = want->pointee()->isConst();
-            const bool givenConst = given->pointee()->isConst();
-            if (!wantConst && givenConst) return Rank::None;
-            return wantConst && !givenConst ? Rank::Qualification : Rank::Identity;
+        // **Every dimension, not just the first.** The pointee of a
+        // `const double[2][3]` is a `const double[3]`, never a `double[3]`, so
+        // it is the innermost element's constness that decides the rank.
+        if (want->isArray() && given->isArray() && want->sameArrayShape(given)) {
+            const Type *we = want->innermostElement();
+            const Type *ge = given->innermostElement();
+            if (we->unqualified() == ge->unqualified()) {
+                if (!we->isConst() && ge->isConst()) return Rank::None;
+                return we->isConst() && !ge->isConst() ? Rank::Qualification
+                                                       : Rank::Identity;
+            }
         }
 
         // **A reference to a base binds to a derived object** - [dcl.init.ref],
@@ -294,9 +317,14 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
             // somewhere the caller can read.
             if (want->isConst() && rankingConversion_ == 0) {
                 rankingConversion_++;
+                // A class target is reached by its converting constructor or by
+                // the argument's conversion function, [over.ics.user]; the second
+                // was missing, and `take(const B &)` refused an A with `operator B`.
                 const bool usable =
                     want->unqualified()->isStructOrUnion()
-                        ? convertingConstructor(want, arg) != nullptr
+                        ? (convertingConstructor(want, arg) != nullptr ||
+                           (given->unqualified()->isStructOrUnion() &&
+                            conversionFunction(given, want->unqualified()) != nullptr))
                         : (given->unqualified()->isStructOrUnion() &&
                            conversionFunction(given, want) != nullptr);
                 rankingConversion_--;
@@ -399,7 +427,9 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
         rankingConversion_++;
         const bool usable =
             to->unqualified()->isStructOrUnion()
-                ? convertingConstructor(to, arg) != nullptr
+                ? (convertingConstructor(to, arg) != nullptr ||
+                   (from->unqualified()->isStructOrUnion() &&
+                    conversionFunction(from, to->unqualified()) != nullptr))
                 : (from->unqualified()->isStructOrUnion() &&
                    conversionFunction(from, to) != nullptr);
         rankingConversion_--;
@@ -699,6 +729,33 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
         if (!keys.empty()) name = keys.back();
     }
     const std::vector<std::size_t> *set = overloadsOf(name);
+
+    // **For an operator the candidate set is the union, not the first scope
+    // that answers.** [over.match.oper] gathers the ordinary unqualified
+    // lookup *and* the operands' own namespaces, and the fallback above
+    // consults the second only where the first found nothing at all. That is a
+    // defensible approximation for an ordinary call - a name in scope is not
+    // quietly outranked by a far one - and it is wrong for an operator: one
+    // `operator==` template instantiated anywhere at file scope hid every
+    // `std::operator==`, so comparing a std::string with a literal failed in
+    // any program that also compares two objects of its own class.
+    std::vector<std::size_t> merged;
+    if (object == nullptr && !args.empty() &&
+        written.compare(0, 8, "operator") == 0) {
+        const std::vector<std::string> keys =
+            lookupKeys(written, args[0]->type(),
+                       args.size() > 1 ? args[1]->type() : nullptr);
+        for (std::size_t i = 0; i < keys.size(); i++)
+            if (const std::vector<std::size_t> *s = overloadsOf(keys[i]))
+                for (std::size_t k = 0; k < s->size(); k++) {
+                    bool seen = false;
+                    for (std::size_t j = 0; j < merged.size() && !seen; j++)
+                        seen = merged[j] == (*s)[k];
+                    if (!seen) merged.push_back((*s)[k]);
+                }
+        if (!merged.empty()) set = &merged;
+    }
+
     if (set == nullptr) {
         // **`C(...)` where C is a class** is a temporary and not a call to a
         // function nobody declared; "no prototype" sends the reader after a

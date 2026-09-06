@@ -1,0 +1,1 @@
+no 'operator+=' is declared for the pair, and the built-in one would need the class to convert to a number

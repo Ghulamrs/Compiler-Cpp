@@ -101,7 +101,16 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
     parseArguments(args);
 
     const std::string key = constructorKey(plain->tag());
-    if (overloadsOf(key) == nullptr) {
+    if (overloadsOf(key) != nullptr)
+        convertThroughConversionFunction(args, plain, true, pos);
+    // **`T(t)` for a class whose constructors leave its copy trivial** is a
+    // copy of bytes too: no copy constructor was declared, so resolution had
+    // nothing to find and `T b = T(T::make())` was refused.
+    const bool trivialSameClass =
+        args.size() == 1 && args[0]->type() != nullptr &&
+        args[0]->type()->unqualified() == plain &&
+        copyConstructorOf(plain) == nullptr && moveConstructorOf(plain) == nullptr;
+    if (overloadsOf(key) == nullptr || trivialSameClass) {
         // No constructor at all: `P(x)` is then a copy of another P, which is
         // a move of bytes, and `P()` is an object with nothing to set.
         if (args.size() > 1)
@@ -300,12 +309,65 @@ ExprPtr Parser::userConversion(const Type *param, ExprPtr &arg, std::size_t pos)
     if (arg->type()->unqualified() == plain) return nullptr;
 
     const Signature *ctor = convertingConstructor(plain, *arg);
-    if (ctor == nullptr) return nullptr;
+    // **The other half of [over.ics.user]: a conversion function on the
+    // argument's own class.** `take(const B &)` given an A with `operator B()`
+    // was refused as no viable function. Copy-initialisation, so never explicit.
+    if (ctor == nullptr) {
+        if (!arg->type()->unqualified()->isStructOrUnion()) return nullptr;
+        const Signature *how = conversionFunction(arg->type(), plain, false);
+        if (how == nullptr) return nullptr;
+        const Type *from = arg->type();
+        std::vector<ExprPtr> none;
+        return memberCallWith(std::move(arg), from, how->name, pos,
+                              std::move(none));
+    }
     markUsed(ctor);
 
     std::vector<ExprPtr> one;
     one.push_back(std::move(arg));
     return constructTemporary(plain, *ctor, std::move(one), false, pos);
+}
+
+// Whether any constructor of `cls` takes these arguments as they stand - the
+// count and rank checks resolveOverload makes, without its refusal.
+bool Parser::constructorViable(const Type *cls, const std::vector<ExprPtr> &args) {
+    const std::vector<std::size_t> *set =
+        overloadsOf(constructorKey(cls->unqualified()->tag()));
+    for (std::size_t k = 0; set != nullptr && k < set->size(); k++) {
+        const Signature &f = functions_[(*set)[k]];
+        if (f.variadic ? args.size() < leastArguments(f)
+                       : (args.size() > f.params.size() ||
+                          args.size() < leastArguments(f))) continue;
+        bool ok = true;
+        for (std::size_t i = 0; i < args.size() && ok && i < f.params.size(); i++)
+            if (rankArgument(*args[i], f.params[i]) == Rank::None) ok = false;
+        if (ok) return true;
+    }
+    return false;
+}
+
+// **[over.match.copy]/1: direct-initialising a T from one argument of another
+// class considers that class's conversion functions to T, the explicit ones
+// included** - `CMatrix<3>(v)` reaching `explicit operator CMatrix<3, 3>()`.
+// Asked only where no constructor takes the argument as it stands, since one
+// that does wins the ordinary ranking. The converted temporary then stands
+// where the argument was, and the copy rules take it from there.
+bool Parser::convertThroughConversionFunction(std::vector<ExprPtr> &args,
+                                              const Type *cls, bool directInit,
+                                              std::size_t pos) {
+    if (args.size() != 1 || args[0]->type() == nullptr) return false;
+    const Type *plain = cls->unqualified();
+    const Type *from = args[0]->type();
+    if (!from->unqualified()->isStructOrUnion() || from->unqualified() == plain)
+        return false;
+    if (publicBaseOffset(from, plain) > -1) return false;
+    if (constructorViable(plain, args)) return false;
+    const Signature *how = conversionFunction(from, plain, directInit);
+    if (how == nullptr) return false;
+    std::vector<ExprPtr> none;
+    args[0] = memberCallWith(std::move(args[0]), from, how->name, pos,
+                             std::move(none));
+    return true;
 }
 
 // **A temporary an arm of a `?:` made belongs to that arm.** The other arm did
@@ -945,6 +1007,7 @@ ExprPtr Parser::newExpression(std::size_t pos) {
     }
 
     if (constructed) {
+        convertThroughConversionFunction(ctorArgs, made, true, pos);
         const Signature &ctor = resolveOverload(constructorKey(made->tag()),
                                                 ctorArgs, pos);
         // **[class.access]/1 applies to a constructor a new-expression calls**,

@@ -656,6 +656,18 @@ void Parser::topLevel(Program &program) {
                     d.pos, false, d.qualifier, constThis,
                     memberTemplateAccess_, false });
                 functions_.back().fromTemplate = true;
+                // **The defaults its parameter list just read.** Every other
+                // declaration site records them and this one did not, so a
+                // member function template with a default argument -
+                // `template <int M> CVector<M> resized(double pad = 0.0)` -
+                // could not be called without one: applyDefaults found no
+                // entry under its symbol and the call was reported as taking
+                // too few arguments. The scope goes with it, for
+                // [dcl.fct.default]/5.
+                if (!pendingDefaults_.empty()) {
+                    defaultArgs_[sym] = pendingDefaults_;
+                    defaultArgNamespace_[sym] = namespaceStack_;
+                }
             }
         }
         if (const std::vector<std::size_t> *set = overloadsOf(key)) {

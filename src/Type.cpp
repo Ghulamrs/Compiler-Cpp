@@ -51,6 +51,25 @@ std::string Type::parameterList() const {
     return s + ")";
 }
 
+// `[2][3]` for a `double[2][3]`: every level's length, outermost first.
+static std::string arrayDims(const Type *t) {
+    std::string dims;
+    for (; t->isArray(); t = t->pointee())
+        dims += "[" + std::to_string(t->length()) + "]";
+    return dims;
+}
+
+bool Type::sameArrayShape(const Type *o) const {
+    const Type *a = this;
+    const Type *b = o;
+    while (a->isArray() && b->isArray()) {
+        if (a->length() != b->length()) return false;
+        a = a->pointee();
+        b = b->pointee();
+    }
+    return !a->isArray() && !b->isArray();
+}
+
 std::string Type::describe() const {
     // A const pointer is written with the const behind the star, and every
     // other const in front of the type. Saying 'const char *' where the
@@ -74,12 +93,14 @@ std::string Type::describe() const {
     // A reference to an array is written round the name, the same way a
     // pointer to a function is: 'int (&)[3]', never 'int [3] &'.
     if (isReference() && pointee_->isArray())
-        return pointee_->pointee()->describe() + " (&)[" +
-               std::to_string(pointee_->length()) + "]";
+        return pointee_->innermostElement()->describe() + " (&)" +
+               arrayDims(pointee_);
     if (kind_ == Kind::LValueRef) return pointee_->describe() + " &";
     if (kind_ == Kind::RValueRef) return pointee_->describe() + " &&";
+    // Outermost dimension first, as it is declared: `double [2][3]` for a
+    // `double r[2][3]`. Recursing through the element wrote them backwards.
     if (kind_ == Kind::Array)
-        return pointee_->describe() + " [" + std::to_string(length_) + "]";
+        return innermostElement()->describe() + " " + arrayDims(this);
     if (kind_ == Kind::Struct)
         return std::string(isClass_ ? "class " : "struct ") +
                (tag_.empty() ? "<anonymous>" : tag_);

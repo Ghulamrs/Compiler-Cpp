@@ -285,6 +285,7 @@ ExprPtr Parser::staticCast(std::size_t pos) {
         ExprPtr c(new Cast(to, std::move(v)));
         return c;
     }
+    refuseUnrelatedClassCast(*v, to, pos, "'static_cast'");
     return convert(std::move(v), to, true);
 }
 
@@ -651,8 +652,20 @@ ExprPtr Parser::primary(Program *program) {
     // A template named in an expression. A function template with its arguments
     // written is instantiated; everything else is refused by name, with the argument
     // list stepped over first so the reader hears about the template, not the `<`.
-    if (peek().kind == TokenKind::Ident && isTemplateName(peek().text))
-        return templateCall(program);
+    if (peek().kind == TokenKind::Ident && isTemplateName(peek().text)) {
+        // **Class scope before namespace scope** - [basic.lookup.unqual]/8, the
+        // rule R1 fixed for a name and this is the same rule for a *call*. A
+        // member of the class being parsed hides a function template of that
+        // name at file scope: `dot(*this)` inside a member of `W<N>` is the
+        // member, not the free `template <int N> dot(W<N>, W<N>)`, and taking
+        // the template first reported that `dot` takes two arguments. Only
+        // where no template arguments are written, since `dot<3>(x)` names the
+        // template outright and cannot mean the member.
+        const bool memberFirst =
+            currentClass_ != nullptr && peekAt(1).is("(") &&
+            findMemberOwner(currentClass_, peek().text) != nullptr;
+        if (!memberFirst) return templateCall(program);
+    }
 
     if (peek().is("__builtin_va_start")) {
         std::size_t pos = peek().pos;
@@ -1019,12 +1032,26 @@ ExprPtr Parser::primary(Program *program) {
         std::size_t consumed = 0;
         for (std::size_t k = 1; peekAt(k).is("::") &&
                                 peekAt(k + 1).kind == TokenKind::Ident; k += 2) {
-            const std::string candidate = q + "::" + peekAt(k + 1).text;
+            const std::string component = peekAt(k + 1).text;
+            // **Through findTypedef, as the static *data* member walk above
+            // does.** The function table is keyed by the class's tag, and the
+            // qualifier as written may be a typedef for it - so joining the
+            // strings made `typedef S T; T::f()` ask for "T::f", which is
+            // nothing's name, and the call was reported as an undeclared `T`.
+            // Its twin one block up resolved the type and worked, so `T::k`
+            // read a static data member while `T::f()` could not be called.
+            // A specialization is the same shape: `typedef V<3> Vec3` keys
+            // "V<3>::f", which is why Vec3::f() was refused where V<3>::f()
+            // was not.
+            std::string candidate = q + "::" + component;
+            if (const Type *cls = findTypedef(q))
+                if (cls->isStructOrUnion())
+                    candidate = cls->tag() + "::" + component;
             if (peekAt(k + 2).is("(") && hasStaticMemberNamed(candidate)) {
                 key = candidate;
                 consumed = k + 2;
             }
-            q += "::" + peekAt(k + 1).text;
+            q += "::" + component;
         }
         if (!key.empty()) {
             const std::size_t qpos = peek().pos;
@@ -1515,10 +1542,14 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
     // at most - `const double (&)[N]` takes a `double[N]` lvalue. The array's
     // own `unqualified()` keeps the element's const, so this is asked apart from
     // the exact-type case below.
+    // Every dimension, and the innermost element's const: a `[2][3]`'s
+    // pointee is a `const double[3]`, which no `double[3]` ever equals.
     const bool arrayBind = it->isArray() && referent->isArray() &&
-        it->length() == referent->length() &&
-        it->pointee()->unqualified() == referent->pointee()->unqualified() &&
-        (referent->pointee()->isConst() || !it->pointee()->isConst());
+        it->sameArrayShape(referent) &&
+        it->innermostElement()->unqualified() ==
+            referent->innermostElement()->unqualified() &&
+        (referent->innermostElement()->isConst() ||
+         !it->innermostElement()->isConst());
 
     if (isGlvalue(*init) && noAddressBecause == nullptr &&
         (it->unqualified() == referent->unqualified() || arrayBind)) {
