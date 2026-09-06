@@ -781,9 +781,11 @@ happened.
 The two ABIs differ in the header, and so in what the vptr holds. Itanium
 writes offset-to-top and a typeinfo pointer first and the vptr points at
 **table + 16** - measured from the `addq $16` in clang's own constructor. The
-typeinfo slot is a plain 0: there is no RTTI here and `typeid` is refused by
-name, which is also why `tools/mangled-names` now asks clang with `-fno-rtti`
-as well as `-fno-exceptions`. Microsoft has no header, so the vptr is the
+typeinfo slot was a plain 0 when this was written, there being no RTTI here,
+which is also why `tools/mangled-names` asks clang with `-fno-rtti` as well as
+`-fno-exceptions`. **`dynamic_cast` filled it** - `ParserClass.cpp:773` - so a
+polymorphic class carries a real `_ZTI` today; `typeid` is still refused by
+name. Microsoft has no header, so the vptr is the
 table's own address, and it spells a virtual member **U** where a non-virtual
 public one is Q.
 
@@ -3119,6 +3121,12 @@ library and `_ZTI` plus the type as a signature spells it - `_ZTIi`, `_ZTId` -
 so the existing Itanium type encoding names it and nothing has to be emitted.
 For a class or a pointer the compiler has to emit the object, and that is
 refused by name rather than thrown with a type nobody can catch.
+
+**Both sentences above are half stale, and the refusal still prints the stale
+half.** `dynamic_cast` gave every polymorphic class a `type_info`, so for one of
+those the object is already emitted and only the refusal stands in the way; a
+class with no vtable still has none. Measured, and scoped with the other six
+gaps, under "Class-typed exceptions: seven refusals, one of them stale".
 
 **Windows lags here and the reason is a shape rather than an omission.** The
 Microsoft ABI hands `_CxxThrowException` a ThrowInfo, which points at a
@@ -6667,6 +6675,93 @@ whose elements have a constructor - at file scope, as a static local, as a
 static member - since each element would need its own registration and the
 destructor walk knows one object per entry; and a static-duration reference
 bound to a temporary.
+
+## Class-typed exceptions: seven refusals, one of them stale
+
+**Scoped 2026-09-06, by measurement rather than from this file.** Two programs
+in `~/Documents/Claude/lambdaTest` - `catcher1.cpp` and `catcher2.cpp` - are
+what asked the question. clang builds both; cxx1 stops at the first line of
+each, `#include <stdexcept>`. What is behind that line is not one gap but
+seven, and they are worth separating because **they do not depend on each other
+and one of them is already done**.
+
+**The refusals, each measured with a program of its own** - the earlier probes
+had them masking each other, which is how the nested `try` hid the rethrow and
+the rethrow hid the catch clause:
+
+| written | answered by | at |
+| --- | --- | --- |
+| `throw E(7);` | `'throw' cannot name the type of this` | `ParserExprNew.cpp:807`, Itanium; `:761`, Microsoft |
+| `catch (E e)` | `'catch' cannot name this type` | `ParserStmt.cpp:954`, `:977` |
+| `catch (const E &e)` | `catching by reference is not supported yet` | `ParserStmt.cpp:950` |
+| `throw;` | `a rethrow ... is not supported yet` | `ParserStmt.cpp:1123` |
+| `try` inside a `try` | `a 'try' inside another one` | `ParserStmt.cpp:899` |
+| a destructible local beside a `try` | `a local with a destructor and a 'try' in one` | `ParserStmt.cpp:625`, `:859`, `:1369` |
+| `#include <stdexcept>` | no such header | `include/` has 25 and not that one |
+
+`catch (...)` compiles today, and so does the whole of rung 6 for a fundamental
+type: `throw 3; catch (int e)` runs on all three targets.
+
+**Catching by reference is the widest of the seven and the least visible from
+here**, because it is not about classes at all - `catch (const int &)` is
+refused by the same line. Every real C++ program catches by `const &`
+([except.throw] makes catching a class by *value* a copy, and a base-class
+catch of a derived object by value slices), so this one gate stops the ordinary
+spelling of the feature even for the types cxx1 can already throw. It is
+refused in the catch clause's declarator, one file, and it does not touch the
+tables.
+
+### The stale refusal, and why the remaining work is smaller than this file says
+
+**Rung 6.2's text - "for a class or a pointer the compiler has to emit the
+object, and that is refused by name" - was true when it was written and is now
+half wrong.** `dynamic_cast` needed a `type_info` beside each vtable and got
+one; `ParserClass.cpp:773` says so where it fills the slot that used to hold a
+plain zero. Measured on one file declaring a polymorphic class and a plain one:
+
+```
+struct Poly { virtual ~Poly() {} int v; ... };   ->  _ZTI4Poly, _ZTS4Poly emitted
+struct Plain { int v; ... };                     ->  nothing
+```
+
+So for a **polymorphic** class the object `__cxa_throw` wants is already in the
+object file, with the base chain in it that a catch-by-base has to walk - and
+`throw p;` is refused anyway, because `itaniumTypeInfoName` (`Mangle.cpp:1208`)
+turns away every type that is not fundamental, without asking whether one was
+emitted. The reason string it prints - "would have to be emitted here, and that
+is its own step" - is the part that is stale.
+
+**That splits the throw side in two, and only the second half is a step.** A
+polymorphic class wants the refusal lifted and the existing symbol named. A
+non-polymorphic one - which is what `catcher1.cpp` throws, and what
+`std::runtime_error`'s own hierarchy is not - wants a `type_info` emitted for a
+class that has no vtable to hang it off, which is where `_ZTI` and `_ZTS` have
+to be emitted on demand from the throw or the catch that names them. The
+Microsoft side is the four-object ThrowInfo chain rung 6.5a already writes for
+a fundamental type, pointed at a class descriptor instead.
+
+### What unblocks what
+
+**`<stdexcept>` is last, not first.** It is a header of small classes deriving
+from one another, so writing it before class throws work would produce a header
+nothing can use. What it needs underneath it is the throw side, the catch side
+including by-reference, and a base-class catch - and its classes hold a
+`std::string`, which means the destructible-local-and-`try` limit is on its
+path too rather than beside it.
+
+**The three try/catch limits are one subject and are already named as
+rung 6's own remainder** - a destructible local beside a `try`, a nested `try`,
+and `return` inside a `catch` on Windows. Every one of them is about the
+call-site table's ranges rather than about types, so they are independent of
+everything above and would be lifted together. `catcher2.cpp` needs the first
+two; `catcher1.cpp` needs the first.
+
+**In dependency order, then:** catch by reference (one declarator, no tables);
+throw and catch of a polymorphic class (lift a refusal, name a symbol that
+exists); `type_info` on demand for a non-polymorphic class (the real emission
+step, both ABIs); rethrow; the three try/catch limits; `<stdexcept>` on top of
+all of it. Nothing here is on the ladder, and the two programs that asked for
+it need every one.
 
 ## The object ledger, because printing cannot show a leak
 
