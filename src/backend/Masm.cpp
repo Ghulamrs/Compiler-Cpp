@@ -296,7 +296,14 @@ void MasmSpelling::prologue(int frameSize, const std::string &lsda) {
     // FH3 table is an unsigned offset up from the establisher. Measured against cl.
     o_ += "  push rbp\n";
     o_ += "$LNpush$" + m + ":\n";
-    if (frameSize > 0) {
+    // A frame of a page or more is probed first - cl's rule, measured: 4056 is
+    // a plain sub, 4120 calls __chkstk. Unprobed, the first write at the bottom
+    // skips the guard page and is an access violation, not a stack overflow.
+    if (frameSize >= 4096) {
+        o_ += "  mov eax, "; appendNum(o_, frameSize);
+        o_ += "\n  call __chkstk\n  sub rsp, rax\n";
+        referenced_.insert("__chkstk");
+    } else if (frameSize > 0) {
         o_ += "  sub rsp, "; appendNum(o_, frameSize); o_ += '\n';
     }
     o_ += "$LNalloc$" + m + ":\n";

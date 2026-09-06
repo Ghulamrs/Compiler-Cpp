@@ -6406,6 +6406,17 @@ purpose - fixing a root tends to close several - and the honest next step is to
 re-measure with review C's 306-program corpus rather than to assume they went
 with the roots.
 
+**A fifth defect was found after the register and is not in it.** The Windows
+stack-probe crash - a frame of six pages taken in one `sub`, past the guard
+page - was found by running `matrix_main.cpp` on the Windows box, not by any of
+the three reviewers. It is recorded under "A frame that skipped the guard page"
+rather than here, and the distinction is worth keeping rather than tidying
+away: the register is what three reviewers found by reading and probing the
+compiler, and this is what a real program found by being run on a third
+machine. Filing it as an audit finding would credit the wrong oracle and hide
+the fact that **the reviews did not catch it** - none of the 306 differential
+programs had a frame that large, and neither did any of the 375 suite cases.
+
 **One finding is explicitly not fixed and is not a remainder of any root.**
 Inside a namespace an unqualified name still finds the global one first,
 because `findGlobal` tries the flat table before `qualifyForLookup`. It is
@@ -6413,68 +6424,85 @@ recorded in `docs/CONFORMANCE.md`, it is R1's neighbour rather than part of it,
 and reversing that order changes how every unqualified name in a namespace
 resolves - which wants a round of its own.
 
-## A string literal's length, and a crash on one target only
+## A frame that skipped the guard page, and two wrong answers before it
 
-**Not fixed. Characterised here, and the first version of this section was
-wrong in a way worth keeping.** `matrix_main.cpp` of the C++ Vector Exercise
-runs correctly on arm64-darwin and x86_64-linux and dies on x86_64-windows with
-0xC0000005. cl's own build of the same file runs, so it is cxx1's code
-generation for that target.
+**Fixed 2026-09-06.** `matrix_main.cpp` of the C++ Vector Exercise died on
+x86_64-windows with 0xC0000005 and ran on the other two targets. The cause is
+in the subsection below - a frame of six pages taken in one `sub`, past the
+guard page Windows commits the stack through - and cxx1's Windows prologues
+now probe with `__chkstk` as cl does for any frame of a page or more.
 
-**What it is.** The crash tracks the *length of the source file's name*, which
-reaches the program only through `assert`'s `__FILE__`. Compiling identical
-source under different names:
+**What is kept here is the road to it, because two published answers were
+wrong before that one was right**, and both were wrong the same way. The
+first named `(CMatrix<>)a`, a class template-id with defaulted arguments, on
+the evidence that rewriting that one token made the crash go away - but the
+rewrite went to a file with a different *name*, so two things changed at once.
+The second named the length of that filename, which reaches the program only
+through `assert`'s `__FILE__`, on the evidence of this table:
 
-    name length   9  exit 0        13  0xC0000005
-                 10  0xC0000005    14  exit 0
-                 11  exit 0        15  exit 0
-                 12  exit 0        16  exit 0
+    name length  9  exit 0        13  0xC0000005
+                10  0xC0000005    14  exit 0
+                11  exit 0        15  exit 0
+                12  exit 0        16  exit 0
 
-The emitted assembly for a crashing and a non-crashing build was diffed and is
-**byte-identical apart from the `DB` bytes of that one string**. So this is
-data emission on this target - alignment or padding around a string constant,
-where certain lengths leave what follows misplaced - and nothing to do with the
-program's C++.
+**Every entry in that table is a single run of a nondeterministic crash.** The
+same binary, run twelve times, crashed eleven and passed once. So the table
+measured luck, the "control" that disproved the first answer was luck, and the
+six careful reductions that all passed on Windows passed by luck too.
 
-**What the first write-up said, and why it was wrong.** It named
-`(CMatrix<>)a` - a class template-id with both arguments defaulted - as the
-trigger, on the evidence that rewriting that one token to `(CMatrix<3,3>)`
-made the crash go away. It did, and the inference was still wrong: the rewrite
-was written to a file with a *different name*, so it changed the `__FILE__`
-string as well as the cast. The control that settles it is two pairs:
+**The rule that would have caught it in the first ten minutes: run the same
+binary twice.** A bisect is a sequence of one-run measurements, and against an
+intermittent fault it produces a confident, detailed, entirely fictional
+answer - which is exactly what it produced, twice.
 
-    identical source, name "spell2.cpp"   exit 0
-    identical source, name "a416.cpp"     0xC0000005
-    CMatrix<3,3> version, short name      0xC0000005
-    CMatrix<>    version, long name       exit 0
+### It was never the string: a frame that skipped the guard page
 
-The spelling is irrelevant in both directions. **A one-token fix that makes a
-crash disappear is not evidence until the two builds differ in one token.**
+**Fixed 2026-09-06, and the characterisation above is wrong in its premise.**
+The length table was one run per name, and the defect is not deterministic:
+`rep.cmd`, twelve runs of *one* `spell2_8.exe`, gave eleven crashes and one
+clean exit with the full 254 bytes of output. Every "exit 0" in that table is
+a lucky run and every 0xC0000005 an unlucky one, and the string's length was
+never a variable at all. **A single run per value is not a measurement of
+the value** - the fifth harness error, and the one that produced the table.
 
-**It also explains what had been baffling.** Six careful reductions all passed
-on Windows - none of them happened to have a filename of a fatal length. Adding
-*any* statement to a truncated `main` flipped the result - it changed the
-string table. And `matrices` was the only one of the four exercise programs
-affected.
+**What it is.** Windows commits a thread's stack one page at a time, through
+a guard page just below whatever has been touched. `main` of `matrix_main`
+has a 24528-byte frame, and cxx1's prologue took it in one step -
+`sub rsp, 5FD0h` - so rsp moved six pages down past the guard page, and the
+first store at the bottom of the frame, `movsd [rsp], xmm0`, touched memory
+the OS had never committed. That is an access violation and not a stack
+overflow, because the guard page was never hit; whether it fires depends on
+where the guard sat when `main` was entered, which varies run to run. The
+8 MB link changed nothing because `/stack` sets the reserve, and commit is a
+page at a time regardless.
 
-**Excluded, each measured:** stack size, since the crash survives the 8 MB link
-the driver uses where the Windows default is 1 MB; dynamic initialisation,
-which landed the same day and emits no `.CRT$XCU` entry for this program at
-all; and every other feature of that day taken singly.
+**cl probes every frame of a page or more**, measured at the boundary: a
+4056-byte frame is a plain `sub`, a 4120-byte one is `mov eax, N; call
+__chkstk; sub rsp, rax`. Both Windows prologues - `MasmSpelling` and the GNU
+`CoffSpelling` - do that now for `frameSize >= 4096`, with the unwind codes
+unchanged: `UWOP_ALLOC_LARGE` still ends at the `sub`, and `__chkstk` is in
+libcmt. The emit golden reports 0 of 675 files changed and 3 added - no case
+in the suite had a frame that size, which is why no suite ever saw it.
 
-**Where to start**: `MasmSpelling`'s string emission and whatever follows a
-string constant in `.rdata` or `CONST`. The lengths that fail - 10 and 13, with
-9, 11, 12, 14, 15 and 16 passing - are the measurement to explain; a simple
-"not padded to 8" would fail on a contiguous run of lengths, and this does not.
+**How it was found, since the first tool did not find it.** The vectored
+handler from the sret investigation, linked in and run under the crash,
+printed nothing. What worked is a twenty-line cl-compiled debugger -
+`CreateProcess` with `DEBUG_ONLY_THIS_PROCESS`, `WaitForDebugEvent`, the
+context and sixteen instruction bytes at the fault, looped until it fired.
+It gave `F2 0F 11 04 24` at an address `dumpbin /disasm` put twenty-seven
+bytes into `main`, right after the `sub`, with the faulting address equal to
+rsp. From there the cause was one search of the prologue.
 
-**Three harness errors were made finding this, and they are worth more than the
-finding.** The first probes linked without `/stack:8388608`, so intermediate
-cuts crashed for a reason unrelated to the defect. `stdout` through an ssh pipe
-is fully buffered, so "the program printed nothing" proved nothing about where
-it died. A `std::cerr` marker never reached the capture at all - caught only
-because a *control* that ran correctly did not print it either. And the fourth,
-above, is the one that produced a published wrong answer: a confounded
-single-variable test.
+**The `.CONST`/`ALIGN` lead was not pursued**, because the fault is a store
+through rsp and a misaligned `movsd` does not fault on this machine in any
+case. `tests/cases/stack-probe.cpp` is the case: a 256 KB frame written from
+its lowest address, which died 3 of 3 on the box before the fix and passes 3
+of 3 after; `matrix_main` passes 12 of 12 where it passed 1 of 12.
+
+**One neighbour, recorded and not taken.** `UWOP_ALLOC_LARGE` with one slot
+holds size/8 in a `DW`, so a frame past 512 KB writes a value ml64 refuses
+with `A2071` - loud, at the assembler, on a shape no program here has. The
+two-slot form is the fix when one does.
 
 ## The four oracles, measured together at c66c8d0
 

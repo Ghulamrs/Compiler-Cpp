@@ -266,7 +266,12 @@ void CoffSpelling::prologue(int frameSize, const std::string &lsda) {
     // FH3 displacement is an unsigned offset up from the establisher.
     o_ += "  push %rbp\n";
     o_ += "\"$LNpush$" + fnName_ + "\":\n";
-    if (frameSize > 0) {
+    // A frame of a page or more is probed through __chkstk first, as the
+    // MASM prologue does and for the same measured reason.
+    if (frameSize >= 4096) {
+        o_ += "  mov $"; appendNum(o_, frameSize);
+        o_ += ", %eax\n  call __chkstk\n  sub %rax, %rsp\n";
+    } else if (frameSize > 0) {
         o_ += "  sub $"; appendNum(o_, frameSize); o_ += ", %rsp\n";
     }
     o_ += "\"$LNalloc$" + fnName_ + "\":\n";
