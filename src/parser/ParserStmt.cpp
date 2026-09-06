@@ -972,7 +972,8 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
             caught = byRef ? d.type->referent()->unqualified()
                            : d.type->unqualified();
             std::string why;
-            if (!itaniumTypeInfoName(caught, &h.type, &why))
+            h.type = typeInfoSymbolFor(caught, cpos, &why);
+            if (h.type.empty())
                 src_.fail(cpos, "'catch' cannot name this type: " + why);
             caughtName = d.name;
         }
@@ -1157,9 +1158,26 @@ StmtPtr Parser::statementBody() {
     if (peek().is("throw")) {
         const std::size_t tpos = peek().pos;
         at_++;
-        if (peek().is(";"))
-            src_.fail(tpos, "a rethrow - 'throw' with nothing after it - is "
-                            "not supported yet");
+        // **A rethrow hands back the exception the handler is holding**, and
+        // the runtime is the one that knows which - so there is nothing to
+        // name and nothing to allocate. [except.throw]/8 makes it ill-formed
+        // outside a handler, where there would be no such exception.
+        if (peek().is(";")) {
+            at_++;
+            if (target_.microsoftNames())
+                src_.fail(tpos, "a rethrow - 'throw' with nothing after it - "
+                                "is not supported yet for x86_64-windows: it "
+                                "is _CxxThrowException with two null pointers "
+                                "from inside a funclet, and that has not been "
+                                "measured on the box");
+            // [except.throw]/8: with no exception being handled this calls
+            // std::terminate, which is what __cxa_rethrow does by itself -
+            // so it is well-formed here, as clang has it, and needs no check.
+            mayThrow_++;
+            return StmtPtr(new ExprStmt(
+                runtimeCall("__cxa_rethrow", types_.get(Kind::Void),
+                            std::vector<ExprPtr>())));
+        }
         mayThrow_++;
         ExprPtr value = decay(expr());
         expect(";");

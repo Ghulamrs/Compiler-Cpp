@@ -131,6 +131,29 @@ What is left of it:
 - **`typeid`** — in the keyword table below. Nothing emits a `type_info` for a
   *fundamental* type either; a class's is what landed.
 
+**A class can be thrown and caught on the two Itanium targets**, by value, by
+reference and by a base — `emitClassTypeInfo` needs no vtable, so a plain class
+is as throwable as a polymorphic one, and `__si_class_type_info` carries the
+base chain the runtime walks. Three things about that are still refused, and
+`tools/exclusions` cannot derive any of them: the message is
+`"'throw' cannot name the type of this: " + why`, and the word that marks a
+refusal arrives at run time inside `why`. So they are written out here instead.
+
+- **throwing or catching a pointer** — that wants `__pointer_type_info`, a
+  third shape beside `__class_type_info` and `__si_class_type_info`, carrying
+  the pointee's own object and the qualifiers written with it.
+  `tests/cases/throw-refused.cpp`
+- **throwing or catching a class with more than one base** — the same
+  `__vmi_class_type_info` the `dynamic_cast` entry above wants.
+  `tests/cases/throw-multiple-bases-refused.cpp`
+- **a class-typed throw on x86_64-windows** — the ThrowInfo chain has to point
+  at a class: a type descriptor and a catchable type per class, and a `_CTA`
+  array listing the thrown class *and its bases*, which is how catch-by-base
+  works on that ABI. Measured from clang for that target, throwing a `Derived`
+  emits `??_R0?AUDerived@@@8` and `??_R0?AUBase@@@8`, a `_CT??_R0?AU...@84`
+  for each, `_CTA2?AUDerived@@` and `_TI2?AUDerived@@`. cxx1 emits the four
+  objects for a fundamental type only. `tests/cases/throw-class.notarget`
+
 ## Templates
 
 Rung 5 landed function and class templates, deduction, partial specialization,
@@ -194,7 +217,7 @@ SFINAE and variadic packs. What is left:
   resolution picks the non-static one — the arguments have been read by then,
   and there is no honest way back to the call that takes an object.
   `src/parser/ParserExpr.cpp:1248`. A static member function on its own works.
-- **a member function of a union** — `src/parser/ParserClass.cpp:2115`
+- **a member function of a union** — `src/parser/ParserClass.cpp:2138`
 - **`friend class X;`** — one named function can be befriended.
   `src/parser/ParserType.cpp:495`
 - **befriending one member function of another class** —
@@ -266,7 +289,7 @@ SFINAE and variadic packs. What is left:
   `src/parser/ParserExpr.cpp:471`
 - **an inline variable** — `inline` on a variable is a C++17 feature; C++11
   has `inline` only on functions, where it works. `src/parser/ParserTopLevel.cpp:232`
-- **a braced default argument** — `src/parser/ParserClass.cpp:2738`,
+- **a braced default argument** — `src/parser/ParserClass.cpp:2761`,
   `src/parser/ParserTopLevel.cpp:691`
 - **a braced member initialiser** — `src/parser/ParserType.cpp:901`
 - **an initialiser for an array of a class** —
@@ -293,7 +316,7 @@ where one object is many:
   its destructor at exit, and the destructor walk knows one object per entry.
   At file scope `src/parser/ParserTopLevel.cpp:352`, as a static local
   `src/parser/ParserStmt.cpp:107`, and as a static data member
-  `src/parser/ParserClass.cpp:2014`
+  `src/parser/ParserClass.cpp:2037`
 - **a static-duration reference bound to a temporary** — [class.temporary]/5
   gives the temporary the program's lifetime, so it would need static storage
   of its own; a named object binds. `src/parser/ParserInit.cpp:1302`
@@ -328,32 +351,35 @@ where one object is many:
 ## `new` and `delete`
 
 - **placement new**, and a parenthesised type-id after `new` —
-  `src/parser/ParserExprNew.cpp:884`
+  `src/parser/ParserExprNew.cpp:885`
 - **more than one value in a new-expression** —
-  `src/parser/ParserExprNew.cpp:971`
+  `src/parser/ParserExprNew.cpp:972`
 - **`new T[n]` of a class with a constructor** —
-  `src/parser/ParserExprNew.cpp:938`
+  `src/parser/ParserExprNew.cpp:939`
 - **`new T[n][m]`** — only the first dimension may be given.
-  `src/parser/ParserExprNew.cpp:912`
-- **`new T{...}`** — `src/parser/ParserExprNew.cpp:964`
-- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:1184`
+  `src/parser/ParserExprNew.cpp:913`
+- **`new T{...}`** — `src/parser/ParserExprNew.cpp:965`
+- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:1185`
 - **`delete[]` of a type with a destructor** — the count `new[]` would have
-  recorded is not written. `src/parser/ParserExprNew.cpp:1252`
+  recorded is not written. `src/parser/ParserExprNew.cpp:1253`
 
 ## Statements, exceptions and control
 
 - **a local with a destructor and a `try` in one function** — each is a range
   in the call-site table and one would have to split the other.
   `src/parser/ParserStmt.cpp:634`, `src/parser/ParserStmt.cpp:868`,
-  `src/parser/ParserStmt.cpp:1407`
+  `src/parser/ParserStmt.cpp:1425`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and
   so does a class in the condition of an `if`, where the object is built once.
   `src/parser/ParserStmt.cpp:574`
 - **a `try` inside another** — `src/parser/ParserStmt.cpp:908`
-- **a rethrow**, `throw;` with nothing after it —
-  `src/parser/ParserStmt.cpp:1161`
+- **a rethrow**, `throw;` with nothing after it — **for x86_64-windows
+  only**; it works on both Itanium targets. There it is
+  `_CxxThrowException` with two null pointers, raised from inside a handler
+  funclet rather than from the frame that owns the `try`, which has not been
+  measured on the box. `src/parser/ParserStmt.cpp:1168`
 - **a dynamic exception specification**, `throw(T)` — `throw()` with nothing in
   it is `noexcept` and works. `src/parser/ParserConst.cpp:97`
 - **a range-based `for` over anything but an array** — a class would need its
@@ -379,7 +405,7 @@ where one object is many:
   class's overload set. `src/parser/ParserType.cpp:361`
 - **a using-declaration inside a block** — it would declare a name for the rest
   of the block and rank against the locals beside it.
-  `src/parser/ParserStmt.cpp:1145`. The one at namespace scope,
+  `src/parser/ParserStmt.cpp:1146`. The one at namespace scope,
   `using N::f;`, works, and so does `using namespace N;` here.
 - **an alias declaration**, `using X = T;` — `typedef T X;` says the same
   thing here. It is not a using-declaration, and the three scopes that refuse
@@ -418,7 +444,7 @@ beside it goes in the same commit.
 | `0b101`, a binary literal | C++14 | `src/Lexer.cpp:250` |
 | `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1449` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:213` |
-| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2726`, `src/parser/ParserTopLevel.cpp:635` |
+| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2749`, `src/parser/ParserTopLevel.cpp:635` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:567` |
 | a variable template | C++14 | `src/parser/ParserTemplate.cpp:385` |
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:660`, `src/parser/ParserInit.cpp:854`, `src/parser/ParserTopLevel.cpp:365` |
@@ -453,11 +479,11 @@ guessed wrong twice.
 
 - **`return` inside a `catch` on x86_64-windows** — a handler is a funclet
   there, so leaving one early is a return of the address to carry on at.
-  `src/parser/ParserStmt.cpp:1170`
+  `src/parser/ParserStmt.cpp:1188`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation
-  rather than in naming. `src/parser/ParserClass.cpp:805`
+  rather than in naming. `src/parser/ParserClass.cpp:828`
 
 A case that cannot be compiled for a target names it in `<case>.notarget` with
 the reason on the line, which is printed on every run.

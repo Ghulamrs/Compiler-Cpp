@@ -687,6 +687,29 @@ ExprPtr Parser::thisMember(int thisSlot, const Type *cls, const Member &m) {
 //
 // The bases are walked, not just named: a chain's every link needs its own pair
 // or the runtime has nothing to walk, which is why this recurses.
+// **A throw and a catch name the same object a `dynamic_cast` walks**, so the
+// class half is `emitClassTypeInfo` - which needs no vtable, only a class this
+// compiler can describe. That is what makes a *non-polymorphic* class throwable
+// here as well as a polymorphic one, and what makes catching by a base work:
+// `__si_class_type_info` carries the base's own `_ZTI` and the runtime walks it.
+std::string Parser::typeInfoSymbolFor(const Type *t, std::size_t pos,
+                                      std::string *why) {
+    const Type *u = t->unqualified();
+    std::string name;
+    if (itaniumTypeInfoName(u, &name, why)) return name;
+
+    if (u->isStructOrUnion() && !u->tag().empty()) {
+        // More than one base wants `__vmi_class_type_info`, which is not built
+        // - emitClassTypeInfo answers empty for it and says so here.
+        const std::string ti = emitClassTypeInfo(u, u->tag(), pos);
+        if (!ti.empty()) { why->clear(); return ti; }
+        *why = "'" + u->describe() + "' has more than one base, and a "
+               "type_info for that shape is not built yet";
+        return std::string();
+    }
+    return std::string();
+}
+
 std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
                                       std::size_t pos) {
     const std::string ti = itaniumClassTypeInfoSymbol(tag);

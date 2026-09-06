@@ -6763,6 +6763,88 @@ step, both ABIs); rethrow; the three try/catch limits; `<stdexcept>` on top of
 all of it. Nothing here is on the ladder, and the two programs that asked for
 it need every one.
 
+## Class-typed exceptions, three of the seven
+
+**Landed 2026-09-06 on the two Itanium targets**, and what made them cheap is
+that the object they need was already being emitted. `emitClassTypeInfo` builds
+`_ZTS` and `_ZTI` for any class this compiler can describe and **needs no
+vtable** - so a plain class is exactly as throwable as a polymorphic one, and
+the scoping's split between "lift a refusal" and "the real emission step" was
+one step after all. `itaniumTypeInfoName` refuses every non-fundamental type
+without asking whether an object exists, and `typeInfoSymbolFor` is the one
+helper the throw and both catch paths now share.
+
+**Catching by a base works because the object says so, not because the
+compiler does.** `__si_class_type_info` carries the base's own `_ZTI` as a
+third word and the runtime walks it - the same chain a `dynamic_cast` reads -
+so nothing here compares types. Measured against clang: by base, by value,
+past a handler that does not match, and `catch (...)`, all agreeing.
+
+**A rethrow is `__cxa_rethrow()` and nothing else.** The runtime knows which
+exception the handler holds, so there is nothing to name and nothing to
+allocate.
+
+**And the first version of it refused a conforming program.** `throw;` with
+nothing being handled looks ill-formed and is not: [except.throw]/8 makes it
+well-formed and terminating, clang compiles it, and `__cxa_rethrow` calls
+`std::terminate` by itself - which is the standard's answer arriving for free.
+The check, and the `inHandler_` flag written to support it, were both taken
+back out. **A refusal that is stricter than the standard is the same defect as
+one that names the wrong version**, and it is easier to write.
+
+### What is still refused, and one of them is not a refusal at all
+
+`throw-refused.cpp` used to say "a fundamental type and nothing else", which
+was true when written. What is left is a **pointer**, which wants
+`__pointer_type_info` - a third shape carrying the pointee's object and its
+qualifiers - and a class with **more than one base**, which wants
+`__vmi_class_type_info`, the same shape `dynamic_cast` already refuses. Both
+still refuse on all three targets and each has a case.
+
+**`tools/exclusions` cannot derive any of it**, and that is worth knowing about
+the tool rather than about the gap: the message is
+`"'throw' cannot name the type of this: " + why`, and the word that marks a
+refusal arrives at run time inside `why`. Three exclusions are written out in
+`docs/EXCLUSIONS.md` by hand for that reason, pointing at their cases rather
+than at a line.
+
+**And the names suite found a gap that is not about names.** clang emits
+`__cxa_free_exception` where cxx1 does not: it is the other half of
+`__cxa_allocate_exception`, freeing the memory if the copy that stores the
+thrown value into it throws. cxx1 emits allocate, store, throw with nothing
+around the store, so an exception raised by that copy leaks the allocation.
+Recorded in `throw-class.nonames` rather than papered over - it wants a cleanup
+region over the window between the allocate and the throw, which is the same
+machinery the destructible-local-and-`try` limit is waiting on.
+
+**The case defines its constructors out of line**, which is about the suite
+rather than the feature: written inside the class they are inline, clang then
+emits only C2 on x86_64-linux where cxx1 emits C1 and C2, and the names suite
+would report a difference about *emission* as though it were about mangling.
+That is the fourth time this file has had to say so.
+
+### Where the seven stand
+
+| | |
+| --- | --- |
+| catch by reference | **done**, both ABIs |
+| throw and catch a class | **done** on Itanium; Microsoft refuses by name |
+| `type_info` for a non-polymorphic class | **done** - it was the same step |
+| rethrow | **done** on Itanium; Microsoft refuses by name |
+| a destructible local beside a `try` | open, and it blocks the rest |
+| a nested `try` | open |
+| `<stdexcept>` | open, and last |
+
+**The remaining three are one subject.** A cleanup region and a `try` are both
+ranges in the call-site table, and the table holds sorted disjoint ranges - so
+a `try` inside a cleanup region has to split it, and a call inside the `try`
+needs an action chain that offers the handlers first and the cleanup after.
+That is action records in the LSDA, which is not written. `<stdexcept>`'s
+classes hold a `std::string`, so the destructible-local limit is on its path
+rather than beside it, and the two programs that asked for all this -
+`catcher1.cpp` and `catcher2.cpp` in `~/Documents/Claude/lambdaTest` - still
+stop at their first line.
+
 ## A refusal is not a substitution failure
 
 **Every diagnostic raised inside a `Trial` is thrown rather than printed** -

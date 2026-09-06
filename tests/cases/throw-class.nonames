@@ -1,0 +1,13 @@
+x86_64-linux  clang emits __cxa_free_exception and cxx1 does not. It is the
+other half of __cxa_allocate_exception: the memory is handed back if the
+object cannot be got into it - if the copy that stores the thrown value into
+that memory throws, the allocation must be freed before the new exception
+leaves, and clang wraps the store in a cleanup region that calls it.
+
+cxx1 emits allocate, store, throw with nothing around the store, so an
+exception raised by that copy leaks the allocation. It is a real gap and not a
+naming difference: it needs a cleanup region covering the window between the
+allocate and the throw, which is the same machinery the destructible-local-
+and-try limit is waiting on. Recorded here rather than papered over, and the
+only difference in this case - every other name agrees on both Itanium
+targets, and arm64-darwin agrees on all of them.

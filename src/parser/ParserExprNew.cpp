@@ -802,8 +802,9 @@ StmtPtr Parser::throwStatement(ExprPtr value, std::size_t pos) {
     const Type *thrown = value->type()->unqualified();
     if (target_.microsoftNames()) return microsoftThrow(std::move(value), pos);
 
-    std::string info, why;
-    if (!itaniumTypeInfoName(thrown, &info, &why))
+    std::string why;
+    const std::string info = typeInfoSymbolFor(thrown, pos, &why);
+    if (info.empty())
         src_.fail(pos, "'throw' cannot name the type of this: " + why);
 
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));

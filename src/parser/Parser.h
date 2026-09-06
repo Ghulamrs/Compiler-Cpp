@@ -652,6 +652,10 @@ private:
     // ordinary class and the template's own name for a specialization.
     std::string inlineOwnerName_;
 
+    // The _ZTI a throw or a catch names, emitting one for a class on the way.
+    // Answers empty and fills `why` where this compiler cannot describe it.
+    std::string typeInfoSymbolFor(const Type *t, std::size_t pos,
+                                  std::string *why);
     std::string emitClassTypeInfo(const Type *cls, const std::string &tag,
                                   std::size_t pos);
     void emitVtable(const Type *cls, const std::string &tag, std::size_t pos);

@@ -1,15 +1,17 @@
-// `throw` can name a fundamental type and nothing else yet.
+// **What `throw` still cannot name**, now that a class can be thrown.
 //
-// The Itanium ABI hands __cxa_throw a pointer to the type_info object that
-// identifies the exception, and for a fundamental type the standard library
-// already carries that object - naming it is all a compiler has to do. For a
-// class, or a pointer, the compiler has to *emit* one, and cxx1 has no RTTI
-// at all: the vtable's typeinfo slot is a plain zero and `typeid` is refused.
-// So this is refused by name rather than thrown with a type nobody can catch.
+// This case used to say "a fundamental type and nothing else", which was true
+// when it was written and stopped being true when the class type_info the
+// `dynamic_cast` work already emits was reached from the throw path. What is
+// left is the shape below: a *pointer* wants `__pointer_type_info`, a third
+// kind beside `__class_type_info` and `__si_class_type_info`, carrying the
+// pointee's own object and the qualifiers it was written with. None of that
+// is built, and the Microsoft side wants a descriptor of its own too - so
+// both ABIs still refuse this and each says why in its own terms.
 //
-// **Both ABIs refuse it and each says why in its own terms** - Itanium that
-// the library carries no such type_info, Microsoft that it can name no such
-// type descriptor - so what the case records is the half they share.
+// throw-class.cpp is the half that works, and
+// throw-multiple-bases-refused.cpp the other thing still refused.
 struct E { int v; };
-void f() { E e; e.v = 1; throw e; }
+static E e;
+void f() { e.v = 1; throw &e; }
 int main() { f(); return 0; }
