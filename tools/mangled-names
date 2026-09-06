@@ -99,6 +99,13 @@ names() {
     # answer. The personality routine and the terminate helper go with them -
     # which of those a compiler references is its own business.
     grep -vE 'catch\$|dtor\$|^_*__CxxFrameHandler|^_*__std_terminate$|^_*__GSHandlerCheck' |
+    # **The initialiser functions are file-local too.** clang builds one
+    # `__cxx_global_var_init.N` - `??__E...` on Windows - per object and one
+    # `_GLOBAL__sub_I_<file>` calling them; cxx1 builds the sub function alone,
+    # and MASM spells its dot as `$..._cpp`. Nothing links against any of them.
+    # The `??__F` atexit helpers *are* compared: the same rule names them on
+    # both sides, and a mistake there would be a naming fault.
+    grep -vE '^_*__cxx_global_var_init|^\?\?__E|^\$?_+GLOBAL__sub_I_' |
     sort -u
 }
 

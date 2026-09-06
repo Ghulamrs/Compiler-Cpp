@@ -473,6 +473,17 @@ void MasmSpelling::items(const char *dir, const std::vector<std::string> &it) {
     }
 }
 
+// **`.CRT$XCU`, with the dot.** cl's listing writes `CRT$XCU SEGMENT` and
+// `DQ FLAT:`, neither of which is what ml64 takes - the same trap `.pdata` and
+// `.text$x` set. Measured on the box: this runs the function before main.
+void MasmSpelling::initialiserEntry(const std::string &fn, bool) {
+    flushPending();
+    o_ += "\n.CRT$XCU SEGMENT READONLY ALIGN(8) 'DATA'\n  DQ ";
+    o_ += mangle(fn);
+    o_ += "\n.CRT$XCU ENDS\n";
+    seg_ = None;
+}
+
 void MasmSpelling::predefine(const std::vector<std::string> &names) {
     for (const std::string &n : names) defined_.insert(n);
 }

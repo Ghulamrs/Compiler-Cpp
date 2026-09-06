@@ -6,6 +6,7 @@
 #include "../Mangle.h"
 #include "../Source.h"
 
+#include <cctype>
 #include <cfloat>
 #include <climits>
 #include <cmath>
@@ -813,3 +814,517 @@ bool Parser::addressOfObject(const Expr &e, std::string *sym, long long *off) co
     return false;
 }
 
+
+// **What a class with constructors is initialised from**, read once for every
+// storage duration: a local, a static local, a file-scope object and a static
+// data member all take the same forms and are refused the same forms.
+Parser::CtorInit Parser::readConstructorInitialiser(const Declared &d) {
+    CtorInit ci;
+    bool valueInitCopied = false;
+    // **`C c{};` and `C c = {};` value-initialise.** [dcl.init]/11 sends
+    // an empty list to /8, which is the default constructor - and the
+    // zeroing before it that `constructObject` puts in for an implicit one.
+    if ((peek().is("{") && peekAt(1).is("}")) ||
+        (peek().is("=") && peekAt(1).is("{") && peekAt(2).is("}"))) {
+        // `= {}` is copy-initialisation and `{}` is not, which is the
+        // whole difference an `explicit` default constructor makes.
+        valueInitCopied = consume("=");
+        expect("{");
+        expect("}");
+        ci.valueInit = true;
+    }
+
+    std::vector<ExprPtr> &args = ci.args;
+    ci.copyInit = valueInitCopied;
+
+    // **A braced initialiser, and the answers it has.** An initializer_list
+    // constructor takes the braces as a list - [over.match.list]; a member
+    // initialiser makes the class no aggregate in C++11; the rest is refused.
+    if (peek().is("{") || (peek().is("=") && peekAt(1).is("{"))) {
+        const Type *ilType = nullptr;
+        const Signature *ilCtor =
+            initializerListConstructor(d.type->unqualified(), &ilType);
+        if (ilCtor != nullptr) {
+            consume("=");
+            Init in = parseInitialiser();
+            args.push_back(buildInitializerList(ilType, in, d.pos, ci.ilSetup));
+            ci.copyInit = true;
+            ci.listInit = true;
+        } else if (hasMemberInitialiser(d.type->tag())) {
+            src_.fail(d.pos, "'" + d.type->describe() + "' writes an "
+                             "initialiser on a member, so in C++11 it "
+                             "is not an aggregate and a braced list "
+                             "cannot initialise it - C++14 changed "
+                             "that rule and this compiler is C++11. "
+                             "Give the class a constructor, or take "
+                             "the member initialiser off");
+        } else {
+            src_.fail(d.pos, "list-initialisation - '" + d.name +
+                             "{...}' calling a constructor - is not "
+                             "supported yet unless the class has an "
+                             "initializer_list constructor; write the "
+                             "arguments in parentheses");
+        }
+    }
+    // **A braced list written as the argument**, `Row r({1, 2})`: [dcl.init]/16
+    // and [over.match.list] reach the initializer_list constructor. Built here,
+    // where the target type is known - parseArguments cannot build one alone.
+    if (!ci.listInit && peek().is("(") && peekAt(1).is("{")) {
+        const Type *ilType = nullptr;
+        if (initializerListConstructor(d.type->unqualified(), &ilType)
+                != nullptr) {
+            at_++;                       // the '('
+            Init in = parseInitialiser();
+            args.push_back(buildInitializerList(ilType, in, d.pos,
+                                                ci.ilSetup));
+            expect(")");
+            ci.listInit = true;
+        }
+    }
+    if (!ci.listInit && consume("(")) {
+        if (peek().is(")"))
+            src_.fail(d.pos, "'" + d.name + "()' declares a function "
+                             "taking nothing and returning '" +
+                             d.type->describe() + "' - C++ reads it that "
+                             "way and not as a construction. Write '" +
+                             d.type->describe() + " " + d.name +
+                             ";' for the default constructor");
+        parseArguments(args);
+    } else if (consume("=")) {
+        // **Copy-initialisation.** `X b = a;` is a constructor called with one
+        // argument, chosen by the ordinary overload rules. What separates it
+        // from `X b(a);` is that an `explicit` constructor may not be picked.
+        ci.copyInit = true;
+        args.push_back(assign());
+    }
+
+    // **One argument of another class that converts to this one through
+    // a conversion function** becomes a T here - [over.ics.user], and
+    // for `T t(v)` an explicit one too, [over.match.copy]/1.
+    if (!ci.listInit && !ci.valueInit)
+        convertThroughConversionFunction(args, d.type, !ci.copyInit, d.pos);
+
+    // **An elided copy still needs a copy constructor that may be chosen.**
+    // [class.copy]/31 selects and checks it even where the copy itself is
+    // elided. Checked here: both branches below reach past `constructLocal`.
+    if (ci.copyInit && args.size() == 1 && args[0]->type() != nullptr &&
+        args[0]->type()->unqualified() == d.type->unqualified()) {
+        // The constructor the rule checks is the one resolution would pick:
+        // the move for a source that is not an lvalue and has one, the copy
+        // otherwise. An explicit copy beside a plain move does not bite.
+        const Signature *mc = moveConstructorOf(d.type->unqualified());
+        const Signature *sel = !isLvalue(*args[0]) && mc != nullptr
+                             ? mc
+                             : copyConstructorOf(d.type->unqualified());
+        if (sel != nullptr && sel->isExplicit)
+            src_.fail(d.pos, "'" + d.type->describe() + "' has an "
+                             "'explicit' " +
+                             (sel == mc ? "move" : "copy") +
+                             " constructor, so it "
+                             "will not be chosen for '" + d.name +
+                             " = ...' - write '" +
+                             d.type->describe() + " " + d.name +
+                             "(...)'. The copy may well be elided, "
+                             "and the rule is checked all the same");
+    }
+    const Signature *mover = moveConstructorOf(d.type->unqualified());
+    const bool sameClass =
+        args.size() == 1 && args[0]->type() != nullptr &&
+        args[0]->type()->unqualified() == d.type->unqualified();
+    // An lvalue is what the deleted copy would be asked to take; an
+    // xvalue moves, and so does a prvalue - `S d = make();` is a
+    // temporary and the move constructor is exactly what it is for.
+    if (mover != nullptr && sameClass && isLvalue(*args[0]) &&
+        copyConstructorOf(d.type->unqualified()) == nullptr)
+        src_.fail(d.pos, "'" + d.type->describe() + "' declares a move "
+                         "constructor, so its copy constructor is "
+                         "deleted and '" + d.name + "' cannot be built "
+                         "from an lvalue - write 'static_cast<" +
+                         d.type->describe() + " &&>(...)' to move out "
+                         "of it, or give the class a copy constructor");
+
+    ci.trivialCopy =
+        sameClass && mover == nullptr &&
+        copyConstructorOf(d.type->unqualified()) == nullptr;
+        return ci;
+}
+
+// ---- Dynamic initialisation: the objects that are built before main --------
+
+// `_GLOBAL__sub_I_<file>`, the name clang gives it: the main file's basename
+// with every character that is not a letter, a digit, '_' or '.' made '_'.
+std::string Parser::initFunctionSymbol() const {
+    std::string file = src_.files().empty() ? std::string("a.cpp")
+                                            : src_.files().front();
+    const std::size_t slash = file.find_last_of("/\\");
+    if (slash != std::string::npos) file = file.substr(slash + 1);
+    for (std::size_t i = 0; i < file.size(); i++) {
+        const unsigned char c = static_cast<unsigned char>(file[i]);
+        if (!std::isalnum(c) && c != '_' && c != '.') file[i] = '_';
+    }
+    return "_GLOBAL__sub_I_" + file;
+}
+
+// The init function's frame is entered the way every other re-entry door
+// enters one: the whole state saved, cleared, and the frame put in its place.
+Parser::FunctionState Parser::enterInitFunction() {
+    FunctionState outer = captureFunctionState();
+    clearFunctionState();
+    frameSize_ = dynInitFrame_;
+    functionName_ = initFunctionSymbol();
+    currentFunction_ = functionName_;
+    atFunctionBody_ = true;
+    initGuardMark_ = guardSlots_.size();
+    return outer;
+}
+
+// The frame comes back out, and so do the guards made inside - they are not
+// part of the state struct, so they are moved by hand. The token index is put
+// back to where the initialiser ended, since the restore rewinds it.
+void Parser::leaveInitFunction(const FunctionState &outer) {
+    dynInitFrame_ = frameSize_;
+    for (std::size_t i = initGuardMark_; i < guardSlots_.size(); i++)
+        dynInitGuards_.push_back(guardSlots_[i]);
+    guardSlots_.resize(initGuardMark_);
+    const std::size_t resume = at_;
+    restoreFunctionState(outer);
+    at_ = resume;
+}
+
+// One function for the file, static, its guards cleared at entry as every
+// function's are. The backends register it; nothing here calls it.
+void Parser::finishDynamicInit(Program &program) {
+    if (dynInit_.empty()) return;
+    std::vector<StmtPtr> body;
+    for (std::size_t i = 0; i < dynInitGuards_.size(); i++)
+        body.push_back(StmtPtr(new ExprStmt(setGuard(dynInitGuards_[i], 0))));
+    for (std::size_t i = 0; i < dynInit_.size(); i++)
+        body.push_back(std::move(dynInit_[i]));
+    dynInit_.clear();
+    dynInitGuards_.clear();
+    const std::string symbol = initFunctionSymbol();
+    program.functions.push_back(Function(symbol, types_.get(Kind::Void),
+                                         std::vector<Param>(),
+                                         StmtPtr(new Block(std::move(body))),
+                                         alignTo(dynInitFrame_, 16), true, 0,
+                                         false, 0, 0, std::vector<::Local>()));
+    program.functions.back().setSymbol(symbol);
+    program.initFunction = symbol;
+}
+
+// `&f` for a function named by its linkage symbol, the shape a designator
+// decays to: a Var of the function's type under an address-of.
+ExprPtr Parser::functionAddress(const std::string &symbol, const Type *fnType) {
+    Var *f = Var::global(symbol);
+    f->setSymbol(symbol);
+    ExprPtr fn(f);
+    fn->setType(fnType);
+    ExprPtr addr(new Unary('&', std::move(fn)));
+    addr->setType(types_.pointerTo(fnType));
+    return addr;
+}
+
+// The object as an expression: a global named by its symbol, or a frame slot.
+ExprPtr Parser::objectAt(const Declared &d, const std::string &symbol, int offset) {
+    Var *v = symbol.empty() ? Var::local(d.name, offset) : Var::global(d.name);
+    if (!symbol.empty()) v->setSymbol(symbol);
+    ExprPtr e(v);
+    e->setType(d.type);
+    return e;
+}
+
+// `??__F<scoped>@YAXXZ`, cl's name for the function atexit is handed for one
+// object - measured: ??__Fg1@@YAXXZ, ??__Fmg@M@N@@YAXXZ, and for a static
+// member the object's whole symbol, ??__F?member@H@@2US@@A@@YAXXZ.
+std::string Parser::atexitHelperName(const std::string &scoped) const {
+    return "??__F" + scoped + "@YAXXZ";
+}
+
+// The construction of one object with static storage duration, in whatever
+// frame is in force, its temporaries destroyed after it, and then the
+// destructor registered - [basic.start.term], in reverse order of completion.
+std::vector<StmtPtr> Parser::buildStaticConstruction(const Declared &d,
+                                                     const std::string &symbol,
+                                                     const std::string &helper) {
+    CtorInit ci = readConstructorInitialiser(d);
+    std::vector<StmtPtr> out;
+    for (std::size_t z = 0; z < ci.ilSetup.size(); z++)
+        out.push_back(std::move(ci.ilSetup[z]));
+    if (ci.trivialCopy) {
+        ExprPtr store(new Assign(objectAt(d, symbol, 0), std::move(ci.args[0])));
+        store->setType(d.type);
+        out.push_back(StmtPtr(new ExprStmt(std::move(store))));
+    } else {
+        out.push_back(constructObject(d, symbol, 0, std::move(ci.args),
+                                      ci.copyInit, ci.valueInit));
+    }
+    flushTemporaries(out);
+    registerDestruction(d, symbol, helper, out);
+    return out;
+}
+
+// Itanium: __cxa_atexit(&D1, &object, &__dso_handle), the complete-object
+// destructor. Microsoft: atexit(&helper), the helper a function of its own
+// that calls the destructor on the object - measured from cl and clang.
+void Parser::registerDestruction(const Declared &d, const std::string &symbol,
+                                 const std::string &helper,
+                                 std::vector<StmtPtr> &into) {
+    const Type *cls = d.type->unqualified();
+    const Signature *dtor = destructorOf(cls);
+    if (dtor == nullptr) return;
+    markUsed(dtor);
+    const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+    const Type *clsPtr = types_.pointerTo(cls);
+
+    if (!target_.microsoftNames()) {
+        std::vector<const Type *> ps;
+        ps.push_back(clsPtr);
+        const Type *dtorType = types_.functionType(types_.get(Kind::Void), ps, false);
+        std::vector<ExprPtr> args;
+        args.push_back(functionAddress(dtor->symbol, dtorType));
+
+        ExprPtr addr(new Unary('&', objectAt(d, symbol, 0)));
+        addr->setType(clsPtr);
+        ExprPtr asVoid(new Cast(voidPtr, std::move(addr)));
+        args.push_back(std::move(asVoid));
+
+        Var *dso = Var::global("__dso_handle");
+        dso->setSymbol("__dso_handle");
+        ExprPtr handle(dso);
+        handle->setType(types_.get(Kind::Char));
+        ExprPtr handleAddr(new Unary('&', std::move(handle)));
+        handleAddr->setType(voidPtr);
+        args.push_back(std::move(handleAddr));
+        current_->usesDsoHandle = true;
+
+        into.push_back(StmtPtr(new ExprStmt(
+            runtimeCall("__cxa_atexit", types_.intType(), std::move(args)))));
+        return;
+    }
+
+    // The helper: no parameters, one destructor call, file-local. Built in a
+    // frame of its own, as the implicit special members are.
+    const int savedFrame = frameSize_;
+    frameSize_ = 0;
+    std::vector<StmtPtr> body;
+    ExprPtr addr(new Unary('&', objectAt(d, symbol, 0)));
+    addr->setType(clsPtr);
+    body.push_back(StmtPtr(new ExprStmt(destructorCall(std::move(addr), *dtor,
+                                                       d.pos))));
+    current_->functions.push_back(Function(helper, types_.get(Kind::Void),
+                                           std::vector<Param>(),
+                                           StmtPtr(new Block(std::move(body))),
+                                           alignTo(frameSize_, 16), true, 0,
+                                           false, 0, d.pos,
+                                           std::vector<::Local>()));
+    current_->functions.back().setSymbol(helper);
+    frameSize_ = savedFrame;
+
+    const Type *helperType = types_.functionType(types_.get(Kind::Void),
+                                                 std::vector<const Type *>(),
+                                                 false);
+    std::vector<ExprPtr> args;
+    args.push_back(functionAddress(helper, helperType));
+    into.push_back(StmtPtr(new ExprStmt(
+        runtimeCall("atexit", types_.intType(), std::move(args)))));
+}
+
+// A file-scope object with a constructor, or a static data member of one,
+// built inside the init function. `once` is a template's static member: a
+// weak guard beside it keeps a second unit's copy from building it again.
+void Parser::dynamicInitialise(const Declared &d, const std::string &symbol,
+                               const std::string &helper, bool once) {
+    if (d.type->isConst() && !peek().is("=") && !peek().is("(") &&
+        !peek().is("{"))
+        requireConstInitialised(d.type, d.name, d.pos);
+    const FunctionState outer = enterInitFunction();
+    std::vector<StmtPtr> built = buildStaticConstruction(d, symbol, helper);
+    if (once) {
+        const bool ms = target_.microsoftNames();
+        const std::string guard = ms ? symbol + "$guard"
+                                     : "_ZGV" + symbol.substr(symbol.compare(0, 2, "_Z") == 0 ? 2 : 0);
+        const Type *guardType = types_.get(ms ? Kind::Int : Kind::LongLong);
+        current_->globals.push_back(Global{ guard, guard, guardType,
+                                            std::vector<GlobalPiece>(), false,
+                                            false, false });
+        current_->globals.back().isInline = true;
+        // The first byte is what Itanium reads; the whole int on Microsoft.
+        const Type *readAs = types_.get(ms ? Kind::Int : Kind::UChar);
+        Var *seen = Var::global(guard);
+        seen->setSymbol(guard);
+        ExprPtr flag(seen);
+        flag->setType(readAs);
+        ExprPtr zero(new Num(0LL));
+        zero->setType(readAs);
+        ExprPtr fresh(new Binary(BinOp::Eq, std::move(flag), std::move(zero)));
+        fresh->setType(types_.get(Kind::Bool));
+
+        Var *mark = Var::global(guard);
+        mark->setSymbol(guard);
+        ExprPtr marked(mark);
+        marked->setType(readAs);
+        ExprPtr one(new Num(1LL));
+        one->setType(readAs);
+        ExprPtr set(new Assign(std::move(marked), std::move(one)));
+        set->setType(readAs);
+
+        std::vector<StmtPtr> body;
+        body.push_back(StmtPtr(new ExprStmt(std::move(set))));
+        for (std::size_t i = 0; i < built.size(); i++)
+            body.push_back(std::move(built[i]));
+        built.clear();
+        built.push_back(StmtPtr(new If(std::move(fresh),
+                                       StmtPtr(new Block(std::move(body))),
+                                       StmtPtr())));
+    }
+    for (std::size_t i = 0; i < built.size(); i++)
+        dynInit_.push_back(std::move(built[i]));
+    leaveInitFunction(outer);
+}
+
+// [stmt.dcl]/4 under the ABI's own guard: __cxa_guard_acquire / _release
+// around the construction on Itanium; _Init_thread_header / _footer with the
+// guard at -1 on Microsoft, without cl's TLS epoch fast path - CONFORMANCE.md.
+StmtPtr Parser::guardOnce(const std::string &symbol, std::vector<StmtPtr> body) {
+    const bool ms = target_.microsoftNames();
+    const std::string guard = symbol + (ms ? "$guard" : ".guard");
+    const Type *guardType = types_.get(ms ? Kind::Int : Kind::LongLong);
+    current_->globals.push_back(Global{ guard, guard, guardType,
+                                        std::vector<GlobalPiece>(), false,
+                                        true, false });
+    const Type *guardPtr = types_.pointerTo(guardType);
+    auto guardAddr = [&]() {
+        Var *g = Var::global(guard);
+        g->setSymbol(guard);
+        ExprPtr e(g);
+        e->setType(guardType);
+        ExprPtr a(new Unary('&', std::move(e)));
+        a->setType(guardPtr);
+        return a;
+    };
+    auto guardIs = [&](long long value, Kind readAs) {
+        Var *g = Var::global(guard);
+        g->setSymbol(guard);
+        ExprPtr e(g);
+        e->setType(types_.get(readAs));
+        ExprPtr n(new Num(value));
+        n->setType(types_.get(readAs));
+        ExprPtr c(new Binary(BinOp::Eq, std::move(e), std::move(n)));
+        c->setType(types_.get(Kind::Bool));
+        return c;
+    };
+
+    if (!ms) {
+        std::vector<ExprPtr> a1;
+        a1.push_back(guardAddr());
+        ExprPtr acquired = runtimeCall("__cxa_guard_acquire", types_.intType(),
+                                       std::move(a1));
+        std::vector<ExprPtr> a2;
+        a2.push_back(guardAddr());
+        body.push_back(StmtPtr(new ExprStmt(
+            runtimeCall("__cxa_guard_release", types_.get(Kind::Void),
+                        std::move(a2)))));
+        std::vector<StmtPtr> inner;
+        inner.push_back(StmtPtr(new If(std::move(acquired),
+                                       StmtPtr(new Block(std::move(body))),
+                                       StmtPtr())));
+        return StmtPtr(new If(guardIs(0, Kind::UChar),
+                              StmtPtr(new Block(std::move(inner))), StmtPtr()));
+    }
+
+    std::vector<StmtPtr> whole;
+    std::vector<ExprPtr> a1;
+    a1.push_back(guardAddr());
+    whole.push_back(StmtPtr(new ExprStmt(
+        runtimeCall("_Init_thread_header", types_.get(Kind::Void),
+                    std::move(a1)))));
+    std::vector<ExprPtr> a2;
+    a2.push_back(guardAddr());
+    body.push_back(StmtPtr(new ExprStmt(
+        runtimeCall("_Init_thread_footer", types_.get(Kind::Void),
+                    std::move(a2)))));
+    whole.push_back(StmtPtr(new If(guardIs(-1, Kind::Int),
+                                   StmtPtr(new Block(std::move(body))),
+                                   StmtPtr())));
+    return StmtPtr(new Block(std::move(whole)));
+}
+
+// A static local's symbol: the function's name and the object's, numbered
+// where a name is declared twice in one function.
+std::string Parser::uniqueStaticSymbol(const std::string &name) {
+    std::string symbol = functionName_ + "." + name;
+    for (int n = 1; ; n++) {
+        bool taken = false;
+        for (const std::string &used : staticSymbols_)
+            if (used == symbol) { taken = true; break; }
+        if (!taken) break;
+        symbol = functionName_ + "." + name + "." + std::to_string(n);
+    }
+    staticSymbols_.push_back(symbol);
+    return symbol;
+}
+
+// The Microsoft helper for a static local is scoped to its function -
+// `??__Floc@?1??f@@YAHXZ@YAXXZ` - with an undecorated owner written ?name@@9.
+void Parser::staticLocalWithConstructor(const Declared &d,
+                                        std::vector<StmtPtr> &inits) {
+    const std::string symbol = uniqueStaticSymbol(d.name);
+    std::string helper;
+    if (target_.microsoftNames()) {
+        const std::string owner =
+            !currentFunction_.empty() && currentFunction_[0] == '?'
+                ? currentFunction_ : "?" + currentFunction_ + "@@9";
+        helper = atexitHelperName(d.name + "@?1?" + owner);
+    }
+    std::vector<StmtPtr> body = buildStaticConstruction(d, symbol, helper);
+    declareStaticLocal(d.name, d.type, d.pos, symbol);
+    locals_.back().isConst = d.type->isConst();
+    // Not `isConst`: the constructor writes it, so it cannot live in .rodata.
+    current_->globals.push_back(Global{ symbol, symbol, d.type,
+                                        std::vector<GlobalPiece>(), false,
+                                        true, false });
+    inits.push_back(guardOnce(symbol, std::move(body)));
+}
+
+// A reference with static storage duration: `&global` goes into the image,
+// anything else is bound where `into` says - the init function, or a static
+// local's guarded statement. A temporary is refused by name.
+void Parser::bindStaticReference(const Declared &d, const std::string &symbol,
+                                 std::vector<GlobalPiece> &pieces, bool &hasInit,
+                                 std::vector<StmtPtr> *into) {
+    if (!peek().is("="))
+        src_.fail(d.pos, "'" + d.name + "' is a reference and has to be "
+                         "initialised here - there is no later assignment "
+                         "that would bind it, only one that writes through it");
+    at_++;
+    ExprPtr init = assign();
+    if (!isGlvalue(*init))
+        src_.fail(d.pos, "'" + d.name + "' is a reference with static storage "
+                         "duration, and binding it to a temporary is not "
+                         "supported yet - the temporary would need static "
+                         "storage of its own. Name the object and bind to that");
+    ExprPtr addr = bindReference(d.type, std::move(init), d.pos,
+                                 "'" + d.name + "'");
+    const Type *slot = types_.pointerTo(d.type->referent());
+    if (const Unary *u = dynamic_cast<const Unary *>(addr.get()))
+        if (u->op() == '&')
+            if (const Var *v = dynamic_cast<const Var *>(&u->operand()))
+                if (!v->isLocal()) {
+                    GlobalPiece p;
+                    p.offset = 0;
+                    p.size = slot->size(target_);
+                    p.value = 0;
+                    p.symbol = v->symbol();
+                    pieces.push_back(p);
+                    hasInit = true;
+                    return;
+                }
+    Var *target = Var::global(d.name);
+    target->setSymbol(symbol);
+    ExprPtr t(target);
+    t->setType(slot);
+    ExprPtr bind(new Assign(std::move(t), std::move(addr)));
+    bind->setType(slot);
+    into->push_back(StmtPtr(new ExprStmt(std::move(bind))));
+    flushTemporaries(*into);
+}

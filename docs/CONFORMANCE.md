@@ -462,3 +462,49 @@ nearer one. Reversing the order changes how every unqualified name inside a
 namespace resolves, which wants a round of its own rather than a line in a
 change about something else.
 
+
+## A static local's guard is not released if its constructor throws
+
+[stmt.dcl]/4: if the initialisation of a static local exits by throwing, it is
+not complete and is tried again the next time control passes through. The
+Itanium ABI says so with `__cxa_guard_abort`, called from a landing pad around
+the constructor, and the Microsoft one with `_Init_thread_abort`; clang and cl
+both emit that pad. cxx1 emits the guard, the acquire and the release and no
+pad: a constructor that throws leaves the guard held, and the next pass
+through the declaration blocks in `__cxa_guard_acquire` on the Itanium targets
+and in `_Init_thread_header` on Windows. What it needs is a cleanup region
+inside the guarded stretch - the machinery a local with a destructor and a
+`try` in one function are waiting on.
+
+## A static local's guard on x86_64-windows skips cl's fast path
+
+cl reads a per-thread epoch out of TLS before calling `_Init_thread_header`,
+so an initialised static local costs one compare on every later pass. cxx1
+calls `_Init_thread_header` on every pass and lets it answer: the function
+takes its lock, sees the guard past -1, and returns, so the program behaves
+identically and pays a lock where cl pays a compare. The fast path is a TLS
+read - `_tls_index`, `gs:[88]`, `_Init_thread_epoch@SECREL32` - which this
+compiler has no shape for yet.
+
+## A file-scope reference is bound before main unless its initialiser is `&global`
+
+[basic.start.init]/2 lets a reference whose initialiser is a constant
+expression be bound during constant initialisation, which clang does for
+`int &r = g;`, `int &r = arr[2];` and `int &r = *&g;` alike - the address goes
+into the image and nothing runs. cxx1 draws the line at the first: `&global`
+exactly goes into the image, and every other initialiser is bound in the init
+function, before main. A program cannot tell the two apart except through the
+order of initialisation across translation units: another unit's dynamic
+initialiser reading `arr[2]` through `r` before this unit's init function has
+run would find the reference unbound here and bound under clang.
+
+## A template's static member is guarded by a flag on x86_64-windows
+
+[basic.start.init]/2 makes the initialisation of a class template's static
+data member *unordered*, and every translation unit that instantiates it
+defines it. cl and clang both give the construction a COMDAT function of its
+own - `??__E?member@?$K@H@@2US@@A@@YAXXZ` - and let the linker keep one. ml64
+cannot mark a COMDAT, so cxx1 builds the member from the file's one init
+function under a weak flag beside the object, `<symbol>$guard`, which is the
+shape both compilers already use on the Itanium targets (`_ZGV` and the
+object's name). One more weak object per member; nothing links against it.

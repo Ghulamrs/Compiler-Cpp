@@ -1933,6 +1933,10 @@ void X86_64Linux::run(const Program &program) {
     emitData(program);
     finishChunk();
     for (const Function &fn : program.functions) emit(fn);
+    if (!program.initFunction.empty()) {
+        a_->initialiserEntry(program.initFunction, program.usesDsoHandle);
+        finishChunk();
+    }
 
     if (lineSource() != nullptr && writesDwarf()) {
         for (const Global &g : program.globals) {

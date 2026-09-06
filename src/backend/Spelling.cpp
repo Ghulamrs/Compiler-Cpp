@@ -102,6 +102,15 @@ void GnuSpelling::location(int file, int line, int column) {
     o_ += '\n';
 }
 
+// Measured from clang: the function's address in .init_array, and
+// __dso_handle declared hidden where the file hands it to __cxa_atexit.
+void GnuSpelling::initialiserEntry(const std::string &fn, bool dsoHandle) {
+    if (dsoHandle) o_ += "  .hidden __dso_handle\n";
+    o_ += "  .section .init_array,\"aw\",@init_array\n  .p2align 3, 0x0\n  .quad ";
+    o_ += sym(fn);
+    o_ += '\n';
+}
+
 void GnuSpelling::textSection()   { o_ += "  .text\n"; }
 void GnuSpelling::rodataSection() { o_ += "  .section .rodata\n"; }
 void GnuSpelling::dataSection()   { o_ += "  .data\n"; }
@@ -193,8 +202,24 @@ void CoffSpelling::functionBegin(const std::string &name, bool exported,
 // opened one, and a second would start an empty section.
 void CoffSpelling::weakDefinition(const std::string &name) {
     if (opened_ == name) { opened_.clear(); return; }
-    o_ += "  .section .rdata,\"dr\",discard," + sym(name) + "\n";
+    // **The COMDAT takes the plain section's own attributes**: a template's
+    // static member and its guard are writable, and clang puts them in
+    // `.bss,"bw",discard` - measured. Read-only only where the section is.
+    const char *where = std::strstr(plainSection_, ".bss") != nullptr
+                          ? ".bss,\"bw\""
+                      : std::strstr(plainSection_, ".data") != nullptr
+                          ? ".data,\"dw\""
+                          : ".rdata,\"dr\"";
+    o_ += "  .section " + std::string(where) + ",discard," + sym(name) + "\n";
     comdatData_ = 1;
+}
+
+// Measured from clang for x86_64-pc-windows-msvc: the same pointer, in the
+// section the CRT walks before main.
+void CoffSpelling::initialiserEntry(const std::string &fn, bool) {
+    o_ += "  .section .CRT$XCU,\"dr\",unique,0\n  .p2align 3, 0x0\n  .quad ";
+    o_ += sym(fn);
+    o_ += '\n';
 }
 
 // COFF spells the read-only segment .rdata, and has no .type or .size. Each

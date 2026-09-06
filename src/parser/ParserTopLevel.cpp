@@ -238,11 +238,33 @@ void Parser::topLevel(Program &program) {
     if (constexprFunction && !d.type->isFunction())
         d.type = types_.withoutConst(d.type);
 
+    // **`S g(1);` at file scope is a construction, not a prototype**: a
+    // parameter list begins with a type name or is empty, the local path's own
+    // question, and `S g();` is the function C++ says it is.
+    bool constructionAhead = false;
+    if (peek().is("(") && d.paramsAt == 0 && d.type->isStructOrUnion() &&
+        !d.type->tag().empty() &&
+        overloadsOf(constructorKey(d.type->tag())) != nullptr) {
+        if (!d.qualifier.empty()) {
+            // Qualified, the class answers: `S H::m(4)` defines a static member
+            // only where H declares one - a member function's parameters may be
+            // class-scope typedefs the scan cannot see (`string::substr` was).
+            const Type *owner = findTypedef(d.qualifier);
+            constructionAhead = owner != nullptr && owner->isStructOrUnion() &&
+                                owner->findStaticMember(d.name) != nullptr;
+        } else {
+            const std::size_t save = at_;
+            at_++;
+            constructionAhead = !(peek().is(")") || atDeclarationStart());
+            at_ = save;
+        }
+    }
+
     // `int Counter::total = 0;` - a static member's definition. A member *function*'s
     // is spelled the same way up to here and told apart by the '(' that follows, which
     // is the same question the class body asks about a member.
-    if (!d.qualifier.empty() && !peek().is("(") && d.paramsAt == 0 &&
-        !d.type->isFunction()) {
+    if (!d.qualifier.empty() && (!peek().is("(") || constructionAhead) &&
+        d.paramsAt == 0 && !d.type->isFunction()) {
         // **`static` belongs to the declaration inside the class, not to this
         // definition** - [class.static.data]/2. At namespace scope the keyword
         // would give the object internal linkage, which the member it defines
@@ -269,19 +291,69 @@ void Parser::topLevel(Program &program) {
         return;
     }
 
-    if (!peek().is("(") && d.paramsAt == 0) {
+    if ((!peek().is("(") || constructionAhead) && d.paramsAt == 0) {
         for (;;) {
             if (mentionsDeduced(d.type))
                 d.type = deduceAuto(d.type, d.name, d.pos);
             if (d.type->isVoid()) src_.fail(d.pos, "'" + d.name + "' cannot have type void");
-            // A reference at file scope has to be bound before main runs,
-            // which is a whole mechanism - the same one static objects with
-            // constructors will need - and it is not here yet.
-            if (d.type->isReference())
-                src_.fail(d.pos, "'" + d.name + "' is a reference at file "
-                                 "scope, and binding one before main is not "
-                                 "supported yet - make it a local or a "
-                                 "pointer");
+            // **A reference at file scope** holds a pointer, so its storage is
+            // one; bound in the image where the initialiser is a global's
+            // address and in the init function otherwise.
+            if (d.type->isReference()) {
+                const std::string gname =
+                    (namespaceStack_.empty() || cLinkage_ > 0)
+                        ? d.name : namespacePrefix() + d.name;
+                GlobalSym *prev = findGlobalToUpdate(gname);
+                if (prev != nullptr && prev->type != d.type)
+                    src_.fail(d.pos, "'" + d.name + "' was already declared as '" +
+                                     prev->type->describe() + "', not '" +
+                                     d.type->describe() + "'");
+                const bool internal = internalLinkage(sc);
+                const std::string symbol = prev != nullptr
+                    ? prev->symbol : dataSymbol(gname, d.type, internal, d.pos);
+                const bool defines = !(sc == StorageExtern && !peek().is("="));
+                std::vector<GlobalPiece> pieces;
+                bool hasInit = false;
+                if (defines) {
+                    if (prev != nullptr && prev->emitted)
+                        src_.fail(d.pos, "'" + d.name + "' is defined twice");
+                    const FunctionState outer = enterInitFunction();
+                    bindStaticReference(d, symbol, pieces, hasInit, &dynInit_);
+                    leaveInitFunction(outer);
+                }
+                if (prev != nullptr) {
+                    if (defines) { prev->emitted = true; prev->hasInit = true; }
+                } else {
+                    globalIndex_[gname] = globals_.size();
+                    globals_.push_back(GlobalSym{ gname, symbol, d.type, false,
+                                                  defines, defines, false, 0 });
+                }
+                if (defines)
+                    program.globals.push_back(Global{ gname, symbol,
+                                                      types_.pointerTo(d.type->referent()),
+                                                      std::move(pieces), hasInit,
+                                                      internal, false });
+                if (!consume(",")) break;
+                d = declarator(base);
+                continue;
+            }
+
+            // **An array of a class with a constructor** at file scope: each
+            // element would need registering, and the destructor walk knows one
+            // object per entry. Refused by name rather than laid out as bytes.
+            {
+                const Type *elem = d.type;
+                while (elem->isArray()) elem = elem->pointee();
+                const Type *plain = elem->unqualified();
+                if (d.type->isArray() && plain->isStructOrUnion() &&
+                    !plain->tag().empty() && sc != StorageExtern &&
+                    overloadsOf(constructorKey(plain->tag())) != nullptr)
+                    src_.fail(d.pos, "'" + d.name + "' is an array of '" +
+                                     plain->describe() + "', which has a "
+                                     "constructor - an array with static "
+                                     "storage duration whose elements have a "
+                                     "constructor is not supported yet");
+            }
 
             // **A class with a constructor, at file scope.** This path had no test at
             // all, so the object was laid out as bytes and the constructor never ran.
@@ -294,11 +366,63 @@ void Parser::topLevel(Program &program) {
                                      "is not an aggregate and a braced list "
                                      "cannot initialise it - C++14 changed "
                                      "that rule and this compiler is C++11");
-                if (overloadsOf(constructorKey(d.type->tag())) != nullptr)
-                    src_.fail(d.pos, "'" + d.name + "' is at file scope and '" +
-                                     d.type->describe() + "' has a constructor "
-                                     "- running one before main is not "
-                                     "supported yet");
+                // **Built before main**, [basic.start.init]/2, in the init
+                // function and in declaration order; destroyed at exit in
+                // reverse. `extern S s;` alone declares and builds nothing.
+                if (overloadsOf(constructorKey(d.type->tag())) != nullptr &&
+                    sc != StorageExtern) {
+                    const std::string gname =
+                        (namespaceStack_.empty() || cLinkage_ > 0)
+                            ? d.name : namespacePrefix() + d.name;
+                    GlobalSym *prev = findGlobalToUpdate(gname);
+                    if (prev != nullptr &&
+                        prev->type->unqualified() != d.type->unqualified())
+                        src_.fail(d.pos, "'" + d.name + "' was already declared "
+                                         "as '" + prev->type->describe() +
+                                         "', not '" + d.type->describe() + "'");
+                    if (prev != nullptr && prev->emitted)
+                        src_.fail(d.pos, "'" + d.name + "' is defined twice");
+                    const bool internal = internalLinkage(sc) || d.type->isConst();
+                    const std::string symbol = prev != nullptr
+                        ? prev->symbol
+                        : dataSymbol(gname, d.type, internal, d.pos);
+                    // The Microsoft helper is scoped innermost first:
+                    // ??__Fmg@M@N@@YAXXZ for N::M::mg, measured.
+                    std::string helper;
+                    if (target_.microsoftNames()) {
+                        std::vector<std::string> parts;
+                        std::size_t from = 0;
+                        for (;;) {
+                            const std::size_t at = gname.find("::", from);
+                            parts.push_back(gname.substr(from, at == std::string::npos
+                                                               ? at : at - from));
+                            if (at == std::string::npos) break;
+                            from = at + 2;
+                        }
+                        std::string scoped;
+                        for (std::size_t i = parts.size(); i-- > 0; )
+                            scoped += parts[i] + "@";
+                        helper = atexitHelperName(scoped);
+                    }
+                    dynamicInitialise(d, symbol, helper, false);
+                    if (prev != nullptr) {
+                        prev->emitted = true;
+                        prev->hasInit = true;
+                    } else {
+                        globalIndex_[gname] = globals_.size();
+                        globals_.push_back(GlobalSym{ gname, symbol, d.type,
+                                                      d.type->isConst(), true,
+                                                      true, false, 0 });
+                    }
+                    // Not isConst: the constructor writes it, so it cannot
+                    // be laid down read-only.
+                    program.globals.push_back(Global{ gname, symbol, d.type,
+                                                      std::vector<GlobalPiece>(),
+                                                      false, internal, false });
+                    if (!consume(",")) break;
+                    d = declarator(base);
+                    continue;
+                }
             }
 
             std::vector<GlobalPiece> pieces;
@@ -1291,6 +1415,7 @@ Program Parser::parse() {
         defineImplicitFunctions();
         if (program.functions.size() == had) break;
     }
+    finishDynamicInit(program);
     if (program.functions.empty())
         src_.fail(0, "the file defines no functions");
     return program;

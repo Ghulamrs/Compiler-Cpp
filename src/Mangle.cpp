@@ -940,9 +940,12 @@ public:
             return;
         }
         type(u);
-        if (u->isPointer()) {
+        // A reference follows the pointer's rule, measured: `?r@@3AEAHEA`,
+        // `?cr@@3AEBHEB`, `?sr@@3AEAUS@@EA`.
+        if (u->isPointer() || u->isReference()) {
+            const Type *at = u->isPointer() ? u->pointee() : u->referent();
             out += 'E';
-            out += u->pointee()->isConst() ? 'B' : 'A';
+            out += at->isConst() ? 'B' : 'A';
             return;
         }
         out += t->isConst() ? "B" : "A";

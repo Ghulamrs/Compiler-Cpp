@@ -13,6 +13,15 @@
 StmtPtr Parser::constructLocal(const Declared &d, int offset,
                                std::vector<ExprPtr> args, bool copyInit,
                                bool valueInit) {
+    return constructObject(d, std::string(), offset, std::move(args), copyInit,
+                           valueInit);
+}
+
+// The same construction wherever the object lives: a frame slot, or a global
+// named by `symbol` - a static local, a file-scope object, a static member.
+StmtPtr Parser::constructObject(const Declared &d, const std::string &symbol,
+                                int offset, std::vector<ExprPtr> args,
+                                bool copyInit, bool valueInit) {
     checkNotAbstract(d.type, d.pos, "'" + d.name + "'");
     const std::string key = constructorKey(d.type->tag());
     const Signature &ctor = resolveOverload(key, args, d.pos);
@@ -35,9 +44,7 @@ StmtPtr Parser::constructLocal(const Declared &d, int offset,
                          (ctor.access == Access::Private ? "private" : "protected"));
 
     const Type *thisType = types_.pointerTo(d.type->unqualified());
-    ExprPtr object(Var::local(d.name, offset));
-    object->setType(d.type);
-    ExprPtr addr(new Unary('&', std::move(object)));
+    ExprPtr addr(new Unary('&', objectAt(d, symbol, offset)));
     addr->setType(thisType);
 
     std::vector<ExprPtr> all;
@@ -56,8 +63,7 @@ StmtPtr Parser::constructLocal(const Declared &d, int offset,
     // it.** A constructor somebody wrote is the whole of the initialisation; an
     // implicit one leaves the members it does not name, so `{}` zeroes first.
     if (valueInit && ctor.implicit) {
-        ExprPtr fresh(Var::local(d.name, offset));
-        fresh->setType(d.type);
+        ExprPtr fresh = objectAt(d, symbol, offset);
         if (ExprPtr chain = zeroChain(*fresh, d.type->unqualified())) {
             ExprPtr seq(new Comma(std::move(chain), std::move(call)));
             seq->setType(types_.get(Kind::Void));
@@ -1997,16 +2003,33 @@ void Parser::defineStaticMember(Declared &d, Program &program) {
             src_.fail(d.pos, "'" + d.qualifier + "::" + d.name + "' is defined "
                              "twice");
 
-    // **A static member of class type has to be constructed before main**, which is the
-    // mechanism a static local with a constructor needs and is not here yet. Refused
-    // where the storage is made. A class with no constructor is an aggregate.
+    // **A static member of class type is built before main** - [basic.start.init]
+    // - in the init function, under a guard where the class is a specialization
+    // so a second translation unit's copy does not build it twice.
     if (const Type *cls = memberClass(s->type))
         if (!cls->tag().empty() &&
-            overloadsOf(constructorKey(cls->tag())) != nullptr)
-            src_.fail(d.pos, "'" + d.qualifier + "::" + d.name + "' is a static "
-                             "member of '" + cls->tag() + "', which has a "
-                             "constructor - running one before main is not "
-                             "supported yet");
+            overloadsOf(constructorKey(cls->tag())) != nullptr) {
+            const std::string full = d.qualifier + "::" + d.name;
+            if (s->type->isArray())
+                src_.fail(d.pos, "'" + full + "' is a static member array of '" +
+                                 cls->tag() + "', which has a constructor - an "
+                                 "array with static storage duration whose "
+                                 "elements have a constructor is not "
+                                 "supported yet");
+            Declared m = d;
+            m.name = full;
+            m.type = s->type;
+            const std::string helper = target_.microsoftNames()
+                ? atexitHelperName(s->symbol + "@") : std::string();
+            dynamicInitialise(m, s->symbol, helper, owner->isSpecialization());
+            expect(";");
+            // Not isConst whatever the member says: the constructor writes it.
+            program.globals.push_back(Global{ full, s->symbol, s->type,
+                                              std::vector<GlobalPiece>(), false,
+                                              false, false });
+            program.globals.back().isInline = owner->isSpecialization();
+            return;
+        }
 
     std::vector<GlobalPiece> pieces;
     bool hasInit = false;

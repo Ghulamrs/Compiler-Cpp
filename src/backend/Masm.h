@@ -58,6 +58,7 @@ public:
     void dataBytes(const std::string &bytes) override;
 
     void predefine(const std::vector<std::string> &names) override;
+    void initialiserEntry(const std::string &fn, bool dsoHandle) override;
     void preamble(std::ostream &sink) override;
     void postamble(std::ostream &sink) override;
 

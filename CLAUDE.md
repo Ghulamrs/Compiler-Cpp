@@ -102,7 +102,7 @@ the source list in `msvc/build.cmd`.
 | `ParserExprCall.cpp` | arguments, defaults, by-value copies, member calls and their access checks |
 | `ParserExprLambda.cpp` | lambdas, closures, captures, the deduced return type |
 | `ParserExprNew.cpp` | `new`, `delete`, `throw`, and class temporaries |
-| `ParserInit.cpp` | initialisers, and the constant folding they need |
+| `ParserInit.cpp` | initialisers, the constant folding they need, and the objects built before main |
 | `ParserOperator.cpp` | one function per precedence level |
 | `ParserStmt.cpp` | statements, the top level, `parse()` |
 
@@ -6372,43 +6372,141 @@ parameter and a local against an enumerator, a member against a global reached
 directly and through both kinds of capture, a local against a member, a class
 enumerator against a global, and a local against a class enumerator.
 
-## Dynamic initialisation, the one thing four refusals are all waiting for
+## Dynamic initialisation, and the four refusals that were waiting for it
 
-**Not started, and scoped here so the next attempt begins from a measurement.**
-[basic.start.init]/2 runs the constructor of a namespace-scope object before
-`main`, and cxx1 runs none - which is one missing mechanism behind four
-separate refusals, each of which names it:
+**Landed 2026-09-06.** [basic.start.init]/2 runs the constructor of a
+namespace-scope object before `main`, and cxx1 ran none - one missing
+mechanism behind four refusals, each of which named it: a static local with
+a constructor, a static data member of class type, a file-scope object with a
+constructor, and a reference at file scope. All four are gone, and
+`rotrix_main.cpp` of the C++ Vector Exercise - whose
+`CRotrixConstants<Tag>::Identity3 = CRotrix()` is a static data member of
+class type - compiles and prints byte for byte what clang prints, as the other
+three programs already did.
 
-    src/parser/ParserStmt.cpp     a static local with a constructor
-    src/parser/ParserClass.cpp    a static data member of class type
-    src/parser/ParserTopLevel.cpp a file-scope object with a constructor
-    src/parser/ParserTopLevel.cpp a reference at file scope
+**Three parts, and the third was not optional.** The parser synthesises one
+function per file, `_GLOBAL__sub_I_<file>`, holding every construction in
+declaration order; `Program::initFunction` carries its name the way `thrown`
+and `rtti` carry their lists. Each backend registers it in the section its
+runtime walks. And each object's destruction is registered the moment its
+constructor returns - [basic.start.term], reverse order of completion -
+without which every such object leaks, which `tests/cases/lifetime.h` sees.
 
-**Three parts, and the second is why this is a rung and not a fix.**
+**The registration was measured on every target before it was written**, and
+the Windows half was not what it had been claimed to be:
 
-*The parser* synthesises a function holding the constructions in declaration
-order and stops refusing at those four sites. `Program` needs a field for it;
-`thrown` and `rtti` are the precedent, both being lists one backend reads.
+    x86_64-linux    .section .init_array,"aw",@init_array   .quad fn
+                    __cxa_atexit(&D1, &object, &__dso_handle), .hidden __dso_handle
+    arm64-darwin    .section __DATA,__mod_init_func,mod_init_funcs   .quad _fn
+                    ___cxa_atexit, the same three arguments
+    x86_64-windows  .section .CRT$XCU,"dr",unique,0   .quad fn     (GNU syntax)
+                    .CRT$XCU SEGMENT READONLY ALIGN(8) 'DATA' / DQ fn / ENDS  (MASM)
+                    atexit(&??__F<name>@@YAXXZ), a helper per object that calls
+                    the destructor - not __cxa_atexit, which that CRT does not have
 
-*The three backends* get it run, and each spells it differently: `.init_array`
-on ELF, `__mod_init_func` on Mach-O, `.CRT$XCU` on Windows. Measure each
-against clang or cl before writing it, as every other ABI answer here was.
+cl's own listing writes `CRT$XCU SEGMENT` and `DQ FLAT:`, neither of which
+ml64 takes - the fourth time its listing has shown what cl means rather than
+what assembles, after `.pdata`, `.text$x` and `FLAT:`. The spelling above was
+run on the box through `tools/windows/asm-run.cmd` before anything depended on
+it: `init` printed before `main`.
 
-*Destruction* is [basic.start.term], in reverse, through `__cxa_atexit`.
-Not optional and not a later step: without it every such object leaks, and
-`tests/cases/lifetime.h` now catches exactly that.
+**The helper's name was measured too**, because it is a symbol another object
+could see: `??__Fg1@@YAXXZ` for a plain global, `??__Fmg@M@N@@YAXXZ` for one
+in `N::M`, `??__F?member@H@@2US@@A@@YAXXZ` for a static member - the object's
+whole symbol as one component - and `??__Floc@?1??f@@YAHXZ@YAXXZ` for a static
+local. `atexitHelperName` builds all four from one rule.
 
-**The shortcut to refuse: calling the init function from the top of `main`.**
-One place instead of three, and it would make a program work tonight. It is
-also wrong - initialisation would happen after another translation unit's, and
-after anything the runtime starts before `main` - and it would look like
-success. That is the shape of defect this compiler's whole method exists to
-find, so it is not the way in.
+**The construction is the local path's construction, into a different
+object.** `readConstructorInitialiser` is the initialiser reading factored
+out of `declarationBody` - `(args)`, `= expr`, `{}`, `= {}`, a braced list for
+an `initializer_list` constructor, the conversion-function step, the
+`explicit` and deleted-copy checks - and `constructObject` is `constructLocal`
+told which object to build, a frame slot or a symbol. So a static local, a
+file-scope object and a static member take exactly the forms a local takes and
+are refused exactly the forms it refuses. What a file-scope object does not
+get is copy elision: `S g = S(2);` builds the temporary and copies, which
+C++11 permits, and a case that counts constructions must not include it.
 
-**What it unblocks**, beyond the four refusals: `rotrix_main.cpp` of the C++
-Vector Exercise, whose `CRotrixConstants<Tag>::Identity3 = CRotrix()` is a
-static data member of class type. The other three of that exercise's four
-programs compile and print byte-for-byte what clang prints.
+**The init function is entered the way every other re-entry door is.**
+`enterInitFunction` captures the whole `FunctionState`, clears it, and puts
+the init function's frame in its place; `leaveInitFunction` takes the frame
+back out, moves the guard slots made inside - not part of the state struct -
+and restores the token index the restore would otherwise rewind. Every
+construction at file scope, and every reference bound there, happens inside
+that pair, so a temporary in an initialiser gets a slot of the right frame
+and is destroyed at the end of its full expression.
+
+**`S g(1);` at file scope was a prototype until this.** A name followed by
+`(` at file scope went to the function branch before anything asked what the
+type was, so `S g1(1);` was "expected a type" at the `1`. The question is the
+one the local path asks - a parameter list is empty or begins with a type -
+and it had to be asked *three* ways: unqualified at file scope by that scan;
+qualified, `S H::m(4)`, by whether the class declares a static data member of
+that name, because a member function's parameters may be class-scope typedefs
+the scan cannot see (`string substr(size_type pos, ...)` inside
+`std::string` was read as a static member for ten minutes, and every program
+including `<string>` stopped); and in a template's out-of-line definition,
+`template <class T> S K<T>::m(4);`, by the same scan inside the pattern read,
+where the class's members are not yet known.
+
+**[stmt.dcl]/4 is the other rule, and it is not this one.** A static local
+is built the first time control passes through, under the ABI's guard:
+`__cxa_guard_acquire` / `__cxa_guard_release` around the constructor on the
+Itanium targets, `_Init_thread_header` / `_Init_thread_footer` on Windows,
+with the guard at -1 while this thread builds - both measured from clang and
+cl. The Windows form skips cl's TLS epoch fast path and lets the header
+answer every time, which behaves identically and is recorded in
+`docs/CONFORMANCE.md`. Neither form has the landing pad that would call
+`__cxa_guard_abort` or `_Init_thread_abort` if the constructor threw - the
+same cleanup-region gap a `try` beside a destructible local has, recorded
+there too.
+
+**A template's static member is unordered and shared.** Every translation
+unit that instantiates it defines it, so the object is weak and a weak guard
+beside it keeps a second copy from building it again - `_ZGV` plus the name,
+clang's own shape, on the Itanium targets; `<symbol>$guard` on Windows, where
+clang and cl use a COMDAT initialiser function ml64 cannot express. Weak
+writable data turned out to need two spellings the tree did not have:
+`.weak_definition` in `__DATA,__data` with `.space` on Mach-O, where a
+`.zerofill` cannot be weak and `.weak_def_can_be_hidden` would give each unit
+its own object; and `.section .bss,"bw",discard` on COFF, where
+`weakDefinition` had only ever opened `.rdata` - a guard in read-only memory
+faults on its first store. Both measured from clang.
+
+**A reference at file scope is a slot holding an address.** `&global` goes
+into the image as a relocation, exactly as clang does for a constant
+initialiser; anything else is bound in the init function, and a temporary is
+refused by name because it would need static storage of its own. Reading one
+had never been exercised - `globalRef` handed back the reference type unlowered
+and `f() + ref` was "cannot be combined" - and neither had naming one on the
+Microsoft ABI: `?r@@3AEAHEA`, `?cr@@3AEBHEB`, `?sr@@3AEAUS@@EA`, the pointer's
+rule with the E and the referent's const repeated, which `dataType` now
+follows for a reference too.
+
+**The ledger case had to register its own report first.** A destructor
+registered before `main` runs *after* an `atexit` handler registered in
+`main`, the two being one list read backwards, so `lfWatch()` as the first
+statement of `main` would report every static object still alive. The
+watcher is the first object in the file and registers the report from its
+constructor; that is [basic.start.term]/3 doing what it says, and clang prints
+the same line. `dynamic-init.cpp` is that case, `static-local-constructor.cpp`
+the block-scope one, `dynamic-init-reference.cpp` both kinds of reference,
+`template-static-data-member-ctor.cpp` the unblocked shape, and
+`global-constructor.cpp` the file-scope refusal turned round. All five print
+what clang prints on the Mac and on the Windows box, MASM assembled and run
+there through `asm-run.cmd`.
+
+**Found beside it and left alone: a statement that begins with a template-id
+is read as a declaration.** `Consts<Tag1>::Named.v = 1;` fails where
+`CNeeds<(N==3)>::check();` works, because only a `(` after the member was
+taught to `atDeclarationStart`. The case reaches the member through a
+reference instead and says so.
+
+**What is still refused, by name:** an array with static storage duration
+whose elements have a constructor - at file scope, as a static local, as a
+static member - since each element would need its own registration and the
+destructor walk knows one object per entry; and a static-duration reference
+bound to a temporary.
 
 ## The object ledger, because printing cannot show a leak
 

@@ -488,7 +488,8 @@ private:
                                         const std::vector<long long> &values,
                                         std::string *name,
                                         std::string *qualifier = nullptr,
-                                        const std::vector<std::vector<const Type *> > *packs = nullptr);
+                                        const std::vector<std::vector<const Type *> > *packs = nullptr,
+                                        bool *construction = nullptr);
     // What a binding does to the two name tables, and how to put them back.
     struct Shadow {
         std::string name;
@@ -621,7 +622,8 @@ private:
     // function template, or a member of a class template defined outside it.
     // `qualifier` is the class for that last one and empty otherwise.
     std::string templatedName(const std::vector<TemplateParam> &params,
-                              bool *isClass, std::string *qualifier);
+                              bool *isClass, std::string *qualifier,
+                              bool *construction = nullptr);
     // `sawInit`, when given, says the declaration ended at a `;` having passed
     // an `=` at depth zero - which is a static data member of a class template
     // being *defined* out of line, not a member left undefined.
@@ -1114,6 +1116,67 @@ private:
     StmtPtr constructLocal(const Declared &d, int offset,
                            std::vector<ExprPtr> args, bool copyInit = false,
                            bool valueInit = false);
+    // The same construction into an object named by `symbol` when one is
+    // given and by a frame slot otherwise - a static local, a file-scope
+    // object and a static data member are the first kind.
+    StmtPtr constructObject(const Declared &d, const std::string &symbol,
+                            int offset, std::vector<ExprPtr> args,
+                            bool copyInit, bool valueInit);
+    ExprPtr objectAt(const Declared &d, const std::string &symbol, int offset);
+
+    // **What a class with constructors is initialised from** - `(args)`,
+    // `= expr`, `{}`, `= {}`, or a braced list for an initializer_list
+    // constructor - shared by every storage duration, so it is written once.
+    struct CtorInit {
+        std::vector<ExprPtr> args;
+        std::vector<StmtPtr> ilSetup;
+        bool copyInit = false;
+        bool valueInit = false;
+        bool listInit = false;
+        // A same-class source and no copy constructor: the bytes are asked for.
+        bool trivialCopy = false;
+    };
+    CtorInit readConstructorInitialiser(const Declared &d);
+
+    // **Dynamic initialisation** - [basic.start.init]/2 and [stmt.dcl]/4. The
+    // statements of _GLOBAL__sub_I_<file>, its frame and its guards, built as
+    // objects are met; parse() makes them one function the backends register.
+    std::vector<StmtPtr> dynInit_;
+    int dynInitFrame_ = 0;
+    std::vector<int> dynInitGuards_;
+    std::string initFunctionSymbol() const;
+    // Everything below runs inside the init function's frame. The state
+    // struct is what every other re-entry door saves, and this is one more.
+    FunctionState enterInitFunction();
+    void leaveInitFunction(const FunctionState &outer);
+    void finishDynamicInit(Program &program);
+    // The construction of a class object with static storage duration and its
+    // destructor's registration, in the frame in force: [basic.start.term]
+    // through __cxa_atexit, or atexit and a helper on the Microsoft ABI.
+    std::vector<StmtPtr> buildStaticConstruction(const Declared &d,
+                                                 const std::string &symbol,
+                                                 const std::string &helper);
+    void registerDestruction(const Declared &d, const std::string &symbol,
+                             const std::string &helper,
+                             std::vector<StmtPtr> &into);
+    std::string atexitHelperName(const std::string &object) const;
+    ExprPtr functionAddress(const std::string &symbol, const Type *fnType);
+    // A file-scope object with a constructor, and a static data member of one.
+    void dynamicInitialise(const Declared &d, const std::string &symbol,
+                           const std::string &helper, bool once);
+    // [stmt.dcl]/4: a static local's construction, run the first time control
+    // passes through it, under the ABI's own guard.
+    StmtPtr guardOnce(const std::string &symbol, std::vector<StmtPtr> body);
+    // Where guardSlots_ stood when the init function's frame was entered.
+    std::size_t initGuardMark_ = 0;
+    void staticLocalWithConstructor(const Declared &d,
+                                    std::vector<StmtPtr> &inits);
+    std::string uniqueStaticSymbol(const std::string &name);
+    // A reference with static storage duration: bound statically where the
+    // initialiser is the address of a global, and before main otherwise.
+    void bindStaticReference(const Declared &d, const std::string &symbol,
+                             std::vector<GlobalPiece> &pieces, bool &hasInit,
+                             std::vector<StmtPtr> *into);
 
     // A static data member: declared inside the class, defined outside it,
     // and reached by all three of `C::n`, `obj.n` and `p->n`.

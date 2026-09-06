@@ -1644,7 +1644,9 @@ ExprPtr Parser::globalRef(const std::string &name) {
         v->setReadOnly(g->isConst);
         ExprPtr n(v);
         n->setType(g->type);
-        return n;
+        // A reference at file scope is a slot holding an address, as a local
+        // one is, so a mention of it is a dereference of the slot.
+        return useReference(std::move(n));
     }
     return nullptr;
 }

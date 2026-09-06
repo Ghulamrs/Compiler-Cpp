@@ -119,7 +119,8 @@ void Parser::templateParameters(std::vector<TemplateParam> &params) {
 // template's is read straight off the keyword; **a function template's sits behind
 // a return type that mentions the parameters**, so `T` denotes a stand-in first.
 std::string Parser::templatedName(const std::vector<TemplateParam> &params,
-                                  bool *isClass, std::string *qualifier) {
+                                  bool *isClass, std::string *qualifier,
+                                  bool *construction) {
     qualifier->clear();
     if (peek().is("struct") || peek().is("class") || peek().is("union")) {
         if (peekAt(1).kind != TokenKind::Ident)
@@ -142,7 +143,8 @@ std::string Parser::templatedName(const std::vector<TemplateParam> &params,
                          ? types_.templateParam(static_cast<int>(i))
                          : params[i].type;
     std::string name;
-    readTemplateDeclaration(scratch, binding, values, &name, qualifier);
+    readTemplateDeclaration(scratch, binding, values, &name, qualifier, nullptr,
+                            construction);
     if (name.empty())
         src_.fail(peek().pos, "this function template has no name");
     return name;
@@ -254,7 +256,8 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
                                             const std::vector<long long> &values,
                                             std::string *name,
                                             std::string *qualifier,
-                                            const std::vector<std::vector<const Type *> > *packs) {
+                                            const std::vector<std::vector<const Type *> > *packs,
+                                            bool *construction) {
     const std::size_t resume = at_;
     // **Put back even if this throws.** Forming a signature is what a trial runs,
     // and a failed one must leave the parameter names unbound for the next
@@ -283,7 +286,21 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
     // **The declarator records where the parameter list is and does not read it**,
     // which is how a definition gets to read the parameters once with their names.
     // Here there is none, so they are read for their types as a prototype's are.
-    if (d.paramsAt != 0 || peek().is("(")) {
+    bool constructs = false;
+    // `S K<T>::m(4);` - a static member defined out of line by a construction,
+    // told from a parameter list as file scope tells them: a list is empty or
+    // begins with a type.
+    if (qualifier != nullptr && !d.qualifier.empty() && d.paramsAt == 0 &&
+        peek().is("(") && d.type->isStructOrUnion() &&
+        !d.type->tag().empty() &&
+        overloadsOf(constructorKey(d.type->tag())) != nullptr) {
+        const std::size_t save = at_;
+        at_++;
+        constructs = !(peek().is(")") || atDeclarationStart());
+        at_ = save;
+    }
+    if (construction != nullptr) *construction = constructs;
+    if (!constructs && (d.paramsAt != 0 || peek().is("("))) {
         if (d.paramsAt != 0) at_ = d.paramsAt;
         std::vector<const Type *> params;
         bool variadic = false;
@@ -424,7 +441,8 @@ bool Parser::templateDeclaration() {
 
     std::string qualifier;
     decl.classKey = peek().is("class");
-    decl.name = templatedName(decl.params, &decl.isClass, &qualifier);
+    bool constructs = false;
+    decl.name = templatedName(decl.params, &decl.isClass, &qualifier, &constructs);
     // Where it was written, for the manglers - the table's key stays bare.
     decl.ns = namespacePrefix();
     at_ = decl.afterParams;
@@ -448,7 +466,7 @@ bool Parser::templateDeclaration() {
         // A static data member defined out of line has an initialiser and no
         // body, and is a definition all the same - the only thing a qualified
         // declaration at namespace scope can be.
-        if (!defined && !sawInit)
+        if (!defined && !sawInit && !constructs)
             src_.fail(decl.pos, "'" + of->templateName() + "::" + decl.name +
                                 "' is declared here and not defined - a member "
                                 "is declared inside its class");
@@ -456,7 +474,7 @@ bool Parser::templateDeclaration() {
         ool.start = decl.afterParams;
         ool.member = decl.name;
         ool.destructor = !decl.name.empty() && decl.name[0] == '~';
-        ool.isData = !defined && sawInit;
+        ool.isData = !defined && (sawInit || constructs);
         owner->second.outOfLine.push_back(ool);
         return true;
     }

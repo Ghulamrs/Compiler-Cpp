@@ -1,0 +1,14 @@
+S1
+S2
+S3
+S4
+S5
+S7
+main 1 2 3 4 5 60 7 80
+~S77
+~S5
+~S4
+~S33
+~S2
+~S11
+LEDGER built=6 gone=6 live=0 double=0 phantom=0 over=0 lost=0

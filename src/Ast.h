@@ -696,4 +696,10 @@ struct Program {
     // needs no such list because its type_info is an ordinary global the parser
     // can push as it goes.
     std::vector<const Type *> rtti;
+    // **The function that runs before main** - [basic.start.init]/2 - holding
+    // this file's dynamic initialisation in declaration order. Empty where the
+    // file has none; each backend registers it in its own section.
+    std::string initFunction;
+    // Whether it names __dso_handle, which ELF wants declared hidden.
+    bool usesDsoHandle = false;
 };

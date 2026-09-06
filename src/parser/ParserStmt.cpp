@@ -105,8 +105,10 @@ StmtPtr Parser::declarationBody() {
                 overloadsOf(constructorKey(plain->tag())) != nullptr) {
                 if (sc == StorageStatic)
                     src_.fail(d.pos, "'" + d.name + "' is static and its "
-                                     "elements have a constructor - running one "
-                                     "before main is not supported yet");
+                                     "elements have a constructor - an array "
+                                     "with static storage duration whose "
+                                     "elements have a constructor is not "
+                                     "supported yet");
                 if (peek().is("(") || peek().is("="))
                     src_.fail(d.pos, "an initialiser for an array of '" +
                                      plain->describe() + "' is not supported "
@@ -136,136 +138,21 @@ StmtPtr Parser::declarationBody() {
 
         if (d.type->isStructOrUnion() && !d.type->tag().empty() &&
             overloadsOf(constructorKey(d.type->tag())) != nullptr) {
-            if (sc == StorageStatic)
-                src_.fail(d.pos, "'" + d.name + "' is static and has a "
-                                 "constructor - running one before main is not "
-                                 "supported yet");
-            // **`C c{};` and `C c = {};` value-initialise.** [dcl.init]/11 sends
-            // an empty list to /8, which is the default constructor - and the
-            // zeroing before it that `constructLocal` puts in for an implicit one.
-            bool valueInit = false;
-            bool valueInitCopied = false;
-            if ((peek().is("{") && peekAt(1).is("}")) ||
-                (peek().is("=") && peekAt(1).is("{") && peekAt(2).is("}"))) {
-                // `= {}` is copy-initialisation and `{}` is not, which is the
-                // whole difference an `explicit` default constructor makes.
-                valueInitCopied = consume("=");
-                expect("{");
-                expect("}");
-                valueInit = true;
+            // [stmt.dcl]/4: a static one is built the first time control
+            // passes through, under a guard, and destroyed at exit.
+            if (sc == StorageStatic) {
+                staticLocalWithConstructor(d, inits);
+                continue;
             }
-
-            std::vector<ExprPtr> args;
-            bool copyInit = valueInitCopied;
-            std::vector<StmtPtr> ilSetup;
-            bool listInit = false;
-
-            // **A braced initialiser, and the answers it has.** A class with an
-            // initializer_list constructor takes the braces as a list -
-            // [over.match.list] - which becomes a backing array and the list
-            // over it. [dcl.init.aggr]/1 in C++11 makes a class with a member
-            // initialiser no aggregate; where it wrote none and has no
-            // initializer_list constructor, the braces are refused.
-            if (peek().is("{") || (peek().is("=") && peekAt(1).is("{"))) {
-                const Type *ilType = nullptr;
-                const Signature *ilCtor =
-                    initializerListConstructor(d.type->unqualified(), &ilType);
-                if (ilCtor != nullptr) {
-                    consume("=");
-                    Init in = parseInitialiser();
-                    args.push_back(buildInitializerList(ilType, in, d.pos, ilSetup));
-                    copyInit = true;
-                    listInit = true;
-                } else if (hasMemberInitialiser(d.type->tag())) {
-                    src_.fail(d.pos, "'" + d.type->describe() + "' writes an "
-                                     "initialiser on a member, so in C++11 it "
-                                     "is not an aggregate and a braced list "
-                                     "cannot initialise it - C++14 changed "
-                                     "that rule and this compiler is C++11. "
-                                     "Give the class a constructor, or take "
-                                     "the member initialiser off");
-                } else {
-                    src_.fail(d.pos, "list-initialisation - '" + d.name +
-                                     "{...}' calling a constructor - is not "
-                                     "supported yet unless the class has an "
-                                     "initializer_list constructor; write the "
-                                     "arguments in parentheses");
-                }
-            }
-            // **A braced list written as the argument**, `Row r({1, 2})`.
-            // [dcl.init]/16 makes this a direct-initialisation whose one
-            // argument is a braced-init-list, and [over.match.list] then picks
-            // the initializer_list constructor - the same one `Row r{1, 2}`
-            // reaches, written the other way. Handled here, where the target
-            // type is known: an argument's type is not known until a candidate
-            // is chosen, so parseArguments cannot build one on its own, and
-            // the braces reached it as an expression and were refused.
-            if (!listInit && peek().is("(") && peekAt(1).is("{")) {
-                const Type *ilType = nullptr;
-                if (initializerListConstructor(d.type->unqualified(), &ilType)
-                        != nullptr) {
-                    at_++;                       // the '('
-                    Init in = parseInitialiser();
-                    args.push_back(buildInitializerList(ilType, in, d.pos,
-                                                        ilSetup));
-                    expect(")");
-                    listInit = true;
-                }
-            }
-            if (!listInit && consume("(")) {
-                if (peek().is(")"))
-                    src_.fail(d.pos, "'" + d.name + "()' declares a function "
-                                     "taking nothing and returning '" +
-                                     d.type->describe() + "' - C++ reads it that "
-                                     "way and not as a construction. Write '" +
-                                     d.type->describe() + " " + d.name +
-                                     ";' for the default constructor");
-                parseArguments(args);
-            } else if (consume("=")) {
-                // **Copy-initialisation.** `X b = a;` is a constructor called with one
-                // argument, chosen by the ordinary overload rules. What separates it
-                // from `X b(a);` is that an `explicit` constructor may not be picked.
-                copyInit = true;
-                args.push_back(assign());
-            }
-
-            // **One argument of another class that converts to this one through
-            // a conversion function** becomes a T here - [over.ics.user], and
-            // for `T t(v)` an explicit one too, [over.match.copy]/1.
-            if (!listInit && !valueInit)
-                convertThroughConversionFunction(args, d.type, !copyInit, d.pos);
-
-            // **An elided copy still needs a copy constructor that may be chosen.**
-            // [class.copy]/31 selects and checks it even where the copy itself is
-            // elided. Checked here: both branches below reach past `constructLocal`.
-            if (copyInit && args.size() == 1 && args[0]->type() != nullptr &&
-                args[0]->type()->unqualified() == d.type->unqualified()) {
-                // The constructor the rule checks is the one resolution would pick:
-                // the move for a source that is not an lvalue and has one, the copy
-                // otherwise. An explicit copy beside a plain move does not bite.
-                const Signature *mc = moveConstructorOf(d.type->unqualified());
-                const Signature *sel = !isLvalue(*args[0]) && mc != nullptr
-                                     ? mc
-                                     : copyConstructorOf(d.type->unqualified());
-                if (sel != nullptr && sel->isExplicit)
-                    src_.fail(d.pos, "'" + d.type->describe() + "' has an "
-                                     "'explicit' " +
-                                     (sel == mc ? "move" : "copy") +
-                                     " constructor, so it "
-                                     "will not be chosen for '" + d.name +
-                                     " = ...' - write '" +
-                                     d.type->describe() + " " + d.name +
-                                     "(...)'. The copy may well be elided, "
-                                     "and the rule is checked all the same");
-            }
+            CtorInit ci = readConstructorInitialiser(d);
 
             int off = declare(d.name, d.type, d.pos);
             locals_.back().guardsJump = true;
 
             // The backing array and the list object, before the constructor
             // that reads them - a list-init only.
-            for (std::size_t z = 0; z < ilSetup.size(); z++)
-                inits.push_back(std::move(ilSetup[z]));
+            for (std::size_t z = 0; z < ci.ilSetup.size(); z++)
+                inits.push_back(std::move(ci.ilSetup[z]));
 
             // **Copy elision, in the one case worth having it**: where the initialiser
             // is a call already returning through a hidden pointer, the object is built
@@ -275,47 +162,24 @@ StmtPtr Parser::declarationBody() {
             // class of plain members with a `~T` is copied by bytes and then
             // destroyed twice, once per object. clang elides it at -O0 and so
             // does this now.
-            Call *made = args.size() == 1 &&
+            Call *made = ci.args.size() == 1 &&
                          (d.type->nonTrivialCopy() ||
                           destructorOf(d.type) != nullptr)
-                       ? dynamic_cast<Call *>(args[0].get()) : nullptr;
-
-            // **A trivial copy, in a class that does have constructors** - none was
-            // declared for it and the standard asks for the bytes. **But a class that
-            // declares a move has no trivial copy**, and reading it so copied one.
-            const Signature *mover = moveConstructorOf(d.type->unqualified());
-            const bool sameClass =
-                args.size() == 1 && args[0]->type() != nullptr &&
-                args[0]->type()->unqualified() == d.type->unqualified();
-            // An lvalue is what the deleted copy would be asked to take; an
-            // xvalue moves, and so does a prvalue - `S d = make();` is a
-            // temporary and the move constructor is exactly what it is for.
-            if (mover != nullptr && sameClass && isLvalue(*args[0]) &&
-                copyConstructorOf(d.type->unqualified()) == nullptr)
-                src_.fail(d.pos, "'" + d.type->describe() + "' declares a move "
-                                 "constructor, so its copy constructor is "
-                                 "deleted and '" + d.name + "' cannot be built "
-                                 "from an lvalue - write 'static_cast<" +
-                                 d.type->describe() + " &&>(...)' to move out "
-                                 "of it, or give the class a copy constructor");
-
-            const bool trivialCopy =
-                sameClass && mover == nullptr &&
-                copyConstructorOf(d.type->unqualified()) == nullptr;
+                       ? dynamic_cast<Call *>(ci.args[0].get()) : nullptr;
 
             if (made != nullptr && made->type() == d.type &&
                 returnsIndirectly(d.type, made->hasThis())) {
                 claimCallResult(*made, off);
-                inits.push_back(StmtPtr(new ExprStmt(std::move(args[0]))));
-            } else if (trivialCopy) {
+                inits.push_back(StmtPtr(new ExprStmt(std::move(ci.args[0]))));
+            } else if (ci.trivialCopy) {
                 ExprPtr target(Var::local(d.name, off));
                 target->setType(d.type);
-                ExprPtr store(new Assign(std::move(target), std::move(args[0])));
+                ExprPtr store(new Assign(std::move(target), std::move(ci.args[0])));
                 store->setType(d.type);
                 inits.push_back(StmtPtr(new ExprStmt(std::move(store))));
             } else {
-                inits.push_back(constructLocal(d, off, std::move(args), copyInit,
-                                               valueInit));
+                inits.push_back(constructLocal(d, off, std::move(ci.args),
+                                               ci.copyInit, ci.valueInit));
             }
             flushTemporaries(inits);
             if (destructorOf(d.type) != nullptr)
@@ -371,10 +235,23 @@ StmtPtr Parser::declarationBody() {
             continue;
         }
         if (d.type->isReference()) {
-            if (sc == StorageStatic)
-                src_.fail(d.pos, "'" + d.name + "' is a static reference, and "
-                                 "that needs the binding to happen once before "
-                                 "main - not supported yet");
+            // [stmt.dcl]/4 again: bound once, statically where the initialiser
+            // is a global's address and under a guard otherwise.
+            if (sc == StorageStatic) {
+                const std::string symbol = uniqueStaticSymbol(d.name);
+                std::vector<GlobalPiece> pieces;
+                bool hasInit = false;
+                std::vector<StmtPtr> body;
+                bindStaticReference(d, symbol, pieces, hasInit, &body);
+                declareStaticLocal(d.name, d.type, d.pos, symbol);
+                current_->globals.push_back(Global{ symbol, symbol,
+                                                    types_.pointerTo(d.type->referent()),
+                                                    std::move(pieces), hasInit,
+                                                    true, false });
+                if (!body.empty())
+                    inits.push_back(guardOnce(symbol, std::move(body)));
+                continue;
+            }
             if (!peek().is("="))
                 src_.fail(d.pos, "'" + d.name + "' is a reference and has to be "
                                  "initialised here - there is no later "
@@ -402,15 +279,7 @@ StmtPtr Parser::declarationBody() {
         checkNotAbstract(d.type, d.pos, "'" + d.name + "'");
 
         if (sc == StorageStatic) {
-            std::string symbol = functionName_ + "." + d.name;
-            for (int n = 1; ; n++) {
-                bool taken = false;
-                for (const std::string &used : staticSymbols_)
-                    if (used == symbol) { taken = true; break; }
-                if (!taken) break;
-                symbol = functionName_ + "." + d.name + "." + std::to_string(n);
-            }
-            staticSymbols_.push_back(symbol);
+            const std::string symbol = uniqueStaticSymbol(d.name);
             std::vector<GlobalPiece> pieces;
             bool hasInit = false;
             if (consume("=") || atBracedInitialiser(d.name)) {

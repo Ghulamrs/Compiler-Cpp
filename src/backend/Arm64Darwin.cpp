@@ -925,8 +925,19 @@ void Arm64Darwin::emitGlobal(const Global &g, Segment seg) {
     int size = g.type->size(target_);
     int p2 = p2AlignOf(objectAlign(g.type, target_));
     if (!g.isStatic) out_ << "  .globl _" << g.symbol << "\n";
-    if (g.isInline) out_ << "  .weak_def_can_be_hidden _" << g.symbol << "\n";
+    // A writable weak object is one object across the program - a template's
+    // static member - so it may not be hidden per unit; clang writes
+    // `.weak_definition` for it, in __data with `.space` rather than zerofill.
+    const bool writable = seg == Segment::Data || seg == Segment::Bss;
+    if (g.isInline)
+        out_ << (writable ? "  .weak_definition _" : "  .weak_def_can_be_hidden _")
+             << g.symbol << "\n";
 
+    if (seg == Segment::Bss && g.isInline) {
+        out_ << "  .section __DATA,__data\n  .p2align " << p2 << "\n_"
+             << g.symbol << ":\n  .space " << size << "\n";
+        return;
+    }
     if (seg == Segment::Bss) {
         out_ << "  .zerofill __DATA,__bss,_" << g.symbol << ","
              << size << "," << p2 << "\n";
@@ -1186,6 +1197,10 @@ void Arm64Darwin::run(const Program &program) {
 
     emitData(program);
     for (const Function &fn : program.functions) emitFunction(fn);
+    // Measured from clang: the init function's address in __mod_init_func.
+    if (!program.initFunction.empty())
+        out_ << "  .section __DATA,__mod_init_func,mod_init_funcs\n"
+                "  .p2align 3, 0x0\n  .quad _" << program.initFunction << "\n";
     if (const Source *src = lineSource()) {
         for (const Global &g : program.globals) {
             DwarfGlobal dg;

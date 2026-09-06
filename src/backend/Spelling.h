@@ -139,6 +139,11 @@ public:
     // nobody emitted. The generator knows once the body is walked.
     virtual void noteHasEh(bool yes) { (void)yes; }
 
+    // **Where the init function is registered** so the runtime calls it before
+    // main - [basic.start.init]/2: .init_array on ELF, .CRT$XCU on COFF, both
+    // measured. `dsoHandle` says __cxa_atexit is handed __dso_handle.
+    virtual void initialiserEntry(const std::string &fn, bool dsoHandle) = 0;
+
     // How a label is written where a *table* names it, rather than a jump.
     // Identity everywhere but COFF, where a temporary cannot carry a
     // relocation - see CoffSpelling::sym.
@@ -178,6 +183,7 @@ public:
     void zero(int n) override;
     void dataInt(int size, long long v) override;
     void dataSym(const std::string &s, long long off) override;
+    void initialiserEntry(const std::string &fn, bool dsoHandle) override;
 
 protected:
     // How a symbol is written. Identity for GNU-as on ELF and Mach-O.
@@ -221,6 +227,7 @@ public:
     void prologue(int frameSize, const std::string &lsda) override;
     void functionEnd(const std::string &name) override;
     void noteHasEh(bool yes) override { hasEh_ = yes; }
+    void initialiserEntry(const std::string &fn, bool dsoHandle) override;
 
     std::string labelText(const std::string &l) const override { return sym(l); }
 
