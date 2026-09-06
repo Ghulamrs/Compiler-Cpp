@@ -6413,56 +6413,68 @@ recorded in `docs/CONFORMANCE.md`, it is R1's neighbour rather than part of it,
 and reversing that order changes how every unqualified name in a namespace
 resolves - which wants a round of its own.
 
-## A default template argument, and a crash on one target only
+## A string literal's length, and a crash on one target only
 
-**Not fixed. Characterised here so the next attempt starts from the bisect
-rather than from the program.** `matrix_main.cpp` of the C++ Vector Exercise
-compiles and runs correctly on arm64-darwin and x86_64-linux and dies on
-x86_64-windows with 0xC0000005. cl's own build of the same file runs, so it is
-cxx1's code generation for that target.
+**Not fixed. Characterised here, and the first version of this section was
+wrong in a way worth keeping.** `matrix_main.cpp` of the C++ Vector Exercise
+runs correctly on arm64-darwin and x86_64-linux and dies on x86_64-windows with
+0xC0000005. cl's own build of the same file runs, so it is cxx1's code
+generation for that target.
 
-**One line.** Truncating `main` and running each cut on the box pins it:
+**What it is.** The crash tracks the *length of the source file's name*, which
+reaches the program only through `assert`'s `__FILE__`. Compiling identical
+source under different names:
 
-```cpp
-415   assert(approxEqual(written, cross(a, b)));             // exit 0
-416   assert((approxEqual((CMatrix<>)a * b, cross(a, b))));   // 0xC0000005
-```
+    name length   9  exit 0        13  0xC0000005
+                 10  0xC0000005    14  exit 0
+                 11  exit 0        15  exit 0
+                 12  exit 0        16  exit 0
 
-`CMatrix` is `template <int M = 3, int N = M>`, so `CMatrix<>` is `CMatrix<3,3>`
-with **both arguments defaulted and the second naming the first**. The same
-conversion spelled out - `(CMatrix<3,3>)a`, line 414 - runs; `CMatrix<3>(a)`,
-line 417, which defaults only the second, also fails. So what distinguishes the
-failing lines is a class template-id whose arguments come from *defaults*, and
-the fault is in that on the Microsoft ABI alone.
+The emitted assembly for a crashing and a non-crashing build was diffed and is
+**byte-identical apart from the `DB` bytes of that one string**. So this is
+data emission on this target - alignment or padding around a string constant,
+where certain lengths leave what follows misplaced - and nothing to do with the
+program's C++.
 
-**What is excluded, each measured rather than assumed:**
+**What the first write-up said, and why it was wrong.** It named
+`(CMatrix<>)a` - a class template-id with both arguments defaulted - as the
+trigger, on the evidence that rewriting that one token to `(CMatrix<3,3>)`
+made the crash go away. It did, and the inference was still wrong: the rewrite
+was written to a file with a *different name*, so it changed the `__FILE__`
+string as well as the cast. The control that settles it is two pairs:
 
-* Stack size. The driver links Windows programs with `/stack:8388608` because
-  the default is 1 MB where ELF and Mach-O reserve 8; the crash survives an
-  8 MB link.
-* Dynamic initialisation, which landed the same day. `matrices` emits no
-  `.CRT$XCU` entry at all - only `rotrix` does, and rotrix runs.
-* Every feature of that day taken singly: nested `initializer_list`
-  construction, an out-of-line conversion function of a class template
-  returning a class by value, a function template with a default argument
-  called with fewer, a by-value return bound to a `const &`, and two
-  overloaded function templates with defaults. Five probes, all pass on
-  Windows.
+    identical source, name "spell2.cpp"   exit 0
+    identical source, name "a416.cpp"     0xC0000005
+    CMatrix<3,3> version, short name      0xC0000005
+    CMatrix<>    version, long name       exit 0
 
-**Where to start**: read the emitted MASM around that call and put it beside
-the Itanium output for the same line. The suspicion the bisect supports is that
-a template-id built from default arguments produces a different type - or a
-differently-sized one - on the two ABIs, and that a by-value class travelling
-between the conversion operator and `operator*` is then passed wrongly.
+The spelling is irrelevant in both directions. **A one-token fix that makes a
+crash disappear is not evidence until the two builds differ in one token.**
 
-**Three harness errors were made finding this, and are worth more than the
+**It also explains what had been baffling.** Six careful reductions all passed
+on Windows - none of them happened to have a filename of a fatal length. Adding
+*any* statement to a truncated `main` flipped the result - it changed the
+string table. And `matrices` was the only one of the four exercise programs
+affected.
+
+**Excluded, each measured:** stack size, since the crash survives the 8 MB link
+the driver uses where the Windows default is 1 MB; dynamic initialisation,
+which landed the same day and emits no `.CRT$XCU` entry for this program at
+all; and every other feature of that day taken singly.
+
+**Where to start**: `MasmSpelling`'s string emission and whatever follows a
+string constant in `.rdata` or `CONST`. The lengths that fail - 10 and 13, with
+9, 11, 12, 14, 15 and 16 passing - are the measurement to explain; a simple
+"not padded to 8" would fail on a contiguous run of lengths, and this does not.
+
+**Three harness errors were made finding this, and they are worth more than the
 finding.** The first probes linked without `/stack:8388608`, so intermediate
-cuts crashed for a reason that had nothing to do with the defect. `stdout`
-through an ssh pipe is fully buffered, so "the program printed nothing" proved
-nothing about where it died. And a `std::cerr` marker never reached the capture
-at all - which was caught only because a *control* that ran correctly did not
-print the marker either. A test that cannot fail visibly is worse than no test:
-each of these produced a confident wrong conclusion before it was caught.
+cuts crashed for a reason unrelated to the defect. `stdout` through an ssh pipe
+is fully buffered, so "the program printed nothing" proved nothing about where
+it died. A `std::cerr` marker never reached the capture at all - caught only
+because a *control* that ran correctly did not print it either. And the fourth,
+above, is the one that produced a published wrong answer: a confounded
+single-variable test.
 
 ## The four oracles, measured together at c66c8d0
 
