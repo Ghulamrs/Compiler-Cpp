@@ -49,21 +49,36 @@ static long long unescape(const std::string &s, std::size_t &i, std::size_t,
     return static_cast<unsigned char>(c);
 }
 
+// The eleven word-spelled alternative tokens of [lex.digraph] table 2. They are
+// keywords in C++ and not macros, and each behaves in every respect as the
+// operator it spells - so it becomes that token here, spelling apart.
+const char *Lexer::alternativeToken(const std::string &word) {
+    static const struct { const char *word; const char *primary; } alt[] = {
+        { "and", "&&" },    { "and_eq", "&=" }, { "bitand", "&" },
+        { "bitor", "|" },   { "compl", "~" },   { "not", "!" },
+        { "not_eq", "!=" }, { "or", "||" },     { "or_eq", "|=" },
+        { "xor", "^" },     { "xor_eq", "^=" }
+    };
+    for (const auto &a : alt)
+        if (word == a.word) return a.primary;
+    return nullptr;
+}
+
 bool Lexer::isKeyword(const std::string &word) {
-    // Every C++11 keyword, including the ones nothing here can parse yet:
-    // recognising a word is not implementing it, and a keyword with no rule is
-    // refused by name. The alternative spellings are keywords here, not macros.
+    // Every C++11 keyword spelled as a word, including the ones nothing here
+    // can parse yet: recognising a word is not implementing it, and a keyword
+    // with no rule is refused by name. The eleven above never reach this.
     static const char *const kw[] = {
-        "alignas", "alignof", "and", "and_eq", "asm", "auto",
-        "bitand", "bitor", "bool", "break",
-        "case", "catch", "char", "char16_t", "char32_t", "class", "compl",
+        "alignas", "alignof", "asm", "auto",
+        "bool", "break",
+        "case", "catch", "char", "char16_t", "char32_t", "class",
         "const", "constexpr", "const_cast", "continue",
         "decltype", "default", "delete", "do", "double", "dynamic_cast",
         "else", "enum", "explicit", "export", "extern",
         "false", "float", "for", "friend", "goto",
         "if", "inline", "int", "long",
-        "mutable", "namespace", "new", "noexcept", "not", "not_eq", "nullptr",
-        "operator", "or", "or_eq",
+        "mutable", "namespace", "new", "noexcept", "nullptr",
+        "operator",
         "private", "protected", "public",
         "register", "reinterpret_cast", "return",
         "short", "signed", "sizeof", "static", "static_assert", "static_cast",
@@ -72,8 +87,7 @@ bool Lexer::isKeyword(const std::string &word) {
         "typedef", "typeid", "typename",
         "union", "unsigned", "using",
         "virtual", "void", "volatile",
-        "wchar_t", "while",
-        "xor", "xor_eq"
+        "wchar_t", "while"
     };
     for (const char *k : kw)
         if (word == k) return true;
@@ -327,7 +341,15 @@ std::vector<Token> Lexer::tokenize() {
             }
             Token t;
             t.text = s.substr(start, i - start);
-            t.kind = isKeyword(t.text) ? TokenKind::Keyword : TokenKind::Ident;
+            // [lex.digraph]/2: an alternative token *is* its primary token from
+            // here on, so nothing downstream needs a rule for the spelling.
+            if (const char *primary = alternativeToken(t.text)) {
+                t.text = primary;
+                t.kind = TokenKind::Punct;
+            } else {
+                t.kind = isKeyword(t.text) ? TokenKind::Keyword
+                                           : TokenKind::Ident;
+            }
             t.pos = start;
             out.push_back(std::move(t));
             continue;

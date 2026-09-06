@@ -17,12 +17,10 @@ int alignTo(int n, int a) { return (n + a - 1) / a * a; }
 // identifier and the error lands on whatever follows it.
 const char *notYetSupported(const std::string &word) {
     static const char *const pending[] = {
-        "alignas", "alignof", "and", "and_eq", "asm",
-        "bitand", "bitor", "char16_t", "char32_t", "compl",
+        "alignas", "alignof", "asm",
+        "char16_t", "char32_t",
         "export",
-        "not", "not_eq", "or", "or_eq",
-        "thread_local", "typeid",
-        "xor", "xor_eq"
+        "thread_local", "typeid"
     };
     for (const char *k : pending)
         if (word == k) return k;

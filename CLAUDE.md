@@ -7232,6 +7232,86 @@ list for *labels*, which is right - an `L` label is a local temporary - and
 was hiding nothing here only because the name reached the list by another
 route.
 
+## The eleven alternative tokens, which are a lexer rewrite and nothing else
+
+`and or not xor compl bitand bitor and_eq or_eq xor_eq not_eq` are keywords in
+C++ ([lex.digraph] table 2 and [lex.key] table 4), where C makes them macros in
+`<iso646.h>`. They were the first item on the 2026-09-06 handover's open list,
+and they came from the *user's own keyword list* rather than from either probe
+grid - a third way of asking, finding what two grids of 105 probes had not.
+
+**[lex.digraph]/2 is the whole design: each alternative token behaves in every
+respect as its primary token, except for its spelling.** So the implementation
+is eleven lines of table in `Lexer::alternativeToken` and a branch in the
+identifier path that makes `and` a `Punct` holding `&&`. No parser rule hears
+of the spelling, and that is what makes the feature reach past expressions for
+free:
+
+- `bitand` is `&`, so it is a reference declarator and an address-of as well as
+  a bitwise and - `int bitand r = n;` and `int *p = bitand n;` both work, and
+  neither is a case in the parser.
+- `compl` is `~`, so it names a destructor. `compl S();` inside the class and
+  `S::compl S() { }` out of line are both accepted, because the destructor rule
+  is reading a `~` by the time it looks.
+- `operator and` reaches the refusal that names `operator&&`, which is refused
+  here for a reason of its own. It is named correctly, which is the point.
+
+**Nine of the eleven were invisible before this.** `not` and `compl` can begin
+an expression, so they reached the keyword door and were refused by name; the
+other nine produced `expected ';'` or `expected ')'` - a message naming no
+feature, which is exactly the bucket `tools/exclusions` cannot see and the
+2026-09-06 sweep was built to empty. The sweep emptied both of its grids and
+this was still outside them.
+
+### The preprocessor needed the same eleven, separately
+
+`#if 1 and 1` is a conditional-expression in the same grammar, and cxx1's `#if`
+evaluator works on **text** rather than on the lexer's tokens - so it got its
+own rewrite, `spellAlternativeTokens` in `src/Preprocessor.cpp`, over one table
+shared with the lexer. Two things about where it runs:
+
+- **After macro expansion, not before.** A macro *name* may not be a keyword,
+  but a macro *body* may spell one: `#define AND and` then `#if 1 AND 1` is
+  well-formed, and clang compiles it.
+- **Word by word, and quoted spans copied.** `android` is a name and not `&&`
+  followed by `roid`, and a character literal must not be rewritten into an
+  operator.
+
+Both were measured against clang before being written, and the old answer was
+`this condition has something left over: 'and 1'` - which is a named-looking
+message about nothing, the worst of the three kinds.
+
+### What the change is checked by
+
+`tests/cases/alternative-tokens.cpp` runs all eleven as operators, `bitand` as
+a declarator and an address-of, `compl` as a destructor name in both places,
+and four `#if` conditions. `alternative-token-not-a-name.cpp` is the other
+half: `int and = 1;` is ill-formed, and cxx1 refuses it at clang's column. The
+pair is deliberate - **a lexer that handed `and` on as an identifier would fail
+the first case loudly and pass the second quietly**, and only one of them says
+which mistake was made.
+
+**The emit golden read `0 of 675 files changed`**, which is the claim a
+front-end rewrite most needs and cannot make by counting passes: eleven words
+became eleven operators and not one byte of any existing case moved.
+
+Two shapes in the case are for `names.sh` and not for the feature, and both are
+this file's standing traps met again: `S`'s constructor and destructor are
+defined **out of line**, because clang emits only the C2 variant of one written
+inline; and the block holding the `S` calls `printf` after it, because a scope
+whose only cleanup can never be reached needs no landing pad and clang drops
+the `_Unwind_Resume` cxx1 keeps. Removing either turns the case red for a
+reason that is not about alternative tokens.
+
+### What is left of this feature
+
+**The digraphs are not done.** `<%` `%>` `<:` `:>` are the other half of
+[lex.digraph] table 2 and are refused with `expected '{'` - generic, therefore
+unlisted, therefore the same invisible bucket. `%:` and `%:%:` are `#` and `##`
+and belong to the preprocessor, not the lexer, and `<::` carries a real
+disambiguation rule ([lex.pptoken]/3) that `Foo<::Bar>` depends on. Measured
+2026-09-06: clang accepts all of them, cxx1 none. It is its own step.
+
 ## How correctness is established
 
 Differential testing against gcc, clang and cl over a growing corpus. That is

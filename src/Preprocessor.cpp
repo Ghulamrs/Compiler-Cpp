@@ -1,4 +1,5 @@
 #include "Preprocessor.h"
+#include "Lexer.h"
 
 #include <cctype>
 #include <cstdio>
@@ -450,10 +451,40 @@ std::string Preprocessor::resolveDefined(const std::string &expr, int fileIndex,
     return out;
 }
 
+// [lex.digraph]/2 reaches the conditional as well: `#if 1 and 1` is `#if 1 && 1`.
+// Word by word, so a name like `android` is left alone, and quoted spans are
+// copied, so a character literal is not rewritten into an operator.
+static std::string spellAlternativeTokens(const std::string &expr) {
+    std::string out;
+    std::size_t i = 0;
+    while (i < expr.size()) {
+        if (expr[i] == '\'' || expr[i] == '"') {
+            char quote = expr[i];
+            out += expr[i++];
+            while (i < expr.size() && expr[i] != quote) {
+                if (expr[i] == '\\' && i + 1 < expr.size()) out += expr[i++];
+                out += expr[i++];
+            }
+            if (i < expr.size()) out += expr[i++];
+            continue;
+        }
+        if (!identStart(expr[i])) { out += expr[i++]; continue; }
+        std::size_t start = i;
+        while (i < expr.size() && identCont(expr[i])) i++;
+        const std::string word = expr.substr(start, i - start);
+        const char *primary = Lexer::alternativeToken(word);
+        out += primary ? primary : word;
+    }
+    return out;
+}
+
 long long Preprocessor::evalCondition(const std::string &raw, int fileIndex, int lineNo,
                                  const std::string &line) {
     std::string expanded = resolveDefined(raw, fileIndex, lineNo, line);
     expanded = expandLine(expanded, fileIndex, lineNo);
+    // After expansion, because a macro body may spell one and a keyword may
+    // not itself be a macro name.
+    expanded = spellAlternativeTokens(expanded);
 
     struct E {
         Preprocessor *pp;

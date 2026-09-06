@@ -436,11 +436,11 @@ where one object is many:
 ## Lexer and preprocessor
 
 - **GNU's named variadic macro parameter** — write `...` and use `__VA_ARGS__`.
-  `src/Preprocessor.cpp:762`
+  `src/Preprocessor.cpp:793`
 - **a literal prefix**, `R"(...)"`, `u8"..."`, `u'...'`, `U"..."` and the raw
   forms — an ordinary `"..."` is a narrow string of char here. `L` is not on
   this list: a wide literal is read further up and works.
-  `src/Lexer.cpp:324`
+  `src/Lexer.cpp:338`
 
 ## Refused because of the standard version
 
@@ -451,8 +451,8 @@ beside it goes in the same commit.
 
 | written | version | site |
 | --- | --- | --- |
-| `1'000`, a digit separator | C++14 | `src/Lexer.cpp:146` |
-| `0b101`, a binary literal | C++14 | `src/Lexer.cpp:250` |
+| `1'000`, a digit separator | C++14 | `src/Lexer.cpp:160` |
+| `0b101`, a binary literal | C++14 | `src/Lexer.cpp:264` |
 | `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1449` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:213` |
 | `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2766`, `src/parser/ParserTopLevel.cpp:635` |
@@ -465,16 +465,19 @@ beside it goes in the same commit.
 
 ## Keywords the parser has no rule for
 
-Twenty, from `pending[]` in `src/parser/Parser.cpp`. Each is refused **by
+Eight, from `pending[]` in `src/parser/Parser.cpp`. Each is refused **by
 name** at the three doors a keyword can arrive at — an expression, a member
 declaration, and a name — rather than as a parse error further along:
-`src/parser/Parser.cpp:99`, `src/parser/ParserExpr.cpp:645`,
+`src/parser/Parser.cpp:97`, `src/parser/ParserExpr.cpp:645`,
 `src/parser/ParserType.cpp:1377`.
 
-    alignas   alignof   and       and_eq    asm
-    bitand    bitor     char16_t  char32_t  compl
-    export    not       not_eq    or        or_eq
-    thread_local        typeid    xor       xor_eq
+    alignas   alignof   asm       char16_t  char32_t
+    export    thread_local        typeid
+
+**Eleven left this list on 2026-09-06 by being implemented**: `and`, `and_eq`,
+`bitand`, `bitor`, `compl`, `not`, `not_eq`, `or`, `or_eq`, `xor` and `xor_eq`
+are alternative spellings of operators, and the lexer now writes each as the
+operator it spells, so none of them reaches a parser rule as a word.
 
 **A second list beside it says the opposite thing**, and the distinction is the
 point: `implementedElsewhere[]` holds `catch`, `friend`, `inline`, `mutable`,

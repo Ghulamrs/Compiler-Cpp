@@ -46,6 +46,11 @@ public:
 
     std::vector<Token> tokenize();
 
+    // The primary token an alternative spelling stands for, or null. Applied in
+    // the lexer, so `and` reaches the parser as `&&`; public because the
+    // preprocessor's `#if` needs the same eleven and one table serves both.
+    static const char *alternativeToken(const std::string &word);
+
 private:
     const Source &src_;
 
