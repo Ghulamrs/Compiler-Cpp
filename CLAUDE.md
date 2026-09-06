@@ -6413,6 +6413,57 @@ recorded in `docs/CONFORMANCE.md`, it is R1's neighbour rather than part of it,
 and reversing that order changes how every unqualified name in a namespace
 resolves - which wants a round of its own.
 
+## A default template argument, and a crash on one target only
+
+**Not fixed. Characterised here so the next attempt starts from the bisect
+rather than from the program.** `matrix_main.cpp` of the C++ Vector Exercise
+compiles and runs correctly on arm64-darwin and x86_64-linux and dies on
+x86_64-windows with 0xC0000005. cl's own build of the same file runs, so it is
+cxx1's code generation for that target.
+
+**One line.** Truncating `main` and running each cut on the box pins it:
+
+```cpp
+415   assert(approxEqual(written, cross(a, b)));             // exit 0
+416   assert((approxEqual((CMatrix<>)a * b, cross(a, b))));   // 0xC0000005
+```
+
+`CMatrix` is `template <int M = 3, int N = M>`, so `CMatrix<>` is `CMatrix<3,3>`
+with **both arguments defaulted and the second naming the first**. The same
+conversion spelled out - `(CMatrix<3,3>)a`, line 414 - runs; `CMatrix<3>(a)`,
+line 417, which defaults only the second, also fails. So what distinguishes the
+failing lines is a class template-id whose arguments come from *defaults*, and
+the fault is in that on the Microsoft ABI alone.
+
+**What is excluded, each measured rather than assumed:**
+
+* Stack size. The driver links Windows programs with `/stack:8388608` because
+  the default is 1 MB where ELF and Mach-O reserve 8; the crash survives an
+  8 MB link.
+* Dynamic initialisation, which landed the same day. `matrices` emits no
+  `.CRT$XCU` entry at all - only `rotrix` does, and rotrix runs.
+* Every feature of that day taken singly: nested `initializer_list`
+  construction, an out-of-line conversion function of a class template
+  returning a class by value, a function template with a default argument
+  called with fewer, a by-value return bound to a `const &`, and two
+  overloaded function templates with defaults. Five probes, all pass on
+  Windows.
+
+**Where to start**: read the emitted MASM around that call and put it beside
+the Itanium output for the same line. The suspicion the bisect supports is that
+a template-id built from default arguments produces a different type - or a
+differently-sized one - on the two ABIs, and that a by-value class travelling
+between the conversion operator and `operator*` is then passed wrongly.
+
+**Three harness errors were made finding this, and are worth more than the
+finding.** The first probes linked without `/stack:8388608`, so intermediate
+cuts crashed for a reason that had nothing to do with the defect. `stdout`
+through an ssh pipe is fully buffered, so "the program printed nothing" proved
+nothing about where it died. And a `std::cerr` marker never reached the capture
+at all - which was caught only because a *control* that ran correctly did not
+print the marker either. A test that cannot fail visibly is worse than no test:
+each of these produced a confident wrong conclusion before it was caught.
+
 ## The four oracles, measured together at c66c8d0
 
 **A compiler this size has four things to be checked against, and the day they
