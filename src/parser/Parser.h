@@ -1052,7 +1052,7 @@ private:
         std::vector<Temporary> pendingTemps;
         std::size_t bodyCleanupFrom = 0;
         bool functionHasPads = false, functionHasTry = false;
-        int functionTypeIndex = 0;
+        std::vector<std::string> functionTypes;
         bool variadicBody = false, inStaticMember = false, inParams = false;
         std::vector<std::string> staticSymbols;
         std::vector<std::size_t> pendingDefaults;
@@ -1484,9 +1484,12 @@ private:
     // personality routine and the table.
     bool functionHasPads_ = false;
     // **The selector is an index into the whole function's type table, not into one try's
-    // handler list.** A second try continues the numbering, and the parser has to know:
-    // its comparisons are written against it, and the backend numbers the same way.
-    int functionTypeIndex_ = 0;
+    // handler list.** The parser writes `if (sel == n)` against it and the backend
+    // numbers the same way, so the two must agree exactly - **including that one type
+    // named by two rows gets one number**, which is why this is a list and not a count.
+    std::vector<std::string> functionTypes_;
+    // 1-based, first occurrence winning, matching Walker::lsdaTable byte for byte.
+    int typeIndexFor(const std::string &symbol);
     // Set where a function writes a `try`. A cleanup region is a call site too, and a
     // call-site table holds sorted ranges that do not overlap - so one inside a try, or a
     // try inside one, is refused until a range can be split rather than nested.

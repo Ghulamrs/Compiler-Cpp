@@ -544,7 +544,7 @@ Parser::FunctionState Parser::captureFunctionState() const {
     s.bodyCleanupFrom = bodyCleanupFrom_;
     s.functionHasPads = functionHasPads_;
     s.functionHasTry = functionHasTry_;
-    s.functionTypeIndex = functionTypeIndex_;
+    s.functionTypes = functionTypes_;
     s.variadicBody = variadicBody_;
     s.inStaticMember = inStaticMember_;
     s.inParams = inParams_;
@@ -590,7 +590,7 @@ void Parser::restoreFunctionState(const FunctionState &s) {
     bodyCleanupFrom_ = s.bodyCleanupFrom;
     functionHasPads_ = s.functionHasPads;
     functionHasTry_ = s.functionHasTry;
-    functionTypeIndex_ = s.functionTypeIndex;
+    functionTypes_ = s.functionTypes;
     variadicBody_ = s.variadicBody;
     inStaticMember_ = s.inStaticMember;
     inParams_ = s.inParams;
@@ -637,7 +637,7 @@ void Parser::clearFunctionState() {
     bodyCleanupFrom_ = 0;
     functionHasPads_ = false;
     functionHasTry_ = false;
-    functionTypeIndex_ = 0;
+    functionTypes_.clear();
     variadicBody_ = false;
     inStaticMember_ = false;
     inParams_ = false;

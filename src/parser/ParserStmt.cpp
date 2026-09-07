@@ -1061,10 +1061,19 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     // handlers kept whole for the runtime to call.
     const bool microsoft = target_.microsoftNames();
     functionHasTry_ = true;
-    if (inTryBody_)
+    // **A handler's body is inside the same table and was not refused**, which
+    // made this compile and terminate rather than say so: the parser numbers
+    // the outer handlers before parsing the body, the backend registers the
+    // inner row first, and the two disagree about which index means which type.
+    // Measured at e731456 - clang prints `outer int 7 inner double 2.5` where
+    // cxx1 called terminate. Refused with its sibling until indices travel on
+    // the Try node instead of being rederived.
+    if (inTryBody_ || inHandlerBody_)
         src_.fail(pos, "a 'try' inside another one is not supported yet - the "
                        "call-site table holds sorted ranges that do not "
-                       "overlap, and a nested one has to split its parent");
+                       "overlap, and a nested one has to split its parent. "
+                       "This includes a 'try' inside a 'catch' handler, which "
+                       "is the same table and the same clash");
 
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     const int pointerSlot = allocateFrameSlot(voidPtr);
@@ -1136,7 +1145,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         }
         expect(")");
         types.push_back(h.type);
-        indices.push_back(++functionTypeIndex_);
+        indices.push_back(typeIndexFor(h.type));
 
         // The handler's own scope, holding the caught object if it was named.
         enterScope();
@@ -1741,3 +1750,17 @@ StmtPtr Parser::statementBody() {
 // extern "C" - [dcl.link]. Two forms: one declaration, or a brace-enclosed
 // list of them. The list is not a scope: what it holds is declared where the
 // specification is, and only the linkage of the names changes.
+
+// **One number per type, however many call-site rows name it.** The personality
+// hands the index back as the selector and the chain above compares against it,
+// so a type named by two rows has to answer with one number - and this has to
+// agree with `Walker::lsdaTable`, which deduplicates the same way. Appending
+// blindly was right while no two rows shared a type and wrong the moment one
+// did: the second row's handler would compare against a number the runtime
+// never produces, and the pad would resume into itself.
+int Parser::typeIndexFor(const std::string &symbol) {
+    for (std::size_t i = 0; i < functionTypes_.size(); i++)
+        if (functionTypes_[i] == symbol) return static_cast<int>(i) + 1;
+    functionTypes_.push_back(symbol);
+    return static_cast<int>(functionTypes_.size());
+}

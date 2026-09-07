@@ -378,21 +378,27 @@ where one object is many:
   can be split around the other. **x86_64-windows keeps the whole refusal**: a
   cleanup is a funclet and an FH3 state there, and `wrapMsCleanups` has not
   been taught the same trick. `src/parser/ParserStmt.cpp:755`,
-  `src/parser/ParserStmt.cpp:1014`, `src/parser/ParserStmt.cpp:1619`
+  `src/parser/ParserStmt.cpp:1014`, `src/parser/ParserStmt.cpp:1628`
 - **a temporary with a destructor in a thrown expression inside a `try`** — it
   is destroyed as the exception leaves, and that statement sits outside the
-  region that would do it. `src/parser/ParserStmt.cpp:1371`
+  region that would do it. `src/parser/ParserStmt.cpp:1380`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and
   so does a class in the condition of an `if`, where the object is built once.
   `src/parser/ParserStmt.cpp:695`
-- **a `try` inside another** — `src/parser/ParserStmt.cpp:1065`
+- **a `try` inside another**, in its body **or in one of its handlers** — the
+  call-site table holds ranges that do not overlap, and a nested one has to
+  split its parent. The handler half was *not* refused until 2026-09-07 and was
+  silently miscompiled: the parser numbers a `try`'s handlers as it reads them
+  and the backend registers rows innermost-first, so the two disagreed about
+  which index meant which type and an outer `catch (int)` never matched. See
+  CLAUDE.md, "One type, one selector index". `src/parser/ParserStmt.cpp:1072`
 - **a rethrow**, `throw;` with nothing after it — **for x86_64-windows
   only**; it works on both Itanium targets. There it is
   `_CxxThrowException` with two null pointers, raised from inside a handler
   funclet rather than from the frame that owns the `try`, which has not been
-  measured on the box. `src/parser/ParserStmt.cpp:1346`
+  measured on the box. `src/parser/ParserStmt.cpp:1355`
 - **a dynamic exception specification**, `throw(T)` — `throw()` with nothing in
   it is `noexcept` and works. `src/parser/ParserConst.cpp:97`
 - **a range-based `for` over a temporary** — [stmt.ranged] binds the range to
@@ -429,7 +435,7 @@ where one object is many:
   class's overload set. `src/parser/ParserType.cpp:361`
 - **a using-declaration inside a block** — it would declare a name for the rest
   of the block and rank against the locals beside it.
-  `src/parser/ParserStmt.cpp:1324`. The one at namespace scope,
+  `src/parser/ParserStmt.cpp:1333`. The one at namespace scope,
   `using N::f;`, works, and so does `using namespace N;` here.
 - **an alias declaration**, `using X = T;` — `typedef T X;` says the same
   thing here. It is not a using-declaration, and the three scopes that refuse
@@ -526,7 +532,7 @@ guessed wrong twice.
 
 - **`return` inside a `catch` on x86_64-windows** — a handler is a funclet
   there, so leaving one early is a return of the address to carry on at.
-  `src/parser/ParserStmt.cpp:1382`
+  `src/parser/ParserStmt.cpp:1391`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation

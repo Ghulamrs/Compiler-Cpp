@@ -338,14 +338,21 @@ std::string Walker::lsdaTable(const LsdaSpelling &sp, const std::string &symbol,
 
     // The action table: a type index and the offset to the next record, 0 saying
     // there is no next, so the chain ends and the exception goes on unwinding.
+    // **One entry per type, however many rows name it**, first occurrence
+    // winning. `Parser::typeIndexFor` numbers identically and the chain it
+    // writes compares against these - so appending blindly, which was right
+    // while no two rows shared a type, hangs the moment one does.
     types.clear();
     for (std::size_t i = 0; i < rows.size(); i++) {
         const CallSite &c = rows[i];
         for (std::size_t k = 0; k < c.types.size(); k++) {
-            o += "  .byte " + std::to_string(types.size() + 1) + "\n";
+            std::size_t at = types.size();
+            for (std::size_t q = 0; q < types.size(); q++)
+                if (types[q] == c.types[k]) { at = q; break; }
+            o += "  .byte " + std::to_string(at + 1) + "\n";
             const bool more = k + 1 < c.types.size() || c.cleanup;
             o += "  .byte " + std::string(more ? "1" : "0") + "\n";
-            types.push_back(c.types[k]);
+            if (at == types.size()) types.push_back(c.types[k]);
         }
         // Filter 0 is "cleanup": not a handler, but a reason to stop here in
         // phase 2 and run the pad. It ends the chain.

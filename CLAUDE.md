@@ -397,6 +397,7 @@ question, before anything was written:
 | `volatile`, as a line drawn | 2026-09-07 | object versus type: kept where it costs nothing, refused where a linkage name is made from it |
 | `dynamic_cast<void *>` | 2026-09-07 | the most derived object - inline on Itanium, `__RTCastToVoid` on Microsoft |
 | range-based `for` over a class | 2026-09-07 | `begin()`/`end()` as members, and the containers in `include/` walkable |
+| one type, one selector index | 2026-09-07 | the parser and the backend numbering alike, and a `try` in a handler refused rather than miscompiled |
 
 Each has a section further down saying what was measured and what was
 deliberately not built. **The table stopped at 2026-08-30 for a week and the
@@ -7789,6 +7790,79 @@ clang prints. That file is four lines - a `std::vector<int>` from a braced list,
 and the range-for was the only thing in it cxx1 could not do. Measured against
 clang: `vector`, `string`, `set`, `map`, `auto`, an empty range, a const
 container, nested loops and a user-written class, nine shapes, all agreeing.
+
+## One type, one selector index - and the miscompile beside it
+
+**Landed 2026-09-07**, as the prerequisite for a destructible object inside a
+`try` body, and worth its own section because what it repaired was a coupling
+nobody had written down.
+
+### The parser predicts a number the backend writes
+
+A selector is an index into the function's type table. **The backend writes it
+into the action record and the parser has already written `sel == n` into the
+handler chain** - `Walker::lsdaTable` numbering by position in `types`, and
+`ParserStmt.cpp` numbering with a counter of its own. Two independent
+implementations of one numbering, agreeing by convention and checked by
+nothing.
+
+They agreed because the backend *appended* per row and no two rows had ever
+shared a type. The moment one did, they would not - and the shape that shares
+one is exactly what a destructible object inside a `try` body needs, since its
+cleanup rows must carry the enclosing `try`'s catch types to be found in
+phase 1 at all.
+
+**Deduplicating only the backend is a hang, not a wrong answer.** Measured:
+two `try`s catching `int` in one function, with the backend sharing the entry
+and the parser still counting 1, 2 - the second handler compares against a
+number the runtime never returns, falls through to `_Unwind_Resume`, and the
+pad resumes into itself. `emit.sh` reported ten changed files and four suites
+stayed green either way; the program looped forever.
+
+So both sides deduplicate now, first occurrence winning, 1-based, and
+`Parser::typeIndexFor` says in a comment that it must match `lsdaTable` byte
+for byte. `catch (...)` is the empty string and is shared like any other -
+clang emits one `.long 0` for two catch-alls in a function, and nothing ever
+compares against its selector.
+
+**Ten emissions changed and every one was read.** Five cases across both
+Itanium targets, each the selector immediate and the action-record byte moving
+together with surplus `_ZTI` entries leaving the table.
+`catch-by-reference.cpp` is the legible one: seven handlers,
+`int int double char double int int`, numbered 1-7 before and
+`int=1 double=2 char=3` after, with 2->1, 3->2, 4->3, 5->2, 6->1, 7->1 in both
+the `mov`s and the `.byte`s. `run.sh` runs all five on the host.
+
+### The miscompile it turned up: a `try` inside a `catch`
+
+**A `try` inside another one's *body* has been refused by name for a long time;
+inside a *handler* it was not, and was silently miscompiled.** `inTryBody_` is
+restored before the handlers are parsed, so nothing refused it. The parser
+numbers a `try`'s handlers as it reads them - the outer `int` before its body -
+while the backend registers rows innermost-first, so the parser wrote
+`sel == 1` for the outer `int` and the table said index 1 was the inner
+`double`.
+
+    clang:  outer int 7 inner double 2.5 | end
+    cxx1:   libc++abi: terminating due to uncaught exception of type int
+
+Reproduced at `e731456` in a clean worktree, so it is older than the
+deduplication and unrelated to it - and it was on the remote. **Refused by name
+now**, with its sibling, and `try-in-handler-refused.cpp` records what clang
+prints so the refusal can be lifted against a known answer rather than a guess.
+
+**No suite had the shape.** It was found by asking whether the parser's
+numbering and the backend's could ever disagree - a question about a *coupling*
+rather than about a feature, which is not what a corpus is made of. The durable
+fix is for the indices to travel on the `Try` node instead of being derived
+twice; refusing is what fits in this round.
+
+### The golden is not in git, and this round re-recorded it
+
+`tests/out-emit.golden` is gitignored, so the ten changed emissions are not in
+the commit and a fresh clone has no golden at all. Re-recording is a local act
+and has to be stated rather than shown: **717 files, and the run after it reads
+`0 of 717 changed`.**
 
 ## namespace, and the fact that a namespace is not a type
 

@@ -66,7 +66,7 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     gotos_.clear();
     functionHasPads_ = false;
     functionHasTry_ = false;
-    functionTypeIndex_ = 0;
+    functionTypes_.clear();
     inTryBody_ = false;
     inMsHandler_ = false;
     mayThrow_ = 0;

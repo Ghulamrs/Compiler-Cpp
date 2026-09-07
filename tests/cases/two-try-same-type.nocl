@@ -1,0 +1,11 @@
+cl emits the four objects a Microsoft throw is identified by - ??_R0H@8, the
+type descriptor for int; _CT??_R0H@84, its catchable type; _CTA1H, the array
+of those; and _TI1H, the ThrowInfo - as public COMDATs, and cxx1 emits the
+same four as file-local symbols, so they do not appear in its symbol table.
+Same reason as condition-declaration-unwind.nocl and temporary-unwind.nocl,
+which throw an int the way this case does; and the handler funclets this
+target builds a catch from, which try-catch-value.nocl records.
+
+Reasoned from those three and not yet measured beside cl: this case was
+written on the Mac, where tests/names.sh compares it against clang for all
+three targets with no difference at all.

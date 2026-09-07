@@ -1385,7 +1385,7 @@ void Parser::topLevel(Program &program) {
     program.functions.back().setInline((replayingInline_ || inlineFunction) &&
                                         !internal);
     functionHasPads_ = false;
-    functionTypeIndex_ = 0;
+    functionTypes_.clear();
     functionHasTry_ = false;
     // A constructor is emitted under both of Itanium's names: C1 for a
     // complete object, C2 for a base subobject, the second as a label in front
