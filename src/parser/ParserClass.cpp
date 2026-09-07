@@ -1986,7 +1986,8 @@ std::string Parser::staticMemberSymbol(const std::string &cls,
 // taking no room in any of them, so nothing here touches the layout. What it needs is
 // a name the linker can hold and a definition outside the class to go with it.
 void Parser::declareStaticMember(const std::string &cls, Type *owner,
-                                 const Declared &d, Access access) {
+                                 const Declared &d, Access access,
+                                 bool volatileWritten) {
     if (cls.empty())
         src_.fail(d.pos, "a static member needs a class with a name - this one "
                          "is anonymous");
@@ -2019,6 +2020,9 @@ void Parser::declareStaticMember(const std::string &cls, Type *owner,
                          "the class is what says how big it is");
     }
 
+    // A static member is one object for the whole program, so it has a name
+    // outside this file whatever else it is.
+    refuseVolatileWithLinkage(volatileWritten, false, d.pos);
     s.symbol = staticMemberSymbol(cls, d.name, d.type, access, d.pos);
     owner->addStaticMember(s);
 }

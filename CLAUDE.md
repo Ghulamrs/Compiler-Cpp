@@ -7385,14 +7385,113 @@ ordinary member goes through `memberSymbol`; a constructor calls
 goes through `functionSymbol`. Fixing the first left the other two writing `P`,
 and the constructor was the one that looked already covered.
 
-### What is still wrong, and it is older than this
+### What was still wrong, and got its own sweep
 
-**`volatile` is discarded in the declarator**, so `int *volatile p` is `R` on cl
-and `P` here, and `int *const volatile p` is `S` there and `Q` here. That is not
-a regression - both were `P` before - and it cannot be mended in the mangler:
-cxx1 has no volatile in its type system at all. Accepted-and-ignored is a fourth
-bucket beside the three the 2026-09-06 sweep sorted refusals into, and worth a
-sweep of its own.
+**`volatile` is discarded in the declarator**, so `int *volatile p` was `R` on cl
+and `P` here. That was not a regression, and it could not be mended in the
+mangler: cxx1 has no volatile in its type system at all. Accepted-and-ignored is
+a fourth bucket beside the three the 2026-09-06 sweep sorted refusals into, and
+it got the sweep it was worth on 2026-09-07 - see below.
+
+## The volatile sweep, 2026-09-07
+
+**A fourth bucket, and it is the one a sweep of refusals cannot see.** The
+2026-09-06 sweep sorted *refusals* into three: compiles, refused by name,
+refused by a message naming no feature. `volatile` was in none of them, because
+cxx1 **accepts** it and throws it away - so the compiler answers, the answer is
+wrong, and nothing anywhere says so. Twenty-four shapes, one minimal program
+each, every one first validated by `clang++ -std=c++11 -pedantic-errors`:
+
+| | shapes | what cxx1 did |
+| --- | --- | --- |
+| right | 6 | agrees with clang on all three targets |
+| silently wrong name | 9 | compiles, wrong linkage name, nothing said |
+| accepts the ill-formed | 5 | compiles a program clang refuses |
+| refused, naming nothing | 4 | `expected ';'`, `'f' is defined twice` |
+
+**Not one of the eighteen was visible.** That is the finding; the fixes follow
+from it.
+
+### Why an object is right and a type is not
+
+`volatile`'s runtime guarantee is that every read is a read. **cxx1 optimises
+nothing**, so every read of every object is already a load from its address and
+every write a store - measured, three reads of one `volatile int` emit three
+`ldr`s on arm64. The guarantee holds by construction rather than by being
+implemented.
+
+What the qualifier also is, and what cxx1 has no way to spell, is *part of a
+type*. `volatile int *` is `_Z1fPVi` and `?f@@YAXPECH@Z`; a plain `int *` is
+`_Z1fPi` and `?f@@YAXPEAH@Z`. So the line is drawn where the qualifier reaches a
+type a linkage name is made from, and it is drawn by refusing:
+
+- **a pointer or reference to a volatile type** - refused at the specifiers,
+  looking at the token after them, which also catches `volatile int &`, `const
+  volatile int *`, a `(volatile int *)` cast and a `f<volatile int *>` argument
+- **`T *volatile`** - Itanium is right about it *by accident*, [dcl.fct]/5
+  deleting a parameter's top-level cv; cl writes `REAH`, so it is refused
+  everywhere, the accident not holding for a pointer object of its own
+- **a volatile member function** - the cv on `this` is half a member function's
+  identity on both ABIs
+- **a typedef of a volatile type** - it would carry the qualifier past the
+  refusal the written form meets, and the typedef's own `*` is a star after a
+  name with nothing on it
+- **a volatile object with external linkage, on x86_64-windows only** - cl
+  decorates a variable's name with its cv, `?g@@3HC` where a plain int is
+  `?g@@3HA`, and neither Itanium target decorates a variable at all. A genuine
+  per-target refusal, with `volatile-object.notarget` naming it
+
+Accepted, and unchanged: a volatile local, a volatile local array, a volatile
+by-value parameter, an internal-linkage volatile object, a volatile data member.
+The C corpus measured 365/58/1 before and after - `qs_volatile.c`,
+`qs_qualifier_order.c`, `hd_setjmp.c` and `hd_standard_headers.c` all use
+volatile in exactly those shapes.
+
+### A trial was swallowing the refusals it should have reported
+
+`(volatile int *)&v` came back `expected an expression`. The C-style cast is
+parsed **tentatively** - `Trial` in `castExpr` - to tell a cast from a
+parenthesised expression, and it caught every `SubstitutionFailure` and answered
+"not a cast". `Source::fail` already marks a refusal that names a feature
+(`unsupported`), and `ParserTemplate` already honours it in both its catches;
+this one did not. **A refusal that names a feature is an answer, not a no**, and
+it now propagates. That is a fix to every named refusal reachable from a cast,
+not only volatile's.
+
+### What the sweep left, all measured
+
+- **`&v` of a volatile object gives a plain `int *`**, so `int *p = &v;` is
+  accepted where clang refuses. Needs volatile in the type system; there is no
+  refusal that catches it without one.
+- **A non-volatile member called on a volatile object** is accepted, same
+  reason.
+- **A volatile return type** - `volatile int f()` is `?f@@YA?CHXZ` on cl and
+  `?f@@YAHXZ` here. The token after the specifiers is the function's name, which
+  is also what an object with a parenthesised initialiser looks like, so the
+  refusal that catches the rest cannot tell them apart. Microsoft only.
+
+Doing better than any of these means volatile in the type system, mirroring
+`const_`: 80 `isConst()` sites, 70 `constThis`, plus `V` for Itanium and the
+`C`/`D` pointee and `Q`/`R`/`S` pointer letters for Microsoft. That is a rung,
+not a sweep.
+
+## A function-local static is named `f.n`, where Itanium writes `_ZZ1fvE1n`
+
+Found by the volatile sweep and nothing to do with volatile - `static volatile
+int n` inside a function was in the first draft of `volatile-object.cpp`, and
+`names.sh` went red on the wrong axis. Measured with the qualifier taken off:
+
+    int f()          { static int n; ... }   cxx1 f.n   clang _ZZ1fvE1n
+    inline int f()   { static int n; ... }   cxx1 f.n   clang _ZZ1fvE1n
+    template <class T> int f() { static int n; ... }
+                                             cxx1 f.n   clang _ZZ1fIiEivE1n
+
+**For an ordinary function this is cosmetic** - the object is private to the
+translation unit and nothing outside can name it either way. **For an inline
+function or a function template it is a defect**: those may be defined in
+several translation units and the standard says there is *one* static, which is
+the whole reason Itanium mangles the name. cxx1 gives each translation unit its
+own, and no one-file test suite can see it. Not fixed, and its own step.
 
 **A template parameter as an array element is refused**: `template <class T>
 int f(T a[], int n)` stops with `target: no size for this type yet`, which names

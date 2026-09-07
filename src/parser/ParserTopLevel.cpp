@@ -310,6 +310,7 @@ void Parser::topLevel(Program &program) {
                                      prev->type->describe() + "', not '" +
                                      d.type->describe() + "'");
                 const bool internal = internalLinkage(sc);
+                refuseVolatileWithLinkage(quals.isVolatile, internal, d.pos);
                 const std::string symbol = prev != nullptr
                     ? prev->symbol : dataSymbol(gname, d.type, internal, d.pos);
                 const bool defines = !(sc == StorageExtern && !peek().is("="));
@@ -384,6 +385,7 @@ void Parser::topLevel(Program &program) {
                     if (prev != nullptr && prev->emitted)
                         src_.fail(d.pos, "'" + d.name + "' is defined twice");
                     const bool internal = internalLinkage(sc) || d.type->isConst();
+                    refuseVolatileWithLinkage(quals.isVolatile, internal, d.pos);
                     const std::string symbol = prev != nullptr
                         ? prev->symbol
                         : dataSymbol(gname, d.type, internal, d.pos);
@@ -524,6 +526,7 @@ void Parser::topLevel(Program &program) {
             // would be external, may not. Nothing outside can name it.
             bool internal = sc == StorageStatic ||
                             (objectIsConst && sc != StorageExtern);
+            refuseVolatileWithLinkage(quals.isVolatile, internal, d.pos);
             std::string symbol = dataSymbol(gname, d.type, internal, d.pos);
             globals_.push_back(GlobalSym{ gname, symbol, d.type, objectIsConst,
                                           sc != StorageExtern, hasInit,

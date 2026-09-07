@@ -27,7 +27,14 @@ ExprPtr Parser::castExpr() {
                 const Type *pt = specifiers(&psc);
                 declarator(pt, true);
                 isCast = peek().is(")");
-            } catch (const SubstitutionFailure &) {
+            } catch (const SubstitutionFailure &f) {
+                // **A refusal that names a feature is an answer, not a
+                // no.** The trial is asking whether this parenthesis holds a
+                // type-id; "not supported yet" says it does and that the type
+                // cannot be built, and swallowing it reports `expected an
+                // expression` about a cast the reader wrote deliberately. The
+                // same rule ParserTemplate applies to a substitution.
+                if (f.unsupported) src_.fail(f.pos, f.why);
                 isCast = false;
             }
             if (isCast) {

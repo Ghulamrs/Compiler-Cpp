@@ -708,7 +708,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             // **A static member is not part of the object**, so it leaves the
             // layout untouched and the cursor where it was.
             if (msc == StorageStatic && !peek().is("(")) {
-                declareStaticMember(tag, type, d, access);
+                declareStaticMember(tag, type, d, access, mquals.isVolatile);
                 if (!consume(",")) break;
                 continue;
             }
@@ -793,6 +793,15 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                                           "overload here");
                 bool constThis = false;
                 if (consume("const")) constThis = true;
+                // `f() volatile` and `f() const volatile`: the cv on `this` is
+                // half of a member function's identity on both ABIs, and this
+                // one is not in the type system - so it is refused, not read.
+                if (peek().is("volatile"))
+                    src_.fail(peek().pos,
+                              "a 'volatile' member function is not supported yet "
+                              "- the qualifier on 'this' is part of the name on "
+                              "both ABIs, and 'volatile' is not in this "
+                              "compiler's type system");
                 // **`override` and `final` are C++11 and are checks**, not
                 // declarations: the first says this must be replacing a base's
                 // virtual and the second that nothing may replace it. The
@@ -1071,7 +1080,59 @@ const Type *Parser::specifiers(StorageClass *storage, Qualifiers *quals) {
     Qualifiers discard;
     if (quals == nullptr) quals = &discard;
     const Type *t = unqualifiedSpecifiers(storage, quals);
+    if (quals->isVolatile) refuseVolatileUnderADeclarator(*storage);
     return quals->isConst ? types_.withConst(t) : t;
+}
+
+// **`volatile` is read and dropped, and this is the line where that stops being
+// honest.** There is no volatile in this type system; on an object that costs
+// nothing, because nothing here is optimised and every read is a read. The
+// moment the qualifier goes under a `*` or a `&` it is part of a type a linkage
+// name is made from, and the name would be wrong on both ABIs at once.
+// `T *volatile p`. Itanium deletes a parameter's top-level cv and is right by
+// accident; the Microsoft ABI writes R for it where a plain pointer is P, and
+// keeps it on an object's name as well. Refused rather than dropped.
+void Parser::refuseVolatilePointer() {
+    src_.fail(peek().pos,
+              "a 'volatile' pointer - 'T *volatile' - is not supported yet: cl "
+              "writes 'REAH' where a plain pointer is 'PEAH', and 'volatile' is "
+              "not in this compiler's type system");
+}
+
+// **A variable's name carries its cv on the Microsoft ABI and not on Itanium**,
+// measured: `volatile int g;` is `?g@@3HC` on cl where a plain int is `?g@@3HA`,
+// and `_Z`-nothing on both Itanium targets, which do not decorate a variable at
+// all. So a volatile object is right here until it has a name outside its file.
+void Parser::refuseVolatileWithLinkage(bool written, bool internal,
+                                       std::size_t pos) {
+    if (!written || internal || !target_.microsoftNames()) return;
+    src_.fail(pos, "a 'volatile' object with external linkage is not supported "
+                   "yet for x86_64-windows: cl decorates its name with the "
+                   "qualifier - '?g@@3HC' where a plain int is '?g@@3HA' - and "
+                   "'volatile' is not in this compiler's type system. The two "
+                   "Itanium targets do not decorate a variable's name, so it is "
+                   "accepted there");
+}
+
+void Parser::refuseVolatileUnderADeclarator(StorageClass storage) {
+    // `volatile int (*p)[3]` hides its star behind a parenthesis.
+    const bool pointerNext =
+        peek().is("*") || peek().is("&") || peek().is("&&") ||
+        (peek().is("(") && (peekAt(1).is("*") || peekAt(1).is("&") ||
+                            peekAt(1).is("&&")));
+    if (pointerNext)
+        src_.fail(peek().pos,
+                  "a pointer or reference to a 'volatile' type is not supported "
+                  "yet - the qualifier is not in this compiler's type system, so "
+                  "this would be named 'int *' where clang writes 'PVi' and cl "
+                  "writes 'PECH'. A 'volatile' object of its own is read and "
+                  "written here as it should be, and is not refused");
+    if (storage == StorageTypedef)
+        src_.fail(peek().pos,
+                  "a typedef of a 'volatile' type is not supported yet - the "
+                  "qualifier is not in this compiler's type system, and a name "
+                  "for it would carry it past the refusal a written "
+                  "'volatile T *' meets");
 }
 
 const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *quals) {
@@ -1507,7 +1568,8 @@ std::string Parser::operatorName() {
             if (consume("*")) {
                 to = types_.pointerTo(to);
                 while (peek().is("const") || peek().is("volatile")) {
-                    if (peek().is("const")) to = types_.withConst(to);
+                    if (peek().is("volatile")) refuseVolatilePointer();
+                    to = types_.withConst(to);
                     at_++;
                 }
                 continue;
@@ -1620,7 +1682,7 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
         base = types_.pointerTo(base);
         for (;;) {
             if (consume("const"))    { base = types_.withConst(base); continue; }
-            if (consume("volatile")) continue;
+            if (peek().is("volatile")) refuseVolatilePointer();
             break;
         }
     }
@@ -1769,7 +1831,7 @@ Parser::Declared Parser::declarator(const Type *base, bool nameOptional,
             }
             for (;;) {
                 if (consume("const"))    { mp = types_.withConst(mp); continue; }
-                if (consume("volatile")) continue;
+                if (peek().is("volatile")) refuseVolatilePointer();
                 break;
             }
             return declarator(mp, nameOptional, insideParens);

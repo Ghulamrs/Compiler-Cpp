@@ -1,0 +1,1 @@
+x86_64-windows  cl decorates a variable name with its cv - a namespace-scope `volatile int g;` is `?g@@3HC` where a plain int is `?g@@3HA` - and volatile is not in this type system, so that name would be silently wrong. Refused by name for this target only; both Itanium targets leave a variable name undecorated and compile this case. See CLAUDE.md, "The volatile sweep".

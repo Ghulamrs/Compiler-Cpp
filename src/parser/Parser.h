@@ -1206,7 +1206,7 @@ private:
         return false;
     }
     void declareStaticMember(const std::string &cls, Type *owner,
-                             const Declared &d, Access access);
+                             const Declared &d, Access access, bool volatileWritten);
     void defineStaticMember(Declared &d, Program &program);
     // **What a static member *defined* out of line is worth when read** - the
     // [expr.const]/3 read-back a namespace-scope const already makes. Keyed by
@@ -1287,6 +1287,12 @@ private:
     // whole type - `std::vector<int>()` is a temporary and
     // `std::vector<int>::size_type` is a member.
     std::size_t qualifiedTypeEndPastArgs() const;
+    // `volatile` is read and dropped, which is honest on an object and not
+    // once the qualifier is under a `*`, a `&`, or on `this`. These two say so
+    // by name rather than letting a wrong linkage name out.
+    void refuseVolatilePointer();
+    void refuseVolatileWithLinkage(bool written, bool internal, std::size_t pos);
+    void refuseVolatileUnderADeclarator(StorageClass storage);
     const Type *specifiers(StorageClass *storage, Qualifiers *quals = nullptr);
     const Type *unqualifiedSpecifiers(StorageClass *storage, Qualifiers *quals);
 
