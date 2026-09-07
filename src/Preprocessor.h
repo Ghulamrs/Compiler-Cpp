@@ -79,6 +79,12 @@ private:
 
     long long evalCondition(const std::string &expr, int fileIndex, int lineNo,
                        const std::string &line);
+    // The `__has_*` predicates. `__has_include` is answered by the same search
+    // `#include` does; the rest answer 0, which is the answer a library's `#if`
+    // is written to receive.
+    static bool isHasPredicate(const std::string &name);
+    std::string resolveHasChecks(const std::string &expr, int fileIndex,
+                                 int lineNo, const std::string &line);
     std::string resolveDefined(const std::string &expr, int fileIndex, int lineNo,
                                const std::string &line);
     bool parentEmitting() const;

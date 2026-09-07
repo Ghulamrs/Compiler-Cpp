@@ -455,7 +455,12 @@ std::string Preprocessor::resolveDefined(const std::string &expr, int fileIndex,
                 fail(fileIndex, lineNo, line, 0, "'defined(' is missing its ')'");
             i++;
         }
-        out += macros_.count(operand) ? "1" : "0";
+        // **These are defined, though no `#define` wrote them.** A library asks
+        // `#if defined(__has_builtin)` before using it, and answering no there
+        // sends it down a path that then uses the predicate anyway - or, in
+        // libstdc++'s case, defines `_GLIBCXX_HAS_BUILTIN` to something this
+        // preprocessor never sees through.
+        out += (macros_.count(operand) || isHasPredicate(operand)) ? "1" : "0";
     }
     return out;
 }
@@ -487,10 +492,113 @@ static std::string spellAlternativeTokens(const std::string &expr) {
     return out;
 }
 
+// **The `__has_*` predicates, resolved before expansion for `defined`'s
+// reason**: `__has_include(<vector>)` holds a header name, not an expression,
+// and macro-expanding it first would make nonsense of the `<` and `>`.
+//
+// **`__has_include` is answered truthfully** - the same search `#include` does,
+// so a header that asks whether another exists gets the right answer. The rest
+// answer **0**, which is not a dodge: `#if __has_builtin(X)` is written by a
+// library precisely so it can be told no, and 0 is the answer C++ gives for a
+// builtin a compiler does not have. Saying nothing at all is what left the
+// whole family unrecognised, so `#if __has_builtin(__builtin_is_constant_evaluated)`
+// reached the expression parser as a bare identifier and stopped there - which
+// is where every libstdc++ header stopped, in `bits/c++config.h` and not in any
+// library code.
+bool Preprocessor::isHasPredicate(const std::string &name) {
+    static const char *const kAll[] = {
+        "__has_builtin", "__has_feature", "__has_extension", "__has_attribute",
+        "__has_cpp_attribute", "__has_declspec_attribute", "__has_warning",
+        "__has_keyword", "__is_identifier", "__building_module",
+        "__has_include", "__has_include_next", 0
+    };
+    for (int k = 0; kAll[k] != 0; k++) if (name == kAll[k]) return true;
+    return false;
+}
+
+std::string Preprocessor::resolveHasChecks(const std::string &expr, int fileIndex,
+                                           int lineNo, const std::string &line) {
+    static const char *const kZero[] = {
+        "__has_builtin", "__has_feature", "__has_extension", "__has_attribute",
+        "__has_cpp_attribute", "__has_declspec_attribute", "__has_warning",
+        "__has_keyword", "__building_module", 0
+    };
+    // **`__is_identifier` is the one that answers 1, not 0.** It asks whether a
+    // token is an ordinary identifier rather than a keyword or a builtin, and
+    // here everything is - cxx1 has no builtins to shadow one. Answering 0
+    // says "that name is special", and libstdc++'s
+    // `__has_builtin(B) || ! __is_identifier(B)` then reads 0 || !0 and
+    // concludes the builtin exists.
+    static const char *const kOne[] = { "__is_identifier", 0 };
+    std::string out;
+    std::size_t i = 0;
+    while (i < expr.size()) {
+        if (!identStart(expr[i])) { out += expr[i++]; continue; }
+        const std::size_t start = i;
+        while (i < expr.size() && identCont(expr[i])) i++;
+        const std::string name = expr.substr(start, i - start);
+
+        bool zero = false, one = false;
+        for (int k = 0; kZero[k] != 0; k++)
+            if (name == kZero[k]) { zero = true; break; }
+        for (int k = 0; kOne[k] != 0; k++)
+            if (name == kOne[k]) { one = true; break; }
+        if (!zero && !one && name != "__has_include" && name != "__has_include_next") {
+            out += name;
+            continue;
+        }
+
+        while (i < expr.size() && std::isspace(static_cast<unsigned char>(expr[i]))) i++;
+        if (i >= expr.size() || expr[i] != '(') {
+            // Not a call: an ordinary identifier that happens to be spelled so.
+            out += name;
+            continue;
+        }
+        // The argument, taken whole and balanced - it may hold `<`, `>`, `"`
+        // and nested parentheses, none of which is an expression here.
+        i++;
+        const std::size_t argStart = i;
+        int depth = 1;
+        while (i < expr.size() && depth > 0) {
+            if (expr[i] == '(') depth++;
+            else if (expr[i] == ')') depth--;
+            if (depth > 0) i++;
+        }
+        if (depth != 0)
+            fail(fileIndex, lineNo, line, 0, "'" + name + "(' is missing its ')'");
+        std::string arg = expr.substr(argStart, i - argStart);
+        i++;                                   // past the ')'
+
+        if (zero) { out += "0"; continue; }
+        if (one) { out += "1"; continue; }
+
+        while (!arg.empty() && std::isspace(static_cast<unsigned char>(arg[0])))
+            arg.erase(arg.begin());
+        while (!arg.empty() &&
+               std::isspace(static_cast<unsigned char>(arg[arg.size() - 1])))
+            arg.erase(arg.size() - 1);
+        bool angled = !arg.empty() && arg[0] == '<';
+        if (arg.size() >= 2 &&
+            ((angled && arg[arg.size() - 1] == '>') ||
+             (arg[0] == '"' && arg[arg.size() - 1] == '"')))
+            arg = arg.substr(1, arg.size() - 2);
+        std::vector<std::string> tried;
+        out += resolveInclude(arg, angled, fileIndex, tried).empty() ? "0" : "1";
+    }
+    return out;
+}
+
 long long Preprocessor::evalCondition(const std::string &raw, int fileIndex, int lineNo,
                                  const std::string &line) {
-    std::string expanded = resolveDefined(raw, fileIndex, lineNo, line);
+    std::string expanded = resolveHasChecks(raw, fileIndex, lineNo, line);
+    expanded = resolveDefined(expanded, fileIndex, lineNo, line);
     expanded = expandLine(expanded, fileIndex, lineNo);
+    // **And again after expansion**, because a macro may spell one:
+    // libstdc++'s `_GLIBCXX_HAS_BUILTIN(B)` is `__has_builtin(B)`, which does
+    // not exist as those tokens until the line has been expanded. The first
+    // pass is still needed - it is what keeps `__has_include(<vector>)`'s
+    // argument from being expanded as though it were an expression.
+    expanded = resolveHasChecks(expanded, fileIndex, lineNo, line);
     // After expansion, because a macro body may spell one and a keyword may
     // not itself be a macro name.
     expanded = spellAlternativeTokens(expanded);
@@ -722,14 +830,25 @@ void Preprocessor::directive(const std::string &line, int fileIndex, int lineNo)
     if (what == "ifdef" || what == "ifndef") {
         if (rest.empty() || !identStart(rest[0]))
             fail(fileIndex, lineNo, line, nameStart, "'#" + what + "' needs a name");
-        bool defined = macros_.count(rest) != 0;
+        // **`#ifdef __has_builtin` is a directive and not `defined()`**, and
+        // libstdc++ guards its whole builtin layer with exactly that. Teaching
+        // only the `#if` path left the guard false, the macro undefined, and a
+        // use of it 2000 lines later reaching the expression parser as
+        // `0(__has_unique_object_representations)`.
+        bool defined = macros_.count(rest) != 0 || isHasPredicate(rest);
         bool want = (what == "ifdef") ? defined : !defined;
         bool on = emitting() && want;
         conds_.push_back(Cond{ on, on, false });
         return;
     }
     if (what == "if") {
-        bool on = emitting() && evalCondition(rest, fileIndex, lineNo, line) != 0;
+        // **A comment is whitespace before a directive is executed** -
+        // [lex.phases]/3 replaces it in phase 3 and directives run in phase 4 -
+        // and `#define`'s body already went through this. A condition did not,
+        // so `#if EXPR // why` reached the expression parser with the comment
+        // still on it and stopped at the '/'. Every real header writes them.
+        bool on = emitting() &&
+                  evalCondition(stripComments(rest), fileIndex, lineNo, line) != 0;
         conds_.push_back(Cond{ on, on, false });
         return;
     }
@@ -743,7 +862,7 @@ void Preprocessor::directive(const std::string &line, int fileIndex, int lineNo)
             c.active = false;
             return;
         }
-        c.active = evalCondition(rest, fileIndex, lineNo, line) != 0;
+        c.active = evalCondition(stripComments(rest), fileIndex, lineNo, line) != 0;
         if (c.active) c.taken = true;
         return;
     }

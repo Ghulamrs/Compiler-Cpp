@@ -402,6 +402,7 @@ question, before anything was written:
 | a thrown temporary with a destructor | 2026-09-07 | the exception object copy-constructed, the operand's temporaries destroyed, and its destructor named |
 | the implicit destructor of an intermediate class | 2026-09-07 | a three-level hierarchy links; `synthesizeDestructor` marks its base's destructor used |
 | `<exception>` and `<stdexcept>` | 2026-09-07 | the standard's nine classes over a `std::string`, and `catcher1.cpp` running |
+| the `__has_*` predicates | 2026-09-07 | `__has_include` answered, the rest told no, and a comment on a directive line |
 
 Each has a section further down saying what was measured and what was
 deliberately not built. **The table stopped at 2026-08-30 for a week and the
@@ -8193,6 +8194,73 @@ nested-`try` refusal and the same call-site-table problem as `try` inside a
 `catch`. Its likely cause is already written down a section above - the filler
 row of negative length. That is now the last thing between this compiler and the
 second of the two programs.
+
+## The `__has_*` predicates, and four walls that were all this compiler's
+
+**Landed 2026-09-07**, and the round exists because of a question rather than a
+feature: could cxx1 use a native compiler's headers instead of shipping its own?
+The measurement was worth more than the answer.
+
+### The predicates
+
+`__has_include` is answered truthfully - the same search `#include` does - and
+`__has_builtin`, `__has_feature`, `__has_attribute` and their neighbours answer
+**0**. That is not a dodge: `#if __has_builtin(X)` is written by a library
+precisely so it can be told no, and 0 is what a compiler without X answers.
+
+**`__is_identifier` is the one that answers 1.** It asks whether a token is an
+ordinary identifier rather than a keyword or a builtin, and here everything is.
+Answering 0 says "that name is special", and libstdc++'s
+`_GLIBCXX_HAS_BUILTIN(B)`, which is `__has_builtin(B) || ! __is_identifier(B)`,
+then reads `0 || !0` and concludes the builtin exists.
+
+**They are resolved twice, before and after expansion.** Before, because
+`__has_include(<vector>)`'s argument is a header name and macro-expanding it
+would make nonsense of the `<` and `>`. After, because a library wraps them:
+`_GLIBCXX_HAS_BUILTIN` is not those tokens until the line has been expanded.
+
+**And they answer `#ifdef`, not only `defined()`.** libstdc++ guards its whole
+builtin layer with `#ifdef __has_builtin` - a directive, handled by a different
+path. Teaching only the `#if` path left the guard false, the macro undefined,
+and a use of it two thousand lines later reaching the expression parser as
+`0(__has_unique_object_representations)`.
+
+### A comment on a directive line is whitespace
+
+[lex.phases]/3 replaces a comment in phase 3 and directives execute in phase 4,
+so a condition should never see one. `stripComments` already existed and
+`#define`'s body already went through it; a condition did not, so
+`#if EXPR // why` stopped at the `/`. Every real header writes them.
+
+### What the probe actually measured
+
+Four fixes carried cxx1 from **zero headers deep** into libstdc++ to parsing
+real library code:
+
+    before   bits/c++config.h, the configure-generated layer, every header
+    after    bits/move.h:197, std::swap's conditional noexcept
+
+**The config layer was not the obstacle**, which is what this round was meant to
+find out. Every one of the four is something cxx1 should have had anyway, and
+none of them is about the library. What stops it now is the *language* -
+variadic templates, `__and_`-style SFINAE, conditional `noexcept` - which is
+`docs/EXCLUSIONS.md`, a list with named refusals and a countable cost.
+
+**And the intrinsics were the cheap part, not the blocker.** `__is_base_of`,
+`__is_polymorphic`, `__has_virtual_destructor` are compiler builtins because the
+compiler already holds the answer - and cxx1 holds it too, in `Type::bases()`,
+`Type::polymorphic()` and `destructorOf()`. Saying they "cannot be written in
+C++" is true and was the wrong thing to draw from: it makes them sound
+expensive, and they are a few lines each reading data this compiler already
+keeps to do its own job.
+
+### The case had to be rewritten to be a case at all
+
+Its first version printed `builtin=1` under clang and `0` under cxx1 - both
+correct - so its `.expected` was taken from cxx1's own output, which checks a
+compiler against itself. It asks about a builtin **neither** has now, so both
+answer 0, the expectation is clang's like every other case here, and what it
+measures is the mechanism rather than the answer.
 
 ## namespace, and the fact that a namespace is not a type
 

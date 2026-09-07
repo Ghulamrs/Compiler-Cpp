@@ -1,0 +1,4 @@
+vector=1 junk=0
+ifdef=1 defined=1
+builtin=0 ident=1
+glibcxx_shape=0 arithmetic=1 n=41
