@@ -399,6 +399,7 @@ question, before anything was written:
 | range-based `for` over a class | 2026-09-07 | `begin()`/`end()` as members, and the containers in `include/` walkable |
 | one type, one selector index | 2026-09-07 | the parser and the backend numbering alike, and a `try` in a handler refused rather than miscompiled |
 | a destructible object inside a `try` body | 2026-09-07 | the body's cleanup rows carrying the `try`'s catch types and handing over to one chain |
+| a thrown temporary with a destructor | 2026-09-07 | the exception object copy-constructed, the operand's temporaries destroyed, and its destructor named |
 
 Each has a section further down saying what was measured and what was
 deliberately not built. **The table stopped at 2026-08-30 for a week and the
@@ -7950,6 +7951,81 @@ were both green. `catch-by-reference.cpp` already had the rule.
 **Define a case's constructors out of line.** clang emits an inline-defined one
 as a comdat `linkonce_odr` and cxx1 as an ordinary definition, and `names.sh`
 then reports an emission difference wearing the shape of a mangling one.
+
+## A thrown temporary, and the three faults behind one refusal
+
+**Landed 2026-09-07.** `throw Msg("hello")` is how every real program raises an
+exception and how `<stdexcept>` will be used, and it was refused inside a `try`.
+Lifting the refusal was the plan; what it uncovered was three faults that had to
+be fixed together, because fixing the middle one alone makes the program worse.
+
+### The three
+
+**The exception object was a block copy.** `*(T *)ex = value` is an `Assign` of
+a class, which moves bytes - neither the copy constructor nor `operator=` runs,
+measured by making both print. For a class owning a buffer, the exception object
+was handed a pointer *into the temporary*.
+
+**The operand's temporaries were never destroyed.** The whole throw was built as
+one expression - `(save, store), thrower` - so there was nowhere to put the
+destruction between initialising the exception object and throwing. The
+temporary stayed in `pendingTemps_` for whatever was parsed next: a
+`throw E(1)` inside a `try` leaked its `E` into the **handler's** block, where
+its destructor was emitted at the end of the handler's first statement.
+
+**`__cxa_throw`'s third argument was null**, written when only fundamental types
+could be thrown. The runtime destroyed no exception object, so a class holding a
+buffer leaked it once per throw.
+
+**Fixing the second alone turns the first from a leak into a use-after-free** -
+measured: the handler read `[]` where clang read `[hello]`. That is why the
+refusal was right to exist and why it could not simply be lifted.
+
+### What it does now
+
+Copy-construct into the exception object through `copyConstructorOf`, falling
+back to the byte copy only where there is no copy constructor - a trivially
+copyable class, or a fundamental type, which is what this always did. Then
+`flushTemporaries`, which is [except.throw]/3's order: the exception object is
+initialised, *then* the operand's temporaries are destroyed. Then the throw,
+carrying the class's destructor so `__cxa_end_catch` destroys the object.
+
+Three statements where there was one expression, which is the whole reason the
+middle one now has somewhere to go.
+
+**The emit golden read `0 of 719 files changed`.** With no temporaries
+`flushTemporaries` appends nothing, and no case in the tree threw a class with a
+copy constructor or a destructor - so the restructure is invisible to everything
+that existed, and nothing existing exercised the new path either. That is what
+`throw-temporary.cpp` is for.
+
+### The case is written to be elision-invariant
+
+[class.copy]/31 lets an implementation build the exception object directly from
+the operand. clang does; cxx1 does not, so cxx1 constructs two objects here and
+clang one. **Counting constructions would be counting a permitted choice**, so
+the case prints an outstanding-allocation *balance* and what the handler read,
+never a total - and it cannot pass with any of the three faults undone.
+
+### What it exposed and did not fix
+
+`names.sh` reported that clang emits `__cxa_free_exception` and cxx1 does not.
+That is the cleanup for a copy constructor that throws while the exception
+object is being initialised: the storage has an owner for the length of the copy
+and none afterwards. It is the open item the handover already lists, and it
+became **visible** rather than new - until the object was copy-constructed there
+was no copy that could throw. Recorded in `throw-temporary.nonames`, with the
+note that nothing in this tree can reach it, cxx1 having no `bad_alloc` to raise.
+
+### And the sequence is worth recording, because it was mine
+
+The crash this round fixes was reachable only because the previous round
+narrowed a refusal. `throw M(5)` in a function with no `try` compiled before and
+after; what changed is that the *catching* side stopped being refused, so the
+program could be written, linked and run - and it aborted. Measured at
+`e65f27f`: refused. At `3ab23b4`: `rc=138`. **A refusal being lifted is a claim
+that what it guarded is now safe**, and that claim needs the same measurement as
+a feature. It did not get one, and the crash went to the remote.
 
 ## namespace, and the fact that a namespace is not a type
 

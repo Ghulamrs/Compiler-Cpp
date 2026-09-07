@@ -1,0 +1,3 @@
+caught [hello] | outstanding 0
+caught [inline] | outstanding 0
+caught [second] | outstanding 0

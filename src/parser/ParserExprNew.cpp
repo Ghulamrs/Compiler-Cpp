@@ -971,10 +971,35 @@ StmtPtr Parser::throwStatement(ExprPtr value, std::size_t pos) {
     asT->setType(voidPtr);
     ExprPtr cast(new Cast(thrownPtr, std::move(asT)));
     cast->setType(thrownPtr);
-    ExprPtr into(new Unary('*', std::move(cast)));
-    into->setType(thrown);
-    ExprPtr store(new Assign(std::move(into), convert(std::move(value), thrown)));
-    store->setType(thrown);
+
+    // **[except.throw]/3 copy-initialises the exception object**, and that means
+    // the copy constructor where there is one. An `Assign` of a class is a block
+    // copy - neither the copy constructor nor `operator=` runs, measured by
+    // making both print - so a class owning a buffer handed the exception object
+    // a pointer into the temporary. Left alone that leaked; destroying the
+    // temporary made it a use-after-free, and the handler read `[]` where clang
+    // read `[hello]`. Both are gone because the copy is a real one now.
+    ExprPtr store;
+    const Signature *cc = copyConstructorOf(thrown);
+    if (cc != nullptr) {
+        markUsed(cc);
+        std::vector<ExprPtr> ctorArgs;
+        ctorArgs.push_back(std::move(cast));
+        ctorArgs.push_back(convert(std::move(value), thrown));
+        std::vector<const Type *> ps;
+        ps.push_back(thrownPtr);
+        ps.push_back(cc->params[0]);
+        store = completeCall(thrown->tag(), cc->symbol, nullptr,
+                             types_.get(Kind::Void), ps, false, pos,
+                             std::move(ctorArgs));
+    } else {
+        // No copy constructor is a trivially copyable class - or a fundamental
+        // type - and the bytes are the copy, which is what this always did.
+        ExprPtr into(new Unary('*', std::move(cast)));
+        into->setType(thrown);
+        store.reset(new Assign(std::move(into), convert(std::move(value), thrown)));
+        store->setType(thrown);
+    }
 
     // The exception object, the type that identifies it, and the destructor
     // it does not have. A fundamental type needs none, so the third argument
@@ -992,18 +1017,45 @@ StmtPtr Parser::throwStatement(ExprPtr value, std::size_t pos) {
     tiAddr->setType(voidPtr);
     throwArgs.push_back(std::move(tiAddr));
 
-    ExprPtr none(new Num(0LL));
-    none->setType(voidPtr);
-    throwArgs.push_back(std::move(none));
+    // **The third argument is the destructor the runtime runs on the exception
+    // object**, and it was a null written when only fundamental types could be
+    // thrown. A class with one needs it named, or `__cxa_end_catch` frees the
+    // storage and destroys nothing - which for a class holding a buffer is the
+    // buffer leaked, once per throw, invisibly.
+    const Signature *dtor = destructorOf(thrown);
+    if (dtor != nullptr) {
+        markUsed(dtor);
+        Var *dv = Var::global(dtor->symbol);
+        dv->setSymbol(dtor->symbol);
+        ExprPtr dref(dv);
+        dref->setType(types_.get(Kind::Char));
+        ExprPtr daddr(new Unary('&', std::move(dref)));
+        daddr->setType(voidPtr);
+        throwArgs.push_back(std::move(daddr));
+    } else {
+        ExprPtr none(new Num(0LL));
+        none->setType(voidPtr);
+        throwArgs.push_back(std::move(none));
+    }
 
     ExprPtr thrower = runtimeCall("__cxa_throw", types_.get(Kind::Void),
                                   std::move(throwArgs));
 
+    // **Three statements, because something happens between them.** The
+    // exception object is initialised, *then* the operand's temporaries are
+    // destroyed - [except.throw]/3 - and only then does the throw leave. Built
+    // as one Comma there was nowhere to put the middle one, and the temporary
+    // was left to whatever was parsed next: `throw E(1)` inside a `try` leaked
+    // its E into the *handler's* block.
+    std::vector<StmtPtr> steps;
     ExprPtr first(new Comma(std::move(save), std::move(store)));
-    first->setType(thrown);
-    ExprPtr whole(new Comma(std::move(first), std::move(thrower)));
-    whole->setType(types_.get(Kind::Void));
-    return StmtPtr(new ExprStmt(std::move(whole)));
+    first->setType(types_.get(Kind::Void));
+    steps.push_back(StmtPtr(new ExprStmt(std::move(first))));
+    flushTemporaries(steps);
+    steps.push_back(StmtPtr(new ExprStmt(std::move(thrower))));
+    Block *b = new Block(std::move(steps));
+    b->setScope(-1);
+    return StmtPtr(b);
 }
 
 ExprPtr Parser::callAllocator(const char *itanium, const char *microsoft,

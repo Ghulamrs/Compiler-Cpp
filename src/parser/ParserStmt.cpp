@@ -1405,23 +1405,12 @@ StmtPtr Parser::statementBody() {
                             std::vector<ExprPtr>())));
         }
         mayThrow_++;
-        const std::size_t tempsBefore = pendingTemps_.size();
         ExprPtr value = decay(expr());
-        // **A temporary in the thrown expression is destroyed as the exception
-        // leaves** - clang runs `~S` before the handler. It is registered on
-        // the enclosing block's list, and inside a `try` that block's cleanup
-        // region is now split around this statement, so nothing would destroy
-        // it. Refused rather than leaked: the first version of the split let
-        // this compile and lose the destructor, which is worse than saying no.
-        if (inTryBody_)
-            for (std::size_t k = tempsBefore; k < pendingTemps_.size(); k++)
-                if (destructorOf(pendingTemps_[k].type) != nullptr)
-                    src_.fail(tpos, "a temporary with a destructor in a thrown "
-                                    "expression inside a 'try' is not "
-                                    "supported yet - it is destroyed as the "
-                                    "exception leaves, and this statement sits "
-                                    "outside the region that would do it; "
-                                    "build the object in a named local first");
+        // **A temporary in the thrown expression is destroyed by the throw
+        // itself now**, after the exception object has been copy-initialised
+        // from it - [except.throw]/3. It was refused here while the exception
+        // object was a *block copy* and nothing destroyed the original: see
+        // throwStatement, which copy-constructs and then flushes.
         expect(";");
         return throwStatement(std::move(value), tpos);
     }

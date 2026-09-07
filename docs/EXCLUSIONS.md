@@ -353,17 +353,17 @@ where one object is many:
 ## `new` and `delete`
 
 - **placement new**, and a parenthesised type-id after `new` —
-  `src/parser/ParserExprNew.cpp:1028`
+  `src/parser/ParserExprNew.cpp:1080`
 - **more than one value in a new-expression** —
-  `src/parser/ParserExprNew.cpp:1115`
+  `src/parser/ParserExprNew.cpp:1167`
 - **`new T[n]` of a class with a constructor** —
-  `src/parser/ParserExprNew.cpp:1082`
+  `src/parser/ParserExprNew.cpp:1134`
 - **`new T[n][m]`** — only the first dimension may be given.
-  `src/parser/ParserExprNew.cpp:1056`
-- **`new T{...}`** — `src/parser/ParserExprNew.cpp:1108`
-- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:1328`
+  `src/parser/ParserExprNew.cpp:1108`
+- **`new T{...}`** — `src/parser/ParserExprNew.cpp:1160`
+- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:1380`
 - **`delete[]` of a type with a destructor** — the count `new[]` would have
-  recorded is not written. `src/parser/ParserExprNew.cpp:1396`
+  recorded is not written. `src/parser/ParserExprNew.cpp:1448`
 
 ## Statements, exceptions and control
 
@@ -377,10 +377,7 @@ where one object is many:
   **x86_64-windows keeps the whole refusal**, body and handler alike: a cleanup
   is a funclet and an FH3 state there, and `wrapMsCleanups` has not been taught
   either trick. `src/parser/ParserStmt.cpp:755`,
-  `src/parser/ParserStmt.cpp:1018`, `src/parser/ParserStmt.cpp:1667`
-- **a temporary with a destructor in a thrown expression inside a `try`** — it
-  is destroyed as the exception leaves, and that statement sits outside the
-  region that would do it. `src/parser/ParserStmt.cpp:1419`
+  `src/parser/ParserStmt.cpp:1018`, `src/parser/ParserStmt.cpp:1656`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and
@@ -531,7 +528,7 @@ guessed wrong twice.
 
 - **`return` inside a `catch` on x86_64-windows** — a handler is a funclet
   there, so leaving one early is a return of the address to carry on at.
-  `src/parser/ParserStmt.cpp:1430`
+  `src/parser/ParserStmt.cpp:1419`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation

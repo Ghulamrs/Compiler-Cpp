@@ -1,11 +1,3 @@
-cl emits the four objects a Microsoft throw is identified by - ??_R0H@8, the
-type descriptor for int; _CT??_R0H@84, its catchable type; _CTA1H, the array
-of those; and _TI1H, the ThrowInfo - as public COMDATs, and cxx1 emits the
-same four as file-local symbols, so they do not appear in its symbol table.
-Same reason as condition-declaration-unwind.nocl and temporary-unwind.nocl,
-which throw an int the way this case does; and the handler funclets this
-target builds a catch from, which try-catch-value.nocl records.
+cl emits the four objects a Microsoft throw is identified by - ??_R0H@8, the type descriptor for int; _CT??_R0H@84, its catchable type; _CTA1H, the array of those; and _TI1H, the ThrowInfo - as public COMDATs, and cxx1 emits the same four as file-local symbols, so they do not appear in its symbol table. That is 6.5a's own measured decision: cl puts each in a COMDAT, MASM cannot say COMDAT, and a public copy collides with cl's at the link. One-directional - nothing cxx1 emits is missing from cl - and everything else about the case agrees.
 
-Reasoned from those three and not yet measured beside cl: this case was
-written on the Mac, where tests/names.sh compares it against clang for all
-three targets with no difference at all.
+Measured against cl on 2026-09-07, and the four above are exactly what it reported. This file first said "reasoned from condition-declaration-unwind.nocl and temporary-unwind.nocl, not yet measured", which was honest and also self-concealing: a .nocl exempts its case from the cl comparison, so the guess it records is the one thing that can never be checked while it is there. It was settled by removing it and running tools/verify-three windows, which answered NAMES-DIFFER with those four names. Do that to any .nocl whose text does not say it was measured.
