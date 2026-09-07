@@ -373,6 +373,14 @@ x86_64-linux, x86_64-windows and arm64-darwin. Suites at the last commit:
 | Linux | 223 | 348 | - | - | - |
 | Windows | 220 | - | - | - | 93 |
 
+**Those numbers are 2026-09-01's and are kept as the record of that day; they
+are not what the tree measures now.** The newest `docs/HANDOVER-*.md` carries
+the current ones, which is where to look - a table in the middle of a file
+written in the order things happened will always be behind, and quietly
+correcting it in place would lose the date it was true. At 2026-09-08, from the
+Windows box: emit 735, `names.sh` 249/1, `overload.sh` 30/0, and the Windows
+cases 235/0 through *both* assembly spellings.
+
 **Two of the four suites only ever run on one machine.** `names.sh` and
 `overload.sh` both ask clang, and the Linux box has no clang++ - they skip
 themselves there and say so. So the oracle half of three-box verification is
@@ -405,6 +413,11 @@ question, before anything was written:
 | the `__has_*` predicates | 2026-09-07 | `__has_include` answered, the rest told no, and a comment on a directive line |
 | disjoint call-site regions | 2026-09-07 | a `try` inside a `catch`, and rows that can finally be sorted |
 | a `try` inside a `try` | 2026-09-07 | the action chain continuing outwards and the pad handing over - all three lambdaTest programs run |
+| a virtual base built once | 2026-09-08 | C1 split from C2, in all three constructor paths; a segfault on the implicit one |
+| `<type_traits>` | 2026-09-08 | the C++11 core of it, and an explicit specialization that may name a base |
+| `ostream << long double` | 2026-09-08 | the overload that did not exist, and `snprintf` under it |
+| clang as the COFF assembler | 2026-09-08 | COMDAT, so a multi-file C++ program links on Windows - Compiler++ does |
+| the GNU spelling catches | 2026-09-08 | a try map and a handler map where there had been neither |
 
 Each has a section further down saying what was measured and what was
 deliberately not built. **The table stopped at 2026-08-30 for a week and the
@@ -8718,13 +8731,159 @@ such function in an implicit `try`, which would inherit the two try/catch
 limits already recorded here and start refusing programs that work today. Lift
 those first.
 
+## A virtual base is built once, and the three paths that had to learn it
+
+**[class.base.init]/7 gives every virtual base to the most-derived class**, and
+the base subobject constructors it calls must not build them again. C2 was a
+label on C1's body - which is right for every class without a virtual base, and
+is what `Function::setAlias` is for - so `V` was built once per class that named
+it: `+V +D1 +V +D2 +V +Dia` where clang gives `+V +D1 +D2 +Dia`, and three
+destructions to match.
+
+**The body carrying the user's code is emitted as C2**, with the virtual bases
+skipped, and C1 is synthesised beside it: build them, then call C2. It falls
+that way round because a wrapper cannot skip part of another function's body.
+
+**Three paths needed it and the implicit one was worse than wrong.**
+`synthesizeDefaultCtor` reached its virtual base *through the vtable* - and the
+vptr that walk follows is stored after the bases are built, so it dereferenced
+whatever the stack held. `struct D : virtual public V { };` with no constructor
+written anywhere **segfaulted**. `synthesizeCopy` takes the same split with the
+source forwarded, so `Dia b(a)` copy-constructs the one `V` out of `a`'s rather
+than default-constructing it.
+
+Verified by running on the Linux box - five shapes, all matching clang,
+including the three that segfaulted. The emit golden read 2 of 735 changed,
+both of them the new case, so nothing else in the tree moved.
+
+**Still refused:** the VTT and the construction vtables, which nothing needs
+until a virtual function is called from inside a base constructor - that is the
+one `names.sh` difference the new case carries, clang emitting `_ZTT2D1` and
+`_ZTC3Dia0_2D1` where this emits neither. And the whole feature on
+x86_64-windows, where a virtual base is a vbtable: **cl says `sizeof(D)` is 24
+where cxx1 says 16**, and reading a member of one stops with `codegen: this has
+no address` - a message naming no feature, which is the invisible bucket again.
+
+## `<type_traits>`, and four gaps of one family
+
+The header is the C++11 core - `is_integral`, `is_floating_point`, `is_same`,
+`is_pointer`, `remove_const`, `remove_reference`, `enable_if`, `conditional`
+and their neighbours - and writing it met **four separate limitations**, each
+of which is why some part of it is shaped the way it is.
+
+**An explicit specialization could not name a base.**
+`template <> struct is_integral<int> : true_type {};` is how every trait is
+written, and it was refused with "an explicit specialization is a definition,
+and this one has no body" - which it had, four tokens further on. The guard
+asked for `{` where `structOrUnionSpecifier` already treats `{` and `:` alike.
+Fixed; `final` joins them.
+
+**Three are still open, and each is recorded in the header where it bites:**
+
+- `template <class T, T v>` - a non-type parameter whose type is the parameter
+  before it - is refused with "expected a type". That is what
+  `integral_constant` is, so it is not there; `true_type` and `false_type` are
+  typedefs of `_bool_constant<bool>`, which needs only a `bool`.
+- **a typedef naming a template-id, used as a base, resolved at
+  instantiation.** `: false_type {}` parses and then fails where the trait is
+  *used*, with "'false_type' is not a class". So every base in the header is
+  written `_bool_constant<false>` outright. The declaration is fine; it is the
+  instantiation that cannot follow the typedef.
+- a partial specialization on an **array of unknown bound**, `is_array<T []>`,
+  stops with `target: no size for this type yet`. A pattern is a shape and
+  needs no size, and it is the same anonymous refusal a template parameter used
+  as an array element gives.
+
+**And a fourth, met writing the case beside it:** an out-of-line **constructor
+of a class template** is refused by name, so a case that wants one has to use
+an ordinary member instead - which is also what keeps clang from emitting only
+C2 and making `names.sh` report an emission difference as a mangling one.
+
+**`ostream << long double` did not exist**, which is what `longong.cpp` stopped
+on: every arithmetic overload was reachable by a conversion and none better, so
+the insertion was ambiguous and the diagnostic listed seven candidates without
+naming the missing one. It asks `snprintf` twice rather than guessing once -
+`setprecision(400)` is legal and `%Lf` near `LDBL_MAX` is five thousand digits
+- so `lib/stdio.h` declares the bounded form C99 added and C++11 requires.
+
+**Measured, and the measurement is the interesting half:** `sizeof(long
+double)` is 16 on x86_64-linux and **8** on x86_64-windows and arm64-darwin. On
+two of the three targets it *is* a double and cxx1 was already right; only
+Linux carries the eleven extra digits, and cxx1 already agreed with g++ there.
+So the feature was one missing overload rather than a type-system rung.
+
+## Compiler++ links on Windows: clang is the assembler
+
+**`ml64` has no COMDAT directive**, so every mergeable definition - a vtable, an
+inline member, a template's - is exported by each translation unit that needs
+one. Building Compiler++'s sixteen sources gave **3592 LNK2005 over 518
+distinct symbols**: 48 vtables and 470 inline, template and implicit members.
+
+**Two answers were measured and rejected, and the measurements are what to keep:**
+
+- **File-local**, the precedent rung 6.5a set for the throw RTTI. Links and
+  runs - the runtime matches a type descriptor by its name string - but vtables
+  alone leave the 470 functions standing, and withdrawing everything costs
+  `names-vs-cl` 17 cases where cl exports a vtable External, on top of the 51
+  already recorded here for the inline functions.
+- **A key function**, which is what Itanium uses. Dead by census: of the 48
+  colliding classes **43 have none**, every virtual being inline or pure. And
+  **cl does not use one either** - measured on this box, it emits the vftable
+  External in both objects of a two-file program whose key function is in one.
+
+What was already true and unreachable is that **the GNU spelling links with no
+duplicates at all**: clang writes the same COFF and can mark a section COMDAT.
+The driver simply never called it - `Driver::link` and `Driver::assembleObjects`
+built an `ml64` command whatever `-masm=` said. They ask
+`windowsAsmIsGnu()` now.
+
+`cxx1 -masm=gnu` builds Compiler++ into a linked executable whose 129 cases are
+byte-identical to the cl build's. The default is unchanged, so an ordinary
+Windows compile still uses ml64 and the emit golden read 0 of 735.
+
+## The GNU spelling catches, and the try map that was not there
+
+Three gaps stood between `-masm=gnu` and the exception support MASM has had
+since rung 6.5b, and **each was hidden by the one before it**.
+
+`endFunclet` wrote the raw `.L` resume label where every table entry around it
+already goes through `labelText`, so the assembler - which discards a `.L` as a
+temporary - refused `lea .L.main.caught.0(%rip)`. One call, identity on ELF and
+Mach-O.
+
+The **Microsoft throw-info chain** had no GNU twin: `??_R0`, `_CT`, `_CTA` and
+`_TI` were emitted only by `MasmCodeGen`, so anything that threw assembled and
+failed at link on `_TI`.
+
+**And under those, the one that mattered: there was no try map.**
+`emitCoffCleanupTables` was the only FH3 emitter here, so a frame that *catches*
+was described as a frame that only cleans up - `nTryBlocks` 0, no handler map -
+and a `try`/`catch` linked, ran, **caught nothing and printed nothing**. It also
+wrote `.long @IMGREL` with no symbol for a state with no funclet, which the
+assembler took as a reference to a symbol named `?`. `emitCoffTryTables` is the
+GNU twin of the MASM try emitter, and the dispatch asks
+`msTries()[0].isCleanup` in the same words `MasmCodeGen` does.
+
+**The Windows cases read 235 / 0 through both spellings now**, where the GNU one
+read 228 / 235. That is what would let `-masm=gnu` become the default, and it is
+a decision rather than a tidy-up: flipping it moves all 235 golden files and
+re-bases `names-vs-cl`, both of which run the default syntax.
+
 ## Comments in src/ are at most three lines
 
-**No comment group in `src/` runs longer than three lines** - a group being a
-run of `//` lines with nothing between them - and that is a standing rule
-rather than a tidy-up somebody did once. It was applied across the tree on
-2026-09-02: 640 groups, 4,575 of the 5,642 comment lines there, rewritten to
-keep the finding and the measurement and drop the reasoning around them.
+**This section used to open "No comment group in `src/` runs longer than three
+lines", and that has not been true for a while.** Counted 2026-09-08: `src/`
+holds **400** groups over three lines, 48 of them in `parser/Parser.h` alone.
+The sweep below happened and the rule was real; the tree has grown past it, and
+a reader who took the sentence at its word would have reformatted a hundred
+comments to match a standard nothing enforces. It is the tree's own rule 5 -
+*a claim with no oracle is not allowed to be believed* - failing on this file.
+
+**What the rule is worth keeping as** is a preference rather than an invariant:
+prefer three lines beside the code, and put the story here. It was applied
+across the tree on 2026-09-02: 640 groups, 4,575 of the 5,642 comment lines
+there, rewritten to keep the finding and the measurement and drop the reasoning
+around them.
 
 **What was dropped is not lost, and this file is where it went.** The long
 form - why an ABI answer is what it is, what a bug looked like before it was
