@@ -157,17 +157,20 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // `class Derived : public Base {` - the base-clause, which may name more than
     // one. Default access is private for a class and public for a struct. Bases are
     // laid down in the order written, which is the order their constructors run in.
-    struct WrittenBase { const Type *type; Access access; };
+    struct WrittenBase { const Type *type; Access access; bool isVirtual; };
     std::vector<WrittenBase> written;
     if (peek().is(":")) {
         at_++;
         for (;;) {
             Access how = isClass ? Access::Private : Access::Public;
-            if (peek().is("virtual"))
-                src_.fail(peek().pos, "a virtual base is not supported yet");
+            // [class.derived]/1 lets `virtual` and the access specifier be
+            // written in either order.
+            bool isVirtualBase = false;
+            if (peek().is("virtual")) { isVirtualBase = true; at_++; }
             if (peek().is("public"))         { how = Access::Public;    at_++; }
             else if (peek().is("protected")) { how = Access::Protected; at_++; }
             else if (peek().is("private"))   { how = Access::Private;   at_++; }
+            if (!isVirtualBase && peek().is("virtual")) { isVirtualBase = true; at_++; }
 
             std::size_t bpos = peek().pos;
             // **Read the base as a type rather than as a name.** A base may be
@@ -191,7 +194,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                 src_.fail(bpos, "'" + baseName + "' is not defined yet - a base "
                                 "class has to be complete, because the derived "
                                 "object contains one");
-            written.push_back(WrittenBase{ b, how });
+            written.push_back(WrittenBase{ b, how, isVirtualBase });
             if (!consume(",")) break;
         }
     }
@@ -224,6 +227,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // at the offsets they already have - that is what the layout IS, so `d.b` needs
     // no second search. Access travels through the inheritance.
     for (std::size_t bi = 0; bi < written.size(); bi++) {
+        // A virtual base waits: it goes after every non-virtual byte, which is
+        // not known until the members have been read.
+        if (written[bi].isVirtual) continue;
         const Type *b = written[bi].type;
         const Access how = written[bi].access;
 
@@ -251,6 +257,10 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             // Whose it is, kept through the flattening: a base's private
             // member stays the base's for the access check, however many
             // classes down it is copied.
+            // **A base's virtual-base part is not copied down.** It lives
+            // past the base's non-virtual size and the most derived class lays
+            // it down once for everybody, which is what `virtual` buys.
+            if (b->hasVirtualBase() && m.offset >= b->nvDataSize() + at) continue;
             if (m.declaredIn == nullptr) m.declaredIn = b;
             if (m.access == Access::Private) m.access = Access::Private;
             else if (how == Access::Private) m.access = Access::Private;
@@ -260,7 +270,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         type->addBase(b, at, how);
 
         // The base's DATA size, not its sizeof - see Type::dataSize.
-        bitCursor = static_cast<long long>(at + b->dataSize()) * 8;
+        bitCursor = static_cast<long long>(at + b->nvDataSize()) * 8;
         if (b->align(target_) > widest) widest = b->align(target_);
         // The first base's slots come down in order, and an override in this
         // class replaces one rather than appending - declareMember does that.
@@ -271,7 +281,8 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // **A polymorphic object carries a vptr at offset 0**, so its members start after
     // it - measured: one int and one virtual is 16 bytes with the int at 8. A derived
     // class inherits the base's: one class, one vptr, however deep the chain.
-    const bool inheritsVptr = base != nullptr && base->polymorphic();
+    // A base carrying a vptr for *either* reason has already counted it.
+    const bool inheritsVptr = base != nullptr && base->hasVptr();
     const std::size_t firstOwnMember = members.size();
 
     // **The one difference between the two keywords.** [class.access]: a class starts
@@ -927,9 +938,22 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // only knowable now - so room for the vptr is made here, by moving this class's
     // own members up by a pointer. A polymorphic base already counted its own.
     const bool anyVirtual = !tag.empty() && !vtables_[tag].empty();
-    if (anyVirtual || inheritsVptr) type->setPolymorphic(true);
+    // **Polymorphic stays the language's question** - a virtual function,
+    // declared or inherited - because `dynamic_cast` and `typeid` hang off it.
+    if (anyVirtual || (base != nullptr && base->polymorphic()))
+        type->setPolymorphic(true);
 
-    if (anyVirtual && !inheritsVptr && kind != Kind::Union) {
+    // **A written virtual base earns a vptr as surely as a virtual function
+    // does**, and does not thereby make the class polymorphic: the vptr is
+    // there to reach the base, not to dispatch.
+    bool writesVirtualBase = false;
+    for (std::size_t bi = 0; bi < written.size(); bi++)
+        if (written[bi].isVirtual) writesVirtualBase = true;
+    for (std::size_t bi = 0; bi < written.size() && !writesVirtualBase; bi++)
+        if (written[bi].type->hasVirtualBase()) writesVirtualBase = true;
+
+    if ((anyVirtual || writesVirtualBase) && !inheritsVptr &&
+        kind != Kind::Union) {
         const int slot = 8;
         for (std::size_t i = firstOwnMember; i < members.size(); i++)
             members[i].offset += slot;
@@ -943,6 +967,76 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                                 msUnitStart + msUnitBits > bitCursor)
                              ? msUnitStart + msUnitBits : bitCursor;
     long long totalBits = (kind == Kind::Union) ? widestBits : lastBits;
+    // Everything above is the non-virtual part; the virtual bases follow it.
+    // **Recorded only when there are any.** `dataSize()` keeps a POD base's
+    // tail padding on purpose - Itanium reuses it only for a non-POD base -
+    // and setting this unconditionally handed the unpadded size to every
+    // derived class, which `base-tail-padding.cpp` caught at once.
+    bool anyVirtualBase = false;
+    for (std::size_t bi = 0; bi < written.size(); bi++)
+        if (written[bi].isVirtual) anyVirtualBase = true;
+    for (std::size_t bi = 0; bi < written.size() && !anyVirtualBase; bi++)
+        if (written[bi].type->hasVirtualBase()) anyVirtualBase = true;
+    if (anyVirtualBase)
+        type->setNvDataSize(static_cast<int>((totalBits + 7) / 8));
+
+    // **The virtual bases, one each, after all the non-virtual data**, and the
+    // set is transitive: `Dia : D1, D2` writes no `virtual` itself yet is the
+    // class that has to lay V down, because "most derived" is about the object
+    // being built and not about who wrote the keyword.
+    struct Gather {
+        static void of(const Type *t, std::vector<const Type *> &out,
+                       std::vector<Access> &how, Access through) {
+            const std::vector<Type::BaseSpec> &bs = t->bases();
+            for (std::size_t i = 0; i < bs.size(); i++) {
+                Access a = (bs[i].access == Access::Private ||
+                            through == Access::Private) ? Access::Private
+                         : (bs[i].access == Access::Protected ||
+                            through == Access::Protected) ? Access::Protected
+                                                          : Access::Public;
+                if (bs[i].isVirtual) {
+                    bool seen = false;
+                    for (std::size_t k = 0; k < out.size(); k++)
+                        if (out[k] == bs[i].type) seen = true;
+                    if (!seen) { out.push_back(bs[i].type); how.push_back(a); }
+                }
+                of(bs[i].type, out, how, a);
+            }
+        }
+    };
+    std::vector<const Type *> vbases;
+    std::vector<Access> vaccess;
+    for (std::size_t bi = 0; bi < written.size(); bi++)
+        if (written[bi].isVirtual) {
+            bool seen = false;
+            for (std::size_t k = 0; k < vbases.size(); k++)
+                if (vbases[k] == written[bi].type) seen = true;
+            if (!seen) { vbases.push_back(written[bi].type);
+                         vaccess.push_back(written[bi].access); }
+        }
+    for (std::size_t bi = 0; bi < written.size(); bi++)
+        Gather::of(written[bi].type, vbases, vaccess, written[bi].access);
+
+    for (std::size_t bi = 0; bi < vbases.size(); bi++) {
+        const Type *b = vbases[bi];
+        const long long byteCursor = (totalBits + 7) / 8;
+        const int at = static_cast<int>(alignTo(static_cast<int>(byteCursor),
+                                                b->align(target_)));
+        const std::vector<Member> &inherited = b->members();
+        for (std::size_t i = 0; i < inherited.size(); i++) {
+            Member m = inherited[i];
+            m.offset += at;
+            if (m.declaredIn == nullptr) m.declaredIn = b;
+            if (m.access == Access::Private) m.access = Access::Private;
+            else if (vaccess[bi] == Access::Private) m.access = Access::Private;
+            else if (vaccess[bi] == Access::Protected) m.access = Access::Protected;
+            if (m.inVirtualBase == nullptr) m.inVirtualBase = b;
+            members.push_back(m);
+        }
+        type->addBase(b, at, vaccess[bi], true);
+        totalBits = static_cast<long long>(at + b->dataSize()) * 8;
+        if (b->align(target_) > widest) widest = b->align(target_);
+    }
 
     // **An empty class is legal in C++ and has size 1**, so that two objects of it
     // have different addresses - and it changes the numbers only: returning here once
@@ -996,7 +1090,9 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         for (std::size_t i = 0; i < slots.size(); i++)
             if (slots[i].pure) { type->setAbstract(true); break; }
     }
-    if (type->polymorphic()) emitVtable(type, tag, pos);
+    // A class with a virtual base needs a table though it has no virtual
+    // function: the table is where the offset to that base is kept.
+    if (type->hasVptr()) emitVtable(type, tag, pos);
     // **A specialization's member bodies are not replayed here.** This is in the
     // middle of whatever asked for the class, and a replay goes through topLevel,
     // which clears the locals; they are handed to the pass that defines them.

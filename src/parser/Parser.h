@@ -675,6 +675,17 @@ private:
     // the pointer arithmetic this file warns about is written.** It is right for
     // the same reason it was at each of the seven sites: nothing has parsed since.
     void markUsed(const Signature *f);
+    // **How far the address point sits past the table's first byte.** Itanium
+    // puts offset-to-top and the typeinfo before it, and one `vbase_offset` per
+    // virtual base before those - so everything that stores or reads a vptr has
+    // to agree on the depth.
+    int vtableHeaderBytes(const Type *cls) const {
+        if (target_.microsoftNames()) return 0;
+        int n = 0;
+        const std::vector<Type::BaseSpec> &bs = cls->bases();
+        for (std::size_t i = 0; i < bs.size(); i++) if (bs[i].isVirtual) n++;
+        return (n + 2) * 8;
+    }
 
     // Two parameter lists compared as C++ compares them - same length, same
     // types, in order. Six places asked it inline; what goes beside it, constThis
@@ -686,6 +697,10 @@ private:
     // hand, each remembering the pointer type on `this`, the class on the
     // dereference and the member's bitfield width; another type is set by the caller.
     ExprPtr thisMember(int thisSlot, const Type *cls, const Member &m);
+    // Reaching a member that lives in a virtual base. Null back means an
+    // ordinary member and the caller builds the constant-offset access.
+    ExprPtr virtualBaseMember(ExprPtr object, const Type *staticType,
+                              const Member &m);
 
     // A member the layout copied down from a base, told by the offset it sits
     // at: a base occupies its data size, so anything inside that range came

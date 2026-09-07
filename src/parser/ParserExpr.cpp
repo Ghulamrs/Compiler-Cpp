@@ -1814,6 +1814,15 @@ ExprPtr Parser::postfix() {
             const Member *m = obj->findMember(name);
             if (!m) src_.fail(pos, "'" + obj->describe() + "' has no member '" + name + "'");
             checkAccessible(obj, *m, pos);
+            // A member of a virtual base is not at a constant offset. The
+            // test comes first because the call consumes the object: asking
+            // unconditionally moved `n` away from every ordinary access too.
+            if (m->inVirtualBase != nullptr) {
+                if (ExprPtr viaVb = virtualBaseMember(std::move(n), obj, *m)) {
+                    n = std::move(viaVb);
+                    continue;
+                }
+            }
             ExprPtr acc(new MemberAccess(std::move(n), name, m->offset,
                                          m->width, m->bitOffset));
             // A member reached through a const object is itself const - [expr.ref]
@@ -1880,6 +1889,15 @@ ExprPtr Parser::postfix() {
             const Member *m = obj->findMember(name);
             if (!m) src_.fail(pos, "'" + obj->describe() + "' has no member '" + name + "'");
             checkAccessible(obj, *m, pos);
+            // A member of a virtual base is not at a constant offset. The
+            // test comes first because the call consumes the object: asking
+            // unconditionally moved `n` away from every ordinary access too.
+            if (m->inVirtualBase != nullptr) {
+                if (ExprPtr viaVb = virtualBaseMember(std::move(n), obj, *m)) {
+                    n = std::move(viaVb);
+                    continue;
+                }
+            }
             ExprPtr acc(new MemberAccess(std::move(n), name, m->offset,
                                          m->width, m->bitOffset));
             // A member reached through a const object is itself const - [expr.ref]

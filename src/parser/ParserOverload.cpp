@@ -110,6 +110,64 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
     if (to->isPointer() && e->type()->isPointer() &&
         to->pointee()->isStructOrUnion() && e->type()->pointee()->isStructOrUnion()) {
         const int off = publicBaseOffset(e->type()->pointee(), to->pointee());
+        // **A virtual base is not at a constant offset from the derived
+        // pointer**, so the walk forward is a number read out of the vtable
+        // rather than one written here. Which entry is fixed by how many
+        // virtual bases the source type has; its contents are not.
+        const Type *srcCls = e->type()->pointee()->unqualified();
+        const Type *dstCls = to->pointee()->unqualified();
+        long long vbBack = 0;
+        {
+            const std::vector<Type::BaseSpec> &bs = srcCls->bases();
+            int nvb = 0, seen = 0;
+            for (std::size_t i = 0; i < bs.size(); i++) if (bs[i].isVirtual) nvb++;
+            for (std::size_t i = bs.size(); i-- > 0; ) {
+                if (!bs[i].isVirtual) continue;
+                if (bs[i].type == dstCls) {
+                    vbBack = -static_cast<long long>(nvb + 2 - seen) * 8;
+                    break;
+                }
+                seen++;
+            }
+        }
+        if (vbBack != 0 && !target_.microsoftNames()) {
+            const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+            const Type *offType = types_.get(Kind::LongLong);
+            ExprPtr asChars(new Cast(chars, std::move(e)));
+            asChars->setType(chars);
+            int slot = const_cast<Parser *>(this)->allocateFrameSlot(chars);
+            std::string temp = ".vp" +
+                std::to_string(const_cast<Parser *>(this)->refTemps_++);
+            ExprPtr held(Var::local(temp, slot));
+            held->setType(chars);
+            ExprPtr save(new Assign(std::move(held), std::move(asChars)));
+            save->setType(chars);
+
+            ExprPtr obj(Var::local(temp, slot));
+            obj->setType(chars);
+            ExprPtr asTable(new Cast(types_.pointerTo(chars), std::move(obj)));
+            asTable->setType(types_.pointerTo(chars));
+            ExprPtr vptr(new Unary('*', std::move(asTable)));
+            vptr->setType(chars);
+            ExprPtr backNum(new Num(vbBack));
+            backNum->setType(offType);
+            ExprPtr at(new Binary(BinOp::Add, std::move(vptr), std::move(backNum)));
+            at->setType(chars);
+            ExprPtr asOff(new Cast(types_.pointerTo(offType), std::move(at)));
+            asOff->setType(types_.pointerTo(offType));
+            ExprPtr delta(new Unary('*', std::move(asOff)));
+            delta->setType(offType);
+
+            ExprPtr from(Var::local(temp, slot));
+            from->setType(chars);
+            ExprPtr moved(new Binary(BinOp::Add, std::move(from), std::move(delta)));
+            moved->setType(chars);
+            ExprPtr asTo(new Cast(to, std::move(moved)));
+            asTo->setType(to);
+            ExprPtr whole(new Comma(std::move(save), std::move(asTo)));
+            whole->setType(to);
+            return whole;
+        }
         if (off > 0) {
             const Type *chars = types_.pointerTo(types_.get(Kind::Char));
             ExprPtr asChars(new Cast(chars, std::move(e)));

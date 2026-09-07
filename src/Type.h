@@ -99,6 +99,10 @@ struct Member {
     // It is a property of the member and not of its type, which is why it sits
     // here rather than in the qualifiers.
     bool isMutable = false;
+    // Set for a member living in a virtual base: its offset is right for the
+    // class that laid the base down and wrong for any other, so reaching it
+    // goes through the vtable rather than through a constant.
+    const Type *inVirtualBase = nullptr;
     // **Which class declared it**, null for one the class wrote itself. A
     // base's data members are copied down into the derived class's list -
     // that flattening *is* the layout - and they carry their access with them
@@ -296,13 +300,34 @@ public:
         const Type *type;
         int offset;
         Access access;
+        // **One subobject however many paths reach it**, laid down after every
+        // non-virtual byte of the *most derived* class - so its offset belongs
+        // to that class and not to whoever wrote `virtual`.
+        bool isVirtual = false;
     };
     const std::vector<BaseSpec> &bases() const {
         return cls().bases_;
     }
-    void addBase(const Type *b, int offset, Access how) {
-        bases_.push_back(BaseSpec{ b, offset, how });
+    void addBase(const Type *b, int offset, Access how, bool isVirtual = false) {
+        bases_.push_back(BaseSpec{ b, offset, how, isVirtual });
     }
+    bool hasVirtualBase() const {
+        const std::vector<BaseSpec> &b = bases();
+        for (std::size_t i = 0; i < b.size(); i++)
+            if (b[i].isVirtual || b[i].type->hasVirtualBase()) return true;
+        return false;
+    }
+    // **A vptr is not the same question as `polymorphic`.** [class.virtual]/1
+    // makes a class polymorphic when it declares or inherits a virtual
+    // *function*, which is what `dynamic_cast` is allowed on. A class with a
+    // virtual base carries a vptr too, because the vtable is where the offset
+    // to that base is kept - measured: clang gives `D1 : virtual public V` one
+    // though nothing in sight is virtual.
+    bool hasVptr() const { return polymorphic() || hasVirtualBase(); }
+    // The size without the virtual bases - clang's `nvsize`. A base contributes
+    // only this much, or the diamond holds three copies of V.
+    int nvDataSize() const { return nvDataSize_ ? nvDataSize_ : dataSize(); }
+    void setNvDataSize(int n) { nvDataSize_ = n; }
 
     // The first base - the only one for most classes, and the only one that
     // needs no adjustment. Kept because most callers ask exactly that.
@@ -405,6 +430,7 @@ private:
     bool nonTrivialCopy_ = false;
     bool hasDestructor_ = false;
     std::vector<BaseSpec> bases_;
+    int nvDataSize_ = 0;
     std::vector<Member> members_;
     std::vector<StaticMember> statics_;
     int size_ = 0;

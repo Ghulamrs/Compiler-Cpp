@@ -170,7 +170,8 @@ std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
     // **The table's ADDRESS, not its contents.** A global Var is an lvalue and
     // reading one loads from it, which stored the table's first word in the vptr and
     // crashed on the first call. Giving it the array type and decaying it is it.
-    std::size_t entryCount = vtables_[cls].size() + (ms ? 0 : 2);
+    std::size_t entryCount = vtables_[cls].size() +
+                             (ms ? 0 : vtableHeaderBytes(memberOf) / 8);
     {
         const std::vector<Type::BaseSpec> &all = memberOf->bases();
         for (std::size_t bi = 1; bi < all.size(); bi++)
@@ -184,7 +185,7 @@ std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
         // **In bytes, because this Add is not the parser's pointer arithmetic.**
         // Building the node by hand skips the scaling `p + n` normally gets, so
         // adding 2 added two bytes. The header is two pointers wide.
-        const long long header = 2LL * entry->size(target_);
+        const long long header = vtableHeaderBytes(memberOf);
         ExprPtr skip(new Num(header));
         skip->setType(types_.intType());
         ExprPtr past(new Binary(BinOp::Add, std::move(value), std::move(skip)));
@@ -210,7 +211,9 @@ std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
     // one. The first vptr is the object's own; this is the one a B * will read.
     const std::vector<Type::BaseSpec> &bs = memberOf->bases();
     for (std::size_t bi = 1; bi < bs.size(); bi++) {
-        if (!bs[bi].type->polymorphic()) continue;
+        // A base carrying a vptr for either reason has a secondary table, and
+        // a `D2 *` into this object reads that vptr rather than the first.
+        if (!bs[bi].type->hasVptr() || bs[bi].isVirtual) continue;
         std::map<std::string, int>::const_iterator where =
             secondaryVptr_.find(cls + "::" + bs[bi].type->tag());
         if (where == secondaryVptr_.end()) continue;
@@ -708,6 +711,85 @@ void Parser::requireConstInitialised(const Type *t, const std::string &name,
                    "a value where it is declared");
 }
 
+// **A member of a virtual base is reached through the vtable**, because where
+// that base sits depends on the complete object and not on the type written
+// here. Measured from clang at -O0:
+//
+//     ldr  x9, [x8]          ; the vptr
+//     ldur x9, [x9, #-24]    ; vbase_offset, three words before the address point
+//     add  x0, x8, x9        ; and that is the base subobject
+//
+// Which entry is fixed by how many virtual bases the *static* type has - they
+// sit in reverse declaration order ahead of offset-to-top and the typeinfo - so
+// the slot is known here even though its contents are not. The member's place
+// inside the base is added after, and that much is constant.
+ExprPtr Parser::virtualBaseMember(ExprPtr object, const Type *staticType,
+                                  const Member &m) {
+    if (m.inVirtualBase == nullptr || target_.microsoftNames()) return ExprPtr();
+    const Type *owner = staticType->unqualified();
+    if (!owner->isStructOrUnion()) return ExprPtr();
+
+    const std::vector<Type::BaseSpec> &bs = owner->bases();
+    int nvb = 0, slot = -1, seen = 0, baseAt = 0;
+    for (std::size_t i = 0; i < bs.size(); i++) if (bs[i].isVirtual) nvb++;
+    for (std::size_t i = bs.size(); i-- > 0; ) {
+        if (!bs[i].isVirtual) continue;
+        if (bs[i].type == m.inVirtualBase) { slot = seen; baseAt = bs[i].offset; break; }
+        seen++;
+    }
+    if (slot < 0) return ExprPtr();
+    const long long back = -static_cast<long long>(nvb + 2 - slot) * 8;
+
+    const Type *charPtr = types_.pointerTo(types_.get(Kind::Char));
+    const Type *offType = types_.get(Kind::LongLong);
+
+    ExprPtr addr(new Unary('&', std::move(object)));
+    addr->setType(types_.pointerTo(owner));
+    const int held = allocateFrameSlot(charPtr);
+    const std::string temp = ".vb" + std::to_string(refTemps_++);
+    ExprPtr keep(Var::local(temp, held));
+    keep->setType(charPtr);
+    ExprPtr asChar(new Cast(charPtr, std::move(addr)));
+    asChar->setType(charPtr);
+    ExprPtr save(new Assign(std::move(keep), std::move(asChar)));
+    save->setType(charPtr);
+
+    ExprPtr obj(Var::local(temp, held));
+    obj->setType(charPtr);
+    ExprPtr asTable(new Cast(types_.pointerTo(charPtr), std::move(obj)));
+    asTable->setType(types_.pointerTo(charPtr));
+    ExprPtr vptr(new Unary('*', std::move(asTable)));
+    vptr->setType(charPtr);
+    ExprPtr backNum(new Num(back));
+    backNum->setType(offType);
+    ExprPtr at(new Binary(BinOp::Add, std::move(vptr), std::move(backNum)));
+    at->setType(charPtr);
+    ExprPtr asOff(new Cast(types_.pointerTo(offType), std::move(at)));
+    asOff->setType(types_.pointerTo(offType));
+    ExprPtr delta(new Unary('*', std::move(asOff)));
+    delta->setType(offType);
+
+    ExprPtr from(Var::local(temp, held));
+    from->setType(charPtr);
+    ExprPtr moved(new Binary(BinOp::Add, std::move(from), std::move(delta)));
+    moved->setType(charPtr);
+    const int within = m.offset - baseAt;
+    if (within != 0) {
+        ExprPtr w(new Num(static_cast<long long>(within)));
+        w->setType(offType);
+        ExprPtr sum(new Binary(BinOp::Add, std::move(moved), std::move(w)));
+        sum->setType(charPtr);
+        moved = std::move(sum);
+    }
+    ExprPtr asT(new Cast(types_.pointerTo(m.type), std::move(moved)));
+    asT->setType(types_.pointerTo(m.type));
+    ExprPtr whole(new Comma(std::move(save), std::move(asT)));
+    whole->setType(types_.pointerTo(m.type));
+    ExprPtr deref(new Unary('*', std::move(whole)));
+    deref->setType(m.type);
+    return deref;
+}
+
 ExprPtr Parser::thisMember(int thisSlot, const Type *cls, const Member &m) {
     ExprPtr me(Var::local("this", thisSlot));
     me->setType(types_.pointerTo(cls));
@@ -845,6 +927,17 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
     std::vector<GlobalPiece> pieces;
     int at = 0;
     if (!ms) {
+        // **One `vbase_offset` per virtual base, ahead of the header.**
+        // Measured from clang: each holds where that base sits relative to this
+        // address point, written in reverse declaration order, so a class with
+        // one virtual base has it at -3 words with offset-to-top at -2.
+        const std::vector<Type::BaseSpec> &vb = cls->bases();
+        for (std::size_t i = vb.size(); i-- > 0; ) {
+            if (!vb[i].isVirtual) continue;
+            pieces.push_back(GlobalPiece{ at, 8,
+                static_cast<long long>(vb[i].offset), std::string() });
+            at += 8;
+        }
         pieces.push_back(GlobalPiece{ at, 8, 0, std::string() });  // offset-to-top
         at += 8;
         pieces.push_back(GlobalPiece{ at, 8, 0, typeInfo });       // typeinfo
@@ -861,7 +954,11 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
     const std::vector<Type::BaseSpec> &bases = cls->bases();
     for (std::size_t bi = 1; bi < bases.size(); bi++) {
         const Type *b = bases[bi].type;
-        if (!b->polymorphic()) continue;
+        // **A base with a vptr needs its own part of the table**, whether that
+        // vptr dispatches or only reaches a virtual base: a `D2 *` into this
+        // object reads the vptr at its own offset and wants a `vbase_offset`
+        // measured from there. A virtual base's own part is not laid here.
+        if (!b->hasVptr() || bases[bi].isVirtual) continue;
         const int off = bases[bi].offset;
 
         // **The Microsoft ABI arranges this differently, and it is not the same thing
@@ -873,9 +970,22 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
                            "out differently - two vftable symbols rather than "
                            "one table in two parts. Not supported yet; it is "
                            "measured for Itanium only");
-        secondaryVptr_[tag + "::" + b->tag()] = at + (ms ? 0 : 16);
+        int vbHere = 0;
+        for (std::size_t k = 0; k < bases.size(); k++)
+            if (bases[k].isVirtual) vbHere++;
+        secondaryVptr_[tag + "::" + b->tag()] = at + (ms ? 0 : (vbHere + 2) * 8);
 
         if (!ms) {
+            // Its own `vbase_offset`, measured from its own address point:
+            // clang writes 16 where the primary writes 32, this part being
+            // entered 16 bytes into the object.
+            for (std::size_t k = bases.size(); k-- > 0; ) {
+                if (!bases[k].isVirtual) continue;
+                pieces.push_back(GlobalPiece{ at, 8,
+                    static_cast<long long>(bases[k].offset - off),
+                    std::string() });
+                at += 8;
+            }
             pieces.push_back(GlobalPiece{ at, 8, -static_cast<long long>(off),
                                           std::string() });
             at += 8;
@@ -1259,7 +1369,10 @@ void Parser::declareImplicitSpecials(const std::string &tag, const Type *type,
     // **An initialiser on a member is work**, and this is where a class with nothing
     // but `int x = 5;` gets a default constructor at all: without one there is no
     // function to put the store in, and `S s;` would leave x holding the stack.
-    bool work = type->polymorphic();
+    // **A vptr must be written whatever put it there** - a virtual function or
+    // a virtual base - so a class with one needs a default constructor to write
+    // it. This is the declaration; synthesizeDefaultCtor does the writing.
+    bool work = type->hasVptr();
     for (std::size_t i = 0; i < type->members().size() && !work; i++)
         if (memberInit_.find(tag + "::" + type->members()[i].name) !=
             memberInit_.end())
@@ -1678,7 +1791,8 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
                          false, pos, std::move(args)))));
     }
 
-    if (type->polymorphic()) {
+    // The vptr is written for either reason it exists.
+    if (type->hasVptr()) {
         std::vector<StmtPtr> vp = storeVptrs(cls, type, thisSlot);
         for (std::size_t i = 0; i < vp.size(); i++)
             body.push_back(std::move(vp[i]));

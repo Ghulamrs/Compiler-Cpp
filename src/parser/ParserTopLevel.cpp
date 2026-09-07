@@ -1184,7 +1184,9 @@ void Parser::topLevel(Program &program) {
     // **A polymorphic object's vptr is set by its constructor**, before the body and
     // after the base's - and by its destructor, for the same reason running the other
     // way: [class.cdtor]/4 makes a virtual call reach that level's own overrider.
-    if (memberOf != nullptr && memberOf->polymorphic() &&
+    // A vptr is written whatever put it there - a virtual function or a
+    // virtual base, the latter needing it to find that base at all.
+    if (memberOf != nullptr && memberOf->hasVptr() &&
         (d.name == localOf(d.qualifier) ||
          d.name == "~" + localOf(d.qualifier))) {
         std::vector<StmtPtr> withVptr = storeVptrs(d.qualifier, memberOf, thisOffset_);
@@ -1295,6 +1297,23 @@ void Parser::topLevel(Program &program) {
             ExprPtr me(Var::local("this", thisOffset_));
             if (baseAt == 0) {
                 me->setType(basePtr);      // the first base is the object
+            } else if (memberOf->bases()[which].isVirtual) {
+                // **A virtual base is reached by a constant here**, where
+                // everywhere else it is reached through the vtable. This class
+                // is the one laying the base down, so it knows where it put it
+                // - and the vtable cannot be read yet anyway: the vptr this
+                // walk would follow is stored *after* the base is built.
+                const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+                me->setType(types_.pointerTo(memberOf));
+                ExprPtr asChars(new Cast(chars, std::move(me)));
+                asChars->setType(chars);
+                ExprPtr step(new Num(static_cast<long long>(baseAt)));
+                step->setType(types_.get(Kind::LongLong));
+                ExprPtr moved(new Binary(BinOp::Add, std::move(asChars),
+                                         std::move(step)));
+                moved->setType(chars);
+                me = ExprPtr(new Cast(basePtr, std::move(moved)));
+                me->setType(basePtr);
             } else {
                 me->setType(types_.pointerTo(memberOf));
                 me = convert(std::move(me), basePtr);
