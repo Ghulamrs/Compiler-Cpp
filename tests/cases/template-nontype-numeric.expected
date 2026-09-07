@@ -1,0 +1,8 @@
+capacity 8 nnz 3
+1.5 0 0 
+0 2.25 0 
+4 0 0 
+trace 3.75
+int capacity 4 (0,1) 7 (1,0) 0
+bounds -inf inf
+unbounded below 1 above 1
