@@ -1006,10 +1006,14 @@ StmtPtr Parser::block() {
         // sorted list, and `wrapMsCleanups` is untouched - so that target
         // keeps the refusal it had, function-wide, until the same work is
         // done there.
+        // **A `try` body's objects are built now**: the region becomes a row
+        // *inside* the `try`'s, carrying its catch types and handing over to
+        // its chain. A *handler*'s are not - a handler is emitted past the
+        // `try`'s range, so its region is not inside any row and has nowhere
+        // to hand over to.
         const bool overlapping = target_.microsoftNames()
                                      ? (functionHasTry_ || inTryBody_)
-                                     : ((inTryBody_ || inHandlerBody_) &&
-                                        tryAt.empty());
+                                     : (inHandlerBody_ && tryAt.empty());
         if (overlapping)
             src_.fail(pos, target_.microsoftNames()
                 ? "a local with a destructor and a 'try' in one function is "
@@ -1017,12 +1021,11 @@ StmtPtr Parser::block() {
                   "a funclet and a state in the FH3 tables, and only the "
                   "Itanium targets have been taught to split one around the "
                   "other"
-                : "a local with a destructor inside a 'try' body or a handler "
-                  "is not supported yet - the cleanup region sits inside the "
-                  "row rather than beside it, and the rows are written "
-                  "innermost-first for a linear scan rather than sorted, so "
-                  "one cannot be split around the other; a local beside the "
-                  "'try' in the same block works");
+                : "a local with a destructor inside a 'catch' handler is not "
+                  "supported yet - a handler is emitted past the 'try''s range, "
+                  "so its cleanup region is inside no row and has no chain to "
+                  "hand the selector to; inside the 'try' body works, and so "
+                  "does beside the 'try' in the same block");
         body = target_.microsoftNames()
                    ? wrapMsCleanups(std::move(body), built, regionFrom, pos,
                                     temps)
@@ -1080,12 +1083,36 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     const int selectorSlot = allocateFrameSlot(types_.intType());
     functionHasPads_ = true;
 
+    // **The chain the body's cleanup rows hand over to.** A `$` is in the name
+    // because no C++ identifier can hold one, so it cannot collide with a
+    // user's label - the same trick `$guard` uses for a frame slot.
+    const std::string chainLabel = "$chain" + std::to_string(functionTypes_.size()) +
+                              "." + std::to_string(pointerSlot);
+    const std::string wasChain = tryChainLabel_;
+    const int wasPtr = tryChainPointerSlot_, wasSel = tryChainSelectorSlot_;
+    std::vector<Try *> wasSegments;
+    wasSegments.swap(tryBodySegments_);
+    if (!microsoft) {
+        tryChainLabel_ = chainLabel;
+        tryChainPointerSlot_ = pointerSlot;
+        tryChainSelectorSlot_ = selectorSlot;
+        tryChainAliveFrom_ = aliveOutside;
+    }
+
     const bool wasInTry = inTryBody_;
     inTryBody_ = true;
     if (!peek().is("{"))
         src_.fail(peek().pos, "'try' takes a block");
     StmtPtr body = block();
     inTryBody_ = wasInTry;
+
+    // Off before the handlers: a handler's block is not inside this row.
+    std::vector<Try *> segments;
+    segments.swap(tryBodySegments_);
+    tryBodySegments_.swap(wasSegments);
+    tryChainLabel_ = wasChain;
+    tryChainPointerSlot_ = wasPtr;
+    tryChainSelectorSlot_ = wasSel;
 
     if (!peek().is("catch"))
         src_.fail(peek().pos, "a 'try' needs at least one 'catch'");
@@ -1292,9 +1319,21 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                                std::move(chain)));
     }
 
+    // **Every segment of the body carries this `try`'s catch types.** Without
+    // them its row is cleanup-only, phase 1 finds no handler at a PC inside the
+    // body and unwinds past the whole frame - which is a `terminate`, measured.
+    // The trailing filter-0 that `alsoCleanup` asks for is what makes phase 2
+    // install the pad when nothing matched, so the destructors still run.
+    for (std::size_t i = 0; i < segments.size(); i++) {
+        segments[i]->setTypes(types);
+        segments[i]->setAlsoCleanup();
+    }
+    // The one chain, behind the label those segments jump to.
+    StmtPtr labelled(new Label(chainLabel, std::move(chain)));
+
     std::vector<StmtPtr> guarded;
     guarded.push_back(std::move(body));
-    Try *t = new Try(std::move(guarded), std::move(chain), pointerSlot,
+    Try *t = new Try(std::move(guarded), std::move(labelled), pointerSlot,
                      selectorSlot, std::move(types));
     // The call site needs a trailing filter-0 action, or phase 2 installs no
     // pad where no handler matched and these destructors never run.

@@ -219,7 +219,7 @@ SFINAE and variadic packs. What is left:
   resolution picks the non-static one — the arguments have been read by then,
   and there is no honest way back to the call that takes an object.
   `src/parser/ParserExpr.cpp:1248`. A static member function on its own works.
-- **a member function of a union** — `src/parser/ParserClass.cpp:2160`
+- **a member function of a union** — `src/parser/ParserClass.cpp:2186`
 - **`friend class X;`** — one named function can be befriended.
   `src/parser/ParserType.cpp:495`
 - **befriending one member function of another class** —
@@ -291,7 +291,7 @@ SFINAE and variadic packs. What is left:
   `src/parser/ParserExpr.cpp:471`
 - **an inline variable** — `inline` on a variable is a C++17 feature; C++11
   has `inline` only on functions, where it works. `src/parser/ParserTopLevel.cpp:232`
-- **a braced default argument** — `src/parser/ParserClass.cpp:2811`,
+- **a braced default argument** — `src/parser/ParserClass.cpp:2837`,
   `src/parser/ParserTopLevel.cpp:697`
 - **a braced member initialiser** — `src/parser/ParserType.cpp:910`
 - **an initialiser for an array of a class** —
@@ -318,7 +318,7 @@ where one object is many:
   its destructor at exit, and the destructor walk knows one object per entry.
   At file scope `src/parser/ParserTopLevel.cpp:353`, as a static local
   `src/parser/ParserStmt.cpp:107`, and as a static data member
-  `src/parser/ParserClass.cpp:2059`
+  `src/parser/ParserClass.cpp:2085`
 - **a static-duration reference bound to a temporary** — [class.temporary]/5
   gives the temporary the program's lifetime, so it would need static storage
   of its own; a named object binds. `src/parser/ParserInit.cpp:1302`
@@ -367,21 +367,20 @@ where one object is many:
 
 ## Statements, exceptions and control
 
-- **a local with a destructor and a `try` in one function** — **narrowed
-  2026-09-06 on the two Itanium targets**. A `try` written directly in the same
-  block as the local now works: the cleanup region is emitted in the pieces
-  between the `try`s and the `try`'s own pad destroys what it found alive, with
-  a trailing filter-0 action so phase 2 installs it. What is still refused
-  there is a destructible object *inside* a `try`'s body or a handler's, where
-  the region sits inside the row rather than beside it — the rows are written
-  innermost-first for a linear scan rather than sorted by address, so neither
-  can be split around the other. **x86_64-windows keeps the whole refusal**: a
-  cleanup is a funclet and an FH3 state there, and `wrapMsCleanups` has not
-  been taught the same trick. `src/parser/ParserStmt.cpp:755`,
-  `src/parser/ParserStmt.cpp:1014`, `src/parser/ParserStmt.cpp:1628`
+- **a local with a destructor inside a `catch` handler** — **narrowed twice on
+  the two Itanium targets**, and this is what is left. A `try` in the same block
+  as the local landed 2026-09-06; a local *inside* the `try`'s body landed
+  2026-09-07, its cleanup rows carrying the `try`'s catch types and handing the
+  selector to one shared chain. A **handler** cannot do that: it is emitted past
+  the `try`'s range, so its region is inside no row — there is nothing to carry
+  types on and no chain to hand over to, and it wants a region of its own.
+  **x86_64-windows keeps the whole refusal**, body and handler alike: a cleanup
+  is a funclet and an FH3 state there, and `wrapMsCleanups` has not been taught
+  either trick. `src/parser/ParserStmt.cpp:755`,
+  `src/parser/ParserStmt.cpp:1018`, `src/parser/ParserStmt.cpp:1667`
 - **a temporary with a destructor in a thrown expression inside a `try`** — it
   is destroyed as the exception leaves, and that statement sits outside the
-  region that would do it. `src/parser/ParserStmt.cpp:1380`
+  region that would do it. `src/parser/ParserStmt.cpp:1419`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and
@@ -393,12 +392,12 @@ where one object is many:
   silently miscompiled: the parser numbers a `try`'s handlers as it reads them
   and the backend registers rows innermost-first, so the two disagreed about
   which index meant which type and an outer `catch (int)` never matched. See
-  CLAUDE.md, "One type, one selector index". `src/parser/ParserStmt.cpp:1072`
+  CLAUDE.md, "One type, one selector index". `src/parser/ParserStmt.cpp:1075`
 - **a rethrow**, `throw;` with nothing after it — **for x86_64-windows
   only**; it works on both Itanium targets. There it is
   `_CxxThrowException` with two null pointers, raised from inside a handler
   funclet rather than from the frame that owns the `try`, which has not been
-  measured on the box. `src/parser/ParserStmt.cpp:1355`
+  measured on the box. `src/parser/ParserStmt.cpp:1394`
 - **a dynamic exception specification**, `throw(T)` — `throw()` with nothing in
   it is `noexcept` and works. `src/parser/ParserConst.cpp:97`
 - **a range-based `for` over a temporary** — [stmt.ranged] binds the range to
@@ -435,7 +434,7 @@ where one object is many:
   class's overload set. `src/parser/ParserType.cpp:361`
 - **a using-declaration inside a block** — it would declare a name for the rest
   of the block and rank against the locals beside it.
-  `src/parser/ParserStmt.cpp:1333`. The one at namespace scope,
+  `src/parser/ParserStmt.cpp:1372`. The one at namespace scope,
   `using N::f;`, works, and so does `using namespace N;` here.
 - **an alias declaration**, `using X = T;` — `typedef T X;` says the same
   thing here. It is not a using-declaration, and the three scopes that refuse
@@ -474,7 +473,7 @@ beside it goes in the same commit.
 | `0b101`, a binary literal | C++14 | `src/Lexer.cpp:267` |
 | `decltype(auto)` | C++14 | `src/parser/ParserExpr.cpp:1449` |
 | `[n = k]`, an init-capture | C++14 | `src/parser/ParserExprLambda.cpp:213` |
-| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2797`, `src/parser/ParserTopLevel.cpp:639` |
+| `auto` as a parameter type | C++14 | `src/parser/ParserClass.cpp:2823`, `src/parser/ParserTopLevel.cpp:639` |
 | `auto` as a return type | C++14 | `src/parser/ParserTopLevel.cpp:570` |
 | a variable template | C++14 | `src/parser/ParserTemplate.cpp:385` |
 | `S s = {1, 2}` with an NSDMI — not an aggregate in C++11 | C++14 changed the rule | `src/parser/ParserInit.cpp:660`, `src/parser/ParserInit.cpp:854`, `src/parser/ParserTopLevel.cpp:366` |
@@ -532,11 +531,11 @@ guessed wrong twice.
 
 - **`return` inside a `catch` on x86_64-windows** — a handler is a funclet
   there, so leaving one early is a return of the address to carry on at.
-  `src/parser/ParserStmt.cpp:1391`
+  `src/parser/ParserStmt.cpp:1430`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation
-  rather than in naming. `src/parser/ParserClass.cpp:845`
+  rather than in naming. `src/parser/ParserClass.cpp:871`
 
 - **a `volatile` object with external linkage, on x86_64-windows** — cl
   decorates a variable's name with its cv, `?g@@3HC` where a plain int is

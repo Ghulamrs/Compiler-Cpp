@@ -411,8 +411,15 @@ std::vector<StmtPtr> Parser::wrapCleanups(
     const std::vector<Temporary> &temps,
     const std::vector<std::size_t> &tryAt) {
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
-    const int pointerSlot = allocateFrameSlot(voidPtr);
-    const int selectorSlot = allocateFrameSlot(types_.intType());
+    // **Inside a `try` body the slots are the `try`'s.** The segment's own
+    // landing pad stores the runtime's pointer and selector, and the chain that
+    // reads them is the `try`'s - so a pair of its own would leave the chain
+    // testing a slot nothing wrote.
+    const bool intoTry = !tryChainLabel_.empty();
+    const int pointerSlot = intoTry ? tryChainPointerSlot_
+                                    : allocateFrameSlot(voidPtr);
+    const int selectorSlot = intoTry ? tryChainSelectorSlot_
+                                     : allocateFrameSlot(types_.intType());
     functionHasPads_ = true;
 
     std::vector<StmtPtr> out;
@@ -436,12 +443,24 @@ std::vector<StmtPtr> Parser::wrapCleanups(
             std::vector<StmtPtr> guarded;
             for (std::size_t i = cur; i < stop; i++)
                 guarded.push_back(std::move(body[i]));
-            if (!guarded.empty())
-                out.push_back(StmtPtr(new Try(
+            if (!guarded.empty()) {
+                // **From the `try`'s entry, not this block's.** A pad that
+                // jumps to the chain is the last one to run, so a nested block
+                // inside the body has to destroy what the body built above it
+                // too - measured as a leak the ledger caught and the trace
+                // showed: `+o +i -i` where clang gives `+o +i -i -o`.
+                Try *seg = new Try(
                     std::move(guarded),
-                    cleanupPad(aliveAtEntry, built[k].second, pointerSlot,
-                               temps, pos),
-                    pointerSlot, selectorSlot, std::vector<std::string>())));
+                    cleanupPad(intoTry ? tryChainAliveFrom_ : aliveAtEntry,
+                               built[k].second, pointerSlot,
+                               temps, pos,
+                               intoTry ? tryChainLabel_ : std::string()),
+                    pointerSlot, selectorSlot, std::vector<std::string>());
+                // The types are the `try`'s and are not read yet; tryStatement
+                // patches every segment once its handlers have been.
+                if (intoTry) tryBodySegments_.push_back(seg);
+                out.push_back(StmtPtr(seg));
+            }
             if (stop == to) break;
             out.push_back(std::move(body[stop]));      // the try, uncovered
             cur = stop + 1;
@@ -455,7 +474,7 @@ std::vector<StmtPtr> Parser::wrapCleanups(
 // the difference is where the code runs from: a pad, ending in _Unwind_Resume.
 StmtPtr Parser::cleanupPad(std::size_t from, std::size_t to, int pointerSlot,
                            const std::vector<Temporary> &temps,
-                           std::size_t pos) {
+                           std::size_t pos, const std::string &chainLabel) {
     // **Bounded rather than truncated.** Resizing `alive_` down and back up would
     // default-construct what it had thrown away, and the second pad would then
     // destroy an object with no class - silently one destructor short.
@@ -492,8 +511,15 @@ StmtPtr Parser::cleanupPad(std::size_t from, std::size_t to, int pointerSlot,
     ExprPtr ptr(Var::local(".ex.ptr", pointerSlot));
     ptr->setType(voidPtr);
     args.push_back(std::move(ptr));
-    steps.push_back(StmtPtr(new ExprStmt(
-        runtimeCall("_Unwind_Resume", types_.get(Kind::Void), std::move(args)))));
+    // **A segment of a `try` body hands over rather than resuming.** Its row
+    // carries the `try`'s catch types, so the selector may name a handler -
+    // and the one chain that tests it lives in the `try`'s own pad.
+    if (chainLabel.empty())
+        steps.push_back(StmtPtr(new ExprStmt(
+            runtimeCall("_Unwind_Resume", types_.get(Kind::Void),
+                        std::move(args)))));
+    else
+        steps.push_back(StmtPtr(new Goto(chainLabel)));
 
     Block *b = new Block(std::move(steps));
     b->setScope(-1);

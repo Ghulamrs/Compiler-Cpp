@@ -534,6 +534,10 @@ public:
     int pointerSlot() const { return pointerSlot_; }
     int selectorSlot() const { return selectorSlot_; }
     const std::vector<std::string> &types() const { return types_; }
+    // **Set late, and only for a `try` body's cleanup rows.** Those rows carry
+    // the enclosing `try`'s catch types so phase 1 finds a handler at a PC
+    // inside the body - and the body is parsed before the handlers are read.
+    void setTypes(std::vector<std::string> t) { types_ = std::move(t); }
 
     const std::vector<MsHandler> &handlers() const { return handlers_; }
     void setHandlers(std::vector<MsHandler> h) { handlers_ = std::move(h); }

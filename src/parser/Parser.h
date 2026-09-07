@@ -1104,7 +1104,8 @@ private:
     // alive_[from..to), last first, and hand the exception back to the unwinder.
     StmtPtr cleanupPad(std::size_t from, std::size_t to, int pointerSlot,
                        const std::vector<Temporary> &temps,
-                       std::size_t pos);
+                       std::size_t pos,
+                       const std::string &chainLabel = std::string());
     // The block's statements with each stretch that has objects alive turned
     // into a cleanup region of its own.
     std::vector<StmtPtr> wrapMsCleanups(
@@ -1488,6 +1489,18 @@ private:
     // numbers the same way, so the two must agree exactly - **including that one type
     // named by two rows gets one number**, which is why this is a list and not a count.
     std::vector<std::string> functionTypes_;
+    // **Set while a `try`'s body is parsed, empty everywhere else.** A cleanup
+    // region built inside that body is a row *within* the `try`'s range, so it
+    // must carry the `try`'s catch types and hand over to the one chain that
+    // tests the selector, which lives in the `try`'s own pad.
+    std::string tryChainLabel_;
+    int tryChainPointerSlot_ = 0;
+    int tryChainSelectorSlot_ = 0;
+    // How much was alive when the `try` was entered. A segment's pad destroys
+    // everything the *body* built, not only what its own block did: it jumps to
+    // the chain instead of resuming, so no enclosing pad runs after it.
+    std::size_t tryChainAliveFrom_ = 0;
+    std::vector<Try *> tryBodySegments_;
     // 1-based, first occurrence winning, matching Walker::lsdaTable byte for byte.
     int typeIndexFor(const std::string &symbol);
     // Set where a function writes a `try`. A cleanup region is a call site too, and a

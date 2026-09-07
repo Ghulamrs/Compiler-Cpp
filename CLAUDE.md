@@ -398,6 +398,7 @@ question, before anything was written:
 | `dynamic_cast<void *>` | 2026-09-07 | the most derived object - inline on Itanium, `__RTCastToVoid` on Microsoft |
 | range-based `for` over a class | 2026-09-07 | `begin()`/`end()` as members, and the containers in `include/` walkable |
 | one type, one selector index | 2026-09-07 | the parser and the backend numbering alike, and a `try` in a handler refused rather than miscompiled |
+| a destructible object inside a `try` body | 2026-09-07 | the body's cleanup rows carrying the `try`'s catch types and handing over to one chain |
 
 Each has a section further down saying what was measured and what was
 deliberately not built. **The table stopped at 2026-08-30 for a week and the
@@ -7863,6 +7864,92 @@ twice; refusing is what fits in this round.
 the commit and a fresh clone has no golden at all. Re-recording is a local act
 and has to be stated rather than shown: **717 files, and the run after it reads
 `0 of 717 changed`.**
+
+## A destructible object inside a `try` body
+
+**Landed 2026-09-07**, and it is rung 6.4's other half: a local beside a `try`
+worked, one *inside* its body did not.
+
+### Why the obvious relaxation is a `terminate`
+
+A cleanup region is a call-site row, and one built inside a `try` body is a row
+*within* the `try`'s range. **The personality routine's phase 1 takes the first
+row whose range holds the PC**, and if that row is cleanup-only it offers no
+handler - so the whole frame is skipped and nothing here ever runs. Measured by
+lifting the refusal and nothing else:
+
+    clang:  +outer +a +b -b -a | caught | end -outer
+    cxx1:   +outer +a +b   then libc++abi: terminating
+
+**It was never about the ranges.** Overlapping nested rows already work - a
+nested block inside a plain function emits `[try.1, tryend.1)` before
+`[try.0, tryend.0)` with the inner genuinely inside the outer, and unwinding
+through it is correct. What was missing was *types*: the inner row carried none.
+
+**And it is not clang's model.** clang emits disjoint address-ordered ranges
+partitioning the function, every PC in exactly one record, nesting resolved at
+compile time. cxx1 nests at run time and resolves by first match. Sorting cxx1's
+rows to look like clang's is the change that silently broke nested unwinding a
+round earlier and was reverted; the two models are different and this one stays.
+
+### What it does instead
+
+Every segment of the body carries the **`try`'s catch types**, so phase 1 finds
+a handler at a PC inside the body. Each segment's pad destroys what the body
+built and then **jumps to one shared chain** in the `try`'s own pad, which is
+where the selector is tested - a `Label` and a `Goto` with a `$` in the name,
+because no C++ identifier holds one and it therefore cannot collide with a
+user's label. `setAlsoCleanup` puts the trailing filter-0 on those rows, or
+phase 2 installs no pad where nothing matched and the destructors never run.
+
+`Walker::visit(const Try &)` pushes its `callSite` **after** walking the body,
+so a segment's row is registered before the `try`'s without anything being
+sorted - the innermost-first order this table wants, for free.
+
+**The prerequisite was the type table**: two rows now name the same `_ZTI`, so
+one type had to mean one selector index. That is its own section above, and it
+was a hang before it was a feature.
+
+### The pad destroys from the `try`'s entry, not from its own block's
+
+**A pad that jumps to the chain is the last one to run in this frame**, so a
+nested block inside the body has to destroy what the body built above it too.
+Before that, `try { A o; { A i; boom(); } }` gave `+o +i -i` where clang gives
+`+o +i -i -o`: one destructor short, and the trace was the only sign.
+
+**The ledger is what caught it** - `gone=7 live=1` against clang's
+`gone=8 live=0` - which is the case the instrument was built for. A leak that
+also happens to show in a trace is luck; the counter does not depend on luck.
+
+### The evidence that nothing else moved
+
+24 emissions changed, twelve exception cases across both Itanium targets, and
+**every changed line in all 24 is an added `$chain` label** - checked
+mechanically rather than by reading a sample. No instruction, no table entry and
+no row moved in any case that existed before, because none of them had this
+shape. Given that the previous change to this machinery was a silent leak all
+four suites passed, that check is the point.
+
+### Still refused, and the reasons are structural
+
+**A destructible local inside a `catch` handler.** A handler is emitted past the
+`try`'s range, so its region is inside no row: there is nothing to carry types
+on and no chain to hand a selector to. It wants a region of its own, and that is
+its own step. **And x86_64-windows**, where a cleanup is a funclet and a state
+in the FH3 tables rather than a row in a call-site list, so none of this
+splitting has a counterpart - `wrapMsCleanups` is untouched.
+
+### Two case-writing rules this round re-learned the hard way
+
+**No handler in a case may `return`.** `return` inside a `catch` is refused for
+x86_64-windows, so a case whose handler returns meets *that* refusal first on
+that box and never reaches the one it is about. `local-in-handler-refused.cpp`
+was written that way and the Windows leg reported it - the Mac and the Linux box
+were both green. `catch-by-reference.cpp` already had the rule.
+
+**Define a case's constructors out of line.** clang emits an inline-defined one
+as a comdat `linkonce_odr` and cxx1 as an ordinary definition, and `names.sh`
+then reports an emission difference wearing the shape of a mangling one.
 
 ## namespace, and the fact that a namespace is not a type
 

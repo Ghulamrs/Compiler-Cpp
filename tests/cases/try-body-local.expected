@@ -1,0 +1,6 @@
++a -a | c1 
++a2 +b2 -b2 -a2 | c2 
++a3 -a3 
++out +in -in | c4 -out 
++o +i -i -o | c5 
+LEDGER built=8 gone=8 live=0 double=0 phantom=0 over=0 lost=0
