@@ -269,6 +269,14 @@ const char *Driver::hostAssembler() {
     return (env != nullptr && env[0] != '\0') ? env : "ml64.exe";
 }
 
+// **clang, and it is asked for the Microsoft target explicitly.** Its default
+// target is whatever it was built for; this has to produce COFF for the
+// linker beside it, and the triple is what says so.
+const char *Driver::hostGnuAssembler() {
+    const char *env = std::getenv("CXX1_AS");
+    return (env != nullptr && env[0] != '\0') ? env : "clang";
+}
+
 const char *Driver::hostLinker() {
     const char *env = std::getenv("CXX1_LD");
     return (env != nullptr && env[0] != '\0') ? env : "link.exe";
@@ -345,7 +353,17 @@ bool Driver::assembleObjects() {
     commands.reserve(temporaries_.size());
     for (std::size_t i = 0; i < temporaries_.size(); i++) {
         std::string command;
-        if (hostIsWindows()) {
+        if (hostIsWindows() && windowsAsmIsGnu()) {
+            // **The GNU spelling is assembled by clang, not by ml64.** ml64
+            // has no COMDAT directive, so every mergeable definition - a
+            // vtable, an inline member, a template's - is exported by each
+            // translation unit that needs one and the linker refuses the
+            // duplicates. clang writes the same COFF and can mark them.
+            command = shellQuote(hostGnuAssembler());
+            command += " -target x86_64-pc-windows-msvc -c ";
+            command += shellQuote(temporaries_[i]);
+            command += " -o " + shellQuote(objects_[i]);
+        } else if (hostIsWindows()) {
             command = shellQuote(hostAssembler());
             command += " /nologo /c /Fo " + shellQuote(objects_[i]);
             command += " " + shellQuote(temporaries_[i]);
@@ -374,8 +392,17 @@ bool Driver::link() {
             std::size_t dot = t.rfind('.');
             std::string obj = (dot == std::string::npos ? t : t.substr(0, dot))
                               + ".obj";
-            std::string step = shellQuote(hostAssembler());
-            step += " /nologo /c /Fo " + shellQuote(obj) + " " + shellQuote(t);
+            // The same choice assembleObjects makes, and for the same reason -
+            // ml64 cannot mark a mergeable definition COMDAT and clang can.
+            std::string step;
+            if (windowsAsmIsGnu()) {
+                step = shellQuote(hostGnuAssembler());
+                step += " -target x86_64-pc-windows-msvc -c " + shellQuote(t);
+                step += " -o " + shellQuote(obj);
+            } else {
+                step = shellQuote(hostAssembler());
+                step += " /nologo /c /Fo " + shellQuote(obj) + " " + shellQuote(t);
+            }
             steps.push_back(step);
             objects.push_back(obj);
             // Recorded before the run, so a failure still cleans up whatever

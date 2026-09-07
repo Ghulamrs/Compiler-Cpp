@@ -15,6 +15,10 @@ public:
 };
 
 void setWindowsAsmSyntax(bool gnu);
+// **Which assembler the driver has to reach for.** ml64 cannot mark a section
+// COMDAT, so a mergeable definition collides across translation units; clang
+// assembles the same COFF and can. Set once from argv before any thread runs.
+bool windowsAsmIsGnu();
 
 class X86_64WindowsBackend final : public Backend {
 public:

@@ -51,6 +51,7 @@ const Abi &X86_64WindowsBackend::abi() const { return kMsAbi; }
 
 static bool gnuSyntax_ = false;
 void setWindowsAsmSyntax(bool gnu) { gnuSyntax_ = gnu; }
+bool windowsAsmIsGnu() { return gnuSyntax_; }
 
 static const char *const kWindowsMacros[] = {
     "__x86_64__=1", "__x86_64=1", "__amd64__=1", "__amd64=1",

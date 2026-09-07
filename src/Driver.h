@@ -59,6 +59,9 @@ private:
     static std::string temporaryName(int index);
     static const char *hostCompiler();
     static const char *hostAssembler();
+    // The assembler for the GNU spelling of x86_64-windows, which is a
+    // different program from ml64 rather than the same one with a flag.
+    static const char *hostGnuAssembler();
     static const char *hostLinker();
     static void usage(char *);
 };
