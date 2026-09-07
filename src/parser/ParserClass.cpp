@@ -323,6 +323,225 @@ void Parser::synthesizeDeleting(const std::string &cls, const Type *type,
     frameSize_ = savedFrame;
 }
 
+// The virtual bases of `type`, built or destroyed through `this`. **Reached by
+// the constant offset**, for the reason the walk in ParserTopLevel records:
+// this class is the one laying them down, so it knows where it put them, and
+// the vptr a vtable walk would follow is stored after they are built.
+//
+// Built in the order written and destroyed in the reverse, which is the same
+// rule the non-virtual bases follow one level down.
+std::vector<StmtPtr> Parser::virtualBaseCalls(const Type *type, int thisSlot,
+                                              bool building, std::size_t pos,
+                                              int srcSlot, bool moving) {
+    std::vector<StmtPtr> out;
+    const std::vector<Type::BaseSpec> &bs = type->bases();
+    const Type *self = types_.pointerTo(type);
+    const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+    for (std::size_t n = 0; n < bs.size(); n++) {
+        const std::size_t i = building ? n : bs.size() - 1 - n;
+        if (!bs[i].isVirtual) continue;
+        const Type *base = bs[i].type;
+        if (base->tag().empty()) continue;
+
+        const Type *basePtr = types_.pointerTo(base);
+        ExprPtr me(Var::local("this", thisSlot));
+        ExprPtr addr;
+        if (bs[i].offset == 0) {
+            me->setType(basePtr);
+            addr = std::move(me);
+        } else {
+            me->setType(self);
+            ExprPtr asChars(new Cast(chars, std::move(me)));
+            asChars->setType(chars);
+            ExprPtr step(new Num(static_cast<long long>(bs[i].offset)));
+            step->setType(types_.get(Kind::LongLong));
+            ExprPtr moved(new Binary(BinOp::Add, std::move(asChars),
+                                     std::move(step)));
+            moved->setType(chars);
+            addr = ExprPtr(new Cast(basePtr, std::move(moved)));
+            addr->setType(basePtr);
+        }
+
+        std::string symbol;
+        ExprPtr srcArg;
+        const Type *srcParam = nullptr;
+        if (building) {
+            // **A copy builds its virtual base from the source's**, not from
+            // nothing: `Dia b(a)` copy-constructs the one `V`, which is what
+            // clang emits. The subobject sits at the same constant offset in
+            // both objects, because both are the same most-derived type.
+            const Signature *ctor = nullptr;
+            if (srcSlot >= 0) {
+                if (moving) ctor = moveConstructorOf(base);
+                if (ctor == nullptr) ctor = copyConstructorOf(base);
+                // A trivial virtual base has no constructor to call; its bytes
+                // travel with the member walk in C2, as they do today.
+                if (ctor == nullptr) continue;
+            } else {
+                ctor = defaultConstructorOf(base);
+                if (ctor == nullptr) continue;
+            }
+            markUsed(ctor);
+            const Type *fnType = types_.functionType(types_.get(Kind::Void),
+                                                     ctor->params, false);
+            std::string sub, why;
+            if (!itaniumConstructorName(base->tag(), base, fnType, false, &sub,
+                                        &why))
+                continue;
+            symbol = sub;
+            if (srcSlot >= 0 && !ctor->params.empty()) {
+                srcParam = ctor->params[0];
+                ExprPtr that(Var::local("that", srcSlot));
+                that->setType(self);
+                ExprPtr asChars2(new Cast(chars, std::move(that)));
+                asChars2->setType(chars);
+                ExprPtr step2(new Num(static_cast<long long>(bs[i].offset)));
+                step2->setType(types_.get(Kind::LongLong));
+                ExprPtr moved2(new Binary(BinOp::Add, std::move(asChars2),
+                                          std::move(step2)));
+                moved2->setType(chars);
+                ExprPtr at(new Cast(basePtr, std::move(moved2)));
+                at->setType(basePtr);
+                ExprPtr obj(new Unary('*', std::move(at)));
+                obj->setType(base);
+                if (moving) obj->setXvalue();
+                srcArg = std::move(obj);
+            }
+        } else {
+            const Signature *dtor = destructorOf(base);
+            if (dtor == nullptr) continue;
+            markUsed(dtor);
+            itaniumDestructorName(base->tag(), base, false, &symbol);
+        }
+
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(addr));
+        std::vector<const Type *> ps;
+        ps.push_back(basePtr);
+        if (srcArg != nullptr) {
+            args.push_back(std::move(srcArg));
+            ps.push_back(srcParam);
+        }
+        out.push_back(StmtPtr(new ExprStmt(
+            completeCall(base->tag(), symbol, nullptr, types_.get(Kind::Void),
+                         ps, false, pos, std::move(args)))));
+    }
+    return out;
+}
+
+void Parser::synthesizeCompleteCtor(const Type *type,
+                                    const std::vector<const Type *> &ctorParams,
+                                    const std::string &c1, const std::string &c2,
+                                    bool isInline, std::size_t pos,
+                                    int copyArg, bool moving) {
+    const std::string &cls = type->tag();
+    const Type *self = types_.pointerTo(type);
+
+    const int savedFrame = frameSize_;
+    frameSize_ = 0;
+    std::vector<Param> params;
+    const int thisSlot = allocateFrameSlot(self);
+    params.push_back(Param{ self, thisSlot });
+    // **A reference parameter is a pointer in the frame**, which is how
+    // synthesizeCopy declares the one it takes; declaring the slot with the
+    // reference type instead made the forwarded argument a `const Dia` where
+    // the callee wanted a `const Dia &`, and the call refused itself.
+    std::vector<int> argSlots;
+    for (std::size_t i = 0; i < ctorParams.size(); i++) {
+        const Type *held = ctorParams[i]->isReference()
+                         ? types_.pointerTo(ctorParams[i]->referent())
+                         : ctorParams[i];
+        const int slot = allocateFrameSlot(held);
+        argSlots.push_back(slot);
+        params.push_back(Param{ held, slot });
+    }
+
+    const int srcSlot = (copyArg >= 0 &&
+                         static_cast<std::size_t>(copyArg) < argSlots.size())
+                      ? argSlots[copyArg] : -1;
+    std::vector<StmtPtr> body = virtualBaseCalls(type, thisSlot, true, pos,
+                                                 srcSlot, moving);
+
+    // Then C2, which builds everything else - the non-virtual bases, the
+    // members, and the body the user wrote.
+    ExprPtr me(Var::local("this", thisSlot));
+    me->setType(self);
+    std::vector<ExprPtr> args;
+    args.push_back(std::move(me));
+    std::vector<const Type *> ps;
+    ps.push_back(self);
+    for (std::size_t i = 0; i < ctorParams.size(); i++) {
+        ExprPtr a(Var::local("a", argSlots[i]));
+        if (ctorParams[i]->isReference()) {
+            // The slot holds the address; the callee wants the object, bound
+            // to its reference parameter the way every other call binds one.
+            a->setType(types_.pointerTo(ctorParams[i]->referent()));
+            ExprPtr obj(new Unary('*', std::move(a)));
+            obj->setType(ctorParams[i]->referent());
+            if (moving) obj->setXvalue();
+            a = std::move(obj);
+        } else {
+            a->setType(ctorParams[i]);
+        }
+        args.push_back(std::move(a));
+        ps.push_back(ctorParams[i]);
+    }
+    body.push_back(StmtPtr(new ExprStmt(
+        completeCall(cls, c2, nullptr, types_.get(Kind::Void), ps, false, pos,
+                     std::move(args)))));
+
+    current_->functions.push_back(Function(cls + "::complete",
+                                           types_.get(Kind::Void),
+                                           std::move(params),
+                                           StmtPtr(new Block(std::move(body))),
+                                           alignTo(frameSize_, 16), false, 0,
+                                           false, 0, pos,
+                                           std::vector<::Local>()));
+    current_->functions.back().setSymbol(c1);
+    if (isInline) current_->functions.back().setInline(true);
+    frameSize_ = savedFrame;
+}
+
+void Parser::synthesizeCompleteDtor(const Type *type, const std::string &d1,
+                                    const std::string &d2, bool isInline,
+                                    std::size_t pos) {
+    const std::string &cls = type->tag();
+    const Type *self = types_.pointerTo(type);
+
+    const int savedFrame = frameSize_;
+    frameSize_ = 0;
+    std::vector<Param> params;
+    const int thisSlot = allocateFrameSlot(self);
+    params.push_back(Param{ self, thisSlot });
+
+    // D2 first - it destroys what C2 built - and the virtual bases after it.
+    std::vector<StmtPtr> body;
+    ExprPtr me(Var::local("this", thisSlot));
+    me->setType(self);
+    std::vector<ExprPtr> args;
+    args.push_back(std::move(me));
+    std::vector<const Type *> ps;
+    ps.push_back(self);
+    body.push_back(StmtPtr(new ExprStmt(
+        completeCall(cls, d2, nullptr, types_.get(Kind::Void), ps, false, pos,
+                     std::move(args)))));
+
+    std::vector<StmtPtr> after = virtualBaseCalls(type, thisSlot, false, pos);
+    for (std::size_t i = 0; i < after.size(); i++)
+        body.push_back(std::move(after[i]));
+
+    current_->functions.push_back(Function(cls + "::completeDtor",
+                                           types_.get(Kind::Void),
+                                           std::move(params),
+                                           StmtPtr(new Block(std::move(body))),
+                                           alignTo(frameSize_, 16), false, 0,
+                                           false, 0, pos,
+                                           std::vector<::Local>()));
+    current_->functions.back().setSymbol(d1);
+    if (isInline) current_->functions.back().setInline(true);
+    frameSize_ = savedFrame;
+}
+
 const Parser::Signature *Parser::destructorOf(const Type *cls) const {
     if (cls == nullptr || !cls->isStructOrUnion() || cls->tag().empty())
         return nullptr;
@@ -1540,6 +1759,9 @@ void Parser::synthesizeDestructor(std::size_t which) {
 
     for (std::size_t n = bs.size(); n-- > 0; ) {
         const Type *base = bs[n].type;
+        // D1 destroys the virtual bases, after this body has run - the mirror
+        // of C1 building them before it. See synthesizeCompleteDtor.
+        if (bs[n].isVirtual && !target_.microsoftNames()) continue;
         const Signature *dtor = destructorOf(base);
         if (dtor == nullptr) continue;
         if (dtor->access != Access::Public)
@@ -1593,7 +1815,13 @@ void Parser::synthesizeDestructor(std::size_t which) {
     if (!target_.microsoftNames()) {
         std::string d2;
         itaniumDestructorName(cls, type, false, &d2);
-        current_->functions.back().setAlias(d2);
+        if (type->hasVirtualBase()) {
+            current_->functions.back().setSymbol(d2);
+            frameSize_ = savedFrame;
+            synthesizeCompleteDtor(type, symbol, d2, true, pos);
+        } else {
+            current_->functions.back().setAlias(d2);
+        }
     }
     frameSize_ = savedFrame;
 
@@ -1749,6 +1977,16 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
     for (std::size_t i = 0; i < bs.size(); i++) {
         const Type *base = bs[i].type;
         if (base->tag().empty()) continue;
+        // **A virtual base belongs to C1, not to this body.** Two things go
+        // wrong when it is built here. It is built once per class that names
+        // it rather than once for the object, which is what the written path
+        // records - and the conversion below reaches a virtual base *through
+        // the vtable*, whose vptr is not stored until the bases are built. So
+        // an implicit constructor read a vptr that was still whatever the
+        // stack held and dereferenced it: a segfault for `struct D : virtual
+        // public V { };` with no constructor written. See
+        // synthesizeCompleteCtor, which reaches them by the constant offset.
+        if (bs[i].isVirtual && !target_.microsoftNames()) continue;
         if (overloadsOf(constructorKey(base->tag())) == nullptr) continue;
         const Signature *ctor = defaultConstructorOf(base);
         if (ctor == nullptr)
@@ -1831,8 +2069,20 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
         const Type *fnType = types_.functionType(types_.get(Kind::Void),
                                                  std::vector<const Type *>(), false);
         std::string c2, why;
-        if (itaniumConstructorName(cls, type, fnType, false, &c2, &why))
+        if (itaniumConstructorName(cls, type, fnType, false, &c2, &why)) {
+            // **A virtual base splits this the same way it splits a written
+            // constructor.** The walk above skipped them, so this body is C2;
+            // C1 builds them and calls it. The frame is restored first,
+            // because the synthesised body allocates one of its own.
+            if (type->hasVirtualBase()) {
+                current_->functions.back().setSymbol(c2);
+                frameSize_ = savedFrame;
+                synthesizeCompleteCtor(type, std::vector<const Type *>(),
+                                       symbol, c2, true, pos);
+                return;
+            }
             current_->functions.back().setAlias(c2);
+        }
     }
     frameSize_ = savedFrame;
 }
@@ -1916,6 +2166,14 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
     const std::vector<Type::BaseSpec> &bs = type->bases();
     for (std::size_t i = 0; i < bs.size(); i++) {
         const Type *base = bs[i].type;
+        // **A virtual base is copied by C1**, for the reason the default
+        // constructor records: once for the object rather than once per class
+        // that names it, and reached by a constant rather than through a vptr
+        // this body has not stored yet. Assignment keeps its single name and
+        // its existing walk - [class.copy.assign]/12 leaves assigning a
+        // virtual base more than once unspecified, so there is nothing here
+        // to correct.
+        if (bs[i].isVirtual && !assigning && !target_.microsoftNames()) continue;
         // **A member or base without a move constructor is copied, not refused.**
         // [class.copy]/15: the implicit move moves each subobject, and moving
         // something that has only a copy is what its copy constructor does.
@@ -2089,8 +2347,18 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
         ps.push_back(srcRef);
         const Type *fnType = types_.functionType(types_.get(Kind::Void), ps, false);
         std::string c2, why;
-        if (itaniumConstructorName(cls, type, fnType, false, &c2, &why))
+        if (itaniumConstructorName(cls, type, fnType, false, &c2, &why)) {
+            // The same split, with the source forwarded: C1 copies the one
+            // virtual base out of `that` and then calls C2 for the rest.
+            if (type->hasVirtualBase()) {
+                current_->functions.back().setSymbol(c2);
+                frameSize_ = savedFrame;
+                synthesizeCompleteCtor(type, ps, symbol, c2, true, pos, 0,
+                                       moving);
+                return;
+            }
             current_->functions.back().setAlias(c2);
+        }
     }
     frameSize_ = savedFrame;
 }

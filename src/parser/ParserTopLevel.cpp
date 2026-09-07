@@ -1224,6 +1224,13 @@ void Parser::topLevel(Program &program) {
         const std::size_t which = memberOf->bases().size() - 1 - bn;
         const Type *base = memberOf->bases()[which].type;
         const int baseAt = memberOf->bases()[which].offset;
+        // **A virtual base is not built here.** This body is C2, the base
+        // subobject form, and [class.base.init]/7 gives every virtual base to
+        // the most-derived class instead - so C1 builds them and then calls
+        // this. See Parser::synthesizeCompleteCtor. The Microsoft ABI arranges
+        // virtual bases differently and is refused before it reaches here.
+        if (memberOf->bases()[which].isVirtual && !target_.microsoftNames())
+            continue;
         const std::string key = building ? constructorKey(base->tag())
                                          : destructorKey(base->tag());
 
@@ -1409,19 +1416,42 @@ void Parser::topLevel(Program &program) {
     // A constructor is emitted under both of Itanium's names: C1 for a
     // complete object, C2 for a base subobject, the second as a label in front
     // of the first. The Microsoft ABI has one name and wants no alias.
+    //
+    // **Unless the class has a virtual base, and then one body cannot carry
+    // both names**: C2 must not build what C1 builds. The walk above skipped
+    // the virtual bases, so this body is C2 - and C1 is synthesised after the
+    // blocks are attached, because pushing a function now would move
+    // `functions.back()` out from under the lines that follow.
+    const bool splitForVirtualBase = memberOf != nullptr &&
+                                     !target_.microsoftNames() &&
+                                     memberOf->hasVirtualBase();
+    std::string splitC1, splitC2, splitD1, splitD2;
     if (memberOf != nullptr && d.name == localOf(d.qualifier) &&
         !target_.microsoftNames()) {
         const Type *fnType = types_.functionType(types_.get(Kind::Void), params, false);
         std::string c2, why;
         if (itaniumConstructorName(d.qualifier, findTypedef(d.qualifier),
-                                   fnType, false, &c2, &why))
-            program.functions.back().setAlias(c2);
+                                   fnType, false, &c2, &why)) {
+            if (splitForVirtualBase) {
+                splitC1 = program.functions.back().symbol();
+                splitC2 = c2;
+                program.functions.back().setSymbol(c2);
+            } else {
+                program.functions.back().setAlias(c2);
+            }
+        }
     }
     if (memberOf != nullptr && d.name == "~" + localOf(d.qualifier) &&
         !target_.microsoftNames()) {
         std::string d2;
         itaniumDestructorName(d.qualifier, memberOf, false, &d2);
-        program.functions.back().setAlias(d2);
+        if (splitForVirtualBase) {
+            splitD1 = program.functions.back().symbol();
+            splitD2 = d2;
+            program.functions.back().setSymbol(d2);
+        } else {
+            program.functions.back().setAlias(d2);
+        }
     }
     // The deleting form is emitted beside the destructor that was just
     // defined, because that is where its body comes from.
@@ -1430,6 +1460,15 @@ void Parser::topLevel(Program &program) {
         member->isVirtual)
         synthesizeDeleting(d.qualifier, memberOf, member->access, d.pos);
     program.functions.back().setBlocks(std::move(blocks_));
+    // C1 and D1 beside the C2 and D2 just emitted. Last of all, because each
+    // pushes a function of its own and every line above wants
+    // `functions.back()` to still be the one being defined.
+    if (!splitC1.empty())
+        synthesizeCompleteCtor(memberOf, params, splitC1, splitC2,
+                               program.functions.back().isInline(), d.pos);
+    if (!splitD1.empty())
+        synthesizeCompleteDtor(memberOf, splitD1, splitD2,
+                               program.functions.back().isInline(), d.pos);
 }
 
 Program Parser::parse() {

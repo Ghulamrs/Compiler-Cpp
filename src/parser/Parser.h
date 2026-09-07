@@ -964,6 +964,32 @@ private:
     // it is what a `delete` through a base pointer reaches.
     void synthesizeDeleting(const std::string &cls, const Type *type,
                             Access access, std::size_t pos);
+    // **A class with a virtual base needs two bodies where every other class
+    // needs one.** [class.base.init]/7: the most-derived class builds every
+    // virtual base, and the base subobject constructors it calls must not - so
+    // C2 cannot be a label on C1's body, which is what `Function::setAlias`
+    // makes it everywhere else. The body carrying the user's code is emitted
+    // as C2 with the virtual bases skipped, and C1 is this: build them, then
+    // call C2. A wrapper cannot skip part of another function's body, which is
+    // why the split falls this way round and not the other.
+    // `copyArg` names the parameter holding the object to copy from, or -1 for
+    // a constructor that builds its virtual bases rather than copying them.
+    void synthesizeCompleteCtor(const Type *type,
+                                const std::vector<const Type *> &ctorParams,
+                                const std::string &c1, const std::string &c2,
+                                bool isInline, std::size_t pos,
+                                int copyArg = -1, bool moving = false);
+    // The same split on the way out, and the order reverses with it: D1 calls
+    // D2 - which destroys what C2 built - and then destroys the virtual bases.
+    void synthesizeCompleteDtor(const Type *type, const std::string &d1,
+                                const std::string &d2, bool isInline,
+                                std::size_t pos);
+    // The construction calls for a class's virtual bases, reached by the
+    // constant offset this class laid them down at. Shared by both of the
+    // above and by the implicit members, which need the identical walk.
+    std::vector<StmtPtr> virtualBaseCalls(const Type *type, int thisSlot,
+                                          bool building, std::size_t pos,
+                                          int srcSlot = -1, bool moving = false);
     static std::string destructorKey(const std::string &cls) {
         return cls + "::~" + localOf(cls);
     }

@@ -20,3 +20,7 @@ xcuserdata/
 *.xcuserdatad
 .vs/
 *.vcxproj.user
+
+# What tools/windows/run-cases.cmd writes beside the tree, the same kind of
+# thing tests/out-* is: one .exe, .out or .err per case, rewritten every run.
+winout/
