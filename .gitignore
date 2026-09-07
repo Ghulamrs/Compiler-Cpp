@@ -27,3 +27,7 @@ winout/
 
 # And what tools/windows/names-vs-cl.cmd writes, for the same reason.
 winnames/
+
+# And the same for a sweep of the GNU spelling, which writes one .exe,
+# .out and .build per case exactly as winout does.
+gnuout/

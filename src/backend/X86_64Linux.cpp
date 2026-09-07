@@ -1615,8 +1615,14 @@ void X86_64Linux::endCleanupFunclet() {
     funcletKind_ = "$catch$";
 }
 
+// **The resume label goes through labelText like every table entry does.**
+// A handler funclet hands back the address to carry on at, and on COFF a `.L`
+// name is a temporary the assembler discards - `lea .L.main.caught.0(%rip)`
+// is refused as undefined, which is the same rule the tables above obey and
+// the one the MASM twin obeys through masm_.labelName. Identity on ELF and
+// Mach-O, so neither Itanium target moves.
 void X86_64Linux::endFunclet(const std::string &resume) {
-    closeFunclet("  lea " + resume + "(%rip), %rax\n");
+    closeFunclet("  lea " + a_->labelText(resume) + "(%rip), %rax\n");
 }
 
 // Write -2 into the runtime's scratch word: the personality routine reads it
@@ -1743,7 +1749,13 @@ void X86_64Linux::emitCoffCleanupTables(const Function &fn) {
         // toState: the region before this one, and -1 for the first, which is
         // what says "nothing further in this frame".
         o += "  .long " + (k == 0 ? std::string("-1") : std::to_string(k - 1)) + "\n";
-        o += "  .long " + a_->labelText(msTries()[k].cleanupFunclet) + "@IMGREL\n";
+        // **A state with no funclet runs nothing, and says so with a zero.**
+        // Writing the name unconditionally emitted `.long @IMGREL` with no
+        // symbol in front of it, which the assembler took as a reference to a
+        // symbol named `?` - undefined, and the link failed naming it.
+        const std::string &act = msTries()[k].cleanupFunclet;
+        if (act.empty()) o += "  .long 0\n";
+        else             o += "  .long " + a_->labelText(act) + "@IMGREL\n";
     }
 
     o += "\"$ip2state$" + m + "\":\n";
@@ -1912,11 +1924,166 @@ void X86_64Linux::emitData(const Program &program) {
     }
 }
 
+// **The FH3 tables for a frame that catches.** A cleanup-only frame has no
+// try blocks and no handler map; this one has both, and without them the
+// runtime finds no handler in the frame at all - a `try`/`catch` compiled
+// this way linked, ran, caught nothing and printed nothing. Same tables and
+// the same constants MasmCodeGen writes, with `.long X@IMGREL` for its
+// `DD imagerel X`.
+void X86_64Linux::emitCoffTryTables(const Function &fn) {
+    (void)fn;
+    const std::string m = fnSymbol_;
+    const std::size_t tries = msTries().size();
+
+    std::string o;
+    o += funclets_;
+    funclets_.clear();
+    funcletIndex_ = 0;
+
+    // Two states per try - the body is one and its handlers the next - so try
+    // k owns states 2k and 2k+1, which is what tryLow and tryHigh say.
+    const std::size_t states = 2 * tries;
+    std::size_t ipRows = 0;
+    for (std::size_t k = 0; k < tries; k++)
+        ipRows += 2 + msTries()[k].handlers.size();
+
+    o += "\n  .section .xdata,\"dr\"\n";
+    o += "  .p2align 2\n";
+    o += "\"$cppxdata$" + m + "\":\n";
+    o += "  .long 0x19930522\n";
+    o += "  .long " + std::to_string(states) + "\n";
+    o += "  .long \"$stateUnwindMap$" + m + "\"@IMGREL\n";
+    o += "  .long " + std::to_string(tries) + "\n";
+    o += "  .long \"$tryMap$" + m + "\"@IMGREL\n";
+    o += "  .long " + std::to_string(ipRows + 1) + "\n";
+    o += "  .long \"$ip2state$" + m + "\"@IMGREL\n";
+    o += "  .long " +
+         std::to_string(establisherOffset(msTries()[0].unwindHelpSlot)) + "\n";
+    o += "  .long 0\n";                     // no exception specification
+    o += "  .long 1\n";                     // EHFlags: compiled with /EHsc
+
+    // No cleanups in such a frame, so every state unwinds to nothing.
+    o += "\"$stateUnwindMap$" + m + "\":\n";
+    for (std::size_t i = 0; i < states; i++) {
+        o += "  .long -1\n";
+        o += "  .long 0\n";
+    }
+
+    o += "\"$tryMap$" + m + "\":\n";
+    for (std::size_t k = 0; k < tries; k++) {
+        const MsTryRegion &r = msTries()[k];
+        o += "  .long " + std::to_string(2 * k) + "\n";          // tryLow
+        o += "  .long " + std::to_string(2 * k) + "\n";          // tryHigh
+        o += "  .long " + std::to_string(2 * k + 1) + "\n";      // catchHigh
+        o += "  .long " + std::to_string(r.handlers.size()) + "\n";
+        o += "  .long \"$handlerMap$" + std::to_string(k) + "$" + m +
+             "\"@IMGREL\n";
+    }
+
+    for (std::size_t k = 0; k < tries; k++) {
+        const MsTryRegion &r = msTries()[k];
+        o += "\"$handlerMap$" + std::to_string(k) + "$" + m + "\":\n";
+        for (std::size_t i = 0; i < r.handlers.size(); i++) {
+            const MsHandlerRow &h = r.handlers[i];
+            // 0x40 is HT_IsCatchAll and names no type; 0x08 is HT_IsReference,
+            // which puts the object's address in the slot rather than a copy.
+            o += "  .long ";
+            o += h.descriptor.empty() ? "0x40\n"
+                                      : (h.byReference ? "0x08\n" : "0\n");
+            if (h.descriptor.empty()) o += "  .long 0\n";
+            else o += "  .long " + a_->labelText(h.descriptor) + "@IMGREL\n";
+            o += "  .long " + std::to_string(h.objectSlot == 0
+                                  ? 0 : establisherOffset(h.objectSlot)) + "\n";
+            o += "  .long " + a_->labelText(h.funclet) + "@IMGREL\n";
+            // The frame size itself: what the runtime adds to the establisher
+            // to reach the handler's own frame.
+            o += "  .long " + std::to_string(frameSize_) + "\n";
+        }
+    }
+
+    // Where each state begins. -1 is "outside any try", and a funclet is
+    // wholly inside its own handler state.
+    o += "\"$ip2state$" + m + "\":\n";
+    o += "  .long \"$LNbeg$" + m + "\"@IMGREL\n";
+    o += "  .long -1\n";
+    for (std::size_t k = 0; k < tries; k++) {
+        const MsTryRegion &r = msTries()[k];
+        o += "  .long " + a_->labelText(r.begin) + "@IMGREL\n";
+        o += "  .long " + std::to_string(2 * k) + "\n";
+        o += "  .long " + a_->labelText(r.end) + "@IMGREL\n";
+        o += "  .long -1\n";
+    }
+    for (std::size_t k = 0; k < tries; k++) {
+        const MsTryRegion &r = msTries()[k];
+        for (std::size_t i = 0; i < r.handlers.size(); i++) {
+            o += "  .long " + a_->labelText(r.handlers[i].funclet) + "@IMGREL\n";
+            o += "  .long " + std::to_string(2 * k + 1) + "\n";
+        }
+    }
+    o += "  .text\n";
+    out_ += o;
+}
+
+// The four objects a Microsoft `throw` hands the runtime, spelled for GNU-as:
+// the type descriptor, one catchable type, the array listing it, and the
+// ThrowInfo itself. Same records MasmCodeGen::emitThrowInfo writes, with
+// `.long X@IMGREL` where MASM writes `DD imagerel X`.
+//
+// **File-local here as well.** cl puts each in a COMDAT and a public copy
+// collides with cl's; the runtime matches a type descriptor by its name
+// string rather than by its address, which is what makes a private one work
+// and what rung 6.5a measured.
+void X86_64Linux::emitCoffThrowInfo(const Program &program) {
+    if (program.thrown.empty()) return;
+    std::string &o = out_;
+
+    for (std::size_t i = 0; i < program.thrown.size(); i++) {
+        const Type *t = program.thrown[i];
+        MicrosoftThrow n;
+        std::string why;
+        if (!microsoftThrowNames(t, t->size(target_), &n, &why)) continue;
+
+        const std::string d = a_->labelText(n.descriptor);
+        const std::string c = a_->labelText(n.catchable);
+        const std::string ar = a_->labelText(n.array);
+        const std::string ti = a_->labelText(n.info);
+
+        o += "  .section .data$r,\"dr\"\n";
+        o += "  .p2align 3\n";
+        o += d + ":\n";
+        o += "  .quad \"??_7type_info@@6B@\"\n";
+        o += "  .quad 0\n";
+        o += "  .asciz \"" + n.decorated + "\"\n";
+
+        o += "  .section .xdata$x,\"dr\"\n";
+        o += "  .p2align 2\n";
+        o += c + ":\n";
+        o += "  .long 1\n";                                  // properties
+        o += "  .long " + d + "@IMGREL\n";                    // the descriptor
+        o += "  .long 0\n";                                   // mdisp
+        o += "  .long -1\n";                                  // pdisp: no vbtable
+        o += "  .zero 4\n";                                   // vdisp, MASM's ORG $+4
+        o += "  .long " + std::to_string(n.size) + "\n";      // sizeOrOffset
+        o += "  .long 0\n";                                   // copyFunction
+        o += ar + ":\n";
+        o += "  .long 1\n";                                   // nCatchableTypes
+        o += "  .long " + c + "@IMGREL\n";
+        o += ti + ":\n";
+        o += "  .long 0\n";                                   // attributes
+        o += "  .long 0\n";                                   // pmfnUnwind
+        o += "  .long 0\n";                                   // pForwardCompat
+        o += "  .long " + ar + "@IMGREL\n";
+    }
+}
+
 void X86_64Linux::run(const Program &program) {
     // The Microsoft RTTI records, where this generator serves that target.
     // The MASM path emits its own in the same place and for the same reason:
     // no other target has anything like them.
-    if (target_.microsoftNames() && !emitsOwnRtti()) emitCoffClassRtti(program);
+    if (target_.microsoftNames() && !emitsOwnRtti()) {
+        emitCoffClassRtti(program);
+        emitCoffThrowInfo(program);
+    }
 
     std::vector<std::string> defined;
     for (const Function &fn : program.functions) defined.push_back(fn.symbol());

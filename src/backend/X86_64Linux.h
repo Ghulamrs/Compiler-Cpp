@@ -90,8 +90,15 @@ protected:
     // class; both are the same arithmetic on the same frame.
     int establisherOffset(int slot) const { return frameSize_ - slot; }
     void emitCoffCleanupTables(const Function &fn);
+    // The same tables for a frame that *catches*: a try map and a handler map
+    // beside the state map, which a cleanup-only frame has neither of.
+    void emitCoffTryTables(const Function &fn);
     // The five objects the Microsoft ABI wants per class with a vftable.
     void emitCoffClassRtti(const Program &program);
+    // The four objects a Microsoft throw is identified by, in GNU syntax.
+    // MasmCodeGen::emitThrowInfo is the twin; without this one anything that
+    // throws assembles and then fails at link on _TI.
+    void emitCoffThrowInfo(const Program &program);
 
     // A funclet is written by walking the handler into the ordinary output and
     // lifting the text back out - what the body appended, in order, IS the
@@ -150,8 +157,17 @@ protected:
         // Microsoft frames carry FH3 tables, not an LSDA. The MASM path says
         // this in its own class; this is the same decision for the COFF one.
         if (target_.microsoftNames()) {
-            if (!msTries().empty()) emitCoffCleanupTables(fn);
-            else { out_ += funclets_; funclets_.clear(); funcletIndex_ = 0; }
+            // **Cleanups and handlers never share a function**, which the
+            // parser enforces on every target - so the first region decides
+            // which shape of table this frame wants. The MASM path asks the
+            // same question in the same words.
+            if (msTries().empty()) {
+                out_ += funclets_; funclets_.clear(); funcletIndex_ = 0;
+            } else if (msTries()[0].isCleanup) {
+                emitCoffCleanupTables(fn);
+            } else {
+                emitCoffTryTables(fn);
+            }
             return;
         }
         if (!callSites().empty()) emitLsda(fn.symbol());
