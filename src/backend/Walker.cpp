@@ -193,6 +193,41 @@ void Walker::visit(const Break &n) { markLine(n); jump(jumps_.back().brk); }
 // **The shape is the same on both targets, so it lives here.** Labels before
 // and after the body bound the range the call-site table talks about, the pad
 // is where the runtime arrives, and the jump over it keeps the ordinary path out.
+// **A region is split around whatever is nested in it**, so no two rows ever
+// overlap. The enclosing one closes at the inner's first label and reopens at
+// its last - past the inner's body but before its landing pad, so a throw from
+// inside a `catch` still belongs to the `try` outside it.
+void Walker::openRegion(const std::string &begin) {
+    if (!open_.empty()) {
+        OpenRegion &outer = open_.back();
+        CallSite piece;
+        piece.begin = outer.start;
+        piece.end = begin;
+        piece.at = outer.at;
+        outer.closed.push_back(piece);
+    }
+    OpenRegion mine;
+    mine.start = begin;
+    mine.at = ++labelOrder_;
+    open_.push_back(mine);
+}
+
+std::vector<Walker::CallSite> Walker::closeRegion(const std::string &end,
+                                                  const std::string &resume) {
+    OpenRegion mine = open_.back();
+    open_.pop_back();
+    CallSite last;
+    last.begin = mine.start;
+    last.end = end;
+    last.at = mine.at;
+    mine.closed.push_back(last);
+    if (!open_.empty()) {
+        open_.back().start = resume;
+        open_.back().at = ++labelOrder_;
+    }
+    return mine.closed;
+}
+
 void Walker::visit(const Try &n) {
     markLine(n);
     if (usesFunclets()) { msTryStatement(n); return; }
@@ -203,8 +238,10 @@ void Walker::visit(const Try &n) {
     const std::string done = label("caught", id);
 
     defineLabel(begin);
+    openRegion(begin);
     for (std::size_t i = 0; i < n.body().size(); i++) n.body()[i]->accept(*this);
     defineLabel(end);
+    const std::vector<CallSite> pieces = closeRegion(end, end);
     jump(done);
 
     defineLabel(pad);
@@ -212,7 +249,12 @@ void Walker::visit(const Try &n) {
     n.pad().accept(*this);
     defineLabel(done);
 
-    callSite(begin, end, pad, n.types(), n.typeIndices(), n.alsoCleanup());
+    // **Every piece names the same pad and the same types.** They are one
+    // region as far as the program is concerned; they are several rows only
+    // because something nested inside had to be cut out of the range.
+    for (std::size_t i = 0; i < pieces.size(); i++)
+        callSite(pieces[i].begin, pieces[i].end, pad, n.types(), n.typeIndices(),
+                 n.alsoCleanup(), pieces[i].at);
 }
 
 // **The Microsoft shape, and what is missing from it is the point.** No pad, no
@@ -310,7 +352,18 @@ std::string Walker::lsdaTable(const LsdaSpelling &sp, const std::string &symbol,
     // destructors. See CLAUDE.md.
     int action = 1;
     std::string at = fnBegin;
-    const std::vector<CallSite> &rows = callSites();
+    // **Sorted by address, which is safe now and was not before.** The gap row
+    // written in front of each real one is `[at, begin)`, and `at` walks to each
+    // row's end - so a row beginning before the one before it ended makes that
+    // length *negative*, assembled as a uleb128 of about 5.4e8. Nested regions
+    // used to do exactly that. They are split now, no two rows overlap, and the
+    // personality's first-match no longer depends on the order - so the order
+    // can be the one the arithmetic needs.
+    std::vector<CallSite> rows = callSites();
+    for (std::size_t i = 1; i < rows.size(); i++)
+        for (std::size_t j = i; j > 0 && rows[j - 1].at > rows[j].at; j--) {
+            CallSite t = rows[j - 1]; rows[j - 1] = rows[j]; rows[j] = t;
+        }
     for (std::size_t i = 0; i < rows.size(); i++) {
         const CallSite &c = rows[i];
         o += "  .uleb128 " + at + "-" + fnBegin + "\n";

@@ -1071,12 +1071,37 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     // Measured at e731456 - clang prints `outer int 7 inner double 2.5` where
     // cxx1 called terminate. Refused with its sibling until indices travel on
     // the Try node instead of being rederived.
-    if (inTryBody_ || inHandlerBody_)
-        src_.fail(pos, "a 'try' inside another one is not supported yet - the "
-                       "call-site table holds sorted ranges that do not "
-                       "overlap, and a nested one has to split its parent. "
-                       "This includes a 'try' inside a 'catch' handler, which "
-                       "is the same table and the same clash");
+    // **A `try` inside a `catch` works now**; one inside a `try` *body* does
+    // not, and the two fail for different reasons. Both are rows and the
+    // enclosing region is split around the inner one, so nothing overlaps -
+    // that part is done, and it is what fixed the handler case.
+    //
+    // What the body case needs beyond it is the **action chain continuing into
+    // the enclosing region**. Measured from clang: the record covering the
+    // inner body reads `catch double, continue to action 4` and action 4 is
+    // `catch int` - the outer's handler. cxx1 gives a row its own types and
+    // stops, so phase 1 finds no `int` there and unwinds past the whole frame.
+    // With that, the pad has to hand over to the enclosing pad as well, since
+    // `_Unwind_Resume` leaves for the caller rather than trying the region
+    // outside this one. Neither is built; refused by name until they are.
+    if (inTryBody_)
+        src_.fail(pos, "a 'try' inside another one's body is not supported yet "
+                       "- the row covering the inner body would have to carry "
+                       "the enclosing handlers on its action chain, and its "
+                       "landing pad hand over to theirs. A 'try' inside a "
+                       "'catch' handler works");
+    // **The handler half is Itanium's only.** A Microsoft handler is a funclet
+    // named `<fn>$catch$N` from a per-function counter, and a nested one gets a
+    // name already taken: ml64 answers `A2005: symbol redefinition` and then
+    // `A1010: unmatched block nesting`. The splitting this round did is to the
+    // call-site list, which that ABI does not have - `msTryStatement` is
+    // untouched. Found by the Windows box, both Itanium targets being green.
+    if (inHandlerBody_ && target_.microsoftNames())
+        src_.fail(pos, "a 'try' inside a 'catch' handler is not supported yet "
+                       "for x86_64-windows - a handler there is a funclet "
+                       "named after its function and a counter, and a nested "
+                       "one takes a name already used. It works on both "
+                       "Itanium targets");
 
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
     const int pointerSlot = allocateFrameSlot(voidPtr);

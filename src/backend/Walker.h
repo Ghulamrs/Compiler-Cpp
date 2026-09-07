@@ -85,6 +85,23 @@ protected:
         // Parallel to `types`: the selector index the parser gave each one.
         std::vector<int> indices;
         bool cleanup = false;   // a trailing action record with filter 0
+        // Where this segment begins, counted in the order labels are defined -
+        // which is address order, since the walk emits as it goes. Only usable
+        // as a sort key because the segments below are disjoint.
+        int at = 0;
+    };
+
+    // **A region open right now, and the segments of it already closed.** A
+    // region nested inside another does not overlap it: the enclosing one is
+    // *split* around it, closing at the inner's first label and reopening at
+    // its last. That is what makes every row disjoint, and disjointness is what
+    // makes sorting them safe - the sort that was reverted was not wrong about
+    // address order, it was premature, because overlapping rows need the
+    // innermost first and a linear scan cannot be given both.
+    struct OpenRegion {
+        std::string start;
+        int at = 0;
+        std::vector<CallSite> closed;
     };
     // **Rows are used in the order they are registered and never sorted.** A
     // field holding a label id lived here to sort them by address, which looks
@@ -97,7 +114,7 @@ protected:
                   const std::string &pad,
                   const std::vector<std::string> &types,
                   const std::vector<int> &indices,
-                  bool cleanup = false) {
+                  bool cleanup = false, int at = 0) {
         CallSite s;
         s.begin = begin;
         s.end = end;
@@ -105,10 +122,20 @@ protected:
         s.types = types;
         s.indices = indices;
         s.cleanup = cleanup;
+        s.at = at;
         callSites_.push_back(s);
     }
+
+    // Open a region here, splitting whatever encloses it.
+    void openRegion(const std::string &begin);
+    // Close it, hand back its segments, and reopen the enclosing one past
+    // `resume` - which is the inner's end, so the enclosing still covers the
+    // inner's landing pad and handler. A throw from inside a `catch` belongs to
+    // the `try` outside it.
+    std::vector<CallSite> closeRegion(const std::string &end,
+                                      const std::string &resume);
     const std::vector<CallSite> &callSites() const { return callSites_; }
-    void clearCallSites() { callSites_.clear(); }
+    void clearCallSites() { callSites_.clear(); open_.clear(); labelOrder_ = 0; }
 
     // The whole table, as text, for a caller that knows where to put it. ELF's
     // stubs and its personality comdat are not here: they are that target's, and
@@ -174,6 +201,8 @@ protected:
 private:
     int labels_ = 0;
     std::vector<CallSite> callSites_;
+    std::vector<OpenRegion> open_;
+    int labelOrder_ = 0;
     std::vector<MsTryRegion> msTries_;
     const Source *lines_ = nullptr;
     std::string compDir_;

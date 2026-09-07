@@ -377,24 +377,35 @@ where one object is many:
   **x86_64-windows keeps the whole refusal**, body and handler alike: a cleanup
   is a funclet and an FH3 state there, and `wrapMsCleanups` has not been taught
   either trick. `src/parser/ParserStmt.cpp:755`,
-  `src/parser/ParserStmt.cpp:1018`, `src/parser/ParserStmt.cpp:1658`
+  `src/parser/ParserStmt.cpp:1018`, `src/parser/ParserStmt.cpp:1683`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and
   so does a class in the condition of an `if`, where the object is built once.
   `src/parser/ParserStmt.cpp:695`
-- **a `try` inside another**, in its body **or in one of its handlers** — the
-  call-site table holds ranges that do not overlap, and a nested one has to
-  split its parent. The handler half was *not* refused until 2026-09-07 and was
-  silently miscompiled: the parser numbers a `try`'s handlers as it reads them
-  and the backend registers rows innermost-first, so the two disagreed about
-  which index meant which type and an outer `catch (int)` never matched. See
-  CLAUDE.md, "One type, one selector index". `src/parser/ParserStmt.cpp:1075`
+- **a `try` inside another one's *body*** — one inside a `catch` **handler**
+  works on both Itanium targets as of 2026-09-07, and the difference says what
+  is missing. The overlap is gone for both: the enclosing region is split around
+  the inner one, so no two rows cover an address and the rows sort into the
+  order the table's gap arithmetic needs. What the body case wants beyond that
+  is the **action chain continuing into the enclosing region** — measured from
+  clang, the record covering the inner body reads `catch double, continue to
+  action 4` where action 4 is the outer's `catch int`, one chain carrying every
+  enclosing handler — and a pad that hands over to the enclosing pad, since
+  `_Unwind_Resume` leaves for the caller rather than trying the region outside
+  it in the same frame. See CLAUDE.md, "Regions that do not overlap".
+  `src/parser/ParserStmt.cpp:1088`
+- **a `try` inside a `catch` handler, on x86_64-windows only** — a Microsoft
+  handler is a funclet named `<fn>$catch$N` from a per-function counter, so a
+  nested one takes a name already used and ml64 answers
+  `A2005: symbol redefinition`. The region splitting that made the Itanium case
+  work is to the call-site list, which this ABI does not have; `msTryStatement`
+  is untouched. `src/parser/ParserStmt.cpp:1100`
 - **a rethrow**, `throw;` with nothing after it — **for x86_64-windows
   only**; it works on both Itanium targets. There it is
   `_CxxThrowException` with two null pointers, raised from inside a handler
   funclet rather than from the frame that owns the `try`, which has not been
-  measured on the box. `src/parser/ParserStmt.cpp:1396`
+  measured on the box. `src/parser/ParserStmt.cpp:1421`
 - **a dynamic exception specification**, `throw(T)` — `throw()` with nothing in
   it is `noexcept` and works. `src/parser/ParserConst.cpp:97`
 - **a range-based `for` over a temporary** — [stmt.ranged] binds the range to
@@ -431,7 +442,7 @@ where one object is many:
   class's overload set. `src/parser/ParserType.cpp:361`
 - **a using-declaration inside a block** — it would declare a name for the rest
   of the block and rank against the locals beside it.
-  `src/parser/ParserStmt.cpp:1374`. The one at namespace scope,
+  `src/parser/ParserStmt.cpp:1399`. The one at namespace scope,
   `using N::f;`, works, and so does `using namespace N;` here.
 - **an alias declaration**, `using X = T;` — `typedef T X;` says the same
   thing here. It is not a using-declaration, and the three scopes that refuse
@@ -528,7 +539,7 @@ guessed wrong twice.
 
 - **`return` inside a `catch` on x86_64-windows** — a handler is a funclet
   there, so leaving one early is a return of the address to carry on at.
-  `src/parser/ParserStmt.cpp:1421`
+  `src/parser/ParserStmt.cpp:1446`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation

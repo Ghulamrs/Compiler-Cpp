@@ -403,6 +403,7 @@ question, before anything was written:
 | the implicit destructor of an intermediate class | 2026-09-07 | a three-level hierarchy links; `synthesizeDestructor` marks its base's destructor used |
 | `<exception>` and `<stdexcept>` | 2026-09-07 | the standard's nine classes over a `std::string`, and `catcher1.cpp` running |
 | the `__has_*` predicates | 2026-09-07 | `__has_include` answered, the rest told no, and a comment on a directive line |
+| disjoint call-site regions | 2026-09-07 | a `try` inside a `catch`, and rows that can finally be sorted |
 
 Each has a section further down saying what was measured and what was
 deliberately not built. **The table stopped at 2026-08-30 for a week and the
@@ -8261,6 +8262,72 @@ correct - so its `.expected` was taken from cxx1's own output, which checks a
 compiler against itself. It asks about a builtin **neither** has now, so both
 answer 0, the expectation is clang's like every other case here, and what it
 measures is the mechanism rather than the answer.
+
+## Regions that do not overlap, and the sort that was premature rather than wrong
+
+**Landed 2026-09-07.** A `try` inside a `catch` handler works; one inside a
+`try` *body* is refused for a reason now written down precisely. What changed is
+the shape of the call-site table.
+
+### Split on the way in, not sorted on the way out
+
+`Walker::openRegion` closes the enclosing region at the inner one's first label
+and reopens it at the inner's last. One region becomes several rows, all naming
+the same pad and the same types - they are one region to the program, several
+rows only because something nested had to be cut out of the range.
+
+**And that is what finally makes sorting safe.** The gap row written in front of
+each real one is `[at, c.begin)`, with `at` walking to each row's end - so a row
+beginning before the previous one ended gives a *negative* length, assembled as
+a uleb128 of about 5.4x10^8, swallowing the rest of the function. Nested regions
+did exactly that.
+
+**The sort reverted a round earlier was not wrong about address order. It was
+premature.** Overlapping rows need the innermost first, because the personality
+takes the first row whose range holds the address; a linear scan cannot be given
+both orders at once. Split the regions and the conflict is gone: nothing
+overlaps, first-match no longer depends on the order, so the order can be the
+one the arithmetic needs. The case that sort silently broke -
+`A outer; { A inner; boom(); }` - runs correctly now *with* sorting on.
+
+### The enclosing region reopens at the inner's end, not past its pad
+
+So it still covers the inner's landing pad and handler, which is what a throw
+from inside a `catch` needs: it belongs to the `try` outside it.
+
+### What this did not fix, and exactly what it wants
+
+A `try` inside a `try` **body** still terminates, and the overlap was not its
+cause either. Measured from clang for that program:
+
+    Action 5: catch TypeInfo 2 (double), continue to action 4
+    Action 4: catch TypeInfo 1 (int), no further
+
+**One record's action chain carries every handler that encloses the address.**
+cxx1 gives a row its own types and stops, so an `int` thrown in the inner body
+finds no `int` in the chain, phase 1 concludes the frame has no handler, and the
+frame is skipped. With that fixed the pad would have to hand over as well: the
+runtime lands at the *inner's* pad, since that is the pad its record names, and
+`_Unwind_Resume` from there leaves for the caller rather than trying the region
+outside it in the same frame.
+
+Both are named in `try-in-try-body-refused.cpp`.
+
+### The evidence that nothing else moved
+
+18 emissions changed, nine cases across both Itanium targets, and **every
+changed line is `.uleb128`, `.byte` or a label** - checked mechanically, zero
+instructions altered. That is the signature of rows being reordered and split
+and nothing else. `run.sh` runs all nine, `lifetime-ledger`,
+`return-copy-balance` and `jump-out-destroys` among them.
+
+### A case that has been all three things
+
+`try-in-handler.cpp` was a miscompile, then a refusal, and is now a runnable
+case, and the file says so. Its first fix was the wrong one: the blame went to
+the parser and backend numbering the selector twice, that was made
+single-sourced, and the miscompile survived it unchanged. **A fix that removes a
+real fragility is not thereby a fix for the bug you blamed on it.**
 
 ## namespace, and the fact that a namespace is not a type
 
