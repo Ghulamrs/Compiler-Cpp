@@ -400,6 +400,7 @@ question, before anything was written:
 | one type, one selector index | 2026-09-07 | the parser and the backend numbering alike, and a `try` in a handler refused rather than miscompiled |
 | a destructible object inside a `try` body | 2026-09-07 | the body's cleanup rows carrying the `try`'s catch types and handing over to one chain |
 | a thrown temporary with a destructor | 2026-09-07 | the exception object copy-constructed, the operand's temporaries destroyed, and its destructor named |
+| the implicit destructor of an intermediate class | 2026-09-07 | a three-level hierarchy links; `synthesizeDestructor` marks its base's destructor used |
 
 Each has a section further down saying what was measured and what was
 deliberately not built. **The table stopped at 2026-08-30 for a week and the
@@ -8092,6 +8093,42 @@ address sort that was reverted. Its comment was the worse half: it explained how
 sorting by that id restores address order, which reads as live design for
 something the tree deliberately does not do. Both replaced by a note saying rows
 are used in registration order and never sorted, and pointing at why.
+
+## The implicit destructor of an intermediate class, which nothing emitted
+
+**Fixed 2026-09-07**, and it is one line. `C : B : A` with a destructor written
+only on `A` **failed to link**:
+
+    Undefined symbols: "B2::~B2()", referenced from: C2::~C2()
+
+`B`'s destructor is implicit and exists only to destroy its `A` subobject; `C`'s
+is implicit and calls `B`'s. `synthesizeDestructor` builds that call through
+`completeCall` directly and **never marked the callee used** - where
+`destructorCall` does, saying so in a comment ("calling one is what asks for a
+body"), and where `synthesizeCopy` marks its bases and its members.
+`defineImplicitFunctions` runs to a fixed point *for exactly this reason* and
+was simply never told, so `B`'s destructor was emitted by nobody.
+
+**Two levels hid it**, because there the base's destructor is the written one
+and has a body whoever asks. It took a third class - the first whose destructor
+is implicit *and* whose caller is also implicit. Four levels work now too, which
+is the fixed point doing what it was built for.
+
+**No exceptions, templates or virtuals are anywhere near it.** It is a plain
+C++98 shape that did not link, and it went unnoticed because no case in the tree
+had a three-level chain with an implicit middle. It was found on the way to
+something else - probing catch-by-base for `<stdexcept>`, which is that
+hierarchy exactly: a base, an intermediate adding nothing but its own type, and
+concrete classes below. `catcher2.cpp`'s `CustomError : std::runtime_error` is
+three deep.
+
+**The case carries no `throw`, deliberately.** The shape that found this was a
+three-level object thrown and caught by its top base, and a `throw C2(3)` makes
+the trace elision-dependent: cxx1 builds the temporary and copy-constructs the
+exception object where clang builds one, so cxx1 destroys twice and clang once,
+and [class.copy]/31 allows both. The destructor chain needs no exception to
+demonstrate - and without one the case runs on x86_64-windows too, where a class
+throw is still refused.
 
 ## namespace, and the fact that a namespace is not a type
 

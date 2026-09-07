@@ -1435,6 +1435,17 @@ void Parser::synthesizeDestructor(std::size_t which) {
                            "base '" + base->tag() + "' is " +
                            (dtor->access == Access::Private ? "private"
                                                             : "protected"));
+        // **Calling one is what asks for a body**, and this is the only
+        // synthesiser that built its call by hand and forgot to say so.
+        // `destructorCall` marks the callee used and `synthesizeCopy` marks
+        // its bases and members; here the call is assembled through
+        // `completeCall` directly, so nothing did. Two levels hid it - the top
+        // class's destructor is written, so it has a body whoever asks - and
+        // three levels did not: `C2 : B2 : A2` with only A2's written left
+        // B2's implicit destructor referenced by C2's and defined by nothing,
+        // and the program failed to *link*. `defineImplicitFunctions` already
+        // runs to a fixed point for exactly this; it was never told.
+        markUsed(dtor);
         // The base-subobject form, D2, which is what a derived class calls -
         // the same name a written destructor reaches for.
         std::string sym = dtor->symbol;
