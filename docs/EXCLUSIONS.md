@@ -125,11 +125,11 @@ inline, Microsoft calls `__RTCastToVoid`. What is left of it:
 
 - **`dynamic_cast` to a reference** — it has no null to answer with, so a
   failure throws `std::bad_cast`, and there is no C++ standard library here to
-  throw it from. `src/parser/ParserExprNew.cpp:738`
+  throw it from. `src/parser/ParserExprNew.cpp:745`
 - **`dynamic_cast` naming a class with more than one base** — that wants
   `__vmi_class_type_info`, a third shape carrying the bases' offsets and flags.
   Such a class still compiles and its vtable still works; only the cast is
-  refused. `src/parser/ParserExprNew.cpp:812`
+  refused. `src/parser/ParserExprNew.cpp:819`
 - **`typeid`** — in the keyword table below. Nothing emits a `type_info` for a
   *fundamental* type either; a class's is what landed.
 
@@ -353,17 +353,17 @@ where one object is many:
 ## `new` and `delete`
 
 - **placement new**, and a parenthesised type-id after `new` —
-  `src/parser/ParserExprNew.cpp:1021`
+  `src/parser/ParserExprNew.cpp:1028`
 - **more than one value in a new-expression** —
-  `src/parser/ParserExprNew.cpp:1108`
+  `src/parser/ParserExprNew.cpp:1115`
 - **`new T[n]` of a class with a constructor** —
-  `src/parser/ParserExprNew.cpp:1075`
+  `src/parser/ParserExprNew.cpp:1082`
 - **`new T[n][m]`** — only the first dimension may be given.
-  `src/parser/ParserExprNew.cpp:1049`
-- **`new T{...}`** — `src/parser/ParserExprNew.cpp:1101`
-- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:1321`
+  `src/parser/ParserExprNew.cpp:1056`
+- **`new T{...}`** — `src/parser/ParserExprNew.cpp:1108`
+- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:1328`
 - **`delete[]` of a type with a destructor** — the count `new[]` would have
-  recorded is not written. `src/parser/ParserExprNew.cpp:1389`
+  recorded is not written. `src/parser/ParserExprNew.cpp:1396`
 
 ## Statements, exceptions and control
 
@@ -377,28 +377,39 @@ where one object is many:
   innermost-first for a linear scan rather than sorted by address, so neither
   can be split around the other. **x86_64-windows keeps the whole refusal**: a
   cleanup is a funclet and an FH3 state there, and `wrapMsCleanups` has not
-  been taught the same trick. `src/parser/ParserStmt.cpp:634`,
-  `src/parser/ParserStmt.cpp:893`, `src/parser/ParserStmt.cpp:1498`
+  been taught the same trick. `src/parser/ParserStmt.cpp:755`,
+  `src/parser/ParserStmt.cpp:1014`, `src/parser/ParserStmt.cpp:1619`
 - **a temporary with a destructor in a thrown expression inside a `try`** — it
   is destroyed as the exception leaves, and that statement sits outside the
-  region that would do it. `src/parser/ParserStmt.cpp:1250`
+  region that would do it. `src/parser/ParserStmt.cpp:1371`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and
   so does a class in the condition of an `if`, where the object is built once.
-  `src/parser/ParserStmt.cpp:574`
-- **a `try` inside another** — `src/parser/ParserStmt.cpp:944`
+  `src/parser/ParserStmt.cpp:695`
+- **a `try` inside another** — `src/parser/ParserStmt.cpp:1065`
 - **a rethrow**, `throw;` with nothing after it — **for x86_64-windows
   only**; it works on both Itanium targets. There it is
   `_CxxThrowException` with two null pointers, raised from inside a handler
   funclet rather than from the frame that owns the `try`, which has not been
-  measured on the box. `src/parser/ParserStmt.cpp:1225`
+  measured on the box. `src/parser/ParserStmt.cpp:1346`
 - **a dynamic exception specification**, `throw(T)` — `throw()` with nothing in
   it is `noexcept` and works. `src/parser/ParserConst.cpp:97`
-- **a range-based `for` over anything but an array** — a class would need its
-  `begin()` and `end()` found and called. `src/parser/ParserStmt.cpp:414`
+- **a range-based `for` over a temporary** — [stmt.ranged] binds the range to
+  `auto &&`, whose lifetime extension keeps it alive for the whole loop; the
+  range is held as a pointer here, so a temporary would be walked after it
+  died. Name it in a variable first, which is what the message says.
+  `src/parser/ParserStmt.cpp:419`
+- **a range-based `for` over a class with no member `begin`/`end`** — the free
+  `begin(r)`/`end(r)` found by argument-dependent lookup, which
+  [stmt.ranged]/1 falls back to, is not looked for. The member form works, and
+  is what every container in `include/` provides. `src/parser/ParserStmt.cpp:426`
+- **a range-based `for` whose iterator is a class** — every `begin()` in
+  `include/` returns a pointer and the loop built is the pointer loop; a class
+  iterator wants its `operator!=`, `operator++` and `operator*` resolved
+  instead. `src/parser/ParserStmt.cpp:464`
 - **a reference loop variable in a range-based `for`** —
-  `src/parser/ParserStmt.cpp:422`
+  `src/parser/ParserStmt.cpp:519`
 - **a trailing return type**, `auto f(int) -> int` — C++11, and refused as the
   C++11 feature it is rather than as `auto` deduction.
   `src/parser/ParserTopLevel.cpp:565`
@@ -407,7 +418,7 @@ where one object is many:
   is not the same thing. C++98. `src/parser/ParserTopLevel.cpp:1133`
 - **a range-based `for` over a braced list** — the list would be an
   `std::initializer_list`, which there is no library for.
-  `src/parser/ParserStmt.cpp:405`
+  `src/parser/ParserStmt.cpp:510`
 
 ## Namespaces and lookup
 
@@ -418,7 +429,7 @@ where one object is many:
   class's overload set. `src/parser/ParserType.cpp:361`
 - **a using-declaration inside a block** — it would declare a name for the rest
   of the block and rank against the locals beside it.
-  `src/parser/ParserStmt.cpp:1203`. The one at namespace scope,
+  `src/parser/ParserStmt.cpp:1324`. The one at namespace scope,
   `using N::f;`, works, and so does `using namespace N;` here.
 - **an alias declaration**, `using X = T;` — `typedef T X;` says the same
   thing here. It is not a using-declaration, and the three scopes that refuse
@@ -515,7 +526,7 @@ guessed wrong twice.
 
 - **`return` inside a `catch` on x86_64-windows** — a handler is a funclet
   there, so leaving one early is a return of the address to carry on at.
-  `src/parser/ParserStmt.cpp:1261`
+  `src/parser/ParserStmt.cpp:1382`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation

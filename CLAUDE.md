@@ -396,6 +396,7 @@ question, before anything was written:
 | dynamic initialisation | 2026-09-06 | a constructor running before `main`, and four refusals with it |
 | `volatile`, as a line drawn | 2026-09-07 | object versus type: kept where it costs nothing, refused where a linkage name is made from it |
 | `dynamic_cast<void *>` | 2026-09-07 | the most derived object - inline on Itanium, `__RTCastToVoid` on Microsoft |
+| range-based `for` over a class | 2026-09-07 | `begin()`/`end()` as members, and the containers in `include/` walkable |
 
 Each has a section further down saying what was measured and what was
 deliberately not built. **The table stopped at 2026-08-30 for a week and the
@@ -7637,16 +7638,30 @@ holds the subobject's position - and MSVC does not read it inline, it calls
 `__RTCastToVoid(p)`: **one argument**, where `__RTDynamicCast` beside it takes
 five. cxx1 emits the call.
 
-**The Microsoft half was measured from clang, not from cl, and that is a
-weaker footing than this tree normally stands on.** `clang++ --target=
-x86_64-pc-windows-msvc -O0` emits `callq __RTCastToVoid` and, in LLVM IR,
-`declare ptr @__RTCastToVoid(ptr)`; the symbol is undecorated on x64, as
-`__RTDynamicCast` already is, and comes from the `libvcruntime.lib` the link
-line names. What cxx1 already emits is enough for it - the runtime reads the
-locator pointer at `vftable[-1]` and the `offset` dword, both of which
-`Masm.cpp` lays down for every polymorphic class. **The box was unreachable the
-day this was written and cl has not been asked.** Until it has, this is the one
-thing here resting on the secondary oracle.
+**The Microsoft half was written from clang and confirmed by cl the same day**,
+once the box came back. `clang++ --target=x86_64-pc-windows-msvc -O0` emits
+`callq __RTCastToVoid` and, in LLVM IR, `declare ptr @__RTCastToVoid(ptr)`;
+cl, asked afterwards, emits
+
+    mov  rcx, QWORD PTR p$[rsp]
+    call __RTCastToVoid
+
+and nothing else, against the five arguments it passes `__RTDynamicCast` for a
+`dynamic_cast<D *>` in the same file. Same undecorated symbol, same single
+argument, and `dynamic_cast<const void *>` is the identical call. What cxx1
+already emits is enough for it - the runtime reads the locator pointer at
+`vftable[-1]` and the `offset` dword, both of which `Masm.cpp` lays down for
+every polymorphic class.
+
+**Ask cl with `/GR`, not through `tools/windows/measure.cmd`.** That script
+passes `/GR-` on purpose, because it exists for mangling questions and RTTI
+objects are noise in a name listing - but `/GR-` suppresses exactly what a
+`dynamic_cast` question is about. A second script beside it, taking the same
+single unquoted argument, is what asked this one.
+
+**cl emits no null test**, relying on the runtime to answer null for null. The
+guard cxx1 emits is kept anyway: it costs one compare, and dropping it would
+trade a measured fact for an assumption about a CRT this tree does not ship.
 
 **The null test is not an optimisation.** On Itanium the load goes *through*
 the pointer, so a null operand would fault where [expr.dynamic.cast]/2 says the
@@ -7701,6 +7716,79 @@ separate file because the Microsoft ABI refuses that layout for a reason older
 than this feature. Kept in one file, the whole feature would have been skipped
 on Windows and the `__RTCastToVoid` path would never have been compiled by the
 suite that was supposed to check it.
+
+## Range-based `for` over a class
+
+**Landed 2026-09-07**, and it is the last thing between cxx1 and the ordinary
+spelling of a loop over a container. [stmt.ranged] defines the statement *by
+rewriting it*, and the parser does that rewrite:
+
+    auto &&__range = expr;
+    for (auto __b = __range.begin(), __e = __range.end(); __b != __e; ++__b)
+        { T x = *__b; body }
+
+### The reference is a pointer, and that is the whole design
+
+cxx1 cannot declare `auto &&__r`, so `__r` is an `R *` holding `&expr` and every
+use is `*__r`. **That is the same object, evaluated once** - which is not a
+detail: a copy of the range would give a loop that walks a snapshot, and an
+expression with a side effect would run twice. `range-for-class.cpp` proves it
+with a `counted()` returning a reference and printing `evaluations 1`.
+
+**The consequence is that a temporary range is refused.** `auto &&__range`
+extends the lifetime of what `f()` returned to the end of the loop; a pointer
+does not, and walking a dead object is worse than refusing. clang compiles that
+program and is right to. The refusal names the remedy, which costs one line:
+name the range, then loop over the name.
+
+### Members first, and the fallback refused by name
+
+[stmt.ranged]/1 looks `begin` and `end` up **as members** and only if neither is
+found looks for free `begin(r)` and `end(r)` by argument-dependent lookup. The
+member half is built, through `memberCallWith` - the same path an ordinary
+`v.begin()` takes - so overload resolution, access control and the const/
+non-const pair come with it rather than being re-implemented. A class with
+neither is refused by a message that says the fallback is what is missing.
+
+### The iterator must be a pointer, and every one in `include/` is
+
+`vector<T>::iterator` is `T *` here, which is the simplification that header
+made on purpose, and `string`, `set` and `map` follow it. So the loop cxx1
+builds is the pointer loop: `__b != __e` is a pointer comparison, `++__b` is
+pointer arithmetic and `*__b` is a load. **A class iterator is refused by name**,
+and the message lists the three operators the next step has to resolve -
+`operator!=`, `operator++` and `operator*`, each of which this compiler has and
+none of which this loop has been measured against.
+
+### The two paths share every line after the two ends
+
+The branch computes `begin-expr` and `end-expr` and nothing else; the condition,
+the step, the loop variable and the body are one piece of code for an array and
+a class alike. That was deliberate - **written twice, a change to one copy would
+be a divergence no case could see**, which this file records happening
+elsewhere. What proves the refactor cost the array path nothing is the emit
+golden: **0 of 675 files changed**, so every array loop in the suite emits the
+byte it emitted before.
+
+### A case was overwritten, and the name change is the record
+
+`range-for-class.cpp` already existed, from 2026-08-29, holding the refusal this
+round lifts - a class with `begin()` and `end()` returning `int *`, refused by
+name. It was **overwritten by accident** while writing the new case, and its
+orphaned `.error` is what turned `run.sh` red. Deleting it is right, and is the
+standing rule that a landed feature deletes its refusal in the same commit; the
+route there was a clobbered file rather than a decision, which is worth knowing
+because nothing in the suites would have said so if the `.error` had gone with
+it. **Check that a case name is free before writing one.**
+
+### What it unblocked
+
+`~/Documents/Claude/lambdaTest/lambda.cpp` compiles unmodified and prints what
+clang prints. That file is four lines - a `std::vector<int>` from a braced list,
+`std::sort` with a lambda comparator, and a range-based `for` over the result -
+and the range-for was the only thing in it cxx1 could not do. Measured against
+clang: `vector`, `string`, `set`, `map`, `auto`, an empty range, a const
+container, nested loops and a user-written class, nine shapes, all agreeing.
 
 ## namespace, and the fact that a namespace is not a type
 

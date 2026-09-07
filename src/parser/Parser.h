@@ -590,6 +590,13 @@ private:
     bool atNamePath() const;
     bool atRangeFor() const;
     StmtPtr rangeForStatement(int scope);
+    // [stmt.ranged]'s begin-expr and end-expr for a class range, and the slots
+    // holding them. Returns the iterator type; fills `setup` with the three
+    // assignments the loop needs in front of it.
+    const Type *classRangeEnds(ExprPtr range, std::size_t rpos,
+                               std::vector<StmtPtr> &setup, int *bSlot,
+                               int *eSlot, std::string *bName,
+                               std::string *eName);
     // The argument list at a use: `<int, 3>` read into types and values.
     void templateArguments(const TemplateDecl &decl,
                            std::vector<const Type *> *binding,

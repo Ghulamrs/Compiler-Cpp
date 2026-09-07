@@ -630,12 +630,19 @@ ExprPtr Parser::dynamicCastToVoid(ExprPtr v, const Type *to) {
     // as `__RTDynamicCast` already is, and comes from the same
     // `libvcruntime.lib` the link line already names.
     //
-    // **That is clang answering for the Microsoft ABI, not cl**, which is the
-    // weaker of the two oracles this tree uses and is recorded as such: the
-    // Windows box was unreachable when this was written. What cxx1 already
-    // emits is enough for the call - the runtime reads the locator pointer at
-    // `vftable[-1]` and the `offset` dword, both of which `Masm.cpp` lays down
-    // for every polymorphic class.
+    // **Written from clang and since confirmed by cl**, which is the oracle a
+    // Microsoft-ABI question is owed. Asked with RTTI on - `measure.cmd` passes
+    // `/GR-`, which suppresses the very thing in question - cl emits
+    // `mov rcx, p` and `call __RTCastToVoid` and nothing else, against five
+    // arguments for a `dynamic_cast<D *>` in the same file. Same undecorated
+    // symbol, same single argument.
+    //
+    // **cl emits no null test**, relying on the runtime to answer null for
+    // null; the guard below is kept anyway, because it costs a compare and
+    // removing it would trade a fact for an assumption about the CRT. What
+    // cxx1 already emits is enough for the call - the runtime reads the locator
+    // pointer at `vftable[-1]` and the `offset` dword, both of which
+    // `Masm.cpp` lays down for every polymorphic class.
     if (target_.microsoftNames()) {
         const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
         const int msSlot = allocateFrameSlot(voidPtr);

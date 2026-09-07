@@ -389,6 +389,111 @@ bool Parser::atRangeFor() const {
 // **[stmt.ranged] is a rewrite, and this does the rewrite.** The standard says what
 // `for (T x : a)` means by writing another loop, and every node that loop needs was
 // already here. The range is evaluated once, which assigning it to `__b` buys.
+// **[stmt.ranged]'s `begin-expr` and `end-expr` for a class range.** The
+// standard writes the loop as `auto &&__range = expr;` and then
+// `__range.begin()`, `__range.end()` - so the range is evaluated **once**, and
+// what the loop walks is whatever those two return.
+//
+// **The reference is a pointer here.** cxx1 has no way to declare
+// `auto &&__r = expr`, so `__r` is `R *` holding `&expr` and every use is
+// `*__r`. That is the same object, evaluated once, and it is what lets a
+// `v.push_back()` inside the body be seen by the loop - which a copy of the
+// range would not.
+//
+// **The member form only.** [stmt.ranged]/1 says that if `begin` and `end` are
+// found as members they are used, and only otherwise are free `begin(r)` and
+// `end(r)` looked up with argument-dependent lookup. Every container in
+// `include/` has them as members. The free form is refused by name.
+const Type *Parser::classRangeEnds(ExprPtr range, std::size_t rpos,
+                                   std::vector<StmtPtr> &setup,
+                                   int *bSlot, int *eSlot,
+                                   std::string *bName, std::string *eName) {
+    const Type *rangeType = range->type();
+    const Type *cls = rangeType->unqualified();
+
+    // **A temporary range needs its lifetime extended and this does not do
+    // that.** `auto &&__range = f()` keeps what `f()` returned alive to the end
+    // of the loop; taking its address here would leave the loop walking a dead
+    // object, which is worse than refusing.
+    if (!isGlvalue(*range))
+        src_.fail(rpos, "the range here is a temporary, and a range-based "
+                        "'for' binds the range to a reference that keeps it "
+                        "alive for the whole loop - which is not supported "
+                        "yet. Name it in a variable first and loop over that");
+
+    if (findMemberOwner(cls, "begin") == nullptr ||
+        findMemberOwner(cls, "end") == nullptr)
+        src_.fail(rpos, "'" + cls->describe() + "' has no 'begin' and 'end' "
+                        "member function, and a free 'begin(r)' and 'end(r)' "
+                        "found by argument-dependent lookup - which is what a "
+                        "range-based 'for' falls back to - is not supported "
+                        "yet");
+
+    // `R *__r = &range;`
+    const Type *rangePtr = types_.pointerTo(rangeType);
+    *bSlot = declare(".rr" + std::to_string(refTemps_), rangePtr, rpos);
+    const std::string rName = ".rr" + std::to_string(refTemps_++);
+    const int rSlot = *bSlot;
+    ExprPtr held(Var::local(rName, rSlot));
+    held->setType(rangePtr);
+    ExprPtr addr(new Unary('&', std::move(range)));
+    addr->setType(rangePtr);
+    ExprPtr keep(new Assign(std::move(held), std::move(addr)));
+    keep->setType(rangePtr);
+    setup.push_back(StmtPtr(new ExprStmt(std::move(keep))));
+
+    // `*__r`, rebuilt for each call: an ExprPtr is used up by the one that
+    // takes it, and `memberCallWith` takes the object's address itself.
+    auto object = [&]() {
+        ExprPtr p(Var::local(rName, rSlot));
+        p->setType(rangePtr);
+        ExprPtr o(new Unary('*', std::move(p)));
+        o->setType(rangeType);
+        return o;
+    };
+
+    ExprPtr first = memberCallWith(object(), rangeType, "begin", rpos,
+                                   std::vector<ExprPtr>());
+    const Type *iter = first->type();
+
+    // **The iterator has to be a pointer, and every one in `include/` is.**
+    // `vector<T>::iterator` is `T *` here; a class iterator would need its
+    // `!=`, `++` and `*` resolved as overloaded operators, each of which is
+    // built, but none of which this has been measured against.
+    if (!iter->isPointer())
+        src_.fail(rpos, "'" + cls->describe() + "::begin()' returns '" +
+                        iter->describe() + "', and a range-based 'for' over a "
+                        "class whose iterator is not a pointer is not "
+                        "supported yet - the loop would have to call its "
+                        "'operator!=', 'operator++' and 'operator*'");
+
+    *bSlot = declare(".rb" + std::to_string(refTemps_), iter, rpos);
+    *bName = ".rb" + std::to_string(refTemps_++);
+    ExprPtr b(Var::local(*bName, *bSlot));
+    b->setType(iter);
+    ExprPtr startAt(new Assign(std::move(b), std::move(first)));
+    startAt->setType(iter);
+    setup.push_back(StmtPtr(new ExprStmt(std::move(startAt))));
+
+    ExprPtr last = memberCallWith(object(), rangeType, "end", rpos,
+                                  std::vector<ExprPtr>());
+    if (last->type() != iter)
+        src_.fail(rpos, "'" + cls->describe() + "::begin()' and 'end()' return "
+                        "different types, '" + iter->describe() + "' and '" +
+                        last->type()->describe() + "', so there is nothing the "
+                        "loop can compare");
+
+    *eSlot = declare(".re" + std::to_string(refTemps_), iter, rpos);
+    *eName = ".re" + std::to_string(refTemps_++);
+    ExprPtr e(Var::local(*eName, *eSlot));
+    e->setType(iter);
+    ExprPtr stopAt(new Assign(std::move(e), std::move(last)));
+    stopAt->setType(iter);
+    setup.push_back(StmtPtr(new ExprStmt(std::move(stopAt))));
+
+    return iter;
+}
+
 StmtPtr Parser::rangeForStatement(int scope) {
     StorageClass sc;
     Qualifiers quals;
@@ -410,50 +515,66 @@ StmtPtr Parser::rangeForStatement(int scope) {
     expect(")");
 
     const Type *rt = range->type();
-    if (!rt->isArray())
-        src_.fail(rpos, "a range-based 'for' over anything but an array is "
-                        "not supported yet - a class would need its begin() "
-                        "and end() looked up and called, which is its own "
-                        "step");
-    if (rt->length() < 0)
-        src_.fail(rpos, "this array has no length, so there is nothing to "
-                        "stop at");
     if (d.type->isReference())
         src_.fail(d.pos, "a reference in a range-based 'for' is not supported "
                          "yet - the loop variable is copied for now");
 
-    const Type *elem = rt->pointee();
-    const Type *elemPtr = types_.pointerTo(elem);
+    // **The two ends of the loop, and the only thing the two kinds of range
+    // disagree about.** [stmt.ranged] names them `begin-expr` and `end-expr`
+    // and everything after them is one loop, so they are what the branch
+    // computes and the rest is shared. An array's are the decayed pointer and
+    // that plus the bound; a class's are what its own `begin()` and `end()`
+    // return.
+    const Type *elemPtr = nullptr;
+    std::vector<StmtPtr> setup;
+    int bSlot = 0, eSlot = 0;
+    std::string bName, eName;
+
+    if (rt->unqualified()->isStructOrUnion()) {
+        elemPtr = classRangeEnds(std::move(range), rpos, setup,
+                                 &bSlot, &eSlot, &bName, &eName);
+    } else {
+        if (!rt->isArray())
+            src_.fail(rpos, "a range-based 'for' needs an array or a class "
+                            "with 'begin' and 'end', and this is '" +
+                            rt->describe() + "'");
+        if (rt->length() < 0)
+            src_.fail(rpos, "this array has no length, so there is nothing to "
+                            "stop at");
+
+        elemPtr = types_.pointerTo(rt->pointee());
+
+        // `T *__b = a;` - the array decayed, evaluated here and nowhere else.
+        bSlot = declare(".rb" + std::to_string(refTemps_), elemPtr, rpos);
+        bName = ".rb" + std::to_string(refTemps_++);
+        ExprPtr b(Var::local(bName, bSlot));
+        b->setType(elemPtr);
+        ExprPtr startAt(new Assign(std::move(b), decay(std::move(range))));
+        startAt->setType(elemPtr);
+        setup.push_back(StmtPtr(new ExprStmt(std::move(startAt))));
+
+        // `T *__e = __b + N;`
+        eSlot = declare(".re" + std::to_string(refTemps_), elemPtr, rpos);
+        eName = ".re" + std::to_string(refTemps_++);
+        ExprPtr from(Var::local(bName, bSlot));
+        from->setType(elemPtr);
+        ExprPtr count(new Num(rt->length()));
+        count->setType(types_.get(target_.sizeType()));
+        // **Through `arithmetic`, not a bare Binary.** `p + 1` on an `int *` advances four
+        // bytes, and that scaling lives in the helper the ordinary expression path uses.
+        // Built by hand it produced a loop that read the array one byte at a time.
+        ExprPtr past = arithmetic(BinOp::Add, std::move(from), std::move(count),
+                                  rpos);
+        ExprPtr e(Var::local(eName, eSlot));
+        e->setType(elemPtr);
+        ExprPtr stopAt(new Assign(std::move(e), std::move(past)));
+        stopAt->setType(elemPtr);
+        setup.push_back(StmtPtr(new ExprStmt(std::move(stopAt))));
+    }
+
+    const Type *elem = elemPtr->pointee();
     if (mentionsDeduced(d.type))
         d.type = deduceAutoFrom(d.type, elem, d.name, d.pos);
-
-    // `T *__b = a;` - the array decayed, evaluated here and nowhere else.
-    const int bSlot = declare(".rb" + std::to_string(refTemps_), elemPtr, rpos);
-    const std::string bName = ".rb" + std::to_string(refTemps_++);
-    ExprPtr b(Var::local(bName, bSlot));
-    b->setType(elemPtr);
-    std::vector<StmtPtr> setup;
-    ExprPtr startAt(new Assign(std::move(b), decay(std::move(range))));
-    startAt->setType(elemPtr);
-    setup.push_back(StmtPtr(new ExprStmt(std::move(startAt))));
-
-    // `T *__e = __b + N;`
-    const int eSlot = declare(".re" + std::to_string(refTemps_), elemPtr, rpos);
-    const std::string eName = ".re" + std::to_string(refTemps_++);
-    ExprPtr from(Var::local(bName, bSlot));
-    from->setType(elemPtr);
-    ExprPtr count(new Num(rt->length()));
-    count->setType(types_.get(target_.sizeType()));
-    // **Through `arithmetic`, not a bare Binary.** `p + 1` on an `int *` advances four
-    // bytes, and that scaling lives in the helper the ordinary expression path uses.
-    // Built by hand it produced a loop that read the array one byte at a time.
-    ExprPtr past = arithmetic(BinOp::Add, std::move(from), std::move(count),
-                              rpos);
-    ExprPtr e(Var::local(eName, eSlot));
-    e->setType(elemPtr);
-    ExprPtr stopAt(new Assign(std::move(e), std::move(past)));
-    stopAt->setType(elemPtr);
-    setup.push_back(StmtPtr(new ExprStmt(std::move(stopAt))));
 
     // `__b != __e`
     ExprPtr atB(Var::local(bName, bSlot));
