@@ -1326,6 +1326,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     // install the pad when nothing matched, so the destructors still run.
     for (std::size_t i = 0; i < segments.size(); i++) {
         segments[i]->setTypes(types);
+        segments[i]->setTypeIndices(indices);
         segments[i]->setAlsoCleanup();
     }
     // The one chain, behind the label those segments jump to.
@@ -1335,6 +1336,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     guarded.push_back(std::move(body));
     Try *t = new Try(std::move(guarded), std::move(labelled), pointerSlot,
                      selectorSlot, std::move(types));
+    t->setTypeIndices(indices);
     // The call site needs a trailing filter-0 action, or phase 2 installs no
     // pad where no handler matched and these destructors never run.
     if (unwindsHere) t->setAlsoCleanup();

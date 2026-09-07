@@ -7855,9 +7855,14 @@ prints so the refusal can be lifted against a known answer rather than a guess.
 
 **No suite had the shape.** It was found by asking whether the parser's
 numbering and the backend's could ever disagree - a question about a *coupling*
-rather than about a feature, which is not what a corpus is made of. The durable
-fix is for the indices to travel on the `Try` node instead of being derived
-twice; refusing is what fits in this round.
+rather than about a feature, which is not what a corpus is made of.
+
+**The fix proposed here was the wrong one, and saying so is the point.** "Let
+the indices travel on the `Try` node instead of being derived twice" was written
+in this section and then *done*, later the same day - and the miscompile
+survived it unchanged. The numbering was never what broke this case. See "Two
+implementations of one numbering, and the filler that actually breaks a
+handler".
 
 ### The golden is not in git, and this round re-recorded it
 
@@ -8026,6 +8031,67 @@ program could be written, linked and run - and it aborted. Measured at
 `e65f27f`: refused. At `3ab23b4`: `rc=138`. **A refusal being lifted is a claim
 that what it guarded is now safe**, and that claim needs the same measurement as
 a feature. It did not get one, and the crash went to the remote.
+
+## Two implementations of one numbering, and the filler that actually breaks a handler
+
+**Landed 2026-09-07**, two cleanups that Fable's audit of the type table left
+behind - and the second of them disproved the audit's own recommendation, which
+is the more useful half.
+
+### The indices travel now, and it changed nothing
+
+A selector is an index into the function's type table. The parser writes
+`if (sel == n)` into the handler chain; the backend wrote `n` into the action
+record. **Two implementations of one numbering**, agreeing by convention. They
+are one now: the parser's numbers ride on the `Try` node, and `lsdaTable`
+*places* entry `n-1` rather than deriving `n` from the order it met the rows in.
+
+`0 of 721 files changed`. That is the whole evidence that it is a restructuring:
+who computes the index moved, what the index *is* did not.
+
+### It did not fix the `try` inside a `catch`, and that was the test
+
+The miscompile this was supposed to make impossible was measured again with the
+refusal lifted, and it is unchanged:
+
+    clang:  outer int 7 inner double 2.5 | end
+    cxx1:   libc++abi: terminating due to uncaught exception of type int
+
+So the numbering caused the *hang* - a shared type numbered twice - and never
+caused this. **A fix that removes a real fragility is not thereby a fix for the
+bug you blamed on it**, and the only way that showed was lifting the refusal and
+running the program again rather than reasoning that it must now work.
+
+### What does break it: a filler row of negative length
+
+`lsdaTable` writes a gap row before each real one, `[at, c.begin)`, with `at`
+walking to each row's end. **That subtraction is negative whenever the rows are
+not in ascending address order**, and it is assembled as a `uleb128`: measured
+in the object file as `ff ff ff ff 01`, about 5.4x10^8.
+
+Rows are registered innermost-first, and for a *nested block* that is harmless -
+measured twice, including the shape the reverted address sort broke, and both
+unwind correctly. A **handler's** region is where it bites: its code is emitted
+past the `try`'s range, so its row is registered first and begins at a *higher*
+address than the row that follows it. The gap goes backwards, the huge length
+swallows the rest of the function, and the outer handler is never reached.
+
+**This was predicted, tested, and retracted earlier the same day.** A throw
+placed after a nested block - which should have hit the same gap - unwound
+correctly, so the finding was recorded as an encoding oddity with no
+demonstrated harm. It needed rows genuinely out of address order, which only a
+handler's region produces, and the probe had not produced one. **Recorded now as
+the named cause**, and it is what a durable `try`-inside-`catch` needs: rows
+that cover a handler either sorted into place or emitted so that registration
+order and address order agree.
+
+### And `CallSite::order` is gone
+
+A field holding a label id, assigned and read by nothing - the residue of the
+address sort that was reverted. Its comment was the worse half: it explained how
+sorting by that id restores address order, which reads as live design for
+something the tree deliberately does not do. Both replaced by a note saying rows
+are used in registration order and never sorted, and pointing at why.
 
 ## namespace, and the fact that a namespace is not a type
 

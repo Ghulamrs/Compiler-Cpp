@@ -377,7 +377,7 @@ where one object is many:
   **x86_64-windows keeps the whole refusal**, body and handler alike: a cleanup
   is a funclet and an FH3 state there, and `wrapMsCleanups` has not been taught
   either trick. `src/parser/ParserStmt.cpp:755`,
-  `src/parser/ParserStmt.cpp:1018`, `src/parser/ParserStmt.cpp:1656`
+  `src/parser/ParserStmt.cpp:1018`, `src/parser/ParserStmt.cpp:1658`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and
@@ -394,7 +394,7 @@ where one object is many:
   only**; it works on both Itanium targets. There it is
   `_CxxThrowException` with two null pointers, raised from inside a handler
   funclet rather than from the frame that owns the `try`, which has not been
-  measured on the box. `src/parser/ParserStmt.cpp:1394`
+  measured on the box. `src/parser/ParserStmt.cpp:1396`
 - **a dynamic exception specification**, `throw(T)` — `throw()` with nothing in
   it is `noexcept` and works. `src/parser/ParserConst.cpp:97`
 - **a range-based `for` over a temporary** — [stmt.ranged] binds the range to
@@ -431,7 +431,7 @@ where one object is many:
   class's overload set. `src/parser/ParserType.cpp:361`
 - **a using-declaration inside a block** — it would declare a name for the rest
   of the block and rank against the locals beside it.
-  `src/parser/ParserStmt.cpp:1372`. The one at namespace scope,
+  `src/parser/ParserStmt.cpp:1374`. The one at namespace scope,
   `using N::f;`, works, and so does `using namespace N;` here.
 - **an alias declaration**, `using X = T;` — `typedef T X;` says the same
   thing here. It is not a using-declaration, and the three scopes that refuse
@@ -528,7 +528,7 @@ guessed wrong twice.
 
 - **`return` inside a `catch` on x86_64-windows** — a handler is a funclet
   there, so leaving one early is a return of the address to carry on at.
-  `src/parser/ParserStmt.cpp:1419`
+  `src/parser/ParserStmt.cpp:1421`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation

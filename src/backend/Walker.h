@@ -82,25 +82,29 @@ protected:
         std::string end;
         std::string pad;
         std::vector<std::string> types;
+        // Parallel to `types`: the selector index the parser gave each one.
+        std::vector<int> indices;
         bool cleanup = false;   // a trailing action record with filter 0
-        // **The table is read by address and written in walk order**, and the
-        // two part company as soon as a region sits in a landing pad: that
-        // code is emitted past the range it belongs to, so its row is
-        // registered after one that begins earlier. The label id is allocated
-        // where the range begins, so sorting by it restores address order.
-        int order = 0;
     };
+    // **Rows are used in the order they are registered and never sorted.** A
+    // field holding a label id lived here to sort them by address, which looks
+    // obviously right and silently breaks unwinding through a nested scope -
+    // the personality takes the *first* row whose range holds the address, so
+    // an inner region has to come before the outer one containing it. The sort
+    // was reverted; the field outlived it, assigned and read by nothing. See
+    // CLAUDE.md, "The sort, which looked right and was not".
     void callSite(const std::string &begin, const std::string &end,
                   const std::string &pad,
                   const std::vector<std::string> &types,
-                  bool cleanup = false, int order = 0) {
+                  const std::vector<int> &indices,
+                  bool cleanup = false) {
         CallSite s;
         s.begin = begin;
         s.end = end;
         s.pad = pad;
         s.types = types;
+        s.indices = indices;
         s.cleanup = cleanup;
-        s.order = order;
         callSites_.push_back(s);
     }
     const std::vector<CallSite> &callSites() const { return callSites_; }

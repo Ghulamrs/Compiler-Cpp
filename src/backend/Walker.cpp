@@ -212,7 +212,7 @@ void Walker::visit(const Try &n) {
     n.pad().accept(*this);
     defineLabel(done);
 
-    callSite(begin, end, pad, n.types(), n.alsoCleanup(), id);
+    callSite(begin, end, pad, n.types(), n.typeIndices(), n.alsoCleanup());
 }
 
 // **The Microsoft shape, and what is missing from it is the point.** No pad, no
@@ -338,21 +338,25 @@ std::string Walker::lsdaTable(const LsdaSpelling &sp, const std::string &symbol,
 
     // The action table: a type index and the offset to the next record, 0 saying
     // there is no next, so the chain ends and the exception goes on unwinding.
-    // **One entry per type, however many rows name it**, first occurrence
-    // winning. `Parser::typeIndexFor` numbers identically and the chain it
-    // writes compares against these - so appending blindly, which was right
-    // while no two rows shared a type, hangs the moment one does.
+    // **The index is the parser's, not this table's.** It wrote
+    // `if (sel == n)` into the handler chain before this ran, so deriving n
+    // again here means two implementations of one numbering agreeing by
+    // convention - which they did until two rows named one type, and then the
+    // second handler compared against a number the runtime never returns and
+    // the pad resumed into itself. The table is now *placed*: entry n-1 holds
+    // the type the parser gave n.
     types.clear();
     for (std::size_t i = 0; i < rows.size(); i++) {
         const CallSite &c = rows[i];
         for (std::size_t k = 0; k < c.types.size(); k++) {
-            std::size_t at = types.size();
-            for (std::size_t q = 0; q < types.size(); q++)
-                if (types[q] == c.types[k]) { at = q; break; }
-            o += "  .byte " + std::to_string(at + 1) + "\n";
+            const std::size_t at = k < c.indices.size()
+                                       ? static_cast<std::size_t>(c.indices[k])
+                                       : types.size() + 1;
+            if (types.size() < at) types.resize(at);
+            types[at - 1] = c.types[k];
+            o += "  .byte " + std::to_string(at) + "\n";
             const bool more = k + 1 < c.types.size() || c.cleanup;
             o += "  .byte " + std::string(more ? "1" : "0") + "\n";
-            if (at == types.size()) types.push_back(c.types[k]);
         }
         // Filter 0 is "cleanup": not a handler, but a reason to stop here in
         // phase 2 and run the pad. It ends the chain.

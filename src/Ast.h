@@ -539,6 +539,14 @@ public:
     // inside the body - and the body is parsed before the handlers are read.
     void setTypes(std::vector<std::string> t) { types_ = std::move(t); }
 
+    // **The selector index of each of those types, as the parser numbered
+    // them.** It writes `if (sel == n)` into the handler chain, so it - and not
+    // the backend - is where n comes from. The backend used to rederive the
+    // same numbering from the order it met the rows in, and the two agreed by
+    // convention: that convention hung one program and miscompiled another.
+    const std::vector<int> &typeIndices() const { return typeIndices_; }
+    void setTypeIndices(std::vector<int> ix) { typeIndices_ = std::move(ix); }
+
     const std::vector<MsHandler> &handlers() const { return handlers_; }
     void setHandlers(std::vector<MsHandler> h) { handlers_ = std::move(h); }
 
@@ -562,6 +570,7 @@ private:
     int selectorSlot_;
     bool alsoCleanup_ = false;
     std::vector<std::string> types_;
+    std::vector<int> typeIndices_;
     std::vector<MsHandler> handlers_;
     StmtPtr cleanup_;
     int unwindHelpSlot_ = 0;
