@@ -401,6 +401,7 @@ question, before anything was written:
 | a destructible object inside a `try` body | 2026-09-07 | the body's cleanup rows carrying the `try`'s catch types and handing over to one chain |
 | a thrown temporary with a destructor | 2026-09-07 | the exception object copy-constructed, the operand's temporaries destroyed, and its destructor named |
 | the implicit destructor of an intermediate class | 2026-09-07 | a three-level hierarchy links; `synthesizeDestructor` marks its base's destructor used |
+| `<exception>` and `<stdexcept>` | 2026-09-07 | the standard's nine classes over a `std::string`, and `catcher1.cpp` running |
 
 Each has a section further down saying what was measured and what was
 deliberately not built. **The table stopped at 2026-08-30 for a week and the
@@ -8129,6 +8130,69 @@ exception object where clang builds one, so cxx1 destroys twice and clang once,
 and [class.copy]/31 allows both. The destructor chain needs no exception to
 demonstrate - and without one the case runs on x86_64-windows too, where a class
 throw is still refused.
+
+## `<stdexcept>`, which is three lines per class because of what is under it
+
+**Landed 2026-09-07**, and it is the header `catcher1.cpp` and `catcher2.cpp`
+have stopped at since they were first tried. `catcher1.cpp` now compiles
+unmodified and prints what clang prints - **686 lines of stdout and 314 of
+stderr, both streams byte-identical**.
+
+**The header is small because the work was done elsewhere.** Each class holds a
+`std::string` and `what()` returns its buffer, which [exception]/8 permits: the
+pointer stays valid while the object does. So the string owns the bytes, its
+copy constructor copies them and its destructor frees them, and not one of the
+nine classes writes a copy constructor, a destructor or a `what()` body beyond
+`return msg_.c_str();`.
+
+What that leans on all landed the same day, and any one of them missing makes
+the header useless rather than imperfect:
+
+- the exception object **copy-constructed** from the thrown operand rather than
+  block-copied - otherwise the buffer is shared with a temporary and freed under
+  the handler, which read `[]`
+- the operand's temporaries **destroyed** after that copy
+- `__cxa_throw` told the class's **destructor**, or the string leaks per throw
+- the **implicit destructor of an intermediate class** emitted, without which
+  `domain_error : logic_error : exception` did not link at all
+
+### `std::exception` is in `<exception>`, and that was measured
+
+Not assumed: libc++ was asked. `<exception>` alone does not declare
+`runtime_error` - "no member named 'runtime_error' in namespace 'std'" - and
+`<stdexcept>` alone does declare `exception`, because it includes the other.
+cxx1's two headers split the same way for the same reason.
+
+### The same header *set*, not the same headers
+
+Adopting the platform's own headers was tried and fails on line 48 of the first
+file libc++'s `<stdexcept>` opens: `#if __has_include(<picolibc.h>)`, a C++17
+preprocessor feature. Those headers are a front end for one compiler's builtins
+- `_LIBCPP_ABI_*`, attributes, variadic templates, `constexpr`,
+`__is_trivially_copyable` - and reaching them means implementing C++17's
+preprocessor and most of `docs/EXCLUSIONS.md` first.
+
+**What is shared is the interface**: the header names, the class names, the
+hierarchy, the constructors, and which header declares what. That is what makes
+a program compile unchanged, which is the only sense in which this matters.
+
+### `to_string`, and the digits come off the negative side
+
+`<string>` gained it because both catcher programs build their messages with it.
+`-v` is undefined for the most negative value of a signed type, so the loop runs
+on `x <= 0` and turns each remainder round with `'0' - x % 10`; C++11 fixed `%`
+to truncate toward zero, so a negative dividend gives a non-positive remainder.
+**30 emissions changed and every changed line is an addition** - checked
+mechanically, zero lines removed or altered - which is what adding a function to
+a header should do.
+
+### Where `catcher2.cpp` stops now
+
+Not at the header: at a **`try` inside a `try`**, line 27, which is the older
+nested-`try` refusal and the same call-site-table problem as `try` inside a
+`catch`. Its likely cause is already written down a section above - the filler
+row of negative length. That is now the last thing between this compiler and the
+second of the two programs.
 
 ## namespace, and the fact that a namespace is not a type
 

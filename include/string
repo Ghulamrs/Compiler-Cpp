@@ -291,6 +291,33 @@ static string operator+(char a, const string &b) {
     return r;
 }
 
+// **[string.conversions] to_string, and the digits come off the negative
+// side.** `-v` is undefined for the most negative value of a signed type -
+// there is no positive counterpart - so the loop runs on `x <= 0` and turns
+// each remainder round with `'0' - x % 10`. C++11 fixed `%` to truncate toward
+// zero, so a negative dividend gives a non-positive remainder and the
+// subtraction is the digit.
+static string to_string(long long v) {
+    char buf[24];
+    int n = 0;
+    bool neg = v < 0;
+    long long x = neg ? v : -v;
+    do {
+        buf[n] = (char)('0' - (int)(x % 10));
+        n++;
+        x /= 10;
+    } while (x != 0);
+    if (neg) { buf[n] = '-'; n++; }
+    string r;
+    for (int i = n; i-- > 0; ) r += buf[i];
+    return r;
+}
+
+static string to_string(int v) { return to_string((long long)v); }
+static string to_string(long v) { return to_string((long long)v); }
+static string to_string(unsigned v) { return to_string((long long)v); }
+static string to_string(unsigned long v) { return to_string((long long)v); }
+
 }  // namespace std
 
 #endif

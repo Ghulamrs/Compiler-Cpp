@@ -1,0 +1,6 @@
+exact: logic 0
+one up: range 2
+top: runtime 1
+top: bad arg 3
+user: custom 4
+picked CustomError: custom 4

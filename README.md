@@ -42,8 +42,8 @@ local assembler to build for hardware it is not on.
 
 ## The library
 
-**A subset ships, and it is a subset on purpose.** `include/` holds 25 C++
-headers and `lib/` 18 C ones, a little over 2,000 lines together. They are here
+**A subset ships, and it is a subset on purpose.** `include/` holds 27 C++
+headers and `lib/` 18 C ones, a little over 2,200 lines together. They are here
 for two reasons: the core language cannot do without some of them -
 `<initializer_list>` is what a braced initialiser *means* - and a compiler with
 no containers cannot be pointed at a real program. **They are not an
@@ -54,6 +54,7 @@ implementation of the C++11 library and are not becoming one.**
 | containers | `<vector>` `<string>` `<map>` `<set>` |
 | algorithms | `<algorithm>` `<numeric>` `<utility>` |
 | streams | `<iostream>` `<ostream>` `<istream>` `<sstream>` `<fstream>` `<ios>` `<iomanip>` |
+| exceptions | `<exception>` `<stdexcept>` |
 | language support | `<initializer_list>` `<limits>` |
 | C, inside `std` | `<cassert>` `<cctype>` `<cfloat>` `<climits>` `<cmath>` `<cstddef>` `<cstdio>` `<cstdlib>` `<cstring>` |
 
@@ -107,9 +108,11 @@ what a program *means*:
 
 ### What is absent
 
-**No exceptions anywhere in the library, and no `<stdexcept>`.** The language's
-`try`, `throw` and `catch` work for the shapes `docs/EXCLUSIONS.md` allows, but
-nothing here throws and there is no hierarchy to catch.
+**`<stdexcept>` is here as of 2026-09-07**, with the standard's nine classes
+over a `std::string` and `std::exception` in `<exception>` beside it, as the
+standard splits them. Nothing else in the library throws: a container that runs
+out of memory or is indexed past its end does not raise, it misbehaves, and
+`at()` is not provided rather than provided without its exception.
 
 `<memory>`, `<type_traits>`, `<new>`, `<typeinfo>`, `<functional>`, `<deque>`,
 `<list>`, `<unordered_map>`, `<thread>` and the rest of C++11 are not present.

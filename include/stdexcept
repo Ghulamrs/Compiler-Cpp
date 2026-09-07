@@ -1,0 +1,96 @@
+// <stdexcept> - the standard exception hierarchy, and the header two of the
+// programs this compiler is measured against stop at.
+//
+// **The shape is the standard's**: [stdexcept] gives `logic_error` and
+// `runtime_error` deriving from `std::exception`, and four concrete classes
+// under the first and three under the second. Each holds the message, and each
+// is constructible from a `std::string` and from a `const char *`.
+//
+// **The message is a `std::string` member and `what()` returns its buffer.**
+// [exception]/8 lets it: the pointer stays valid while the object does. That is
+// what makes the whole header three lines per class - the string owns the
+// bytes, its copy constructor copies them, and its destructor frees them, so
+// none of these classes writes any of the three.
+//
+// **What that leans on, all of it landed on 2026-09-07**: an exception object
+// copy-constructed from the thrown operand rather than block-copied, or the
+// buffer would be shared with a temporary and freed under the handler; the
+// operand's temporaries destroyed after that copy; `__cxa_throw` told the
+// class's destructor, or the string leaks once per throw; and the implicit
+// destructor of an *intermediate* class emitted, without which
+// `domain_error : logic_error : exception` did not even link.
+//
+// The classes are declared in the standard's order and each says nothing the
+// one above it does not, which is the point of them: they are distinguishable
+// by type in a `catch`, and nothing else distinguishes them.
+#ifndef _CXX1_STDEXCEPT
+#define _CXX1_STDEXCEPT
+
+#include <exception>
+#include <string>
+
+namespace std {
+
+class logic_error : public exception {
+public:
+    explicit logic_error(const string &what_arg) : msg_(what_arg) {}
+    explicit logic_error(const char *what_arg) : msg_(what_arg) {}
+    virtual const char *what() const { return msg_.c_str(); }
+private:
+    string msg_;
+};
+
+class domain_error : public logic_error {
+public:
+    explicit domain_error(const string &what_arg) : logic_error(what_arg) {}
+    explicit domain_error(const char *what_arg) : logic_error(what_arg) {}
+};
+
+class invalid_argument : public logic_error {
+public:
+    explicit invalid_argument(const string &what_arg) : logic_error(what_arg) {}
+    explicit invalid_argument(const char *what_arg) : logic_error(what_arg) {}
+};
+
+class length_error : public logic_error {
+public:
+    explicit length_error(const string &what_arg) : logic_error(what_arg) {}
+    explicit length_error(const char *what_arg) : logic_error(what_arg) {}
+};
+
+class out_of_range : public logic_error {
+public:
+    explicit out_of_range(const string &what_arg) : logic_error(what_arg) {}
+    explicit out_of_range(const char *what_arg) : logic_error(what_arg) {}
+};
+
+class runtime_error : public exception {
+public:
+    explicit runtime_error(const string &what_arg) : msg_(what_arg) {}
+    explicit runtime_error(const char *what_arg) : msg_(what_arg) {}
+    virtual const char *what() const { return msg_.c_str(); }
+private:
+    string msg_;
+};
+
+class range_error : public runtime_error {
+public:
+    explicit range_error(const string &what_arg) : runtime_error(what_arg) {}
+    explicit range_error(const char *what_arg) : runtime_error(what_arg) {}
+};
+
+class overflow_error : public runtime_error {
+public:
+    explicit overflow_error(const string &what_arg) : runtime_error(what_arg) {}
+    explicit overflow_error(const char *what_arg) : runtime_error(what_arg) {}
+};
+
+class underflow_error : public runtime_error {
+public:
+    explicit underflow_error(const string &what_arg) : runtime_error(what_arg) {}
+    explicit underflow_error(const char *what_arg) : runtime_error(what_arg) {}
+};
+
+}  // namespace std
+
+#endif
