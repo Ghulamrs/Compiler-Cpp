@@ -50,6 +50,7 @@ using ::remove;
 using ::rename;
 using ::rewind;
 using ::scanf;
+using ::snprintf;
 using ::sprintf;
 using ::sscanf;
 using ::tmpfile;

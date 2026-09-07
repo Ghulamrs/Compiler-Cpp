@@ -198,6 +198,35 @@ public:
     }
     ostream &operator<<(float v) { return *this << (double)v; }
 
+    // **`long double` needs an overload of its own, not a conversion.**
+    // Without one, `os << x` for a long double finds `char`, `bool`, `int`
+    // and `unsigned int` through the standard conversions, all equally far
+    // away, and the insertion is ambiguous - which is where longong.cpp
+    // stopped. Measured: `sizeof(long double)` is 16 on x86_64-linux and 8 on
+    // x86_64-windows and arm64-darwin, so on two of the three this prints
+    // exactly what the `double` overload would; on the third the `L` length
+    // modifier is what keeps the eleven extra digits x87 carries.
+    //
+    // **Asked twice rather than guessed once.** The precision is the
+    // program's - `setprecision(400)` is legal - and `%Lf` of a number near
+    // LDBL_MAX is nearly five thousand digits before the point, so no fixed
+    // buffer is always enough. snprintf reports the length it wanted; the
+    // second call is made only when the first did not fit.
+    ostream &operator<<(long double v) {
+        char how[16];
+        char kind = fmt_ == 1 ? 'f' : fmt_ == 2 ? 'e' : 'g';
+        std::sprintf(how, "%%.%dL%c", prec_, kind);
+        char small[128];
+        int n = std::snprintf(small, sizeof small, how, v);
+        if (n < 0) return *this;
+        if (n < (int)sizeof small) return *this << small;
+        char *big = new char[(std::size_t)n + 1];
+        std::snprintf(big, (std::size_t)n + 1, how, v);
+        *this << big;
+        delete[] big;
+        return *this;
+    }
+
     // A pointer prints as an address. `const char *` is taken by the overload
     // above, which is what a program means by it.
     ostream &operator<<(const void *p) {

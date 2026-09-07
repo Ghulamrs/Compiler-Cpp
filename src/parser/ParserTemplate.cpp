@@ -565,7 +565,14 @@ bool Parser::explicitSpecialization() {
         src_.fail(pos, "'" + tag + "' has already been used further up, so "
                        "specializing it here is too late - the specialization "
                        "goes before the first use");
-    if (!peek().is("{"))
+    // **A base-clause is a body too.** `template <> struct is_integral<int> :
+    // true_type {};` is how every trait in <type_traits> is written, and
+    // asking only for `{` refused all of them with a message saying the
+    // definition had no body - which it did, four tokens further on.
+    // `structOrUnionSpecifier` already treats `{` and `:` alike (its
+    // `defining` is one or the other), and `final` may precede either, so
+    // nothing below this needed to change.
+    if (!peek().is("{") && !peek().is(":") && !peek().is("final"))
         src_.fail(peek().pos, "an explicit specialization is a definition, and "
                               "this one has no body");
 

@@ -90,6 +90,12 @@ int fflush(FILE *);
 int printf(const char *, ...);
 int fprintf(FILE *, const char *, ...);
 int sprintf(char *, const char *, ...);
+// **snprintf, which C99 added and C++11 requires.** `sprintf` cannot be used
+// safely against a precision the program chooses: `os << setprecision(400)`
+// on a `long double` asks for more digits than any fixed buffer holds, and
+// LDBL_MAX in `%Lf` is nearly five thousand of them before the point. The
+// bound is the whole reason this is declared - see <ostream>.
+int snprintf(char *, size_t, const char *, ...);
 int scanf(const char *, ...);
 int fscanf(FILE *, const char *, ...);
 int sscanf(const char *, const char *, ...);
