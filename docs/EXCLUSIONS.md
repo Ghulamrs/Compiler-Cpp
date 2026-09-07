@@ -119,15 +119,17 @@ in this tree with that in front of it.
 A class carries a run-time description on all three targets now — `_ZTI` and
 `_ZTS` behind the vtable on Itanium, five `??_R` records and a locator in front
 of the vftable on Microsoft — and `dynamic_cast` to a pointer works on each.
-What is left of it:
+`dynamic_cast<void *>`, the most-derived-object form, works on each too, and
+reads none of that: Itanium takes offset-to-top from in front of the vtable
+inline, Microsoft calls `__RTCastToVoid`. What is left of it:
 
 - **`dynamic_cast` to a reference** — it has no null to answer with, so a
   failure throws `std::bad_cast`, and there is no C++ standard library here to
-  throw it from. `src/parser/ParserExprNew.cpp:611`
+  throw it from. `src/parser/ParserExprNew.cpp:738`
 - **`dynamic_cast` naming a class with more than one base** — that wants
   `__vmi_class_type_info`, a third shape carrying the bases' offsets and flags.
   Such a class still compiles and its vtable still works; only the cast is
-  refused. `src/parser/ParserExprNew.cpp:676`
+  refused. `src/parser/ParserExprNew.cpp:812`
 - **`typeid`** — in the keyword table below. Nothing emits a `type_info` for a
   *fundamental* type either; a class's is what landed.
 
@@ -351,17 +353,17 @@ where one object is many:
 ## `new` and `delete`
 
 - **placement new**, and a parenthesised type-id after `new` —
-  `src/parser/ParserExprNew.cpp:885`
+  `src/parser/ParserExprNew.cpp:1021`
 - **more than one value in a new-expression** —
-  `src/parser/ParserExprNew.cpp:972`
+  `src/parser/ParserExprNew.cpp:1108`
 - **`new T[n]` of a class with a constructor** —
-  `src/parser/ParserExprNew.cpp:939`
+  `src/parser/ParserExprNew.cpp:1075`
 - **`new T[n][m]`** — only the first dimension may be given.
-  `src/parser/ParserExprNew.cpp:913`
-- **`new T{...}`** — `src/parser/ParserExprNew.cpp:965`
-- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:1185`
+  `src/parser/ParserExprNew.cpp:1049`
+- **`new T{...}`** — `src/parser/ParserExprNew.cpp:1101`
+- **`delete[]` of a polymorphic type** — `src/parser/ParserExprNew.cpp:1321`
 - **`delete[]` of a type with a destructor** — the count `new[]` would have
-  recorded is not written. `src/parser/ParserExprNew.cpp:1253`
+  recorded is not written. `src/parser/ParserExprNew.cpp:1389`
 
 ## Statements, exceptions and control
 

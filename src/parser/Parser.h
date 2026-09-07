@@ -1924,6 +1924,7 @@ private:
     ExprPtr staticCast(std::size_t pos);
     ExprPtr constCast(std::size_t pos);
     ExprPtr dynamicCast(std::size_t pos);
+    ExprPtr dynamicCastToVoid(ExprPtr v, const Type *to);
     // A function named but not called, as a pointer to it; null if `key`
     // names no function. Shared by the bare and the qualified spelling.
     ExprPtr functionAsValue(const std::string &key, std::size_t pos);

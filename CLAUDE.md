@@ -391,9 +391,18 @@ question, before anything was written:
 | `explicit` | 2026-08-30 | copy-initialization, in its three places |
 | `const_cast`, `reinterpret_cast` | 2026-08-30 | the const line between the two |
 | `noexcept` | 2026-08-30 | the specifier and the operator |
+| catching by reference | 2026-09-06 | the ordinary spelling of `catch`, for every type |
+| the eleven alternative tokens, then the six digraphs | 2026-09-06 | a lexer rewrite; nothing in the parser has a rule for them |
+| dynamic initialisation | 2026-09-06 | a constructor running before `main`, and four refusals with it |
+| `volatile`, as a line drawn | 2026-09-07 | object versus type: kept where it costs nothing, refused where a linkage name is made from it |
+| `dynamic_cast<void *>` | 2026-09-07 | the most derived object - inline on Itanium, `__RTCastToVoid` on Microsoft |
 
 Each has a section further down saying what was measured and what was
-deliberately not built.
+deliberately not built. **The table stopped at 2026-08-30 for a week and the
+last five rows were added on 2026-09-07**, which is worth knowing about any
+index in this file: the sections are written as the work lands and the summary
+in front of them is not, so a gap here means nobody updated it, never that
+nothing happened.
 
 ### What to do next, and why in this order
 
@@ -7589,6 +7598,110 @@ that, on two case files created ten minutes earlier. `--exclude '* [0-9]'` and
 name, so they cost nothing. The Makefiles already guard the same trap with a
 `$(wildcard)` filter, and this is that guard at the other end of the wire.
 
+## `dynamic_cast<void *>`, and two ABIs answering differently
+
+**Landed 2026-09-07.** [expr.dynamic.cast]/7 - a pointer to the *most derived*
+object - was the last shape of `dynamic_cast` that could be built, and it names
+no target class, so it asks the object without asking the type graph: no second
+`_ZTI` is handed over and no base chain is walked. The answer is a number the
+object already carries.
+
+### It was invisible, and that is the point worth keeping
+
+It was refused by **"'dynamic_cast' casts to a pointer to a class, and 'void *'
+is not one"** - a message that names no feature and never says "not supported
+yet". So `tools/exclusions` could not list it, `docs/EXCLUSIONS.md` never
+carried it, and nothing in this file said it was missing. That is exactly the
+third bucket of the 2026-09-06 sweep, still producing a month's work later: a
+refusal that reads like a **type error** about the program rather than a gap in
+the compiler. The sweep's lesson is not that the list is now complete. It is
+that this bucket is where the next gap will be.
+
+### The two ABIs do not do the same thing, and neither was guessed
+
+**Itanium generates it inline.** Measured from clang at -O0 on arm64-darwin:
+
+    ldr  x9, [x8]          ; the vptr, at the front of the object
+    ldur x9, [x9, #-16]    ; offset-to-top, two words before the address point
+    add  x8, x8, x9        ; and that is the complete object
+
+Offset-to-top is signed and sits at the address point minus two words, with the
+`_ZTI` between it and the first entry. It is zero for the most derived class
+itself, so one expression is right for a pointer that is already the whole
+object and for one pointing into a base.
+
+**Microsoft has no offset-to-top at all**, so this is a different answer rather
+than the same one spelled differently. The complete object is reached through
+the Complete Object Locator in front of the vftable, whose `offset` dword at +4
+holds the subobject's position - and MSVC does not read it inline, it calls
+`__RTCastToVoid(p)`: **one argument**, where `__RTDynamicCast` beside it takes
+five. cxx1 emits the call.
+
+**The Microsoft half was measured from clang, not from cl, and that is a
+weaker footing than this tree normally stands on.** `clang++ --target=
+x86_64-pc-windows-msvc -O0` emits `callq __RTCastToVoid` and, in LLVM IR,
+`declare ptr @__RTCastToVoid(ptr)`; the symbol is undecorated on x64, as
+`__RTDynamicCast` already is, and comes from the `libvcruntime.lib` the link
+line names. What cxx1 already emits is enough for it - the runtime reads the
+locator pointer at `vftable[-1]` and the `offset` dword, both of which
+`Masm.cpp` lays down for every polymorphic class. **The box was unreachable the
+day this was written and cl has not been asked.** Until it has, this is the one
+thing here resting on the secondary oracle.
+
+**The null test is not an optimisation.** On Itanium the load goes *through*
+the pointer, so a null operand would fault where [expr.dynamic.cast]/2 says the
+answer is null. clang emits the same branch for the same reason. The Microsoft
+path keeps the guard too, although the runtime is documented to answer null for
+null - that half is the part clang could not tell us.
+
+### A raw `Binary` on a pointer adds bytes
+
+`pointerAdd` is what scales by the pointee's size; a `Binary(BinOp::Add, p, n)`
+built directly does not. The virtual-call lowering already relied on that -
+it multiplies the slot index by the pointer size itself - and this reads the
+same way. Written down because the two spellings look identical at the call
+site and differ by a factor of eight.
+
+### What the symbol listing caught that the running program could not
+
+`names.sh` reported a difference the `.expected` never could: for a two-base
+class, clang emits `_ZTI4Both` and `_ZTS4Both`, and **cxx1 emits neither** -
+its vtable carries a plain zero in the type_info slot:
+
+    cxx1                  clang
+    .quad 0               .quad 0
+    .quad 0               .quad __ZTI4Both
+    .quad ...D1Ev         .quad ...D1Ev
+    .quad ...D0Ev         .quad ...D0Ev
+    .quad -16             .quad -16
+    .quad 0               .quad __ZTI4Both
+
+That is the existing `__vmi_class_type_info` refusal showing through rather
+than new damage, and the case is still right **because the two slots are not
+the same slot**: this cast reads offset-to-top, where cxx1 writes `0` and `-16`
+exactly as clang does, and never touches the null one. A `dynamic_cast<Both *>`
+would need the null one and is refused by name before it can look. Recorded in
+`dynamic-cast-void-multiple.nonames`.
+
+### The other shape is blocked, and not by effort
+
+`dynamic_cast<T &>` has no null to answer with, so a failure throws
+`std::bad_cast` - a **polymorphic** class. Measured the same day: throwing a
+polymorphic class is refused on *every* target, and Windows refuses a class
+throw at all. So the reference form sits behind the same class-exception work
+`catcher1.cpp` and `catcher2.cpp` are behind, and its refusal already says so.
+
+### Two cases, and why they are two
+
+`dynamic-cast-void.cpp` runs on **all three** targets - a downcast source, two
+levels of derivation, a most-derived pointer, a `const` one and a null.
+`dynamic-cast-void-multiple.cpp` holds the shape the feature exists for, a
+`Second *` into a `Both` whose offset-to-top is **negative** - and it is a
+separate file because the Microsoft ABI refuses that layout for a reason older
+than this feature. Kept in one file, the whole feature would have been skipped
+on Windows and the `__RTCastToVoid` path would never have been compiled by the
+suite that was supposed to check it.
+
 ## namespace, and the fact that a namespace is not a type
 
 **A namespace has no `Type`, and everything else here follows from that.** A
@@ -7833,7 +7946,9 @@ two compilers a question about emission.**
 ## The named casts
 
 `static_cast` was already here. This adds `const_cast` and `reinterpret_cast`,
-and refuses `dynamic_cast` by name.
+and refused `dynamic_cast` by name - which has since been built; the subsection
+below carries the correction rather than being edited away, because what the
+refusal said at the time is why the work was scoped the way it was.
 
 **Neither of the two generates anything.** Every conversion they allow is
 between things of the same size, so the value is unchanged and what moves is
@@ -7856,13 +7971,17 @@ arrive at the same type. `const int *const *` to `int **` is similar and legal;
 has - `volatile` is parsed and dropped - so that is the only thing either cast
 can move.
 
-### dynamic_cast is a rung, not a missing branch
+### dynamic_cast was a rung, and it has since been walked
 
-It asks what an object *actually* is, which only a `type_info` beside its
-vtable can answer, and this compiler emits none for a class on any target. The
-work is the type_info, the inheritance graph it carries, and the `__cxa_` call
-that walks it. Refused by name, and the refusal points at `static_cast`, which
-does the direction that needs no run-time answer.
+**This paragraph read "refused by name" until 2026-09-07 and was true when it
+was written.** It asks what an object *actually* is, which only a `type_info`
+beside its vtable can answer, and this compiler emitted none. All three parts
+have since landed - the `type_info`, the inheritance graph it carries, and the
+`__cxa_` call that walks it - so the pointer form works on all three targets,
+and `dynamic_cast<void *>` with it. What is still refused is the **reference**
+form, which needs `std::bad_cast` thrown, and a class naming **more than one
+base**, which needs `__vmi_class_type_info`. See "`dynamic_cast<void *>`, and
+two ABIs answering differently".
 
 ### `long` is not a portable pointer-sized integer
 

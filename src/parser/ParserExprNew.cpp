@@ -595,6 +595,133 @@ ExprPtr Parser::constructTemporary(const Type *plain, const Signature &ctor,
 // it is given and would fault. The hint is -1, "unspecified" in the ABI, which
 // is always correct - clang computes the offset where it can prove one, and
 // that is a speed difference and not an answer difference.
+// **`dynamic_cast<void *>(p)` - [expr.dynamic.cast]/7, and the one form that
+// asks the object without asking the type graph.** The result is a pointer to
+// the most derived object, so there is no target class to name, no `_ZTI` to
+// hand over and no runtime to call: the answer is a number the vtable already
+// carries.
+//
+// **Measured from clang at -O0 on arm64-darwin**, which generates it inline:
+//
+//     ldr  x9, [x8]          ; the vptr, at the front of the object
+//     ldur x9, [x9, #-16]    ; offset-to-top, two words before the address point
+//     add  x8, x8, x9        ; and that is the complete object
+//
+// The Itanium ABI puts offset-to-top at the address point minus two words, with
+// the `_ZTI` between it and the first entry. It is signed, and it is zero for
+// the most derived class itself - so this is correct for a `B *` that is
+// already the whole object as well as for one pointing into a base.
+//
+// **The null test is not an optimisation.** The load goes through the pointer,
+// so a null operand would fault where the standard says the answer is null.
+// clang emits the same branch for the same reason.
+ExprPtr Parser::dynamicCastToVoid(ExprPtr v, const Type *to) {
+    // **The Microsoft ABI keeps no offset-to-top, and does not do this
+    // inline.** It reaches the complete object through the Complete Object
+    // Locator in front of the vftable, whose `offset` dword at +4 holds the
+    // subobject's position - and rather than read that here, it calls the
+    // runtime, which is what the oracle emits.
+    //
+    // `__RTCastToVoid` takes the pointer and nothing else: one argument where
+    // `__RTDynamicCast` a few lines below takes five. **Measured from
+    // `clang++ --target=x86_64-pc-windows-msvc -O0`**, which emits
+    // `movq %rcx, ...; callq __RTCastToVoid` and, in LLVM IR,
+    // `declare ptr @__RTCastToVoid(ptr)`; the symbol is undecorated on x64,
+    // as `__RTDynamicCast` already is, and comes from the same
+    // `libvcruntime.lib` the link line already names.
+    //
+    // **That is clang answering for the Microsoft ABI, not cl**, which is the
+    // weaker of the two oracles this tree uses and is recorded as such: the
+    // Windows box was unreachable when this was written. What cxx1 already
+    // emits is enough for the call - the runtime reads the locator pointer at
+    // `vftable[-1]` and the `offset` dword, both of which `Masm.cpp` lays down
+    // for every polymorphic class.
+    if (target_.microsoftNames()) {
+        const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+        const int msSlot = allocateFrameSlot(voidPtr);
+        const std::string msTemp = ".dyv" + std::to_string(newTemps_++);
+        ExprPtr keep(Var::local(msTemp, msSlot));
+        keep->setType(voidPtr);
+        ExprPtr asVoid(new Cast(voidPtr, std::move(v)));
+        asVoid->setType(voidPtr);
+        ExprPtr store(new Assign(std::move(keep), std::move(asVoid)));
+        store->setType(voidPtr);
+
+        std::vector<ExprPtr> args;
+        ExprPtr object(Var::local(msTemp, msSlot));
+        object->setType(voidPtr);
+        args.push_back(std::move(object));
+        ExprPtr asked = runtimeCall("__RTCastToVoid", to, std::move(args));
+
+        // The same null guard the pointer form uses. The runtime is documented
+        // to answer null for null, but that is the half of this that clang did
+        // not have to tell us, so it is not leaned on.
+        ExprPtr noneMs(new Num(0LL));
+        noneMs->setType(to);
+        ExprPtr testMs(Var::local(msTemp, msSlot));
+        testMs->setType(voidPtr);
+        ExprPtr pickMs(new Conditional(std::move(testMs), std::move(asked),
+                                       std::move(noneMs)));
+        pickMs->setType(to);
+        ExprPtr allMs(new Comma(std::move(store), std::move(pickMs)));
+        allMs->setType(to);
+        return allMs;
+    }
+
+    const Type *charPtr = types_.pointerTo(types_.get(Kind::Char));
+    const Type *offsetType = types_.get(Kind::LongLong);
+    const long long word = charPtr->size(target_);
+
+    // The operand is read three times - tested, dereferenced for its vptr, and
+    // added to - and it is any expression, so it goes into a slot first.
+    const int slot = allocateFrameSlot(charPtr);
+    const std::string temp = ".dyv" + std::to_string(newTemps_++);
+    ExprPtr held(Var::local(temp, slot));
+    held->setType(charPtr);
+    ExprPtr asChar(new Cast(charPtr, std::move(v)));
+    asChar->setType(charPtr);
+    ExprPtr save(new Assign(std::move(held), std::move(asChar)));
+    save->setType(charPtr);
+
+    // `*(char **)p` - the vtable pointer.
+    ExprPtr obj(Var::local(temp, slot));
+    obj->setType(charPtr);
+    ExprPtr asTable(new Cast(types_.pointerTo(charPtr), std::move(obj)));
+    asTable->setType(types_.pointerTo(charPtr));
+    ExprPtr vptr(new Unary('*', std::move(asTable)));
+    vptr->setType(charPtr);
+
+    // Two words in front of it, read as a signed offset. A raw `Binary` on a
+    // pointer adds bytes - `pointerAdd` is what scales, and it is not used here
+    // for exactly that reason.
+    ExprPtr back(new Num(-2 * word));
+    back->setType(offsetType);
+    ExprPtr at(new Binary(BinOp::Add, std::move(vptr), std::move(back)));
+    at->setType(charPtr);
+    ExprPtr asOffset(new Cast(types_.pointerTo(offsetType), std::move(at)));
+    asOffset->setType(types_.pointerTo(offsetType));
+    ExprPtr offset(new Unary('*', std::move(asOffset)));
+    offset->setType(offsetType);
+
+    ExprPtr base(Var::local(temp, slot));
+    base->setType(charPtr);
+    ExprPtr moved(new Binary(BinOp::Add, std::move(base), std::move(offset)));
+    moved->setType(charPtr);
+    ExprPtr complete(new Cast(to, std::move(moved)));
+    complete->setType(to);
+
+    ExprPtr none(new Num(0LL));
+    none->setType(to);
+    ExprPtr test(Var::local(temp, slot));
+    test->setType(charPtr);
+    ExprPtr chosen(new Conditional(std::move(test), std::move(complete),
+                                   std::move(none)));
+    chosen->setType(to);
+    ExprPtr whole(new Comma(std::move(save), std::move(chosen)));
+    whole->setType(to);
+    return whole;
+}
+
 ExprPtr Parser::dynamicCast(std::size_t pos) {
     expect("<");
     StorageClass sc;
@@ -613,9 +740,16 @@ ExprPtr Parser::dynamicCast(std::size_t pos) {
                        "'std::bad_cast', and there is no C++ standard library "
                        "here to throw it from; the pointer form works and "
                        "answers with a null");
-    if (!to->isPointer() || !to->pointee()->unqualified()->isStructOrUnion())
-        src_.fail(pos, "'dynamic_cast' casts to a pointer to a class, and '" +
-                       to->describe() + "' is not one");
+    // **[expr.dynamic.cast]/7: `void *` is the other target, and it asks a
+    // different question.** Not "is this object a D?" but "where does the
+    // complete object begin?" - which is answered out of the object alone, so
+    // no type_info is named and no runtime is called.
+    const bool toVoid = to->isPointer() && to->pointee()->unqualified()->isVoid();
+
+    if (!toVoid &&
+        (!to->isPointer() || !to->pointee()->unqualified()->isStructOrUnion()))
+        src_.fail(pos, "'dynamic_cast' casts to a pointer to a class or to "
+                       "'void *', and '" + to->describe() + "' is neither");
 
     const Type *from = v->type();
     if (!from->isPointer() || !from->pointee()->unqualified()->isStructOrUnion())
@@ -623,7 +757,6 @@ ExprPtr Parser::dynamicCast(std::size_t pos) {
                        "and this is '" + from->describe() + "'");
 
     const Type *source = from->pointee()->unqualified();
-    const Type *target = to->pointee()->unqualified();
     // [expr.dynamic.cast]/6: the operand's class must be polymorphic, because
     // the answer is read out of the vtable and a class without one has nothing
     // to read.
@@ -631,6 +764,9 @@ ExprPtr Parser::dynamicCast(std::size_t pos) {
         src_.fail(pos, "'" + source->describe() + "' has no virtual function, "
                        "so an object of it carries nothing that says what it "
                        "really is - 'dynamic_cast' has nothing to ask");
+    if (toVoid) return dynamicCastToVoid(std::move(v), to);
+
+    const Type *target = to->pointee()->unqualified();
     // **[expr.dynamic.cast]/5: an upcast is not a question.** If the target is
     // the operand's own class, or a public base of it, the answer follows from
     // the types and the object is never asked - which is also why the runtime

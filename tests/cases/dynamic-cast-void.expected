@@ -1,0 +1,5 @@
+derived through base: 1
+two levels up: 1
+already most derived: 1
+through a const pointer: 1
+null answers null: 1
