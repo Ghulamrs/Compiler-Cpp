@@ -1084,35 +1084,50 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     // With that, the pad has to hand over to the enclosing pad as well, since
     // `_Unwind_Resume` leaves for the caller rather than trying the region
     // outside this one. Neither is built; refused by name until they are.
-    if (inTryBody_)
-        src_.fail(pos, "a 'try' inside another one's body is not supported yet "
-                       "- the row covering the inner body would have to carry "
-                       "the enclosing handlers on its action chain, and its "
-                       "landing pad hand over to theirs. A 'try' inside a "
-                       "'catch' handler works");
+    // **A `try` inside another one is built now, body or handler.** The
+    // enclosing region is split around it so nothing overlaps; its row's action
+    // chain carries the enclosing handlers, so phase 1 finds them there; and
+    // its pad hands the selector to the enclosing chain rather than resuming,
+    // because `_Unwind_Resume` leaves for the caller and never tries the region
+    // outside this one in the same frame.
     // **The handler half is Itanium's only.** A Microsoft handler is a funclet
     // named `<fn>$catch$N` from a per-function counter, and a nested one gets a
     // name already taken: ml64 answers `A2005: symbol redefinition` and then
     // `A1010: unmatched block nesting`. The splitting this round did is to the
     // call-site list, which that ABI does not have - `msTryStatement` is
     // untouched. Found by the Windows box, both Itanium targets being green.
-    if (inHandlerBody_ && target_.microsoftNames())
-        src_.fail(pos, "a 'try' inside a 'catch' handler is not supported yet "
-                       "for x86_64-windows - a handler there is a funclet "
-                       "named after its function and a counter, and a nested "
-                       "one takes a name already used. It works on both "
-                       "Itanium targets");
+    if ((inTryBody_ || inHandlerBody_) && target_.microsoftNames())
+        src_.fail(pos, "a 'try' inside another one is not supported yet for "
+                       "x86_64-windows - a handler there is a funclet named "
+                       "after its function and a counter, and a nested one "
+                       "takes a name already used, which ml64 answers with "
+                       "'A2005: symbol redefinition'. It works on both Itanium "
+                       "targets");
 
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
-    const int pointerSlot = allocateFrameSlot(voidPtr);
-    const int selectorSlot = allocateFrameSlot(types_.intType());
+    // **A nested `try` shares the slots of the one it sits in.** Its pad may
+    // hand the selector to the enclosing chain, and that chain reads the
+    // enclosing region's `.ex.sel` - so a pair of its own would leave the chain
+    // testing a slot nothing on that path ever wrote. Measured as a crash. The
+    // cleanup segments of a `try` body share them for the same reason.
+    const bool nested = !microsoft && !tryChainLabel_.empty();
+    const int pointerSlot = nested ? tryChainPointerSlot_
+                                   : allocateFrameSlot(voidPtr);
+    const int selectorSlot = nested ? tryChainSelectorSlot_
+                                    : allocateFrameSlot(types_.intType());
     functionHasPads_ = true;
 
     // **The chain the body's cleanup rows hand over to.** A `$` is in the name
     // because no C++ identifier can hold one, so it cannot collide with a
     // user's label - the same trick `$guard` uses for a frame slot.
-    const std::string chainLabel = "$chain" + std::to_string(functionTypes_.size()) +
-                              "." + std::to_string(pointerSlot);
+    // **Unique per `try`, and not derived from the slot.** A nested one shares
+    // the enclosing region's slots, so a name built from those collided -
+    // `symbol 'L.main.user.$chain0.8' is already defined`.
+    const std::string chainLabel = "$chain" + std::to_string(refTemps_++);
+    // **The chain of the `try` this one sits inside**, captured before this
+    // statement overwrites it. A nested `try` that matches nothing must reach
+    // the enclosing handlers rather than leave the frame.
+    const std::string enclosingChain = tryChainLabel_;
     const std::string wasChain = tryChainLabel_;
     const int wasPtr = tryChainPointerSlot_, wasSel = tryChainSelectorSlot_;
     std::vector<Try *> wasSegments;
@@ -1319,12 +1334,26 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     again->setType(voidPtr);
     resumeArgs.push_back(std::move(again));
     std::vector<StmtPtr> resume;
-    const bool unwindsHere = aliveOutside > bodyCleanupFrom_;
+    // **A nested `try` hands over instead of resuming.** Its row's action chain
+    // names the enclosing handlers too, so phase 1 can pick one of those - and
+    // phase 2 then lands *here*, at this region's pad, because that is the pad
+    // its record names. `_Unwind_Resume` from here leaves for the caller and
+    // never tries the region outside this one in the same frame; measured as a
+    // loop, the resume finding this frame again. So the selector goes to the
+    // enclosing chain, which is the one place that tests it for those types.
+    //
+    // The objects alive outside are left to the enclosing pad as well: they are
+    // its to destroy, and doing it here would destroy them twice.
+    const bool unwindsHere = aliveOutside > bodyCleanupFrom_ &&
+                             enclosingChain.empty();
     if (unwindsHere) emitDestructors(resume, bodyCleanupFrom_, pos,
                                      -1, aliveOutside);
-    resume.push_back(StmtPtr(new ExprStmt(
-        runtimeCall("_Unwind_Resume", types_.get(Kind::Void),
-                    std::move(resumeArgs)))));
+    if (enclosingChain.empty())
+        resume.push_back(StmtPtr(new ExprStmt(
+            runtimeCall("_Unwind_Resume", types_.get(Kind::Void),
+                        std::move(resumeArgs)))));
+    else
+        resume.push_back(StmtPtr(new Goto(enclosingChain)));
     Block *resumeBlock = new Block(std::move(resume));
     resumeBlock->setScope(-1);
     StmtPtr chain(resumeBlock);

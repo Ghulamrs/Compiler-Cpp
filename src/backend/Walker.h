@@ -102,6 +102,14 @@ protected:
         std::string start;
         int at = 0;
         std::vector<CallSite> closed;
+        // **What this region catches**, carried so a region nested inside it
+        // can put these on the end of its own action chain. One record's chain
+        // has to name every handler that encloses the address: clang writes
+        // `catch double, continue to action 4` where action 4 is the enclosing
+        // `catch int`, and phase 1 walks the whole chain before deciding this
+        // frame has no handler.
+        std::vector<std::string> types;
+        std::vector<int> indices;
     };
     // **Rows are used in the order they are registered and never sorted.** A
     // field holding a label id lived here to sort them by address, which looks
@@ -127,7 +135,9 @@ protected:
     }
 
     // Open a region here, splitting whatever encloses it.
-    void openRegion(const std::string &begin);
+    void openRegion(const std::string &begin,
+                    const std::vector<std::string> &types,
+                    const std::vector<int> &indices);
     // Close it, hand back its segments, and reopen the enclosing one past
     // `resume` - which is the inner's end, so the enclosing still covers the
     // inner's landing pad and handler. A throw from inside a `catch` belongs to

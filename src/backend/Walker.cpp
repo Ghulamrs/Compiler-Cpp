@@ -197,7 +197,9 @@ void Walker::visit(const Break &n) { markLine(n); jump(jumps_.back().brk); }
 // overlap. The enclosing one closes at the inner's first label and reopens at
 // its last - past the inner's body but before its landing pad, so a throw from
 // inside a `catch` still belongs to the `try` outside it.
-void Walker::openRegion(const std::string &begin) {
+void Walker::openRegion(const std::string &begin,
+                        const std::vector<std::string> &types,
+                        const std::vector<int> &indices) {
     if (!open_.empty()) {
         OpenRegion &outer = open_.back();
         CallSite piece;
@@ -209,6 +211,8 @@ void Walker::openRegion(const std::string &begin) {
     OpenRegion mine;
     mine.start = begin;
     mine.at = ++labelOrder_;
+    mine.types = types;
+    mine.indices = indices;
     open_.push_back(mine);
 }
 
@@ -238,7 +242,7 @@ void Walker::visit(const Try &n) {
     const std::string done = label("caught", id);
 
     defineLabel(begin);
-    openRegion(begin);
+    openRegion(begin, n.types(), n.typeIndices());
     for (std::size_t i = 0; i < n.body().size(); i++) n.body()[i]->accept(*this);
     defineLabel(end);
     const std::vector<CallSite> pieces = closeRegion(end, end);
@@ -252,8 +256,22 @@ void Walker::visit(const Try &n) {
     // **Every piece names the same pad and the same types.** They are one
     // region as far as the program is concerned; they are several rows only
     // because something nested inside had to be cut out of the range.
+    //
+    // **And the chain continues outwards.** A row covering this region's body
+    // carries this region's handlers and then every enclosing region's, in
+    // order - phase 1 walks one chain and must find an enclosing `catch` there
+    // or it concludes the frame has none and skips it entirely.
+    std::vector<std::string> chain = n.types();
+    std::vector<int> chainIx = n.typeIndices();
+    for (std::size_t k = open_.size(); k-- > 0; ) {
+        const OpenRegion &outer = open_[k];
+        for (std::size_t t = 0; t < outer.types.size(); t++) {
+            chain.push_back(outer.types[t]);
+            if (t < outer.indices.size()) chainIx.push_back(outer.indices[t]);
+        }
+    }
     for (std::size_t i = 0; i < pieces.size(); i++)
-        callSite(pieces[i].begin, pieces[i].end, pad, n.types(), n.typeIndices(),
+        callSite(pieces[i].begin, pieces[i].end, pad, chain, chainIx,
                  n.alsoCleanup(), pieces[i].at);
 }
 

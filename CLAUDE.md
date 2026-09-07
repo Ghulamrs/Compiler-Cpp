@@ -404,6 +404,7 @@ question, before anything was written:
 | `<exception>` and `<stdexcept>` | 2026-09-07 | the standard's nine classes over a `std::string`, and `catcher1.cpp` running |
 | the `__has_*` predicates | 2026-09-07 | `__has_include` answered, the rest told no, and a comment on a directive line |
 | disjoint call-site regions | 2026-09-07 | a `try` inside a `catch`, and rows that can finally be sorted |
+| a `try` inside a `try` | 2026-09-07 | the action chain continuing outwards and the pad handing over - all three lambdaTest programs run |
 
 Each has a section further down saying what was measured and what was
 deliberately not built. **The table stopped at 2026-08-30 for a week and the
@@ -8328,6 +8329,61 @@ case, and the file says so. Its first fix was the wrong one: the blame went to
 the parser and backend numbering the selector twice, that was made
 single-sourced, and the miscompile survived it unchanged. **A fix that removes a
 real fragility is not thereby a fix for the bug you blamed on it.**
+
+## A `try` inside a `try`, and the three mechanisms it wanted
+
+**Landed 2026-09-07**, and with it all three programs in
+`~/Documents/Claude/lambdaTest` compile and run byte-identically to clang -
+`lambda.cpp`, `catcher1.cpp` at 686 lines of stdout and 314 of stderr, and
+`catcher2.cpp` at 40 and 26. Those three are what opened the day.
+
+Nesting took three mechanisms, and each was found by the previous one failing.
+
+**The regions must not overlap.** `Walker::openRegion` splits the enclosing one
+around the inner, closing at its first label and reopening at its last. That
+alone made a `try` inside a `catch` work, and here it was necessary and not
+sufficient.
+
+**The action chain must continue outwards.** Measured from clang: the record
+covering the inner body reads `catch double, continue to action 4`, and action 4
+is the outer's `catch int`. One record's chain names every handler enclosing the
+address, and phase 1 walks all of it before deciding the frame has none. cxx1
+gave a row its own types and stopped, so the `int` was never found and the frame
+was skipped entirely.
+
+**And the pad must hand over rather than resume.** With the chain fixed, phase 1
+picks the outer's `int` and phase 2 lands at the *inner* region's pad, because
+that is the pad its record names. `_Unwind_Resume` from there leaves for the
+caller and never tries the region outside this one in the same frame - measured
+as an **infinite loop**, `ulimit -t` catching it as SIGXCPU. So the selector goes
+to the enclosing chain, which is the one place that tests it for those types.
+
+### Two things fell out of the third
+
+A nested `try` **shares the enclosing region's `.ex.ptr` and `.ex.sel` slots**,
+or the chain reads a slot nothing on that path wrote - measured as a crash. And
+the chain label is numbered from a counter rather than from the slot, which
+collided the moment the slots were shared: `symbol '.L.main.user.$chain0.8' is
+already defined`.
+
+### The evidence, and a filter that lied about it
+
+32 emissions changed, and the first check said **130 lines were neither table
+data nor labels** - which would have been instructions moving. It was the check
+that was wrong: these labels begin `.L` at column 0 and the pattern matched a
+bare `L`. Corrected, the count is **0**: table data and chain-label renames
+only, across all 32. Worth keeping because a filter that under-reports is the
+same danger as a suite that does - and this one over-reported, which is the
+harmless direction, only because the labels changed name at the same time.
+
+### x86_64-windows keeps the whole refusal
+
+A Microsoft handler is a funclet named `<fn>$catch$N` from a per-function
+counter, so a nested one takes a name already used: ml64 answers
+`A2005: symbol redefinition` and then `A1010: unmatched block nesting`. All
+three mechanisms here are to the Itanium call-site list, which that ABI does not
+have. `msTryStatement` is untouched, and the Windows box is what caught it while
+both Itanium targets were green.
 
 ## namespace, and the fact that a namespace is not a type
 
