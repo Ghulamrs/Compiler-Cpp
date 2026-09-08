@@ -152,6 +152,59 @@ bool Parser::releaseTemporary(const Expr &value) {
     return false;
 }
 
+// **[class.temporary]/5: a temporary bound to a reference lives as long as the
+// reference does**, not to the end of the full expression that made it. So the
+// object comes off the pending list - where it would be destroyed at the
+// semicolon, leaving the reference dangling - and goes on `alive_`, where the
+// end of the enclosing scope destroys it like any other local.
+//
+// Neither half was happening. The reference declaration flushed nothing at all,
+// so `const T &r = T();` built the temporary and destroyed it never: `+|` where
+// every other compiler prints `+|-`. A destructor with an observable effect did
+// not run, and whatever the object owned leaked.
+//
+// The slot is found the way releaseTemporary finds one, by the same walk -
+// `bindReference` hands back an address, so there is a `&` in front of what
+// classTemporary already wrapped as `*(ctor(&tmp), &tmp)`.
+//
+// Only a temporary is extended. Binding to an object that already exists,
+// `const T &r = t;`, finds no pending entry and returns false - which is right:
+// that object belongs to whoever declared it and is destroyed there.
+bool Parser::extendTemporary(const Expr &addr, const std::string &name) {
+    const Expr *at = &addr;
+    for (;;) {
+        if (const Comma *c = dynamic_cast<const Comma *>(at)) { at = &c->right(); continue; }
+        if (const Unary *u = dynamic_cast<const Unary *>(at))
+            if (u->op() == '*' || u->op() == '&') { at = &u->operand(); continue; }
+        break;
+    }
+
+    int slot = 0;
+    if (const Var *v = dynamic_cast<const Var *>(at)) {
+        if (!v->isLocal()) return false;
+        slot = v->offset();
+    } else if (const Call *c = dynamic_cast<const Call *>(at)) {
+        if (c->resultSlot() == 0) return false;
+        slot = c->resultSlot();
+    } else {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < pendingTemps_.size(); i++)
+        if (pendingTemps_[i].slot == slot) {
+            const Type *cls = pendingTemps_[i].type;
+            pendingTemps_.erase(pendingTemps_.begin() + i);
+            // The guard flag goes with the entry. A guard exists so a cleanup
+            // pad reaching the middle of a full expression can ask whether the
+            // object was built yet; past the declaration it always was, so the
+            // scope's own destructor needs no question asked.
+            if (destructorOf(cls) != nullptr)
+                alive_.push_back(Alive{ name, slot, cls });
+            return true;
+        }
+    return false;
+}
+
 ExprPtr Parser::endFullExpression(ExprPtr e) {
     if (pendingTemps_.empty()) return e;
     std::vector<Temporary> mine;

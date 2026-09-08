@@ -1,0 +1,23 @@
+The same four objects a Microsoft throw is identified by - ??_R0H@8, the type
+descriptor for int; _CT??_R0H@84, its catchable type; _CTA1H, the array of
+those; and _TI1H, the ThrowInfo - appear on cl's side and not on cxx1's. They
+are the only difference, and there are two reasons for it, both of which the
+case is about rather than a fault in it.
+
+**The `throw` that escapes is not a throw here at all.** [except.spec]/9 makes
+an exception leaving a `noexcept` function call std::terminate, and where the
+escape is certain at compile time cxx1 calls `abort` where the throw would have
+been - so it emits no exception object, no type descriptor and no ThrowInfo for
+`escapes()`. cl throws and terminates from the landing pad, which is the same
+observable result and a different set of symbols. That difference is the fix
+this case measures; the exit status is what run.sh compares, and it is 134 on
+both.
+
+**And the throw that is caught inside `keepsIt()` emits them file-locally**,
+which is the older reason condition-declaration-unwind.nocl records: a public
+copy collides with cl's at the link with LNK2005, and the runtime matches a
+type descriptor by its name string rather than its address. CLAUDE.md has it
+under "6.5a as it actually landed".
+
+Nothing on cxx1's side is missing from cl's; the whole difference is four
+symbols cl has and cxx1 does not need.

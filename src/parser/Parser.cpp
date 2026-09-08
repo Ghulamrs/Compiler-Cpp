@@ -551,6 +551,7 @@ Parser::FunctionState Parser::captureFunctionState() const {
     s.staticSymbols = staticSymbols_;
     s.pendingDefaults = pendingDefaults_;
     s.pendingNoexcept = pendingNoexcept_;
+    s.inNoexceptFunction = inNoexceptFunction_;
     s.replayingInline = replayingInline_;
     s.loopDepth = loopDepth_;
     s.switchDepth = switchDepth_;
@@ -597,6 +598,7 @@ void Parser::restoreFunctionState(const FunctionState &s) {
     staticSymbols_ = s.staticSymbols;
     pendingDefaults_ = s.pendingDefaults;
     pendingNoexcept_ = s.pendingNoexcept;
+    inNoexceptFunction_ = s.inNoexceptFunction;
     replayingInline_ = s.replayingInline;
     loopDepth_ = s.loopDepth;
     switchDepth_ = s.switchDepth;
@@ -644,6 +646,7 @@ void Parser::clearFunctionState() {
     staticSymbols_.clear();
     pendingDefaults_.clear();
     pendingNoexcept_ = false;
+    inNoexceptFunction_ = false;
     loopDepth_ = 0;
     switchDepth_ = 0;
     switches_.clear();

@@ -266,9 +266,28 @@ StmtPtr Parser::declarationBody() {
                                          "'" + d.name + "'");
             ExprPtr target(Var::local(d.name, off));
             target->setType(slot);
+            // **The temporary this reference binds to, if it made one**, is
+            // extended to the scope rather than destroyed at the semicolon -
+            // [class.temporary]/5. Asked before `addr` is moved into the
+            // assignment, because the walk that finds the slot goes through
+            // commas and address-ofs and not through an `Assign`.
+            const bool extended = extendTemporary(*addr, d.name + "$held");
             ExprPtr bind(new Assign(std::move(target), std::move(addr)));
             bind->setType(slot);
             inits.push_back(StmtPtr(new ExprStmt(std::move(bind))));
+            // And anything else the initialiser built - `const T &r = f(T(1));`
+            // makes T(1) as well, and that one does die here.
+            //
+            // **Only once something was extended.** Where the reference binds
+            // to an object this statement did not make - `const T &r = t;` -
+            // there is nothing of this statement's to flush. And where it binds
+            // to a call's result, cxx1 copies that result into a `.ref` slot
+            // and the pending entry still names the *call's* slot, not the one
+            // the reference points at: flushing would destroy the source while
+            // the reference goes on naming the copy. That case keeps the
+            // behaviour it had - the copy outlives everything, which leaks but
+            // does not dangle - and is written up in docs/CONFORMANCE.md.
+            if (extended) flushTemporaries(inits);
             continue;
         }
 
@@ -1468,6 +1487,32 @@ StmtPtr Parser::statementBody() {
         // object was a *block copy* and nothing destroyed the original: see
         // throwStatement, which copy-constructs and then flushes.
         expect(";");
+        // **[except.spec]/9: an exception that escapes a `noexcept` function
+        // calls std::terminate.** Where the escape is certain at compile time -
+        // a `throw` in such a function with no `try` in it to catch anything -
+        // that is a direct call, needing no landing pad, no unwind table and no
+        // funclet, so it is the same on all three targets.
+        //
+        // The operand is still evaluated, because its construction is
+        // observable; the exception object is not built, because no handler can
+        // ever see it, and [except.terminate] leaves unwinding before terminate
+        // up to the implementation - clang does not unwind either.
+        //
+        // **What this does not cover**, and docs/CONFORMANCE.md carries it:
+        // an exception arriving from a function this one *calls*. Catching that
+        // means a landing pad over the whole body, which is the implicit `try`
+        // the same document orders behind two other pieces of work. So this is
+        // the half that costs nothing rather than the whole rule; nothing that
+        // was accepted before is refused now, and nothing that terminated
+        // before propagates.
+        if (inNoexceptFunction_ && !inTryBody_ && !inHandlerBody_) {
+            std::vector<StmtPtr> both;
+            both.push_back(StmtPtr(new ExprStmt(std::move(value))));
+            both.push_back(StmtPtr(new ExprStmt(
+                runtimeCall("abort", types_.get(Kind::Void),
+                            std::vector<ExprPtr>()))));
+            return StmtPtr(new Block(std::move(both)));
+        }
         return throwStatement(std::move(value), tpos);
     }
 

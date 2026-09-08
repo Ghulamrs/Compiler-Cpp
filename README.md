@@ -112,7 +112,10 @@ what a program *means*:
 over a `std::string` and `std::exception` in `<exception>` beside it, as the
 standard splits them. Nothing else in the library throws: a container that runs
 out of memory or is indexed past its end does not raise, it misbehaves, and
-`at()` is not provided rather than provided without its exception.
+`at()` **is** provided and does not throw - it indexes like `operator[]`, so a
+past-the-end `at()` misbehaves rather than raising `std::out_of_range`. That is
+the one place the sentence above is not kept, and it is worse than not providing
+it: a caller who wrote `at()` for the check does not get one. `include/vector`.
 
 `<memory>`, `<type_traits>`, `<new>`, `<typeinfo>`, `<functional>`, `<deque>`,
 `<list>`, `<unordered_map>`, `<thread>` and the rest of C++11 are not present.

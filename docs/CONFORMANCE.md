@@ -208,20 +208,25 @@ say, in a program that could then be compiled by clang and mean the other thing.
 Worth knowing because it decides what a program may rely on: `new` here either
 returns memory or ends the program. It never returns null.
 
-## An inline member function is a strong symbol
+## Vague linkage: done for functions, still open for the two forms
 
 A member function defined inside its class is *implicitly inline*, and an
-inline function may be defined in several translation units - so the linker has
-to fold the copies rather than reject them. clang says so in the object:
+inline function - or a template instantiation - may be defined in several
+translation units, so the linker has to fold the copies rather than reject
+them:
 
 ```
 .weak    _ZN7CounterC2Ev              # Linux
 .weak_def_can_be_hidden __ZN7CounterC1Ev   # Darwin
 ```
 
-cxx1 emits an ordinary strong global instead. In one translation unit that is
-invisible and everything links; two units that both include such a class would
-collide on every inline member.
+**cxx1 emits that now**, for inline members, for function-template
+specializations and for members defined outside a class template. It did not
+for the last two until 2026-09-08: `instantiatePending` replayed those bodies
+through a door that did not set the inline flag, so a header defining a
+function template failed to link the moment two translation units used it -
+`duplicate symbol 'int tmax<int>(int, int)'`. Nothing in this tree caught it
+because the suite compiles one translation unit at a time.
 
 There is a second half to it on Linux: for an inline constructor clang emits
 only `C2` and no `C1` at all, where the out-of-line case emits both. cxx1 emits
@@ -345,12 +350,23 @@ because the two rules are one piece of work and the narrow version is a
 deliberate stopping point, not an oversight.
 
 
-## A `noexcept` function that throws propagates instead of terminating
+## A `noexcept` function terminates on its own throw, not on a callee's
 
 [except.spec]/9: when an exception escapes a function whose specification does
-not allow it, `std::terminate` is called. cxx1 records the promise and does not
-enforce it, so the exception unwinds past the function like any other and an
-outer handler catches it.
+not allow it, `std::terminate` is called. **Half of that is enforced now.**
+
+**Where the escape is certain at compile time it terminates**, matching clang:
+a `throw` written inside a `noexcept` function with no `try` in that function to
+catch anything cannot do otherwise, so cxx1 evaluates the operand - its
+construction is observable - and calls `abort` where the throw would have been.
+No landing pad, no unwind table and no funclet, so it is the same on all three
+targets, and nothing that compiled before is refused now.
+`tests/cases/noexcept-terminates.cpp`.
+
+**Where the exception arrives from a function this one calls, it still
+propagates**, and an outer handler still catches it. That case needs a landing
+pad over the whole body - the implicit `try` the rest of this section is about -
+and the ordering below still holds.
 
 ```cpp
 void f() noexcept { throw 1; }
@@ -508,3 +524,23 @@ cannot mark a COMDAT, so cxx1 builds the member from the file's one init
 function under a weak flag beside the object, `<symbol>$guard`, which is the
 shape both compilers already use on the Itanium targets (`_ZGV` and the
 object's name). One more weak object per member; nothing links against it.
+
+## Reading a data member of a virtual base gives garbage
+
+Found 2026-09-08 while checking what EXCLUSIONS.md still called refused. A
+virtual base is *constructed* correctly - `tests/cases/virtual-base-diamond`
+measures that it is built once by the most-derived class, and it passes - but
+reading one of its data members through the derived object does not find it:
+
+```cpp
+struct B { int n; B(int v) : n(v) {} };
+struct L : virtual B { L() : B(1) {} };
+struct D : L        { D() : B(3) {} };
+D d; printf("%d\n", d.n);      // clang: 3      cxx1: -232112040
+```
+
+No diagnostic, no virtual function needed, and a single chain is enough - so it
+is not about the diamond. The construction order is right and the offset the
+member access uses is not, which points at the access path rather than at
+layout. Worse than a refusal, because it is silent: this is the shape a
+`.error` case should carry until it is fixed.

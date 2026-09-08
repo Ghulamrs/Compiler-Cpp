@@ -1098,6 +1098,7 @@ private:
         std::vector<std::string> staticSymbols;
         std::vector<std::size_t> pendingDefaults;
         bool pendingNoexcept = false;
+        bool inNoexceptFunction = false;
         bool replayingInline = false;
         // The six a review found still missing, each with a program that
         // reached it: `break` and `case` written in a lambda inside a loop or
@@ -1644,6 +1645,9 @@ private:
     // Answers whether it found one, which is what tells `return` that the
     // operand *is* the object going out rather than something to copy from.
     bool releaseTemporary(const Expr &value);
+    // [class.temporary]/5 - a temporary bound to a reference outlives its full
+    // expression and is destroyed with the reference's scope instead.
+    bool extendTemporary(const Expr &addr, const std::string &name);
     void flushTemporaries(std::vector<StmtPtr> &into);
     ExprPtr completeCall(const std::string &name, const std::string &symbol,
                          ExprPtr callee, const Type *returns,
@@ -1937,6 +1941,10 @@ private:
     // and cleared by whichever declare* call follows. The same shape `pendingDefaults_`
     // uses: the places that parse one are not the places that build a Signature.
     bool pendingNoexcept_ = false;
+    // **Is the function being parsed right now declared `noexcept`?**
+    // pendingNoexcept_ answers that at the declarator and is consumed there;
+    // this carries it into the body, where [except.spec]/9 needs it.
+    bool inNoexceptFunction_ = false;
     // Set when `explicit operator T()` is seen, consumed by the next
     // declareFunction of a conversion name, which stamps the signature.
     bool pendingExplicitConversion_ = false;

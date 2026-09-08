@@ -46,7 +46,15 @@ for src in tests/cases/*.cpp; do
         fail=$((fail + 1))
         continue
     fi
-    "$OUT/$base" > "$OUT/$base.out" 2>&1 || true
+    # **The runner's own stderr is closed around the run**, so the shell's
+    # report of a signal does not land in the suite's output. A case that ends
+    # by calling abort - which is what `noexcept-terminates` measures - makes
+    # the shell write "Abort trap: 6", in a spelling that differs on each of the
+    # three machines and reads like a failure when it is the expected result.
+    # The case's own stdout and stderr are captured inside the group either way;
+    # only the shell's commentary is dropped. A subshell does not do it: the
+    # report comes from the shell that waited, not the one that ran.
+    { "$OUT/$base" > "$OUT/$base.out" 2>&1; } 2>/dev/null || true
     if diff -q "tests/cases/$base.expected" "$OUT/$base.out" >/dev/null; then
         pass=$((pass + 1))
     else

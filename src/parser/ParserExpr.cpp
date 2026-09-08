@@ -1621,6 +1621,14 @@ ExprPtr Parser::bindReference(const Type *ref, ExprPtr init, std::size_t pos,
 
     ExprPtr both(new Comma(std::move(keep), std::move(addr)));
     both->setType(addrType);
+    // **This copy is not registered for destruction, deliberately.** The store
+    // above is `convert`ed and, for two class types, that is a copy of the
+    // bytes rather than a call to a copy constructor - so no object was
+    // constructed here that a destructor should answer for. Destroying it
+    // anyway takes `conditional-class` from `live 0` to `live -1`: one
+    // destruction with no construction to balance it. The elided branch above
+    // is different, and is registered, because there the call really does
+    // build the object in this slot.
     return both;
 }
 

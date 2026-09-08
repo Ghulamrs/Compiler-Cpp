@@ -145,10 +145,55 @@ void Preprocessor::emitLine(const std::string &text, int fileIndex, int lineNo) 
     lines_.push_back(Source::Line{ fileIndex, lineNo });
 }
 
+// [cpp.stringize]/2: the spelling of the argument, a backslash before each `"`
+// and `\`, leading and trailing white space deleted - and **each run of white
+// space between two preprocessing tokens replaced by a single space**. That
+// last clause was missing, so `S(  a   b  )` gave "a   b" where the standard
+// and every other compiler give "a b".
+//
+// White space inside a string or character literal is part of that token and
+// is not touched, which is why this walks the argument instead of collapsing
+// it in one blind pass: `S("a   b")` still stringifies with its three spaces.
+//
+// One deliberate divergence, kept from the older version of this function: the
+// standard escapes a `\` only inside a literal, so `S(a\b)` conforming-ly
+// yields the two characters `a` and a backspace. A stray backslash outside a
+// literal is not valid C++ in the first place, and escaping it produces a
+// string literal that can be read rather than an accidental escape sequence,
+// so this escapes it. Every well-formed argument stringifies as the standard
+// says.
 std::string Preprocessor::stringify(const std::string &arg) {
+    const std::string s = trim(arg);
     std::string out = "\"";
-    for (char c : trim(arg)) {
-        if (c == '"' || c == '\\') out += '\\';
+    for (std::size_t i = 0; i < s.size(); i++) {
+        char c = s[i];
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            while (i + 1 < s.size() && std::isspace(static_cast<unsigned char>(s[i + 1]))) i++;
+            out += ' ';
+            continue;
+        }
+        if (c == '"' || c == '\'') {
+            // A literal, copied through whole. Its delimiters are escaped, an
+            // escape sequence inside it keeps both characters, and the closing
+            // quote ends it. An unterminated one runs to the end of the
+            // argument, which is what the rest of the preprocessor does too.
+            const char quote = c;
+            out += '\\';
+            out += c;
+            for (i++; i < s.size(); i++) {
+                if (s[i] == '\\' && i + 1 < s.size()) {
+                    out += "\\\\";
+                    if (s[i + 1] == '"' || s[i + 1] == '\\') out += '\\';
+                    out += s[i + 1];
+                    i++;
+                    continue;
+                }
+                if (s[i] == quote) { out += '\\'; out += s[i]; break; }
+                out += s[i];
+            }
+            continue;
+        }
+        if (c == '\\') out += '\\';
         out += c;
     }
     out += '"';

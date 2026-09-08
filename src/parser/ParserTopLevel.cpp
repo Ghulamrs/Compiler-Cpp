@@ -746,6 +746,11 @@ void Parser::topLevel(Program &program) {
     // The exception specification comes after the constness, which is the
     // order C++ writes them in: `int get() const noexcept`.
     pendingNoexcept_ = exceptionSpecification();
+    // **Captured here because declareFunction consumes it.** The declaration
+    // records the specification on the Signature and clears the field, and that
+    // happens before the body below is parsed - so the body would otherwise
+    // never know it is inside a `noexcept` function. [except.spec]/9 needs it.
+    const bool declaredNoexcept = pendingNoexcept_;
 
     if (consume(";")) {
         if (memberOf != nullptr)
@@ -1137,6 +1142,11 @@ void Parser::topLevel(Program &program) {
                               "same thing");
 
     atFunctionBody_ = true;
+    // [except.spec]/9 needs this inside the body, and the declarator read it a
+    // few hundred lines up. An out-of-line member repeats the specification its
+    // class declared, and ParserClass checks the two agree, so this is set for
+    // a member definition too.
+    inNoexceptFunction_ = declaredNoexcept;
     bodyCleanupFrom_ = paramsFrom;
     // A class can be defined inside a function and its members defined from
     // there, so what this function allocates is what it added to the list.

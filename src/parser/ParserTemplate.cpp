@@ -1013,6 +1013,25 @@ void Parser::instantiatePending() {
             instantiationOf_ = sp.isClass ? std::string() : sp.name;
 
             const std::size_t resume = at_;
+            // **An instantiated definition has vague linkage** - [basic.link]
+            // and [temp.spec]: the same specialization may be produced by every
+            // translation unit that uses it, and the linker folds the copies
+            // rather than rejecting them. That is the same rule an inline
+            // function lives under, and `setInline` is what carries it to the
+            // backends, so the flag is set for every body replayed here.
+            //
+            // `replayInlineBodies` sets it itself for the bodies written inside
+            // a class template. The other two doors did not, so a function
+            // template - or a member defined outside its class template - was
+            // emitted as an ordinary strong symbol, and a header defining one
+            // then failed to link the moment two translation units used it:
+            //
+            //     duplicate symbol 'int tmax<int>(int, int)'   ld: 1 duplicate
+            //
+            // Saved and restored rather than just set: `instantiatePending` is
+            // re-entered, and the outer replay's answer is not this one's.
+            const bool wasReplayingInline = replayingInline_;
+            replayingInline_ = true;
             if (sp.isClass) {
                 // Its member functions, written inside the class and held
                 // there. inlineOwner_ supplies the "Box<int,3>::" that the
@@ -1029,6 +1048,7 @@ void Parser::instantiatePending() {
                 at_ = sp.start;
                 topLevel(*current_);
             }
+            replayingInline_ = wasReplayingInline;
             at_ = resume;
 
             instantiationKey_ = wasKey;
