@@ -7,7 +7,7 @@
 #include <ostream>
 #include <string>
 
-std::unique_ptr<CodeGen> X86_64LinuxBackend::codegen(std::ostream &sink) const {
+std::unique_ptr<CodeGen> X86_64LinuxBackend::codegen(std::ostream &sink, bool) const {
     return std::unique_ptr<CodeGen>(new X86_64Linux(sink, target_, abi()));
 }
 

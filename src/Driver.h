@@ -25,6 +25,11 @@ private:
     bool debug_ = false;
     bool objectOnly_ = false;
     unsigned threads_ = 0;
+    // **Which assembler the Windows target is written for.** It lived as a
+    // file-scope bool in the backend, which made it one object shared by every
+    // compiling thread; it is an option of this invocation, so it belongs
+    // here beside the others and is handed to the backend at the call.
+    bool gnuAsm_ = false;
     std::string linkTo_;
     std::vector<std::string> temporaries_;
     std::vector<std::string> objects_;

@@ -14,11 +14,15 @@ public:
     const char *name() const override { return "x86_64-windows"; }
 };
 
-void setWindowsAsmSyntax(bool gnu);
-// **Which assembler the driver has to reach for.** ml64 cannot mark a section
-// COMDAT, so a mergeable definition collides across translation units; clang
-// assembles the same COFF and can. Set once from argv before any thread runs.
-bool windowsAsmIsGnu();
+// **Which assembler this target is written for** arrives as `gnuAsm` at the
+// two calls below, from the Driver that read `-masm=` off argv. ml64 cannot
+// mark a section COMDAT, so a mergeable definition collides across translation
+// units where clang, writing the same COFF, can mark it.
+//
+// It was a file-scope `bool` here until 2026-09-08, with `setWindowsAsmSyntax`
+// to write it - one mutable object shared by every compiling thread, correct
+// only while nothing set it after the pool started. Passing it costs an
+// argument and removes the convention.
 
 class X86_64WindowsBackend final : public Backend {
 public:
@@ -27,8 +31,8 @@ public:
     const Abi &abi() const override;
     bool emits() const override { return true; }
     const char *const *identityMacros() const override;
-    bool emitsLineTable() const override;
-    std::unique_ptr<CodeGen> codegen(std::ostream &sink) const override;
+    bool emitsLineTable(bool gnuAsm) const override;
+    std::unique_ptr<CodeGen> codegen(std::ostream &sink, bool gnuAsm) const override;
 private:
     WindowsX86_64Target target_;
 };

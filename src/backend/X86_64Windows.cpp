@@ -49,20 +49,17 @@ static const Abi kMsAbi = microsoft();
 
 const Abi &X86_64WindowsBackend::abi() const { return kMsAbi; }
 
-static bool gnuSyntax_ = false;
-void setWindowsAsmSyntax(bool gnu) { gnuSyntax_ = gnu; }
-bool windowsAsmIsGnu() { return gnuSyntax_; }
-
 static const char *const kWindowsMacros[] = {
     "__x86_64__=1", "__x86_64=1", "__amd64__=1", "__amd64=1",
     "_WIN32=1", "_WIN64=1", "__llp64__=1", nullptr,
 };
 const char *const *X86_64WindowsBackend::identityMacros() const { return kWindowsMacros; }
 
-bool X86_64WindowsBackend::emitsLineTable() const { return gnuSyntax_; }
+bool X86_64WindowsBackend::emitsLineTable(bool gnuAsm) const { return gnuAsm; }
 
-std::unique_ptr<CodeGen> X86_64WindowsBackend::codegen(std::ostream &sink) const {
-    if (gnuSyntax_)
+std::unique_ptr<CodeGen> X86_64WindowsBackend::codegen(std::ostream &sink,
+                                                      bool gnuAsm) const {
+    if (gnuAsm)
         return std::unique_ptr<CodeGen>(new X86_64Linux(sink, target_, kMsAbi));
     return std::unique_ptr<CodeGen>(new MasmCodeGen(sink, target_, kMsAbi));
 }

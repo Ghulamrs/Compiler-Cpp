@@ -28,8 +28,8 @@ public:
     const Abi &abi() const override;
     bool emits() const override { return true; }
     const char *const *identityMacros() const override;
-    std::unique_ptr<CodeGen> codegen(std::ostream &sink) const override;
-    bool emitsLineTable() const override { return true; }
+    std::unique_ptr<CodeGen> codegen(std::ostream &sink, bool gnuAsm) const override;
+    bool emitsLineTable(bool) const override { return true; }
 private:
     DarwinArm64Target target_;
 };

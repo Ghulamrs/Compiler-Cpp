@@ -353,7 +353,7 @@ bool Driver::assembleObjects() {
     commands.reserve(temporaries_.size());
     for (std::size_t i = 0; i < temporaries_.size(); i++) {
         std::string command;
-        if (hostIsWindows() && windowsAsmIsGnu()) {
+        if (hostIsWindows() && gnuAsm_) {
             // **The GNU spelling is assembled by clang, not by ml64.** ml64
             // has no COMDAT directive, so every mergeable definition - a
             // vtable, an inline member, a template's - is exported by each
@@ -395,7 +395,7 @@ bool Driver::link() {
             // The same choice assembleObjects makes, and for the same reason -
             // ml64 cannot mark a mergeable definition COMDAT and clang can.
             std::string step;
-            if (windowsAsmIsGnu()) {
+            if (gnuAsm_) {
                 step = shellQuote(hostGnuAssembler());
                 step += " -target x86_64-pc-windows-msvc -c " + shellQuote(t);
                 step += " -o " + shellQuote(obj);
@@ -502,10 +502,10 @@ bool Driver::parseArguments(int argc, char **argv) {
         } else if (std::strncmp(argv[i], "-masm=", 6) == 0) {
             const char *want = argv[i] + 6;
             if (std::strcmp(want, "gnu") == 0) {
-                setWindowsAsmSyntax(true);
+                gnuAsm_ = true;
             } else if (std::strcmp(want, "masm") == 0 ||
                        std::strcmp(want, "intel") == 0) {
-                setWindowsAsmSyntax(false);
+                gnuAsm_ = false;
             } else {
                 std::fprintf(stderr,
                     "%s: -masm= takes 'masm' or 'gnu', not '%s'\n", argv[0], want);
@@ -576,7 +576,7 @@ bool Driver::parseArguments(int argc, char **argv) {
 
     if (inputs.empty()) { usage(argv[0]); return false; }
 
-    if (debug_ && !backend_->emitsLineTable()) {
+    if (debug_ && !backend_->emitsLineTable(gnuAsm_)) {
         std::fprintf(stderr,
                      "%s: -g asks where each line of C++ went, and this compiler "
                      "writes no such thing for %s in the MASM spelling: MASM "
@@ -661,7 +661,7 @@ bool Driver::compile(const Job &job) {
 
     bool ok = true;
     if (job.output.empty()) {
-        std::unique_ptr<CodeGen> gen = backend_->codegen(std::cout);
+        std::unique_ptr<CodeGen> gen = backend_->codegen(std::cout, gnuAsm_);
         if (debug_) gen->setLineSource(&src, workingDirectory());
         gen->run(program);
     } else {
@@ -671,7 +671,7 @@ bool Driver::compile(const Job &job) {
                          job.output.c_str());
             return false;
         }
-        std::unique_ptr<CodeGen> gen = backend_->codegen(file);
+        std::unique_ptr<CodeGen> gen = backend_->codegen(file, gnuAsm_);
         if (debug_) gen->setLineSource(&src, workingDirectory());
         gen->run(program);
     }
