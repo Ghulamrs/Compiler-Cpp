@@ -1186,6 +1186,86 @@ void Parser::topLevel(Program &program) {
         body = StmtPtr(new Block(std::move(withClears)));
         guardSlots_.resize(guardsFrom);
     }
+    // **[except.spec]/9 over the whole body**, for an exception this function
+    // did not throw itself. The throw statement already answers for one written
+    // here - it calls `abort` where the escape is certain - and this answers for
+    // one arriving from a callee, which needs a landing pad rather than a
+    // branch.
+    //
+    // **Built after the body is parsed, and that is what makes it free.** An
+    // implicit `try` written *around* the parse would set `functionHasTry_` and
+    // `inTryBody_` before the body was read, and the destructible-local
+    // refusals test exactly those - so every `noexcept` function holding an
+    // object with a destructor would have started being refused. That is the
+    // cost docs/CONFORMANCE.md said this had to be paid with, and building the
+    // region out of the finished body avoids it: no flag is set while anything
+    // is being read, and nothing that compiled before is refused now.
+    //
+    // **Only where something could arrive.** `mayThrow_` counts the throws and
+    // the calls to functions that have not promised otherwise; at zero there is
+    // nothing to catch and the function is left exactly as it was, which is
+    // most of them.
+    //
+    // **And only where this function owns no unwind region already**, which is
+    // what `functionHasPads_` says: `wrapCleanups` sets it for a destructible
+    // local and `tryStatement` for a `try`. A region built around one of those
+    // *after* the fact does not work, and the failure is not subtle - the inner
+    // cleanup row resumes, the resume finds this frame again, and the
+    // destructor runs for ever:
+    //
+    //     before +9 -9 -9 -9 -9 -9 -9 ...
+    //
+    // Handing over instead of resuming is what `tryChainLabel_` and the
+    // `tryBodySegments_` list are for, and a segment learns its chain when it
+    // is built - so covering those bodies means setting the chain up before the
+    // body is parsed, which sets `inTryBody_`, which is what
+    // `for (S s; ...)` is refused under on every target. That is the cost
+    // docs/CONFORMANCE.md declined to pay, and it still declines: a `noexcept`
+    // function holding a destructible object keeps the behaviour it had.
+    //
+    // Itanium only. A Microsoft handler is a funclet and a state in the FH3
+    // tables rather than a row in a call-site list, and `msTryStatement` is
+    // untouched - so x86_64-windows keeps the half it had. Same lag rung 6.5
+    // records for Windows exceptions generally.
+    if (inNoexceptFunction_ && mayThrow_ > 0 && !functionHasPads_ &&
+        !target_.microsoftNames()) {
+        const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
+        const int pointerSlot = allocateFrameSlot(voidPtr);
+        const int selectorSlot = allocateFrameSlot(types_.intType());
+        functionHasPads_ = true;
+
+        // A catch-all is the empty type string, the spelling `catch (...)`
+        // takes, so the chain is the pad itself with nothing to test.
+        std::vector<std::string> types;
+        types.push_back(std::string());
+        std::vector<int> indices;
+        indices.push_back(typeIndexFor(std::string()));
+
+        // `__cxa_begin_catch` first, as clang's `__clang_call_terminate` does:
+        // the exception is being handled, and the runtime is told so before the
+        // process ends. Then `abort`, which is what std::terminate does here -
+        // there is no `set_terminate` in this library to make it anything else.
+        std::vector<ExprPtr> beginArgs;
+        ExprPtr held(Var::local(".ex.ptr", pointerSlot));
+        held->setType(voidPtr);
+        beginArgs.push_back(std::move(held));
+        std::vector<StmtPtr> padSteps;
+        padSteps.push_back(StmtPtr(new ExprStmt(
+            runtimeCall("__cxa_begin_catch", voidPtr, std::move(beginArgs)))));
+        padSteps.push_back(StmtPtr(new ExprStmt(
+            runtimeCall("abort", types_.get(Kind::Void),
+                        std::vector<ExprPtr>()))));
+        Block *padBlock = new Block(std::move(padSteps));
+        padBlock->setScope(-1);
+
+        std::vector<StmtPtr> guarded;
+        guarded.push_back(std::move(body));
+        Try *t = new Try(std::move(guarded), StmtPtr(padBlock), pointerSlot,
+                         selectorSlot, types);
+        t->setTypeIndices(indices);
+        body = StmtPtr(t);
+    }
+
     resolveGotos();
     variadicBody_ = false;
 

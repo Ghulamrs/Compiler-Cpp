@@ -363,10 +363,36 @@ No landing pad, no unwind table and no funclet, so it is the same on all three
 targets, and nothing that compiled before is refused now.
 `tests/cases/noexcept-terminates.cpp`.
 
-**Where the exception arrives from a function this one calls, it still
-propagates**, and an outer handler still catches it. That case needs a landing
-pad over the whole body - the implicit `try` the rest of this section is about -
-and the ordering below still holds.
+**Where the exception arrives from a function this one calls, it terminates
+too** - unless the function owns an unwind region already. The pad over the
+whole body is built out of the *finished* body rather than around the parse,
+and that is what makes it cost nothing: an implicit `try` written around the
+parse sets `inTryBody_` before the body is read, and `for (S s; ...)` is
+refused under that flag on every target, so wrapping the parse would have
+started refusing `noexcept` functions that compile today. Building it
+afterwards sets no flag while anything is being read.
+`tests/cases/noexcept-terminates-callee.cpp`.
+
+**What is left, and why it is a real limit.** A body that already owns an
+unwind region - a destructible local, or a `try` - cannot be wrapped after the
+fact. Its cleanup row resumes, the resume finds this frame again, and the
+destructor runs for ever:
+
+```
+before +9 -9 -9 -9 -9 -9 -9 -9 ...
+```
+
+Handing over instead of resuming is what `tryChainLabel_` and the
+`tryBodySegments_` list are for, and a segment learns its chain when it is
+built - so covering those bodies means setting the chain up before the body is
+parsed, which is the cost this section declined to pay and still declines.
+`functionHasPads_` is the test, and a `noexcept` function holding a
+destructible object keeps the behaviour it had.
+
+So the rule is enforced for a `throw` written in the function, and for one
+arriving from a callee where the function has nothing to unwind. It is not
+enforced where the function has an object to destroy, and not at all on
+x86_64-windows, where a handler is a funclet rather than a row.
 
 ```cpp
 void f() noexcept { throw 1; }
