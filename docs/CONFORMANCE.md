@@ -525,22 +525,36 @@ function under a weak flag beside the object, `<symbol>$guard`, which is the
 shape both compilers already use on the Itanium targets (`_ZGV` and the
 object's name). One more weak object per member; nothing links against it.
 
-## Reading a data member of a virtual base gives garbage
+## A virtual base's mem-initialiser was ignored — fixed
 
-Found 2026-09-08 while checking what EXCLUSIONS.md still called refused. A
-virtual base is *constructed* correctly - `tests/cases/virtual-base-diamond`
-measures that it is built once by the most-derived class, and it passes - but
-reading one of its data members through the derived object does not find it:
+Found 2026-09-08 while checking what EXCLUSIONS.md still called refused, fixed
+the same day. It looked like a bad member-access offset and was not: the
+subobject was never written.
+
+[class.base.init]/7 gives every virtual base to the most-derived constructor.
+cxx1 split that correctly - C2 skips them, C1 builds them - but C1 only ever
+asked for a *default* constructor, so the mem-initialiser list was parsed,
+checked, and then dropped:
 
 ```cpp
 struct B { int n; B(int v) : n(v) {} };
-struct L : virtual B { L() : B(1) {} };
-struct D : L        { D() : B(3) {} };
-D d; printf("%d\n", d.n);      // clang: 3      cxx1: -232112040
+struct L : virtual B { L() : B(7) {} };
+L l; l.n;          // clang: 7      cxx1: B() ran instead, or nothing at all
 ```
 
-No diagnostic, no virtual function needed, and a single chain is enough - so it
-is not about the diamond. The construction order is right and the offset the
-member access uses is not, which points at the access path rather than at
-layout. Worse than a refusal, because it is silent: this is the shape a
-`.error` case should carry until it is fixed.
+Where `B` had a default constructor the wrong one ran; where it had none,
+nothing was built and the subobject held whatever the stack did. Silent both
+ways. `virtual-base-diamond` did not catch it because its classes carry no
+data - it counts constructor calls, and a call was made, just the wrong one.
+
+The arguments are parsed in C2's scope and emitted in C1's body, so **C1's
+frame is now laid out to match C2's slot for slot**: arguments before `this`,
+which is the order `topLevel` declares them in, and not the order the calling
+convention lists them in. The two were already independent - C2 inserts `this`
+at the front of its `Param` list having declared it last - and C1 allocating
+`this` first put every argument one slot out.
+
+One thing is refused rather than emitted wrong: an argument that needs a
+temporary of its own allocates it in C2's frame, and C1 cannot read it there.
+`: V(f())` for a class-returning `f` is named and refused;
+`: V(v + 10)` over the parameters works. `tests/cases/virtual-base-initialiser.cpp`.

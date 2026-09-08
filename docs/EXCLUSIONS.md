@@ -218,8 +218,8 @@ SFINAE and variadic packs. What is left:
   `struct D : virtual B` compiles, and `tests/cases/virtual-base-diamond`
   measures that the base is constructed once by the most-derived class on both
   Itanium targets (x86_64-windows keeps a named refusal, `.notarget`). Reading
-  a *data member* of a virtual base is still wrong, silently - see
-  docs/CONFORMANCE.md.
+  its mem-initialiser is honoured too, since 2026-09-08 - see
+  docs/CONFORMANCE.md for what was wrong before it.
 - **one name holding both a static and a non-static member**, where overload
   resolution picks the non-static one — the arguments have been read by then,
   and there is no honest way back to the call that takes an object.

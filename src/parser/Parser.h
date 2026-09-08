@@ -978,7 +978,9 @@ private:
                                 const std::vector<const Type *> &ctorParams,
                                 const std::string &c1, const std::string &c2,
                                 bool isInline, std::size_t pos,
-                                int copyArg = -1, bool moving = false);
+                                int copyArg = -1, bool moving = false,
+                                std::map<std::string, std::vector<ExprPtr> >
+                                    *vbaseArgs = nullptr);
     // The same split on the way out, and the order reverses with it: D1 calls
     // D2 - which destroys what C2 built - and then destroys the virtual bases.
     void synthesizeCompleteDtor(const Type *type, const std::string &d1,
@@ -987,9 +989,15 @@ private:
     // The construction calls for a class's virtual bases, reached by the
     // constant offset this class laid them down at. Shared by both of the
     // above and by the implicit members, which need the identical walk.
+    // `vbaseArgs` carries what the constructor's mem-initialiser list said for
+    // each virtual base, keyed by tag - the arguments parsed in C2's scope and
+    // emitted here, which is why this frame matches C2's slot for slot.
     std::vector<StmtPtr> virtualBaseCalls(const Type *type, int thisSlot,
                                           bool building, std::size_t pos,
-                                          int srcSlot = -1, bool moving = false);
+                                          int srcSlot = -1, bool moving = false,
+                                          std::map<std::string,
+                                              std::vector<ExprPtr> >
+                                              *vbaseArgs = nullptr);
     static std::string destructorKey(const std::string &cls) {
         return cls + "::~" + localOf(cls);
     }

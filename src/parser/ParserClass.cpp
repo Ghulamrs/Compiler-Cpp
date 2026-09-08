@@ -332,7 +332,10 @@ void Parser::synthesizeDeleting(const std::string &cls, const Type *type,
 // rule the non-virtual bases follow one level down.
 std::vector<StmtPtr> Parser::virtualBaseCalls(const Type *type, int thisSlot,
                                               bool building, std::size_t pos,
-                                              int srcSlot, bool moving) {
+                                              int srcSlot, bool moving,
+                                              std::map<std::string,
+                                                  std::vector<ExprPtr> >
+                                                  *vbaseArgs) {
     std::vector<StmtPtr> out;
     const std::vector<Type::BaseSpec> &bs = type->bases();
     const Type *self = types_.pointerTo(type);
@@ -365,23 +368,50 @@ std::vector<StmtPtr> Parser::virtualBaseCalls(const Type *type, int thisSlot,
         std::string symbol;
         ExprPtr srcArg;
         const Type *srcParam = nullptr;
+        Signature namedCtor;
+        const Signature *ctor = nullptr;
+        std::vector<ExprPtr> ctorArgs;
         if (building) {
             // **A copy builds its virtual base from the source's**, not from
             // nothing: `Dia b(a)` copy-constructs the one `V`, which is what
             // clang emits. The subobject sits at the same constant offset in
             // both objects, because both are the same most-derived type.
-            const Signature *ctor = nullptr;
-            if (srcSlot >= 0) {
+            // **What the mem-initialiser list said for this base, if it said
+            // anything.** Until this was read, `L() : B(7)` ran B's *default*
+            // constructor and dropped the 7 - and where B had no default one,
+            // built nothing at all and left the subobject uninitialised. Both
+            // silently: the list was parsed, checked, and then ignored, because
+            // C2 skips virtual bases (they belong to the most-derived class)
+            // and C1 only ever asked for a default constructor.
+            //
+            // The arguments were parsed in C2's scope. They name frame slots,
+            // and this frame is laid out to match C2's for exactly that reason;
+            // anything needing a slot of its own is refused where the list is
+            // read, so what arrives here is expressions over parameters and
+            // constants.
+            std::map<std::string, std::vector<ExprPtr> >::iterator said =
+                vbaseArgs == nullptr ? std::map<std::string,
+                    std::vector<ExprPtr> >::iterator()
+                                     : vbaseArgs->find(base->tag());
+            if (vbaseArgs != nullptr && said != vbaseArgs->end() &&
+                !said->second.empty()) {
+                ctorArgs.swap(said->second);
+                namedCtor = resolveOverload(constructorKey(base->tag()),
+                                            ctorArgs, pos);
+                applyDefaults(namedCtor, ctorArgs, pos);
+                ctor = &namedCtor;
+            } else if (srcSlot >= 0) {
                 if (moving) ctor = moveConstructorOf(base);
                 if (ctor == nullptr) ctor = copyConstructorOf(base);
                 // A trivial virtual base has no constructor to call; its bytes
                 // travel with the member walk in C2, as they do today.
                 if (ctor == nullptr) continue;
+                markUsed(ctor);
             } else {
                 ctor = defaultConstructorOf(base);
                 if (ctor == nullptr) continue;
+                markUsed(ctor);
             }
-            markUsed(ctor);
             const Type *fnType = types_.functionType(types_.get(Kind::Void),
                                                      ctor->params, false);
             std::string sub, why;
@@ -422,6 +452,17 @@ std::vector<StmtPtr> Parser::virtualBaseCalls(const Type *type, int thisSlot,
             args.push_back(std::move(srcArg));
             ps.push_back(srcParam);
         }
+        // **The mem-initialiser's own arguments**, converted to the parameters
+        // the chosen constructor declared, the way every other call converts
+        // them. `ctorArgs` is empty for the default and copy paths above.
+        for (std::size_t k = 0; k < ctorArgs.size(); k++) {
+            const Type *want = k < ctor->params.size() ? ctor->params[k]
+                                                       : ctorArgs[k]->type();
+            ExprPtr one = decay(std::move(ctorArgs[k]));
+            checkAssignable(*one, want, pos, "'" + base->tag() + "'");
+            args.push_back(convert(std::move(one), want));
+            ps.push_back(want);
+        }
         out.push_back(StmtPtr(new ExprStmt(
             completeCall(base->tag(), symbol, nullptr, types_.get(Kind::Void),
                          ps, false, pos, std::move(args)))));
@@ -433,34 +474,49 @@ void Parser::synthesizeCompleteCtor(const Type *type,
                                     const std::vector<const Type *> &ctorParams,
                                     const std::string &c1, const std::string &c2,
                                     bool isInline, std::size_t pos,
-                                    int copyArg, bool moving) {
+                                    int copyArg, bool moving,
+                                    std::map<std::string,
+                                        std::vector<ExprPtr> > *vbaseArgs) {
     const std::string &cls = type->tag();
     const Type *self = types_.pointerTo(type);
 
     const int savedFrame = frameSize_;
     frameSize_ = 0;
-    std::vector<Param> params;
-    const int thisSlot = allocateFrameSlot(self);
-    params.push_back(Param{ self, thisSlot });
+    // **The arguments take their slots before `this`, which is C2's order and
+    // not the obvious one.** In topLevel a constructor's parameters are
+    // declared by the parameter loop and `this` only afterwards, while the
+    // Param list is built the other way round - `this` inserted at the front,
+    // because that is the calling convention rather than the frame. The two are
+    // independent, and matching C2's *frame* here is what lets the
+    // mem-initialiser expressions parsed in C2 be emitted in this body: they
+    // name `Var::local(name, slot)`, and the slot has to mean the same thing.
+    // Allocating `this` first put every argument one slot out, so a virtual
+    // base built from a parameter read the wrong bytes.
+    //
     // **A reference parameter is a pointer in the frame**, which is how
     // synthesizeCopy declares the one it takes; declaring the slot with the
     // reference type instead made the forwarded argument a `const Dia` where
     // the callee wanted a `const Dia &`, and the call refused itself.
     std::vector<int> argSlots;
+    std::vector<const Type *> argHeld;
     for (std::size_t i = 0; i < ctorParams.size(); i++) {
         const Type *held = ctorParams[i]->isReference()
                          ? types_.pointerTo(ctorParams[i]->referent())
                          : ctorParams[i];
-        const int slot = allocateFrameSlot(held);
-        argSlots.push_back(slot);
-        params.push_back(Param{ held, slot });
+        argSlots.push_back(allocateFrameSlot(held));
+        argHeld.push_back(held);
     }
+    const int thisSlot = allocateFrameSlot(self);
+    std::vector<Param> params;
+    params.push_back(Param{ self, thisSlot });
+    for (std::size_t i = 0; i < ctorParams.size(); i++)
+        params.push_back(Param{ argHeld[i], argSlots[i] });
 
     const int srcSlot = (copyArg >= 0 &&
                          static_cast<std::size_t>(copyArg) < argSlots.size())
                       ? argSlots[copyArg] : -1;
     std::vector<StmtPtr> body = virtualBaseCalls(type, thisSlot, true, pos,
-                                                 srcSlot, moving);
+                                                 srcSlot, moving, vbaseArgs);
 
     // Then C2, which builds everything else - the non-virtual bases, the
     // members, and the body the user wrote.

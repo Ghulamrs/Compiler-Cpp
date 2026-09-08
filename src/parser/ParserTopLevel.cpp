@@ -907,6 +907,7 @@ void Parser::topLevel(Program &program) {
                 entry += "::" + expectIdent("a name after '::'");
             }
             expect("(");
+            const int frameBeforeArgs = frameSize_;
             std::vector<ExprPtr> args;
             parseArguments(args);
 
@@ -918,6 +919,7 @@ void Parser::topLevel(Program &program) {
             // What goes in the map is the tag either way, because that is what
             // the walk over the bases looks it up by.
             bool isBase = false;
+            bool wasVirtualBase = false;
             std::string baseKey = entry;
             const Type *namedBase = findTypedef(entry);
             const std::vector<Type::BaseSpec> &bs = memberOf->bases();
@@ -932,12 +934,30 @@ void Parser::topLevel(Program &program) {
                      namedBase->unqualified() == bs[i].type->unqualified())) {
                     isBase = true;
                     baseKey = bs[i].type->tag();
+                    wasVirtualBase = bs[i].isVirtual;
                     break;
                 }
 
             if (isBase) {
                 if (baseArgs.count(baseKey))
                     src_.fail(epos, "'" + entry + "' is initialised twice");
+                // **A virtual base is built in C1, not here**, so its arguments
+                // are emitted into a body with a frame of its own. That frame is
+                // laid out to match this one slot for slot, which is what lets
+                // these already-parsed expressions be used there - but only as
+                // long as they need nothing beyond the parameters. An argument
+                // that wanted a frame slot of its own allocated it in *this*
+                // frame, and reading it from C1 would be reading past C1's.
+                // Refused by name rather than emitted wrong.
+                if (wasVirtualBase && frameSize_ != frameBeforeArgs)
+                    src_.fail(epos, "'" + entry + "(...)' initialises a virtual "
+                                    "base with an argument that needs a "
+                                    "temporary of its own, and that is not "
+                                    "supported yet - a virtual base is built by "
+                                    "the most-derived constructor, in a body "
+                                    "whose frame this temporary is not in. An "
+                                    "argument made of the parameters and "
+                                    "constants works");
                 baseArgs[baseKey] = std::move(args);
             } else if (const Member *m = memberOf->findMember(entry)) {
                 if (memberExprs.count(entry))
@@ -1475,7 +1495,8 @@ void Parser::topLevel(Program &program) {
     // `functions.back()` to still be the one being defined.
     if (!splitC1.empty())
         synthesizeCompleteCtor(memberOf, params, splitC1, splitC2,
-                               program.functions.back().isInline(), d.pos);
+                               program.functions.back().isInline(), d.pos,
+                               -1, false, &baseArgs);
     if (!splitD1.empty())
         synthesizeCompleteDtor(memberOf, splitD1, splitD2,
                                program.functions.back().isInline(), d.pos);
