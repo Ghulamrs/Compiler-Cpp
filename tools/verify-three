@@ -100,6 +100,13 @@ if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then
     pass=0; fail=0
     for e in "$ROOT"/tests/cases/*.expected; do
         n=$(basename "$e" .expected)
+        # **Excluded coming back as well as going out.** The tar above drops
+        # the `name 2.ext` copies iCloud leaves, so the far side never sees
+        # them - but this loop reads the local directory, where they are, and
+        # then reports each as "did not run" against output that was rightly
+        # never produced. 125 of them on 2026-09-08, every one a copy, and the
+        # run exited 1 for a reason that had nothing to do with the compiler.
+        case "$n" in *" "[0-9]*) continue;; esac
         nt="$ROOT/tests/cases/$n.notarget"
         if [ -f "$nt" ] && grep -q x86_64-windows "$nt"; then
             echo "  skip $n: $(grep x86_64-windows "$nt")"
@@ -123,6 +130,7 @@ if [ "$WHICH" = all ] || [ "$WHICH" = windows ]; then
     # the case is about.
     for e in "$ROOT"/tests/cases/*.error; do
         n=$(basename "$e" .error)
+        case "$n" in *" "[0-9]*) continue;; esac   # the copies again
         nt="$ROOT/tests/cases/$n.notarget"
         if [ -f "$nt" ] && grep -q x86_64-windows "$nt"; then
             echo "  skip $n: $(grep x86_64-windows "$nt")"
