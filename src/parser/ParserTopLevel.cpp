@@ -1365,12 +1365,12 @@ void Parser::topLevel(Program &program) {
                              "body has to be a single return statement and "
                              "nothing else - that restriction is what lets its "
                              "value be worked out while compiling");
-        ConstexprFn fn;
+        ConstantEvaluator::Fn fn;
         fn.value = value;
         fn.pos = d.pos;
         for (std::size_t i = 0; i < paramSlots.size(); i++)
             fn.slots.push_back(paramSlots[i].offset);
-        constexprFns_[definedSymbol] = fn;
+        constants_.define(definedSymbol, fn);
     }
     currentClass_ = nullptr;
     currentFunction_.clear();

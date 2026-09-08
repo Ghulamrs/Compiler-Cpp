@@ -2,6 +2,7 @@
 
 #include "../Abi.h"
 #include "../Ast.h"
+#include "ConstantEvaluator.h"
 #include "../Lexer.h"
 #include "../Mangle.h"
 #include "../Type.h"
@@ -14,7 +15,12 @@
 
 class Source;
 
-class Parser {
+// **Parser implements ConstantNames**, which is the only reason it has a base
+// at all. The three overrides are the whole of what the constant folder needs
+// from the name tables, and they are private because nobody but the folder
+// asks them. See ConstantEvaluator.h for why it is an interface and not a
+// pointer back to this class.
+class Parser : private ConstantNames {
 public:
     // **The whole ABI table, not the three fields of it a return happens to
     // need.** They arrived as three positional arguments, which is a thing to get
@@ -22,7 +28,7 @@ public:
     Parser(const Source &src, std::vector<Token> tokens,
            TypeTable &types, const Target &target, const Abi &abi)
         : src_(src), tokens_(std::move(tokens)), types_(types), target_(target),
-          abi_(abi) {}
+          abi_(abi), constants_(src, target, *this) {}
 
     Program parse();
 
@@ -1844,20 +1850,33 @@ private:
     bool atBracedInitialiser(const std::string &name);
     bool constantInitialiser(const Type *t, const Init &in, long long *out) const;
 
-    // **A `constexpr` function, kept so that fold() can run it.** [dcl.constexpr] in
-    // C++11 lets the body be one return statement, which makes evaluating a call an
-    // expression fold. The function is still compiled and callable at run time.
-    struct ConstexprFn {
-        const Expr *value = nullptr;   // owned by the Function in the Program
-        std::vector<int> slots;        // parameter frame slots, in order
-        std::size_t pos = 0;
-    };
-    std::map<std::string, ConstexprFn> constexprFns_;   // by mangled symbol
+    // **The constant folder, and the two tables it now owns.** `ConstexprFn`
+    // and the frame stack used to be members here and visible to all fourteen
+    // parser files; they are `ConstantEvaluator`'s business now and this class
+    // reaches them only through it. Held **by value**, so it is built and
+    // destroyed with the parser on the compiling thread's stack - see the
+    // header for why that is not an implementation detail.
+    ConstantEvaluator constants_;
 
-    // One frame per call being folded, holding what each parameter slot is
-    // worth. Mutable because fold() is const and answering a call means
-    // remembering its arguments for as long as the body is being read.
-    mutable std::vector<std::vector<std::pair<int, long long> > > constexprFrames_;
+    // What a name is worth, answered for the folder. `false` means "not a
+    // constant here", which is a fold that does not happen rather than an
+    // error.
+    bool localConstant(const std::string &name, long long *out) const override {
+        if (const Local *l = findLocal(name))
+            if (l->isConstantValue) { *out = l->constantValue; return true; }
+        return false;
+    }
+    bool globalConstant(const std::string &name, long long *out) const override {
+        if (const GlobalSym *g = findGlobal(name))
+            if (g->isConstantValue) { *out = g->constantValue; return true; }
+        return false;
+    }
+    bool staticMemberConstant(const std::string &symbol,
+                              long long *out) const override {
+        if (const StaticConst *sc = findStaticConst(symbol))
+            if (sc->known) { *out = sc->value; return true; }
+        return false;
+    }
 
     const Expr *singleReturnValue(const Stmt &body) const;
     ExprPtr targetFor(const std::string &name, const std::vector<InitStep> &path);
