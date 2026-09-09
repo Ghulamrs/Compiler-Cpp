@@ -1,8 +1,11 @@
 # The second round of 2026-09-09: the register was built in the morning and closed two by the evening
 
-**HEAD is `3782fac` on `main`, pushed.** Four commits since `48f28a3`, and the
-first of them is the round the earlier handover on this date describes, which
-had been left staged and unverified rather than committed.
+**HEAD was `3782fac` on `main` when this was written, and is `b1d97a5` now** -
+the round below carried on into the evening and closed the third item of its
+own open list, which is noted where that item stands. Four commits since
+`48f28a3` at the time of writing, and the first of them is the round the
+earlier handover on this date describes, which had been left staged and
+unverified rather than committed.
 
 | | |
 | --- | --- |
@@ -73,11 +76,15 @@ namespaced specializations in the tree.
    `mem-init-template-id-base` - `D(int x) : P<int>(x) {}` is answered
    "expected '('" at the `<`, so a class deriving from a specialization cannot
    pass its base an argument.
-3. **`__cxa_end_catch` is not called when a handler is left by `return`**,
-   which is `catch-return-end-catch` in the register and the one item of the
-   three raised this morning that is still open. It is appended after the
-   handler's block, so only falling off the end reaches it; a nested handler
-   will want one call per enclosing one.
+3. ~~**`__cxa_end_catch` is not called when a handler is left by `return`**~~ -
+   **closed the same evening, at `b1d97a5`.** Every jump out makes the call
+   itself now, once per handler it leaves, with `break` and `continue` counted
+   against the loop depth each handler was entered at and `goto` refused by
+   name. The Microsoft side gained the two refusals it was missing - `break`
+   and `continue` out of a funclet, which `return` had been refused for alone.
+   What is left of it: an exception thrown *out* of a handler still leaves the
+   chain set, which wants a cleanup row rather than a statement. `tests/open/`
+   holds twelve.
 4. Everything the 09-09 handover lists that this round did not touch: the
    Microsoft virtual-base layout, `noexcept` where the function owns a region,
    a mem-initialiser needing a temporary, `-masm=gnu` as the Windows default,
