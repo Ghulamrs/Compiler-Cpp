@@ -699,10 +699,15 @@ std::vector<StmtPtr> Parser::wrapCleanups(
     // landing pad stores the runtime's pointer and selector, and the chain that
     // reads them is the `try`'s - so a pair of its own would leave the chain
     // testing a slot nothing wrote.
-    const bool intoTry = !tryChainLabel_.empty();
-    const int pointerSlot = intoTry ? tryChainPointerSlot_
-                                    : allocateFrameSlot(voidPtr);
-    const int selectorSlot = intoTry ? tryChainSelectorSlot_
+    // **And a handler's block answers with its own end-catch pad**, which is
+    // nearer than any enclosing `try`'s chain: a segment inside a handler that
+    // jumped to the chain would leave without ending the catch. `unwindTarget`
+    // is the one place that ranks the three answers.
+    int targetPtr = 0, targetSel = 0;
+    const std::string handOver = unwindTarget(&targetPtr, &targetSel);
+    const bool intoTry = !handOver.empty();
+    const int pointerSlot = intoTry ? targetPtr : allocateFrameSlot(voidPtr);
+    const int selectorSlot = intoTry ? targetSel
                                      : allocateFrameSlot(types_.intType());
     functionHasPads_ = true;
 
@@ -735,14 +740,18 @@ std::vector<StmtPtr> Parser::wrapCleanups(
                 // showed: `+o +i -i` where clang gives `+o +i -i -o`.
                 Try *seg = new Try(
                     std::move(guarded),
-                    cleanupPad(intoTry ? tryChainAliveFrom_ : aliveAtEntry,
+                    cleanupPad(handOver == tryChainLabel_ && intoTry
+                                   ? tryChainAliveFrom_ : aliveAtEntry,
                                built[k].second, pointerSlot,
-                               temps, pos,
-                               intoTry ? tryChainLabel_ : std::string()),
+                               temps, pos, handOver),
                     pointerSlot, selectorSlot, std::vector<std::string>());
                 // The types are the `try`'s and are not read yet; tryStatement
-                // patches every segment once its handlers have been.
-                if (intoTry) tryBodySegments_.push_back(seg);
+                // patches every segment once its handlers have been. **Only
+                // where the hand-over is to that `try`'s own chain**: a
+                // segment inside a *handler* hands to the end-catch pad and
+                // carries no types of its own.
+                if (intoTry && handOver == tryChainLabel_)
+                    tryBodySegments_.push_back(seg);
                 out.push_back(StmtPtr(seg));
             }
             if (stop == to) break;

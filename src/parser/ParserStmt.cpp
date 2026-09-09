@@ -1095,7 +1095,7 @@ StmtPtr Parser::block() {
         // to hand over to.
         const bool overlapping = target_.microsoftNames()
                                      ? (functionHasTry_ || inTryBody_)
-                                     : (inHandlerBody_ && tryAt.empty());
+                                     : false;
         if (overlapping)
             src_.fail(pos, target_.microsoftNames()
                 ? "a local with a destructor and a 'try' in one function is "

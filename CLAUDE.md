@@ -6801,6 +6801,28 @@ declared *before* the `try` whose handler threw: `~A` never ran, and clang's
 order is the exception object first and then that local, which is what this
 emits.
 
+### And the exclusion it lifted, which is why the region was worth building
+
+**A local with a destructor inside a `catch` handler compiles now**, on both
+Itanium targets, and it was refused for exactly the reason this region
+removes: a handler is emitted past the `try`'s range, so its block was inside
+no row - nothing to carry the `try`'s catch types on, and no chain to hand the
+selector to. The end-catch region *is* that row, and a local's destructor goes
+in the same pad, in front of the call that ends the catch. Two lines did it
+once the region existed: `wrapCleanups` asks `unwindTarget` where to hand over
+instead of asking for the enclosing `try`'s chain by name, and the refusal
+went.
+
+**Nothing else moved** - 0 of 764 emitted files, because no case in the tree
+had a local in a handler; they could not, it was refused. `local-in-handler.cpp`
+is the case, six shapes against clang: falling off the end, a `throw` past the
+local, a `return` past it, two locals with a block between them, a `continue`
+out of a handler in a loop, and a handler that throws while its local is alive
+into an enclosing `try`. **x86_64-windows keeps the refusal**, function-wide
+and for all three shapes - a cleanup there is a funclet and an FH3 state, and
+`wrapMsCleanups` has been taught none of it. `local-in-handler-refused.cpp` was
+a `.error` case and is now `local-in-handler.cpp` with an `.expected`.
+
 ### What the case covers, and the two names clang has that this does not
 
 `throw-out-of-handler.cpp` pins eight shapes against clang: a new exception out

@@ -372,17 +372,17 @@ where one object is many:
 
 ## Statements, exceptions and control
 
-- **a local with a destructor inside a `catch` handler** — **narrowed twice on
-  the two Itanium targets**, and this is what is left. A `try` in the same block
-  as the local landed 2026-09-06; a local *inside* the `try`'s body landed
-  2026-09-07, its cleanup rows carrying the `try`'s catch types and handing the
-  selector to one shared chain. A **handler** cannot do that: it is emitted past
-  the `try`'s range, so its region is inside no row — there is nothing to carry
-  types on and no chain to hand over to, and it wants a region of its own.
-  **x86_64-windows keeps the whole refusal**, body and handler alike: a cleanup
-  is a funclet and an FH3 state there, and `wrapMsCleanups` has not been taught
-  either trick. `src/parser/ParserStmt.cpp:755`,
-  `src/parser/ParserStmt.cpp:1018`, `src/parser/ParserStmt.cpp:1712`
+- **a local with a destructor and a `try` in one function, on x86_64-windows
+  only** — **the Itanium half is gone as of 2026-09-09**, in three steps: a
+  `try` in the same block as the local landed 2026-09-06; a local *inside* the
+  `try`'s body landed 2026-09-07, its cleanup rows carrying the `try`'s catch
+  types and handing the selector to one shared chain; and a local inside a
+  **handler** landed with the end-catch region, which gave a handler's block
+  the row it had been missing — the same region a `throw` out of a handler
+  needs, and a local's destructor goes in it. What is left is Microsoft's: a
+  cleanup there is a funclet and an FH3 state rather than a row in a list, and
+  `wrapMsCleanups` has been taught none of the three tricks.
+  `src/parser/ParserStmt.cpp:755`, `src/parser/ParserStmt.cpp:1097`
 - **a `goto` that leaves a `catch` handler** — [except.handle]/16 ends the
   handling on the way out and the call that ends it is `__cxa_end_catch`, which
   a jump has to make where it is written. A forward label has not been read
