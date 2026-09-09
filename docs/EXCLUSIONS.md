@@ -383,6 +383,13 @@ where one object is many:
   is a funclet and an FH3 state there, and `wrapMsCleanups` has not been taught
   either trick. `src/parser/ParserStmt.cpp:755`,
   `src/parser/ParserStmt.cpp:1018`, `src/parser/ParserStmt.cpp:1712`
+- **a `goto` that leaves a `catch` handler** — [except.handle]/16 ends the
+  handling on the way out and the call that ends it is `__cxa_end_catch`, which
+  a jump has to make where it is written. A forward label has not been read
+  there: `resolveGotos` fills the jump's cleanups afterwards, and by then the
+  statement is built. `return`, `break` and `continue` out of a handler all
+  work, and so does a `goto` to a label the handler itself declares.
+  `src/parser/ParserStmt.cpp:1930`
 - **a class declared in the condition of a `while`** — [stmt.iter]/2 builds it
   afresh on every turn and destroys it at the end of each one, and the
   construction would have to be written where the test is. A scalar works, and
@@ -536,9 +543,13 @@ guessed wrong twice.
 
 ## Refused for one target only
 
-- **`return` inside a `catch` on x86_64-windows** — a handler is a funclet
-  there, so leaving one early is a return of the address to carry on at.
-  `src/parser/ParserStmt.cpp:1475`
+- **`return`, `break` or `continue` that leaves a `catch` on x86_64-windows** —
+  a handler is a funclet there, so leaving one early is a return of the address
+  to carry on at, in the register a return value would travel in. All three are
+  the one refusal wearing three hats; a `break` or `continue` whose loop is
+  *inside* the handler leaves no funclet and is not refused.
+  `src/parser/ParserStmt.cpp:1587`, `src/parser/ParserStmt.cpp:1964`,
+  `src/parser/ParserStmt.cpp:1980`
 - **a virtual function overridden from a base that is not the first, on the
   Microsoft ABI** — cl compiles such an override against a biased `this` where
   Itanium puts a thunk in front, so this is a difference in code generation

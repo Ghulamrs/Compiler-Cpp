@@ -909,7 +909,8 @@ private:
     // the way out is everything built since.
     std::vector<std::size_t> loopMarks_;
     std::vector<std::size_t> breakMarks_;
-    StmtPtr jumpLeaving(StmtPtr jump, std::size_t mark, std::size_t pos);
+    StmtPtr jumpLeaving(StmtPtr jump, std::size_t mark, std::size_t pos,
+                      int endsCatches);
     std::vector<LabelDef> labels_;
     std::vector<LabelDef> gotos_;
 
@@ -1118,6 +1119,9 @@ private:
         std::vector<SwitchCtx> switches;
         std::vector<std::size_t> breakMarks;
         bool inTryBody = false, inMsHandler = false, inHandlerBody = false;
+        int handlerDepth = 0;
+        std::vector<int> handlerLoopDepth, handlerSwitchDepth;
+        std::vector<std::size_t> handlerFrom;
         int mayThrow = 0;
         bool conditionDecl = false;
         std::string conditionName;
@@ -1543,6 +1547,30 @@ private:
     // after the try's row and before it in address order - which the linear
     // scan cannot express - so an object there is refused rather than lost.
     bool inHandlerBody_ = false;
+    // **How many Itanium handlers the statement being parsed is inside**, and
+    // the loop and switch depth each of them was entered at.
+    // [except.handle]/16: leaving a handler by `return`, `break`, `continue`
+    // or `goto` ends the handling, and what ends it is `__cxa_end_catch` -
+    // which is appended *after* the handler's block, so only falling off its
+    // end ever reached it. A jump has to make the call itself, once per
+    // handler it leaves, and the two depths are what say how many that is: a
+    // `break` leaves a handler exactly when the loop or switch it is breaking
+    // out of was entered before that handler was. Cleared with the rest of a
+    // function's state, so a lambda written inside a handler does not end its
+    // enclosing catch when its own body returns.
+    int handlerDepth_ = 0;
+    std::vector<int> handlerLoopDepth_;
+    std::vector<int> handlerSwitchDepth_;
+    // Where each open handler's block begins, which is how a `goto` is told
+    // from a jump that stays inside the handler: a label declared after this
+    // is one of the handler's own.
+    std::vector<std::size_t> handlerFrom_;
+    // The `__cxa_end_catch` calls a jump out of `count` handlers has to make,
+    // appended after whatever destructors that jump already runs.
+    void endCatches(std::vector<StmtPtr> &into, int count);
+    // How many handlers a `break` or a `continue` here leaves.
+    int handlersLeftByBreak() const;
+    int handlersLeftByContinue() const;
     // Set when this function has a landing pad, so its prologue names the
     // personality routine and the table.
     bool functionHasPads_ = false;

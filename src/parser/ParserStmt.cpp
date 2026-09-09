@@ -892,9 +892,51 @@ std::vector<Parser::JumpGuard> Parser::jumpGuards() const {
 // A jump that leaves a scope destroys what the scope built, innermost first, before it
 // goes - the calls the scope's end would have made, made here instead. [stmt.jump]/2.
 // `break` and `continue` destroy everything built since their loop was entered.
-StmtPtr Parser::jumpLeaving(StmtPtr jump, std::size_t mark, std::size_t pos) {
+// **[except.handle]/16: leaving a handler ends the handling**, and on Itanium
+// what ends it is `__cxa_end_catch` - the call that pops the caught-exception
+// chain and destroys the exception object. It is appended after the handler's
+// block, so falling off the end reaches it and every jump out did not: the
+// object was never destroyed and the chain was left set. One call per handler
+// left, innermost first, which is the order the runtime's stack of them wants.
+void Parser::endCatches(std::vector<StmtPtr> &into, int count) {
+    // **Nothing to call on the Microsoft ABI**: a handler there is a funclet
+    // and the runtime ends the catch when it returns, so the counts this asks
+    // for are used only to refuse the jumps that would leave one early.
+    if (target_.microsoftNames()) return;
+    for (int i = 0; i < count; i++)
+        into.push_back(StmtPtr(new ExprStmt(
+            runtimeCall("__cxa_end_catch", types_.get(Kind::Void),
+                        std::vector<ExprPtr>()))));
+}
+
+// **A `break` leaves a handler exactly when the loop or switch it breaks out
+// of was entered before that handler was.** Handlers nest, so the ones left
+// are a run from the innermost outwards: the first that owns a loop of its own
+// stops the count, and nothing further out can be left by this jump either.
+int Parser::handlersLeftByBreak() const {
+    int left = 0;
+    for (std::size_t i = handlerLoopDepth_.size(); i-- > 0; ) {
+        if (loopDepth_ != handlerLoopDepth_[i] ||
+            switchDepth_ != handlerSwitchDepth_[i]) break;
+        left++;
+    }
+    return left;
+}
+
+int Parser::handlersLeftByContinue() const {
+    int left = 0;
+    for (std::size_t i = handlerLoopDepth_.size(); i-- > 0; ) {
+        if (loopDepth_ != handlerLoopDepth_[i]) break;
+        left++;
+    }
+    return left;
+}
+
+StmtPtr Parser::jumpLeaving(StmtPtr jump, std::size_t mark, std::size_t pos,
+                            int endsCatches) {
     std::vector<StmtPtr> steps;
     emitDestructors(steps, mark, pos);
+    endCatches(steps, endsCatches);
     if (steps.empty()) return jump;
     steps.push_back(std::move(jump));
     Block *b = new Block(std::move(steps));
@@ -1267,7 +1309,20 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
             const bool wasBody = inHandlerBody_;
             inMsHandler_ = true;
             inHandlerBody_ = true;
+            // **The same bookkeeping, for the opposite purpose.** This ABI ends
+            // the catch by returning from the funclet, so there is no call to
+            // make - but a jump that leaves the funclet early is the thing
+            // `return` is already refused for here, and the counts are how
+            // `break` and `continue` are told from the ones that stay inside.
+            handlerDepth_++;
+            handlerLoopDepth_.push_back(loopDepth_);
+            handlerSwitchDepth_.push_back(switchDepth_);
+            handlerFrom_.push_back(peek().pos);
             mh.body = block();
+            handlerFrom_.pop_back();
+            handlerSwitchDepth_.pop_back();
+            handlerLoopDepth_.pop_back();
+            handlerDepth_--;
             inMsHandler_ = wasInHandler;
             inHandlerBody_ = wasBody;
             leaveScope();
@@ -1316,9 +1371,21 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         if (!peek().is("{")) src_.fail(peek().pos, "'catch' takes a block");
         const bool wasBody = inHandlerBody_;
         inHandlerBody_ = true;
+        // **What a jump out of this handler has to end**, and where the loops
+        // around it stood when it was entered - see endCatches().
+        handlerDepth_++;
+        handlerLoopDepth_.push_back(loopDepth_);
+        handlerSwitchDepth_.push_back(switchDepth_);
+        handlerFrom_.push_back(peek().pos);
         steps.push_back(block());
+        handlerFrom_.pop_back();
+        handlerSwitchDepth_.pop_back();
+        handlerLoopDepth_.pop_back();
+        handlerDepth_--;
         inHandlerBody_ = wasBody;
 
+        // Falling off the end of the block, which is the way out that always
+        // reached this call; every other way out makes it for itself now.
         ExprPtr ended = runtimeCall("__cxa_end_catch", types_.get(Kind::Void),
                                     std::vector<ExprPtr>());
         steps.push_back(StmtPtr(new ExprStmt(std::move(ended))));
@@ -1529,9 +1596,10 @@ StmtPtr Parser::statementBody() {
                 src_.fail(pos, "this function returns '" + returnType_->describe() +
                                "', so 'return' needs a value - a bare 'return' is "
                                "only for a function returning 'void'");
-            if (!alive_.empty()) {
+            if (!alive_.empty() || handlerDepth_ > 0) {
                 std::vector<StmtPtr> unwind;
                 emitDestructors(unwind, 0, pos);
+                endCatches(unwind, handlerDepth_);
                 unwind.push_back(StmtPtr(new Return(nullptr)));
                 return StmtPtr(new Block(std::move(unwind)));
             }
@@ -1684,10 +1752,23 @@ StmtPtr Parser::statementBody() {
             if (const Var *v = dynamic_cast<const Var *>(value.get()))
                 if (v->isLocal()) elided = v->offset();
 
-        if (!alive_.empty()) {
+        if (!alive_.empty() || handlerDepth_ > 0) {
             std::vector<StmtPtr> unwind;
             for (std::size_t i = 0; i < before.size(); i++)
                 unwind.push_back(std::move(before[i]));
+            // **A void function returning a void expression has nothing to
+            // save**, and asking for a frame slot of `void` is the wrong
+            // question. It only arrives here at all because a handler is open.
+            if (returnType_->isVoid()) {
+                unwind.push_back(StmtPtr(new ExprStmt(std::move(value))));
+                emitDestructors(unwind, 0, pos, elided);
+                endCatches(unwind, handlerDepth_);
+                unwind.push_back(StmtPtr(new Return(nullptr)));
+                return StmtPtr(new Block(std::move(unwind)));
+            }
+            // **The value is computed into a slot before the catch ends**, and
+            // that is not only tidiness: `return e.v;` reads the caught object,
+            // which `__cxa_end_catch` destroys.
             int slot = allocateFrameSlot(returnType_);
             std::string temp = ".ret" + std::to_string(refTemps_++);
 
@@ -1698,6 +1779,7 @@ StmtPtr Parser::statementBody() {
             unwind.push_back(StmtPtr(new ExprStmt(std::move(save))));
 
             emitDestructors(unwind, 0, pos, elided);
+            endCatches(unwind, handlerDepth_);
 
             ExprPtr give(Var::local(temp, slot));
             give->setType(returnType_);
@@ -1832,6 +1914,27 @@ StmtPtr Parser::statementBody() {
         std::size_t pos = peek().pos;
         std::string name = expectIdent("a label to jump to");
         expect(";");
+        // **A `goto` out of a handler ends the handling** - [except.handle]/16,
+        // the same sentence `return`, `break` and `continue` answer above - and
+        // this one cannot: a forward label has not been read, so `resolveGotos`
+        // fills the cleanups afterwards and there is nowhere to put the
+        // `__cxa_end_catch` at the point the decision is made. A label already
+        // seen *inside* this handler is a jump that stays in it and needs
+        // none, which is the case that keeps working.
+        if (handlerDepth_ > 0) {
+            bool insideHandler = false;
+            for (std::size_t i = 0; i < labels_.size(); i++)
+                if (labels_[i].name == name && labels_[i].pos >= handlerFrom_.back())
+                    insideHandler = true;
+            if (!insideHandler)
+                src_.fail(pos, "'goto " + name + "' leaves a 'catch' block, "
+                               "which is not supported yet - leaving a handler "
+                               "ends the handling, and the call that ends it "
+                               "is emitted where the jump is written, which a "
+                               "label this compiler has not read yet cannot "
+                               "have. A 'return' out of a handler works, and "
+                               "so does a 'goto' to a label inside it");
+        }
         // **The jump destroys what it leaves, and cannot yet know what that is**: a
         // forward label has not been read. So the goto is placed behind an empty block
         // that resolveGotos() fills. What is alive here is copied now, not later.
@@ -1857,7 +1960,14 @@ StmtPtr Parser::statementBody() {
         if (loopDepth_ == 0 && switchDepth_ == 0)
             src_.fail(pos, "'break' is not inside a loop or a switch");
         expect(";");
-        return jumpLeaving(StmtPtr(new Break()), breakMarks_.back(), pos);
+        if (target_.microsoftNames() && handlersLeftByBreak() > 0)
+            src_.fail(pos, "'break' out of a 'catch' block is not supported "
+                           "yet for x86_64-windows - a handler is compiled as "
+                           "a function of its own there, and leaving it early "
+                           "means handing back the address to carry on at, "
+                           "which is what 'return' is refused for here too");
+        return jumpLeaving(StmtPtr(new Break()), breakMarks_.back(), pos,
+                           handlersLeftByBreak());
     }
 
     if (peek().is("continue")) {
@@ -1866,7 +1976,14 @@ StmtPtr Parser::statementBody() {
         if (loopDepth_ == 0)
             src_.fail(pos, "'continue' is not inside a loop");
         expect(";");
-        return jumpLeaving(StmtPtr(new Continue()), loopMarks_.back(), pos);
+        if (target_.microsoftNames() && handlersLeftByContinue() > 0)
+            src_.fail(pos, "'continue' out of a 'catch' block is not supported "
+                           "yet for x86_64-windows - a handler is compiled as "
+                           "a function of its own there, and leaving it early "
+                           "means handing back the address to carry on at, "
+                           "which is what 'return' is refused for here too");
+        return jumpLeaving(StmtPtr(new Continue()), loopMarks_.back(), pos,
+                           handlersLeftByContinue());
     }
     if (peek().is("{")) return block();
     if (consume(";")) return StmtPtr(new Block({}));

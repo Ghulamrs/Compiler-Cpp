@@ -560,6 +560,10 @@ Parser::FunctionState Parser::captureFunctionState() const {
     s.inTryBody = inTryBody_;
     s.inMsHandler = inMsHandler_;
     s.inHandlerBody = inHandlerBody_;
+    s.handlerDepth = handlerDepth_;
+    s.handlerLoopDepth = handlerLoopDepth_;
+    s.handlerSwitchDepth = handlerSwitchDepth_;
+    s.handlerFrom = handlerFrom_;
     s.mayThrow = mayThrow_;
     s.conditionDecl = conditionDecl_;
     s.conditionName = conditionName_;
@@ -607,6 +611,10 @@ void Parser::restoreFunctionState(const FunctionState &s) {
     inTryBody_ = s.inTryBody;
     inMsHandler_ = s.inMsHandler;
     inHandlerBody_ = s.inHandlerBody;
+    handlerDepth_ = s.handlerDepth;
+    handlerLoopDepth_ = s.handlerLoopDepth;
+    handlerSwitchDepth_ = s.handlerSwitchDepth;
+    handlerFrom_ = s.handlerFrom;
     mayThrow_ = s.mayThrow;
     conditionDecl_ = s.conditionDecl;
     conditionName_ = s.conditionName;
@@ -654,6 +662,10 @@ void Parser::clearFunctionState() {
     inTryBody_ = false;
     inMsHandler_ = false;
     inHandlerBody_ = false;
+    handlerDepth_ = 0;
+    handlerLoopDepth_.clear();
+    handlerSwitchDepth_.clear();
+    handlerFrom_.clear();
     mayThrow_ = 0;
     conditionDecl_ = false;
     conditionName_.clear();

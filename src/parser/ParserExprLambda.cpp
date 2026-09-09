@@ -69,6 +69,15 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     functionTypes_.clear();
     inTryBody_ = false;
     inMsHandler_ = false;
+    // **A lambda's body is a different function**, so a `return` in it ends no
+    // catch of the function around it - [except.handle]/16 is about leaving
+    // the *handler*, and this body is left through a call. `inHandlerBody_` is
+    // not cleared here on purpose: it says a cleanup region cannot be
+    // expressed at this point in the enclosing function, which is still true.
+    handlerDepth_ = 0;
+    handlerLoopDepth_.clear();
+    handlerSwitchDepth_.clear();
+    handlerFrom_.clear();
     mayThrow_ = 0;
     loopDepth_ = 0;
     switchDepth_ = 0;

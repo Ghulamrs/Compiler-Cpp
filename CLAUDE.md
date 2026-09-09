@@ -6680,6 +6680,78 @@ specialization cannot pass its base an argument, which is why the case's
 polymorphism is exercised through a reference to `P<int>` rather than through a
 derived class.
 
+## Every way out of a handler ends the catch, and only one of them did
+
+**Fixed 2026-09-09**, the third entry `tests/open/` closed and the last of the
+three raised that morning. `__cxa_end_catch` - the call that pops the runtime's
+caught-exception chain and destroys the exception object - was appended *after*
+the handler's block, so **falling off the end was the only way out that made
+it.** `catch (E &e) { return e.v; }` branched straight to the return with the
+chain still set and the object never destroyed: one leaked exception object per
+call, the right answer printed, and nothing in stdout to see it by.
+
+```
+cxx1   built=2 gone=1 live=1        clang   built=1 gone=1 live=0
+```
+
+**A jump makes the call itself now, once per handler it leaves**, and the count
+is the whole of the design. `handlerDepth_` says how many handlers the
+statement is inside; two vectors beside it say what the loop and switch depth
+were when each was entered, which is what tells a `break` that leaves a handler
+from one that does not:
+
+| | |
+| --- | --- |
+| `return` | leaves every open handler - `handlerDepth_` of them |
+| `break`, `continue` | leaves the run of handlers entered *after* the loop or switch being left, counted from the innermost out |
+| a loop inside the handler | leaves none, and gets no call |
+| `goto` | refused, and the reason is below |
+
+**The value is saved before the catch ends, and that is not tidiness.**
+`return e.v;` reads the caught object, which `__cxa_end_catch` destroys - so the
+returned value goes into a frame slot, then the destructors run, then the
+catches end, then the frame slot is returned. The path that did that already
+existed for a function that owes destructors; it is now also taken when a
+handler is open.
+
+**Order within it: locals first, exception object after.** [except.handle]/16
+destroys the handler's own objects on the way out and the exception object when
+the handling ends, so `emitDestructors` runs and `endCatches` follows it.
+`catch (E e)` - by value - is the shape that shows it, and both compilers report
+the same two objects and two destructions there, elision having nothing to take.
+
+### `goto` is refused, and the reason is where the decision is made
+
+A forward label has not been read when the `goto` is parsed: `resolveGotos`
+fills the jump's cleanup block afterwards, by which time the statement is
+built and there is nowhere to put the call. So a `goto` that leaves a handler
+is **refused by name** rather than left to leak, and a `goto` to a label the
+handler itself declares - which leaves nothing - still compiles. The test for
+"inside this handler" is the label's own position against the handler's first
+token.
+
+### The Microsoft side keeps the counters and uses them to refuse
+
+There is no `__cxa_end_catch` on that ABI: a handler is a funclet and the
+runtime ends the catch when it returns. `return` inside one was already refused
+there - leaving a funclet early means handing back the address to carry on at,
+in the register a return value would travel in - and **`break` and `continue`
+out of one were not, though they are the same jump**. They are now, by the same
+counters, and a `break` whose loop is inside the handler is still allowed. That
+hole was invisible until the counters existed to see it.
+
+### What this does not fix
+
+**An exception thrown *out* of a handler still does not end the catch**: the
+region around the handler has no cleanup that calls `__cxa_end_catch`, so a
+`throw` from inside one leaves the chain set. Every jump this section is about
+is a jump the parser writes; that one is the unwinder's path and wants a
+cleanup row, which is the same work `noexcept` over a body wanted. Also
+recorded, from `names.sh` on the new case: cxx1 emits neither
+`__cxa_free_exception` - clang's cleanup for a throw whose object's own
+constructor throws - nor `__cxa_get_exception_ptr`, which the ABI asks for
+before `__cxa_begin_catch` when a by-value parameter is copy-initialised.
+
 ## A frame that skipped the guard page, and two wrong answers before it
 
 **Fixed 2026-09-06.** `matrix_main.cpp` of the C++ Vector Exercise died on
