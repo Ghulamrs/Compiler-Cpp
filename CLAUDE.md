@@ -6463,6 +6463,76 @@ recorded in `docs/CONFORMANCE.md`, it is R1's neighbour rather than part of it,
 and reversing that order changes how every unqualified name in a namespace
 resolves - which wants a round of its own.
 
+## V-09, the finding with no root, and the register that holds the tail now
+
+**One of the nine hand-verified findings in `docs/audit-2026-09-06.html` carries
+no `Root:` line**, and that is how it outlived the round that closed the other
+eight. R1 to R5 each name their findings; V-09 names a source line and nothing
+else, so it belonged to no root, was not in the tail either, and the table above
+never mentioned it. Fixed 2026-09-09, three days after the rest.
+
+**[expr.prim.lambda]/18: the captured `this` has the type it has in the
+enclosing function.** In a const member function that is `const S *`, and cxx1
+captured the unqualified class - so a const member function could write its own
+object through a lambda, and call its own non-const members, with no
+diagnostic. Both halves were needed and either alone leaves the hole open:
+
+- the capture takes the type `this` has here, which `findLocal("this")` already
+  carries - `pointerTo(withConst(memberOf))` is what `topLevel` gave it - rather
+  than `pointerTo(currentClass_)`;
+- and the member reached through that pointer inherits its const, which is the
+  same two-exception rule the `.`, `->` and implicit paths follow and this one
+  path did not: a reference member and a `mutable` one are unaffected.
+
+`insideAccessOf` compares the recorded class by pointer, so it asks for the
+`unqualified()` one now - a const-qualified `Type *` is a different pointer, and
+without that line a lambda in a const member function loses the access its
+enclosing function has.
+
+**Six of 991 emitted files changed, all three of them one case.** The case is
+`lookup-order`, on the const-member path this fixes, and the whole diff is one
+redundant sign-extension leaving - `sxtw x0, w0` after an `ldrsw` that has
+already done it. Measured the way this file asks: golden recorded at HEAD, the
+fix applied, the suite re-run.
+
+Six shapes are measured against clang and agree: reading a member and calling a
+const member from a const function's lambda, writing a `mutable` member from
+one, writing an ordinary member from a lambda in a non-const function, and the
+two that must now be refused. `tests/cases/lambda-capture-this-const.cpp` holds
+the first four, and the refusals are their own cases, one per rule.
+
+### And the tail is a directory rather than a paragraph
+
+The section above says the tail - fourteen refusals of ordinary code,
+twenty-seven over-acceptances, the `_ZTS` failure - was not worked item by item
+and should be re-measured rather than assumed closed. Fifteen of those shapes
+were re-measured on 2026-09-09 at `48f28a3`, one program each. **All fifteen
+still reproduced**, so nothing in the tail went with the roots; V-09 was the
+fifteenth and is the one now fixed.
+
+The other fourteen are `tests/open/`, and `tests/open.sh` runs them against a
+recorded clang answer and **gates on nothing**, the way `tests/corpus.sh` does.
+The reason it cannot gate is the reason the tail was invisible in the first
+place: a known wrong answer put in `tests/cases` turns three boxes red until
+somebody mends it, and one written down only in prose is a claim
+`tools/exclusions` cannot see and no run will ever print. A third place, which
+is counted, is the answer to both.
+
+**A closed entry does not stay there.** When cxx1 starts agreeing with the
+`.clang` file beside a program, `open.sh` names it and says to move it into
+`tests/cases` with its `.expected` or `.error`; a register that keeps its
+mended entries stops being a list of what is wrong.
+
+Two of the fourteen are worth knowing by name. `int z(5);` - parenthesised
+direct-init of a scalar - is refused, and this tree's own `include/utility`
+writes it, so `std::swap` on two `int`s fails *inside the header*. And
+`catch-return-end-catch.cpp` is the one that needs the ledger rather than a
+trace: leaving a handler by `return` never calls `__cxa_end_catch`, so the
+exception object is never destroyed - cxx1 prints `built=2 gone=1 live=1` where
+clang prints `built=1 gone=1 live=0`, with **identical output above the ledger
+line**. That is the register's own rule about elision, and the argument for
+`tests/cases/lifetime.h` made a second time.
+
 ## A frame that skipped the guard page, and two wrong answers before it
 
 **Fixed 2026-09-06.** `matrix_main.cpp` of the C++ Vector Exercise died on

@@ -198,9 +198,17 @@ ExprPtr Parser::lambdaExpression() {
                 src_.fail(peek().pos, "'[this]' is only inside a member "
                                       "function, and this lambda is not in one");
             at_++;
+            // **The captured pointer has the type `this` has here** -
+            // [expr.prim.lambda]/18. In a const member function that is
+            // `const S *`, and the unqualified class let one write through it.
+            const Local *enclosingThis = findLocal("this");
+            const Type *from = currentClass_;
+            if (enclosingThis != nullptr &&
+                enclosingThis->type->pointee() != nullptr)
+                from = enclosingThis->type->pointee();
             capNames.push_back(capturedThis());
-            capTypes.push_back(types_.pointerTo(currentClass_));
-            capturedThisFrom = currentClass_;
+            capTypes.push_back(types_.pointerTo(from));
+            capturedThisFrom = from;
             if (!peek().is("]")) expect(",");
             continue;
         }

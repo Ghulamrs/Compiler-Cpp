@@ -1,0 +1,39 @@
+Programs this compiler answers differently from clang, kept as programs.
+
+Every file here is a known wrong answer, so nothing in this directory gates
+anything: `tests/open.sh` counts and always exits 0. That is the point of the
+directory rather than a weakness of it. A defect put in tests/cases turns the
+three boxes red until somebody mends it, and a defect written down only in
+prose is one `tools/exclusions` cannot see and no run will ever mention - which
+is how the tail of docs/audit-2026-09-06.html came to sit unworked underneath
+four green suites for three days. This is the third place.
+
+Each program carries a `<name>.clang` holding the oracle's answer: `REFUSE` on
+a line of its own, or `ACCEPT` followed by the exact stdout, recorded with
+
+    clang++ -x c++ -std=c++11 -pedantic-errors
+
+A case is closed when cxx1 agrees with that file, and open.sh says so by name.
+**A closed case does not belong here.** Move it to tests/cases with its
+.expected or .error, where the suites will hold it from then on, and delete it
+from this directory - a register that keeps its fixed entries stops being a
+list of what is wrong.
+
+Two rules about what may be added:
+
+  - it must be a shape somebody writes. A defect nobody can reach is a note for
+    docs/CONFORMANCE.md, not a program here.
+  - where the defect is a leak, a double destroy, or a destructor on a slot
+    nothing built, count objects with ../cases/lifetime.h and print the ledger.
+    C++11 permits elision, so a constructor trace differs legitimately between
+    two conforming compilers and only the balance says anything. See
+    catch-return-end-catch.cpp, where cxx1 prints built=2 gone=1 live=1 and
+    clang built=1 gone=1 live=0: the same program, one leaked exception object,
+    and identical output above the ledger line.
+
+The fourteen here were re-measured on 2026-09-09 at 48f28a3, one program each,
+from the tail of docs/audit-2026-09-06.html that the five roots did not cover -
+the fourteen refusals of ordinary code, the twenty-seven over-acceptances and
+the _ZTS assembler failure, none of which went with the roots. That report says
+its own programs live in the reviewers' scratch directories; these are in the
+repository, which is the difference between a finding and a test.

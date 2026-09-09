@@ -15,6 +15,12 @@ fi
 
 pass=0; fail=0
 for src in tests/cases/*.cpp; do
+    # The `name 2.cpp` copies macOS leaves in this directory are not cases:
+    # each is a duplicate whose markers are duplicated too, so it is compared
+    # against an oracle for a file of another name and reported as a
+    # difference. tools/verify-three excludes them at both ends and emit.sh
+    # ignores them in the golden; this suite enumerated them.
+    case "$(basename "$src")" in *" "[0-9]*) continue;; esac
     base=$(basename "$src" .cpp)
     [ -f "tests/cases/$base.error" ] && continue
 

@@ -719,7 +719,8 @@ bool Parser::insideAccessOf(const Type *cls, Access access) const {
         return true;
     std::map<std::string, const Type *>::const_iterator outer =
         closureOuter_.find(currentClass_->unqualified()->tag());
-    return outer != closureOuter_.end() && outer->second == want;
+    return outer != closureOuter_.end() &&
+           outer->second->unqualified() == want;
 }
 
 bool Parser::accessibleFrom(const Type *from, const Type *owner,

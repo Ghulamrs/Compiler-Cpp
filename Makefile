@@ -90,7 +90,7 @@ BINDIR  ?= .
 # suffix that changes by platform is one more thing a script has to know.
 TARGET   = $(BINDIR)/cxx1.exe
 
-.PHONY: all test golden corpus clean help
+.PHONY: all test golden corpus open clean help
 
 all: $(TARGET)
 
@@ -130,6 +130,7 @@ help:
 	@echo "make test       build and run the four suites"
 	@echo "make golden     record what emit.sh emits now, to compare a change against"
 	@echo "make corpus     run the 424 inherited C cases; gates nothing"
+	@echo "make open       run the register of known-open defects; gates nothing"
 	@echo "make clean"
 	@echo ""
 	@echo "cxx1 emits assembly for x86_64-linux, x86_64-windows and"
@@ -146,9 +147,15 @@ golden: $(TARGET)
 corpus: $(TARGET)
 	@./tests/corpus.sh
 
+# The register of known-open defects. Not part of `make test` either, and for a
+# sharper reason: every program in it is a wrong answer, so it would be red by
+# construction. It says how many still differ from clang - see tests/open/README.
+open: $(TARGET)
+	@./tests/open.sh
+
 clean:
 	rm -rf $(OBJDIR) $(TARGET)
-	rm -rf tests/out-run tests/out-emit tests/out-corpus
+	rm -rf tests/out-run tests/out-emit tests/out-corpus tests/out-open
 # **tests/out-emit.golden is deliberately not on that line**, and this is the
 # exception the rule below is otherwise right about: a golden is recorded before
 # a change and read after one, with a rebuild in between, so a clean that took it

@@ -1378,7 +1378,12 @@ ExprPtr Parser::primary(Program *program) {
                     ExprPtr acc(new MemberAccess(std::move(obj), name,
                                                  om->offset, om->width,
                                                  om->bitOffset));
-                    acc->setType(om->type);
+                    // The same two rules the three ordinary member paths
+                    // follow, which this one did not: a const object reaches
+                    // its members as const, a reference or `mutable` apart.
+                    acc->setType(of->isConst() && !om->type->isReference() &&
+                                 !om->isMutable
+                                     ? types_.withConst(om->type) : om->type);
                     return useReference(std::move(acc));
                 }
             }
