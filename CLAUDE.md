@@ -7006,6 +7006,36 @@ be a guess about which class it came from.
 **Nothing emitted moved** - 0 of 772 files - because every one of these is a
 program that now stops at the front end.
 
+## A two-dimensional array member, built twice over its first row
+
+**Fixed 2026-09-09**, and it was the only *miscompile* in `tests/open/` - the
+rest of that register was refusals of legal code and acceptances of illegal.
+`struct H { E g[2][3]; };` constructed **two** objects where [class.base.init]/8
+asks for six, and the four it skipped began life holding the frame:
+
+```
+cxx1   + + | 1            clang   + + + + + + | 1
+```
+
+**Three walks had the same line and the same mistake** - the one that builds an
+array member, the one that copies or assigns it, and the one that destroys it.
+Each took `mt->length()` for a count and `mt->pointee()` for an element, which
+for `E[2][3]` is *two* and `E[3]`: two constructor calls, stepping by the size
+of a **row**, so both landed inside the first row. The copy copied two rows'
+worth of bytes as two elements and the destructor destroyed two.
+
+**A local array of the same type was right the whole time.**
+`constructLocalArray` multiplies every dimension, which is what made this look
+like a class problem rather than an array one. `memberElements` is that walk
+written once, and the three sites read it.
+
+**No emitted file moved** - 0 of 775 - which is the measurement that says why
+this survived: **no case in the tree had a multi-dimensional array member.**
+`array-member-dimensions.cpp` has four now, and counts them: a `[2][3]`, a
+`[2][2][2]`, a class mixing a scalar with a single, a row and a grid, and a
+scalar `int[2][3]` with nothing to build. Both compilers report **42 objects
+built and 42 destroyed**, so what agrees is the count and not only the balance.
+
 ## A frame that skipped the guard page, and two wrong answers before it
 
 **Fixed 2026-09-06.** `matrix_main.cpp` of the C++ Vector Exercise died on

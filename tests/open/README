@@ -31,7 +31,7 @@ Two rules about what may be added:
     clang built=1 gone=1 live=0: the same program, one leaked exception object,
     and identical output above the ledger line.
 
-Six are here now, and both halves of that number are the point. **Five of
+Five are here now, and both halves of that number are the point. **Five of
 the original fourteen have been mended and moved out** with their .expected,
 which is the movement the rule above asks for: capture-default-this,
 polymorphic-class-template-zts, catch-return-end-catch, and then
@@ -41,7 +41,8 @@ lambda-return-through-try and catch-copy-throws. And **six over-acceptances
 went in one round** - auto-two-declarators, const-member-default-init,
 constructor-return-type, duplicate-data-member, member-pointer-const-object and
 operator-plus-int-int - each becoming a refusal case in tests/cases with the
-legal shape beside it in refusals-that-must-not-fire.cpp. A register that only ever
+legal shape beside it in refusals-that-must-not-fire.cpp. two-d-array-member,
+the only *miscompile* the register ever held, went with them. A register that only ever
 grows is a list of complaints, and one that only ever shrinks is finished.
 
 The original fourteen were re-measured on 2026-09-09 at 48f28a3, one program each,

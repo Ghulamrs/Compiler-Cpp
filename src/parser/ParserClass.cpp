@@ -1391,6 +1391,28 @@ void Parser::declareConstructor(const std::string &cls, std::size_t pos,
     pendingNoexcept_ = false;
 }
 
+// **How many objects a member array holds, and of what type.** Every dimension
+// counts: `E g[2][3]` is six elements of `E`, not two of `E[3]`, and
+// [class.base.init]/8 default-initialises every one of them. The three walks
+// that build, copy and destroy an array member each took `length()` and one
+// `pointee()` - so a two-dimensional member had its outer length for a count
+// and its *row* for an element, and the constructor ran twice over the first
+// row while four objects were left holding the frame. `constructLocalArray`
+// flattens correctly, which is why a local `E a[2][3]` was right and a member
+// of the same type was not.
+//
+// `*count` comes back -1 where a dimension has no length, which is what the
+// callers already refuse by name.
+static const Type *memberElements(const Type *t, long long *count) {
+    *count = 1;
+    while (t != nullptr && t->isArray()) {
+        if (t->length() < 0) { *count = -1; return t->pointee(); }
+        *count *= t->length();
+        t = t->pointee();
+    }
+    return t;
+}
+
 // The class a member is built from: the element type when the member is an
 // array, and nothing at all when it is not of class type.
 static const Type *memberClass(const Type *t) {
@@ -1758,7 +1780,8 @@ std::vector<StmtPtr> Parser::memberDestructors(const std::string &cls,
         if (memberFromBase(type, ms[n])) continue;
 
         const Type *mt = ms[n].type;
-        const Type *elem = mt->isArray() ? mt->pointee() : mt;
+        long long elemCount = 1;
+        const Type *elem = mt->isArray() ? memberElements(mt, &elemCount) : mt;
         const Signature *dtor = destructorOf(memberClass(mt));
         if (dtor == nullptr) continue;
         if (dtor->access != Access::Public)
@@ -1772,7 +1795,7 @@ std::vector<StmtPtr> Parser::memberDestructors(const std::string &cls,
         int indexSlot = 0;
         long long count = 0;
         if (mt->isArray()) {
-            count = mt->length();
+            count = elemCount;
             if (count < 0)
                 src_.fail(pos, "'" + cls + "::" + ms[n].name + "' has no length, "
                                "so the destructor the compiler would write does "
@@ -2328,7 +2351,8 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
         if (done) continue;
 
         const Type *mt = ms[i].type;
-        const Type *elem = mt->isArray() ? mt->pointee() : mt;
+        long long elemCount = 1;
+        const Type *elem = mt->isArray() ? memberElements(mt, &elemCount) : mt;
         const Signature *cc = nullptr;
         if (assigning) cc = copyAssignOf(memberClass(mt));
         else {
@@ -2349,7 +2373,7 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
         int indexSlot = 0;
         long long count = 0;
         if (mt->isArray()) {
-            count = mt->length();
+            count = elemCount;
             if (count < 0)
                 src_.fail(pos, "'" + cls + "::" + ms[i].name + "' has no length, "
                                "so the copy constructor the compiler would write "
@@ -3262,7 +3286,7 @@ StmtPtr Parser::constructMember(const std::string &cls, const Type *type,
     int indexSlot = 0;
     long long count = 0;
     if (m.type->isArray()) {
-        count = m.type->length();
+        memberElements(m.type, &count);
         if (count < 0)
             src_.fail(pos, "'" + cls + "::" + m.name + "' has no length, so a "
                            "constructor does not know how many elements to "
