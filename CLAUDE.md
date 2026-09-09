@@ -5878,7 +5878,9 @@ already had, which is why it was three lines: **a general rule written once for
 one feature paid for a second.**
 
 With that, every capture C++11 has is here: by value, by reference, `[=]`,
-`[&]`, `[this]`, `mutable`, and nesting to any depth. - by then that name is a member of the outer
+`[&]`, `[this]`, `mutable`, and nesting to any depth. **That sentence was one
+short for three weeks** - a capture-default also takes `this`, which this scan
+did not do until 2026-09-09; see "A capture-default takes `this` as well". - by then that name is a member of the outer
 closure and not a local, so the scan has nothing to take.
 
 ## Reference data members, refused since rung 3
@@ -6532,6 +6534,52 @@ exception object is never destroyed - cxx1 prints `built=2 gone=1 live=1` where
 clang prints `built=1 gone=1 live=0`, with **identical output above the ledger
 line**. That is the register's own rule about elision, and the argument for
 `tests/cases/lifetime.h` made a second time.
+
+## A capture-default takes `this` as well, and both of them do
+
+**Fixed 2026-09-09, and it is the first entry `tests/open/` closed** - written
+into that directory in the morning and moved out of it the same day, which is
+the movement the register was built for.
+
+**[expr.prim.lambda]/8**: `[=]` and `[&]` capture `this` implicitly where the
+body names a member, and *both* capture the pointer. `[=, *this]`, which copies
+the object, is C++17 and is not what `[=]` has ever meant. So the shape most
+lambdas inside a class are written in - `[=]() { return n; }` - did not compile
+here at all, while `[this]` written out worked: the scan that finds a
+capture-default's captures looks for names that are **locals of the enclosing
+function**, and a member is not one. The message even said so, `'n' is not a
+local of the function around this lambda`, which named the right thing and the
+wrong rule.
+
+**Three lines decide it and each is a rule rather than a special case.** A
+scanned name that is neither a local nor an enclosing closure's capture is
+asked whether it is this class's own - `namesOwnMember`, a data member or a
+member function, its bases' included, and false inside a closure's own call
+operator where `currentClass_` is the closure. If any name answers yes the
+pointer is taken **once, after the scan**: one `this` however many members the
+body reads, and none where `[this]` was written out already.
+
+**The const half came free, and only because V-09 was fixed first.** The
+implicit capture asks `capturedThisClass()` for its type - the same helper the
+written `[this]` now uses, which reads the enclosing `this` rather than
+`currentClass_`, so in a const member function it is `const S *`. Building it
+from `currentClass_` would have re-opened V-09 through a second door;
+`lambda-capture-default-this-refused.cpp` is the case that would have caught
+that, and clang refuses the same program in the same place.
+
+`lambda-capture-default-this.cpp` pins six shapes, all agreeing with clang
+byte for byte: a data member through `[=]`, a const member function called
+from a const function's `[=]`, a member written through `[&]`, a local of the
+same name as a member shadowing it, an inherited member, and a local and two
+members in one body. **No emitted file moved**: the three that changed in this
+round's golden are the `lookup-order` of the V-09 commit, and the six added are
+these two cases' own.
+
+**What is next door and still open** is `tests/open/lambda-class-scope-names`,
+which looks like this one and is not: a lambda body naming a class's `static`
+member or enumerator needs no `this` at all - [expr.prim.lambda]/7 puts the
+body in the enclosing function's scope, and the lookup walks `currentClass_`,
+which inside the call operator is the closure. Nothing here touches it.
 
 ## A frame that skipped the guard page, and two wrong answers before it
 

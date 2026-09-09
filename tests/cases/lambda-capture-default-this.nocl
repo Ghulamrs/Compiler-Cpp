@@ -1,0 +1,12 @@
+The closure type's own name, and nothing else - measured on the Windows box rather than reasoned about. cl does not inline these away: each closure is stored in a variable and called through it, so cl emits a constructor and a call operator for all six and cxx1 emits a call operator for all six. What differs is how the two spell a type that has no name to spell. cl writes a content hash, `??R<lambda_4e4408a5775438823cb5ccb497b2bc49>@@QEBA@XZ`, where cxx1 writes `??R$_0@?1??reads@S@@QEAAHXZ@QEBAHXZ` - `$_0` against `<lambda_...>`, the local-scope index `?1` against cl's `?0`, and the deduced return type written out where cl writes `@`. The same three parts lambda-capture-this.nocl records. A hash over the closure's contents is not a name anything could be matched against in the first place, and every other name in this case agrees: `?reads@S@@QEAAHXZ`, `?callsMember@S@@QEBAHXZ` and the rest.
+
+**cl's constructors say what this case is about, and they agree with it.** Six closures, and the parameter each constructor takes is the capture cl gave it:
+
+    ??0<lambda_...>@@QEAA@PEAUS@@@Z        reads, writes, inherited - S *
+    ??0<lambda_...>@@QEAA@PEBUS@@@Z        callsMember - const S *
+    ??0<lambda_...>@@QEAA@AEBH@Z           shadowed - const int &, no pointer at all
+    ??0<lambda_...>@@QEAA@PEAUS@@AEBH@Z    alsoLocal - S * and the local beside it
+
+That is [expr.prim.lambda]/8 read off the Microsoft mangling: a capture-default takes `this` where the body names a member, takes it with the constness the enclosing member function has, and does not take it where the body's only name is a local that shadows one. cxx1 captures the same four ways; only the closure's own name differs.
+
+Nothing here can reach a link. A closure type is unnamed, its call operator is reached through the object, and the object never leaves the function that made it.

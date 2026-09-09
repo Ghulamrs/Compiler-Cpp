@@ -31,7 +31,11 @@ Two rules about what may be added:
     clang built=1 gone=1 live=0: the same program, one leaked exception object,
     and identical output above the ledger line.
 
-The fourteen here were re-measured on 2026-09-09 at 48f28a3, one program each,
+Thirteen are here now. The fourteenth, capture-default-this, was mended the
+same day it was written down and moved to tests/cases with its .expected, which
+is the movement the rule above asks for rather than an exception to it.
+
+The fourteen were re-measured on 2026-09-09 at 48f28a3, one program each,
 from the tail of docs/audit-2026-09-06.html that the five roots did not cover -
 the fourteen refusals of ordinary code, the twenty-seven over-acceptances and
 the _ZTS assembler failure, none of which went with the roots. That report says

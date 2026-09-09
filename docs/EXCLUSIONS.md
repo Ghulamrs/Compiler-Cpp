@@ -451,7 +451,8 @@ where one object is many:
 ## Lambdas
 
 - **naming a capture after a default one** — `[=]` and `[&]` on their own take
-  everything the body reads. `src/parser/ParserExprLambda.cpp:181`
+  everything the body reads, `this` included where the body names a member.
+  `src/parser/ParserExprLambda.cpp:181`
 - **a capture-less lambda converting to a function pointer** —
   [expr.prim.lambda]/6 gives the closure a conversion function returning one
   that calls the body, and that function is not synthesised.

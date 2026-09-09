@@ -1380,6 +1380,18 @@ private:
     // `$this` - the member a `[this]` capture holds. Not a name any program
     // can write, which is the point: it must not collide with a capture.
     static const char *capturedThis() { return "$this"; }
+    // The class the enclosing function's `this` points at, const and all:
+    // [expr.prim.lambda]/18 gives a captured `this` the type it has there, and
+    // `currentClass_` is the unqualified one, so it is not the answer. Null
+    // outside a member function, where there is nothing to capture.
+    const Type *capturedThisClass();
+    // Is this name one of the enclosing class's own - a data member or a member
+    // function, its bases' included - so that reading it means reading through
+    // `this`? What decides whether a capture-default has to take the pointer.
+    // False outside a member function, and false inside a closure's own call
+    // operator, where `currentClass_` is the closure and the outer class's
+    // members are not its members.
+    bool namesOwnMember(const std::string &name);
     // Inside a closure that captured `this`, the pointer it holds - built as
     // `this->$this`, `this` being the closure. Null anywhere else.
     ExprPtr capturedThisPointer();

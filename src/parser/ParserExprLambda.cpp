@@ -147,6 +147,25 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     return found;
 }
 
+// **The captured pointer has the type `this` has in the enclosing function** -
+// [expr.prim.lambda]/18. In a const member function that is `const S *`, and
+// capturing the unqualified class let a lambda write an object its own function
+// could not. `currentClass_` is unqualified by construction, so the type comes
+// from the enclosing `this` itself, which `topLevel` gave `pointerTo(withConst)`.
+const Type *Parser::capturedThisClass() {
+    const Local *enclosing = findLocal("this");
+    if (enclosing != nullptr && enclosing->type->pointee() != nullptr)
+        return enclosing->type->pointee();
+    return currentClass_;
+}
+
+bool Parser::namesOwnMember(const std::string &name) {
+    if (currentClass_ == nullptr || findLocal("this") == nullptr) return false;
+    const Type *cls = currentClass_->unqualified();
+    return cls->findMember(name) != nullptr ||
+           findMemberOwner(cls, name) != nullptr;
+}
+
 ExprPtr Parser::lambdaExpression() {
     const std::size_t pos = peek().pos;
     const std::size_t lamAt = at_;
@@ -169,6 +188,7 @@ ExprPtr Parser::lambdaExpression() {
     std::vector<int> capOffsets;
     bool captureAllByValue = false;
     bool captureAllByRef = false;
+    bool defaultTakesThis = false;
     const Type *capturedThisFrom = nullptr;
     if (peek().is("=") || peek().is("&")) {
         // `[&]` only where it is the whole list: `[&x]` is one named capture
@@ -198,14 +218,7 @@ ExprPtr Parser::lambdaExpression() {
                 src_.fail(peek().pos, "'[this]' is only inside a member "
                                       "function, and this lambda is not in one");
             at_++;
-            // **The captured pointer has the type `this` has here** -
-            // [expr.prim.lambda]/18. In a const member function that is
-            // `const S *`, and the unqualified class let one write through it.
-            const Local *enclosingThis = findLocal("this");
-            const Type *from = currentClass_;
-            if (enclosingThis != nullptr &&
-                enclosingThis->type->pointee() != nullptr)
-                from = enclosingThis->type->pointee();
+            const Type *from = capturedThisClass();
             capNames.push_back(capturedThis());
             capTypes.push_back(types_.pointerTo(from));
             capturedThisFrom = from;
@@ -297,7 +310,16 @@ ExprPtr Parser::lambdaExpression() {
                 // By the time the inner is read that name is a member of the
                 // outer closure, so it is reached through the outer `this`.
                 if (ExprPtr reach = outerCaptureAccess(n)) raw = reach->type();
-                if (raw == nullptr) continue;
+                // **A capture-default captures `this` as well**, and both of
+                // them do - [expr.prim.lambda]/8. A name that is neither a
+                // local nor an enclosing closure's capture may still be this
+                // class's own member, reached through the enclosing object's
+                // pointer, which the closure then has to hold. `[=]` copies
+                // that pointer, not the object: `[=, *this]` is C++17.
+                if (raw == nullptr) {
+                    if (namesOwnMember(n)) defaultTakesThis = true;
+                    continue;
+                }
             }
             capNames.push_back(n);
             const Type *base = raw->isReference()
@@ -305,6 +327,15 @@ ExprPtr Parser::lambdaExpression() {
                              : raw->unqualified();
             capTypes.push_back(captureAllByRef ? types_.referenceTo(base) : base);
         }
+    }
+
+    // Added after the scan rather than during it: one pointer however many
+    // members the body reads, and `[this]` written out has taken it already.
+    if (defaultTakesThis && capturedThisFrom == nullptr) {
+        const Type *from = capturedThisClass();
+        capNames.push_back(capturedThis());
+        capTypes.push_back(types_.pointerTo(from));
+        capturedThisFrom = from;
     }
 
     if (returns == nullptr)
