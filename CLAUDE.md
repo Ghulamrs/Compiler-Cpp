@@ -6581,6 +6581,105 @@ member or enumerator needs no `this` at all - [expr.prim.lambda]/7 puts the
 body in the enclosing function's scope, and the lookup walks `currentClass_`,
 which inside the call operator is the closure. Nothing here touches it.
 
+## A class template's three symbols, and the name they could not spell
+
+**Fixed 2026-09-09**, the second entry `tests/open/` closed. A virtual function
+in a class template needs the class's name in three symbols - `_ZTV`, `_ZTI`
+and the `_ZTS` string the second points at - and all three were built by
+`itaniumClassNameString(tag)`, which counts the letters of the display tag.
+For `P<int>` that is `6P<int>`, and it reaches the assembler as it stands:
+
+```
+  .globl _ZTS6P<int>
+```
+
+**So every polymorphic class template stopped in the assembler**, one step past
+a compiler that thought it had succeeded. The Microsoft side had the same
+shape, `??_7P<int>@@6B@` where cl writes `??_7?$P@H@@6B@`.
+
+**The fix is not to sanitise the angle brackets.** Nothing is escaped in an ABI
+name: the arguments are *encoded*, `1PIiE` and `?$P@H@`, and a name with `<`
+replaced by `_` would link against nothing and would collide - `P<int>` and
+`P_int_` are one name after such a substitution. The encoding already existed,
+because the mangler spells such a type wherever one is written in a signature;
+these three symbols now ask it, and a tag with no `<` in it takes the old path
+untouched, which is why **no emitted file moved** - 0 of 757 changed, 3 added,
+those being the new case's own.
+
+Measured against clang, and each shape is a different part of the encoding:
+
+| | |
+| --- | --- |
+| `_ZTS1PIiE` | a type argument |
+| `_ZTS3BoxIiLi3EE` | a non-type argument |
+| `_ZTS6HolderIS_IiEE` | an argument that is a specialization of the same template, which takes a substitution |
+| `_ZTSN2ns1RIiEE` | one in a namespace |
+| `??_7?$P@H@@6B@` | the Microsoft vftable |
+
+### The namespace wrapper, which the same measurement found
+
+**Two older bugs came out of that last row, one per ABI, and neither is about
+type_info at all** - both are ordinary linkage names that a program linking
+against a real library would get wrong.
+
+On Itanium a specialization in a namespace was written as a bare template-id:
+`_Z1f2ns1RIiE` where clang writes `_Z1fN2ns1RIiEE`. The `N...E` wrapper is what
+every other nested name carries, and the branch above this one already writes
+it for a plain class in a namespace. **`std` is the exception the ABI itself
+makes** - `St3vecIiE` has no wrapper - which is exactly why nothing showed it:
+the only namespaced specializations this tree had were `std::initializer_list`
+and its neighbours, and they were right.
+
+On the Microsoft side the namespace was missing altogether: `?$R@H@@` where cl
+writes `?$R@H@ns@@`. **Twelve emitted files moved on that one**, all
+x86_64-windows and all specializations in a namespace - `lib::box<int>` became
+`??0?$box@H@lib@@QEAA@AEBH@Z` where it had been `??0?$box@H@@QEAA@AEBH@Z`, and
+every `std::` one the same way. None of them was under a `names.sh` comparison
+that could have said so: each carries a `.nonames` for the COMDAT difference,
+which skips the case for every target at once. The cause is the same in both - **a specialization carries
+its namespace beside the template's name rather than in its tag**, so
+`inNamespace()` is false for it and the loop that pushes scopes had nothing to
+push. There is no `St` abbreviation there; `std` is spelled `std@` like any
+other scope.
+
+Both were found by `tests/names.sh` on a case written for the type_info bug,
+which is the argument for that suite in one sentence: the case was about
+`_ZTS`, and it caught two names that had nothing to do with it.
+
+### What the case cannot cover, and what it found on the way
+
+`polymorphic-class-template.cpp` carries a `.nonames` for x86_64-linux only,
+and for the reason several other cases do - clang emits only the C2 and D2
+forms of a constructor defined inside its class there. The other cases answer
+that by defining the constructor out of line; this one cannot, an out-of-line
+constructor of a class template being one of the four gaps met writing
+`<type_traits>`.
+
+**And a Windows defect no case had reached**, found by this one failing on the
+box: a function *other than `main`* that owns an unwind region emits a `.pdata`
+entry pointing at `$cppxdata$<its mangled name>` and never lays that label
+down, so ml64 answers `A2006: undefined symbol`. The shape that reaches it is
+an ordinary one - a constructor taking a class **by value**, which on the
+Microsoft ABI the callee destroys, so the parameter needs a cleanup:
+
+```cpp
+struct G { S v; G(S x) : v(x) {} };      // ml64: A2006 $cppxdata$??0G@@QEAA@US@@@Z
+```
+
+It is not about templates and not about this round: the same program without a
+template does it, and a scan of all 991 golden files found **no existing case
+that emits such a reference at all**, which is why nothing had caught it.
+`main` is the exception because its own `$cppxdata$main` *is* defined. The case
+here takes its parameter by `const T &` to stay about names, and this is
+written down rather than fixed in a round that was measuring manglings.
+
+Writing it found a third thing, now `tests/open/mem-init-template-id-base.cpp`:
+**a mem-initialiser naming a template-id base does not parse** - `D(int x) :
+P<int>(x) {}` is answered "expected '('" at the `<`. So a class deriving from a
+specialization cannot pass its base an argument, which is why the case's
+polymorphism is exercised through a reference to `P<int>` rather than through a
+derived class.
+
 ## A frame that skipped the guard page, and two wrong answers before it
 
 **Fixed 2026-09-06.** `matrix_main.cpp` of the C++ Vector Exercise died on

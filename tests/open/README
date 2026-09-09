@@ -31,11 +31,15 @@ Two rules about what may be added:
     clang built=1 gone=1 live=0: the same program, one leaked exception object,
     and identical output above the ledger line.
 
-Thirteen are here now. The fourteenth, capture-default-this, was mended the
-same day it was written down and moved to tests/cases with its .expected, which
-is the movement the rule above asks for rather than an exception to it.
+Thirteen are here now, and the number is a coincidence rather than a
+standstill: two of the original fourteen - capture-default-this and
+polymorphic-class-template-zts - were mended the same day they were written
+down and moved to tests/cases with their .expected, which is the movement the
+rule above asks for; and mem-init-template-id-base arrived, found while
+measuring the second of those. A register that only ever grows is a list of
+complaints, and one that only ever shrinks is finished.
 
-The fourteen were re-measured on 2026-09-09 at 48f28a3, one program each,
+The original fourteen were re-measured on 2026-09-09 at 48f28a3, one program each,
 from the tail of docs/audit-2026-09-06.html that the five roots did not cover -
 the fourteen refusals of ordinary code, the twenty-seven over-acceptances and
 the _ZTS assembler failure, none of which went with the roots. That report says

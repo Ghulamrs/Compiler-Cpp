@@ -163,7 +163,13 @@ void Parser::registerDestructor(const std::string &cls, std::size_t pos,
 std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
                                         const Type *memberOf, int thisSlot) {
     const bool ms = target_.microsoftNames();
-    const std::string table = vtableSymbol(cls, ms);
+    // **The class itself where it is the one named**, so a specialization's
+    // table is spelled by the mangler rather than by counting the letters of
+    // `P<int>`. Every caller passes the class whose tag this is; the guard is
+    // for the one that might not, and falls back to the tag.
+    const std::string table =
+        memberOf != nullptr && memberOf->unqualified()->tag() == cls
+            ? vtableSymbol(memberOf, ms) : vtableSymbol(cls, ms);
     const Type *entry = types_.pointerTo(types_.get(Kind::Void));
     const Type *entries = types_.pointerTo(entry);
 
@@ -1112,7 +1118,9 @@ std::string Parser::typeInfoSymbolFor(const Type *t, std::size_t pos,
 
 std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
                                       std::size_t pos) {
-    const std::string ti = itaniumClassTypeInfoSymbol(tag);
+    const std::string ti = cls->unqualified()->tag() == tag
+                         ? itaniumClassTypeInfoSymbol(cls)
+                         : itaniumClassTypeInfoSymbol(tag);
     for (std::size_t i = 0; i < current_->globals.size(); i++)
         if (current_->globals[i].symbol == ti) return ti;      // one per class
 
@@ -1136,8 +1144,11 @@ std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
         if (baseTypeInfo.empty()) return std::string();
     }
 
-    const std::string ts = itaniumClassTypeNameSymbol(tag);
-    const std::string text = itaniumClassNameString(tag);
+    const bool own = cls->unqualified()->tag() == tag;
+    const std::string ts = own ? itaniumClassTypeNameSymbol(cls)
+                               : itaniumClassTypeNameSymbol(tag);
+    const std::string text = own ? itaniumClassNameString(cls)
+                                 : itaniumClassNameString(tag);
     std::vector<GlobalPiece> letters;
     for (std::size_t i = 0; i <= text.size(); i++)             // the NUL too
         letters.push_back(GlobalPiece{ static_cast<int>(i), 1,
@@ -1178,7 +1189,8 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
 
     const std::vector<VSlot> &slots = vtables_[tag];
     const bool ms = target_.microsoftNames();
-    const std::string symbol = vtableSymbol(tag, ms);
+    const std::string symbol = cls->unqualified()->tag() == tag
+                             ? vtableSymbol(cls, ms) : vtableSymbol(tag, ms);
 
     for (std::size_t i = 0; i < current_->globals.size(); i++)
         if (current_->globals[i].symbol == symbol) return;   // one per class

@@ -175,3 +175,14 @@ std::string vtableSymbol(const std::string &tag, bool microsoft);
 std::string itaniumClassNameString(const std::string &tag);
 std::string itaniumClassTypeInfoSymbol(const std::string &tag);
 std::string itaniumClassTypeNameSymbol(const std::string &tag);
+
+// **The same four, for a class whose name is a template-id.** `P<int>` cannot
+// be spelled by counting its letters - the ABI encodes the arguments, `1PIiE`
+// and `?$P@H@`, and `6P<int>` is what an assembler answers `unexpected token`
+// to. A specialization is asked of the mangler, which already spells one
+// wherever a type is written; every other class takes the path above and gets
+// the same answer it always did. Pass the class itself where there is one.
+std::string vtableSymbol(const Type *cls, bool microsoft);
+std::string itaniumClassNameString(const Type *cls);
+std::string itaniumClassTypeInfoSymbol(const Type *cls);
+std::string itaniumClassTypeNameSymbol(const Type *cls);

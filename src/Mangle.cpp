@@ -584,7 +584,19 @@ private:
                 return;                       // prefix() pushed it already
             }
             if (t->isSpecialization()) {
+                // **A specialization in a namespace is a nested-name as much
+                // as a plain class in one is**, and this branch was writing
+                // the bare template-id: `_Z1f2ns1RIiE` where clang writes
+                // `_Z1fN2ns1RIiEE`, measured. `std` is the exception the ABI
+                // itself makes - `St3vecIiE` carries no wrapper - which is
+                // why nothing about std::vector ever showed it, and it is the
+                // same rule the branch above follows for a plain class.
+                const bool wrapped =
+                    !t->templateNamespace().empty() &&
+                    !isDirectlyInStd(t->templateNamespace() + t->templateName());
+                if (wrapped) out += 'N';
                 templateId(t);
+                if (wrapped) out += 'E';
                 subs_.push_back(Sub{ t, std::string() });
                 return;                       // pushed here, not below
             }
@@ -638,6 +650,20 @@ public:
                 pushName(componentOf(c));
                 if (c->enclosing() == nullptr && c->inNamespace()) {
                     const std::vector<std::string> parts = scopeComponents(c->tag());
+                    for (std::size_t i = parts.size() - 1; i-- > 0; )
+                        pushName(parts[i]);
+                }
+                // **A specialization carries its namespace apart from its
+                // tag**, which is why the line above cannot find it:
+                // `inNamespace()` is false and the namespace is held beside
+                // the template's name. cl writes it like any other scope -
+                // `?$R@H@ns@@` where cxx1 wrote `?$R@H@@` - and unlike
+                // Itanium there is no abbreviation for `std`, which is
+                // spelled `std@` in full.
+                if (c->enclosing() == nullptr && !c->inNamespace() &&
+                    c->isSpecialization() && !c->templateNamespace().empty()) {
+                    const std::vector<std::string> parts = scopeComponents(
+                        c->templateNamespace() + c->templateName());
                     for (std::size_t i = parts.size() - 1; i-- > 0; )
                         pushName(parts[i]);
                 }
@@ -951,6 +977,11 @@ public:
         out += t->isConst() ? "B" : "A";
     }
 
+    // The scope list a vftable's name carries - `?$P@H@@` for `P<int>`, and
+    // `B@N@@` for `N::B` - the class's own component and the scopes around it,
+    // which is what sits between `??_7` and `6B@`.
+    void vftableScope(const Type *cls) { scopeOf(cls, cls->tag()); }
+
 private:
     std::vector<std::string> names_;
     std::vector<const Type *> args_;
@@ -1203,6 +1234,60 @@ std::string itaniumClassTypeInfoSymbol(const std::string &tag) {
 
 std::string itaniumClassTypeNameSymbol(const std::string &tag) {
     return "_ZTS" + itaniumClassNameString(tag);
+}
+
+// **A class whose name is a template-id is spelled by the mangler, not by
+// counting letters.** `P<int>` is `1PIiE` where the letter-counting path above
+// writes `6P<int>`, which reaches the assembler as it stands - `.globl
+// _ZTS6P<int>`, answered with `unexpected token`. So any virtual function in a
+// class template stopped there. Measured against clang for the four shapes
+// that differ: `_ZTS1PIiE`, `_ZTS1PIS_IiEE` for a template argument that is
+// itself one and takes a substitution, `_ZTS3BoxIiLi3EE` for a non-type
+// argument, and `_ZTSN2ns1QIdEE` for one in a namespace. Microsoft's vftable
+// is `??_7?$P@H@@6B@`, measured the same way.
+//
+// **A tag with no '<' in it takes the old path**, which is not a shortcut but
+// the point: every symbol this compiler already emits is spelled by the same
+// code it was spelled by before, and the new spelling reaches exactly the
+// names that could not be assembled.
+static bool tagIsTemplateId(const std::string &tag) {
+    return tag.find('<') != std::string::npos;
+}
+
+std::string vtableSymbol(const Type *cls, bool microsoft) {
+    if (cls == nullptr) return vtableSymbol(std::string(), microsoft);
+    const Type *plain = cls->unqualified();
+    if (!tagIsTemplateId(plain->tag())) return vtableSymbol(plain->tag(), microsoft);
+    if (microsoft) {
+        Microsoft m;
+        m.out = "??_7";
+        m.vftableScope(plain);
+        if (!m.ok) return vtableSymbol(plain->tag(), microsoft);
+        return m.out + "6B@";
+    }
+    Itanium m;
+    m.out = "_ZTV";
+    m.typeInfoFor(plain);
+    if (!m.ok) return vtableSymbol(plain->tag(), microsoft);
+    return m.out;
+}
+
+std::string itaniumClassNameString(const Type *cls) {
+    if (cls == nullptr) return itaniumClassNameString(std::string());
+    const Type *plain = cls->unqualified();
+    if (!tagIsTemplateId(plain->tag())) return itaniumClassNameString(plain->tag());
+    Itanium m;
+    m.typeInfoFor(plain);
+    if (!m.ok) return itaniumClassNameString(plain->tag());
+    return m.out;
+}
+
+std::string itaniumClassTypeInfoSymbol(const Type *cls) {
+    return "_ZTI" + itaniumClassNameString(cls);
+}
+
+std::string itaniumClassTypeNameSymbol(const Type *cls) {
+    return "_ZTS" + itaniumClassNameString(cls);
 }
 
 bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem) {
