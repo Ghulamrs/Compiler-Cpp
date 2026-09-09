@@ -13,6 +13,52 @@
 #include <climits>
 #include <cstring>
 
+// **The initialiser inside `(...)` of a direct-initialised scalar.** One
+// expression and no braces: `int z(5);` and `int z(f());` are this shape, and
+// `int z(1, 2)` is refused by name rather than by the parser running out of
+// tokens - a scalar has one initialiser, and the reader who wrote two is owed
+// the rule rather than a complaint about a comma.
+Parser::Init Parser::parenthesisedInitialiser(const Declared &d) {
+    expect("(");
+    Init in;
+    in.pos = peek().pos;
+    in.value = assign();
+    if (peek().is(","))
+        src_.fail(peek().pos, "'" + d.name + "' has type '" +
+                              d.type->describe() + "', which takes one "
+                              "initialiser - a list in parentheses is for a "
+                              "class with a constructor that takes them");
+    expect(")");
+    return in;
+}
+
+// **Is the `(` ahead an initialiser or a parameter list?** [dcl.ambig.res]/1
+// settles it one way - anything that *can* be a declaration is one - so this
+// answers only for what could not: an empty pair is `f()`, a type name begins
+// a parameter, an ellipsis begins `(...)`, and `Ts... a` is a parameter pack
+// whose name is not a type until the template is instantiated. Everything
+// else is an expression, which makes it an initialiser.
+bool Parser::atParenInitialiser() {
+    const std::size_t save = at_;
+    at_++;                                    // the '('
+    // **A parameter list begins with a decl-specifier-seq**, and that is the
+    // whole question - `atTypeName` and not `atDeclarationStart`, which asks
+    // whether a *statement* is a declaration and answers no to `T()`. Inside
+    // parentheses `T()` is a parameter of function type, which is what makes
+    // `S s(T());` the most vexing parse: a function declaration, as clang
+    // reads it. Asking the statement question here declared an object instead.
+    const bool pack = peek().kind == TokenKind::Ident && peekAt(1).is("...");
+    // `auto` among them: a parameter declared with it is C++14 and is refused
+    // by name where the parameter list is read, which only happens if this
+    // says parameter list. Answering "initialiser" here turned that message
+    // into "expected an expression".
+    const bool parameters = peek().is(")") || peek().is("...") || pack ||
+                            peek().is("static") || peek().is("register") ||
+                            peek().is("auto") || atTypeName();
+    at_ = save;
+    return !parameters;
+}
+
 StmtPtr Parser::declaration() {
     std::size_t pos = peek().pos;
     StmtPtr s = declarationBody();
@@ -195,10 +241,8 @@ StmtPtr Parser::declarationBody() {
         // the standard asks for is the bytes - the struct assignment the backends
         // already emit. A parameter list begins with a type name and this does not.
         if (peek().is("(") && d.type->isStructOrUnion() && sc != StorageStatic) {
-            const std::size_t save = at_;
-            at_++;
-            const bool looksLikeParameters = peek().is(")") || atDeclarationStart();
-            if (!looksLikeParameters) {
+            if (atParenInitialiser()) {
+                at_++;                        // the '('
                 std::vector<ExprPtr> args;
                 parseArguments(args);
                 if (args.size() != 1)
@@ -223,10 +267,35 @@ StmtPtr Parser::declarationBody() {
                 // unread: `std::string a, b;` came back as `expected ';'`.
                 continue;
             }
-            at_ = save;
         }
 
-        if (peek().is("(")) {
+        // **`int z(5);` is direct-initialisation, not a function.**
+        // [dcl.init]/16, and [dcl.ambig.res]/1 is what tells the two apart:
+        // anything that *can* be a declaration is one, so `int f();` and
+        // `int f(int);` stay functions and a parenthesised list that could not
+        // be parameters is an initialiser. `5` cannot begin a parameter, which
+        // is the same test the class branch above makes.
+        //
+        // The class case has worked since rung 3 and this one had not, so
+        // `int z(5);` was read as a function declaration and answered
+        // "expected a type" pointing at the 5. This tree's own `<utility>`
+        // writes `T held(a);`, so `std::swap` on two `int`s failed inside the
+        // header - which is how the shape was found.
+        const bool parenInit = peek().is("(") && !d.type->isStructOrUnion() &&
+                               !d.type->isArray() && !d.type->isReference() &&
+                               atParenInitialiser();
+        // **Not in a condition**, which takes `= expr` or braces and nothing
+        // else - [stmt.select]/1 spells the grammar out, and clang says so by
+        // name. Refused rather than accepted quietly: `if (int a(5))` reads
+        // like a call to a reader and is neither.
+        if (parenInit && conditionDecl_)
+            src_.fail(peek().pos, "a declaration in a condition is initialised "
+                                  "with '=' or with braces, not with "
+                                  "parentheses - [stmt.select] gives the "
+                                  "condition its own grammar, and this one "
+                                  "would read like a call");
+
+        if (peek().is("(") && !parenInit) {
             if (sc == StorageStatic)
                 src_.fail(d.pos, "'" + d.name + "' is a function declared inside a "
                                  "block, and such a declaration is always extern - "
@@ -301,8 +370,9 @@ StmtPtr Parser::declarationBody() {
             const std::string symbol = uniqueStaticSymbol(d.name);
             std::vector<GlobalPiece> pieces;
             bool hasInit = false;
-            if (consume("=") || atBracedInitialiser(d.name)) {
-                Init in = parseInitialiser();
+            if (parenInit || consume("=") || atBracedInitialiser(d.name)) {
+                Init in = parenInit ? parenthesisedInitialiser(d)
+                                    : parseInitialiser();
                 if (d.type->isArray() && d.type->length() < 0)
                     d.type = types_.arrayOf(d.type->pointee(),
                                             inferredLength(in, d.type->pointee(), d.pos));
@@ -320,14 +390,18 @@ StmtPtr Parser::declarationBody() {
             continue;
         }
 
-        bool hasInit = peek().is("=") || atBracedInitialiser(d.name);
+        bool hasInit = parenInit || peek().is("=") || atBracedInitialiser(d.name);
         Init in;
         if (hasInit) {
+            if (parenInit) {
+                in = parenthesisedInitialiser(d);
+            } else {
             consume("=");
             in = parseInitialiser();
             if (d.type->isArray() && d.type->length() < 0)
                 d.type = types_.arrayOf(d.type->pointee(),
                                         inferredLength(in, d.type->pointee(), d.pos));
+            }
         } else if (d.type->isArray() && d.type->length() < 0) {
             src_.fail(d.pos, "'" + d.name + "' has no length and no initialiser "
                              "to take one from");

@@ -1920,6 +1920,14 @@ private:
     };
 
     Init parseInitialiser();
+    // The initialiser inside the parentheses of `int z(5);` - one expression,
+    // [dcl.init]/16.
+    Init parenthesisedInitialiser(const Declared &d);
+    // **Is the `(` this sits on an initialiser rather than a parameter list?**
+    // [dcl.ambig.res]/1: anything that can be a declaration is one, so the
+    // question is only whether what follows could begin a parameter. Called
+    // with `at_` on the `(` and leaves it there.
+    bool atParenInitialiser();
     // Answers whether a declaration is initialised by braces, and refuses the
     // braces this compiler does not read - which is every pair with a value in
     // it. The empty pair is value-initialisation and parseInitialiser takes it.

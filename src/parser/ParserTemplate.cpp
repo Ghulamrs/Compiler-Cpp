@@ -1088,13 +1088,20 @@ const Type *Parser::deduceAuto(const Type *declared, const std::string &name,
     // `auto x{...}` has an initialiser and is refused for the reason below, not
     // for having none - the braces are what cannot be deduced from, however
     // they were introduced.
-    if (!peek().is("=") && !peek().is("{"))
+    // **`auto z(5);` deduces from a parenthesised initialiser too**, which is
+    // the direct-initialisation [dcl.init]/16 describes and the same shape
+    // `int z(5);` takes. An empty pair, or one that could be a parameter list,
+    // is a function declaration and is left to the code that reads those -
+    // [dcl.ambig.res]/1, the same test the declaration path makes.
+    const bool paren = peek().is("(") && atParenInitialiser();
+    if (!peek().is("=") && !peek().is("{") && !paren)
         src_.fail(pos, "'" + name + "' is declared 'auto' and has no "
                        "initialiser, so there is nothing to deduce its type "
                        "from");
 
     const std::size_t resume = at_;
-    consume("=");
+    if (paren) at_++;
+    else consume("=");
     if (peek().is("{"))
         src_.fail(peek().pos, "'auto' from a braced initialiser is not "
                               "supported yet - it deduces an "

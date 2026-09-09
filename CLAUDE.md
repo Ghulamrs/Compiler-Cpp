@@ -6906,6 +6906,47 @@ copy constructor throws, [except.handle]/3 calls `std::terminate` and clang
 emits `__clang_call_terminate` around the copy. cxx1 lets the exception leave,
 so the enclosing handler catches it.
 
+## `int z(5);`, and the question the parser was asking instead
+
+**Fixed 2026-09-09.** Direct-initialisation of a scalar - [dcl.init]/16 - read
+as a parameter list and answered `expected a type` at the 5. A class with a
+constructor had this since rung 3; nothing else did, and **this tree's own
+`<utility>` writes `T held(a);`**, so `std::swap` on two `int`s failed inside
+the header. Two entries of `tests/open/` closed on one change.
+
+**[dcl.ambig.res]/1 decides it: anything that can be a declaration is one.** So
+the only question is whether what follows the `(` could begin a parameter, and
+there is one place that asks it now - `atParenInitialiser` - where there were
+three copies of a similar test and a fourth was about to be written. It says
+*parameter list* for an empty pair, an ellipsis, `static`, `register`, `auto`,
+and anything `atTypeName` recognises; everything else is an expression, which
+makes it an initialiser.
+
+**And the old copies were asking the wrong question**, which is what the new
+name is for. They called `atDeclarationStart`, which answers "is this
+*statement* a declaration" - and that one says **no** to `T()`, because
+`P().get();` is an expression statement. Inside parentheses `T()` is a
+parameter of function type, so `S s(T());` is the **most vexing parse**: a
+function declaration, which is what clang reads and what cxx1 now reads.
+Before this it built an object, silently, and the class path had been doing
+that since rung 3. `names.sh` is what caught it - `?vexing@@3US@@A`, a data
+symbol where clang has a function.
+
+Four callers share the helper: a local, a file-scope object, `auto`'s
+deduction, and the class-with-no-constructor path that already existed. `auto
+z(5);` needed the deduction to look inside the parentheses for the type, and
+**`int f(auto x)` needed the answer to stay "parameter list"** or its
+`is C++14` refusal turns into `expected an expression` - which is how that
+keyword got onto the list.
+
+**A condition is refused**, and by name: [stmt.select]/1 gives a condition its
+own grammar, `= expr` or braces, and clang refuses `if (int a(5))` too. A
+scalar given two initialisers is refused the same way - `int b(1, 2);` has
+nothing for the second to initialise.
+
+**No emitted file moved.** 0 of 766, because everything this touches was
+refused before it could be emitted; the six added are the new cases' own.
+
 ## A frame that skipped the guard page, and two wrong answers before it
 
 **Fixed 2026-09-06.** `matrix_main.cpp` of the C++ Vector Exercise died on

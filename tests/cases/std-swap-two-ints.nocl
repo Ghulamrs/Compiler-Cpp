@@ -1,0 +1,3 @@
+There is nothing to compare here, by construction, and it is the same reason include-vector.nocl gives: a case that includes a C++ standard library header is compiled by cl against Microsoft's implementation and by cxx1 against this tree's `include/`, so the two objects hold the symbols of two different libraries. cl emits `??$swap@H$0A@@std@@YAXAEAH0@Z` - its own `std::swap`, with the array-size non-type parameter its header declares - and `??$move@AEAH@std@@YA$$QEAHAEAH@Z` beside it, neither of which this tree's `<utility>` has: it writes a two-line swap through a copy, which is what `T held(a);` is doing there and why this case exists.
+
+Behaviour is the oracle for these, and `run-cases.cmd` asks it on this box: the program prints `2 1` on all three machines.

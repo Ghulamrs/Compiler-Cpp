@@ -242,7 +242,19 @@ void Parser::topLevel(Program &program) {
     // **`S g(1);` at file scope is a construction, not a prototype**: a
     // parameter list begins with a type name or is empty, the local path's own
     // question, and `S g();` is the function C++ says it is.
-    bool constructionAhead = false;
+    // **And `int g(5);` is direct-initialisation of a scalar** - [dcl.init]/16,
+    // the same shape and the same test one statement inside a function takes.
+    // It is kept apart from the class question below because that one has a
+    // constructor to look for and this one has nothing but the parentheses.
+    bool scalarInitAhead = false;
+    if (peek().is("(") && d.paramsAt == 0 && d.qualifier.empty() &&
+        !d.type->isStructOrUnion() && !d.type->isArray() &&
+        !d.type->isReference() && !d.type->isFunction() &&
+        sc != StorageExtern && !constexprFunction && !inlineFunction) {
+        scalarInitAhead = atParenInitialiser();
+    }
+
+    bool constructionAhead = scalarInitAhead;
     if (peek().is("(") && d.paramsAt == 0 && d.type->isStructOrUnion() &&
         !d.type->tag().empty() &&
         overloadsOf(constructorKey(d.type->tag())) != nullptr) {
@@ -254,10 +266,7 @@ void Parser::topLevel(Program &program) {
             constructionAhead = owner != nullptr && owner->isStructOrUnion() &&
                                 owner->findStaticMember(d.name) != nullptr;
         } else {
-            const std::size_t save = at_;
-            at_++;
-            constructionAhead = !(peek().is(")") || atDeclarationStart());
-            at_ = save;
+            constructionAhead = atParenInitialiser();
         }
     }
 
@@ -439,8 +448,10 @@ void Parser::topLevel(Program &program) {
             // what it is worth so one defined from it can fold.
             bool constantDoubleKnown = false;
             long double constantDoubleValue = 0;
-            if (consume("=") || atBracedInitialiser(d.name)) {
-                Init in = parseInitialiser();
+            if (scalarInitAhead || consume("=") || atBracedInitialiser(d.name)) {
+                Init in = scalarInitAhead ? parenthesisedInitialiser(d)
+                                          : parseInitialiser();
+                scalarInitAhead = false;
                 if (d.type->isArray() && d.type->length() < 0)
                     d.type = types_.arrayOf(d.type->pointee(),
                                             inferredLength(in, d.type->pointee(), d.pos));
