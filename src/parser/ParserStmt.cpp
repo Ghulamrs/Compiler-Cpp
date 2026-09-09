@@ -59,6 +59,18 @@ bool Parser::atParenInitialiser() {
     return !parameters;
 }
 
+void Parser::checkOneDeducedType(const Type *&first, const Type *now,
+                                 const std::string &name, std::size_t pos) {
+    if (first == nullptr) { first = now; return; }
+    if (first == now) return;
+    src_.fail(pos, "'auto' deduces '" + now->describe() + "' for '" + name +
+                   "' where the declarator before it in this declaration "
+                   "deduced '" + first->describe() +
+                   "' - [dcl.spec.auto] gives one 'auto' one type, however "
+                   "many names are written after it. Split them into two "
+                   "declarations");
+}
+
 StmtPtr Parser::declaration() {
     std::size_t pos = peek().pos;
     StmtPtr s = declarationBody();
@@ -116,6 +128,9 @@ StmtPtr Parser::declarationBody() {
     }
 
     std::vector<StmtPtr> inits;
+    // What the first declarator of an `auto` declaration deduced - see
+    // checkOneDeducedType. Null while there has been none.
+    const Type *deducedSoFar = nullptr;
     do {
         Declared d = declarator(base);
         // **A condition declares one name and must initialise it**, and both
@@ -128,7 +143,10 @@ StmtPtr Parser::declarationBody() {
                                  "and has no initialiser - there would be "
                                  "nothing to test");
         }
-        if (mentionsDeduced(d.type)) d.type = deduceAuto(d.type, d.name, d.pos);
+        if (mentionsDeduced(d.type)) {
+            d.type = deduceAuto(d.type, d.name, d.pos);
+            checkOneDeducedType(deducedSoFar, lastDeducedAuto_, d.name, d.pos);
+        }
 
         // **A const object has to be initialised where it is declared**, and this
         // is asked before the branch below rather than after it: a class whose
@@ -407,6 +425,7 @@ StmtPtr Parser::declarationBody() {
                              "to take one from");
         }
 
+        if (!hasInit) refuseDeletedDefaultInit(d.type, d.name, d.pos);
         const int off = declare(d.name, d.type, d.pos);
         locals_.back().isConst = d.type->isConst();
         locals_.back().isRegister = (sc == StorageRegister);

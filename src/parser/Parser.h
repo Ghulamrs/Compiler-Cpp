@@ -1045,6 +1045,10 @@ private:
     // that decides whether a derived class may use its tail padding. Asked while the
     // class is completed, before its implicit members exist: what the program wrote.
     bool podForLayout(const Type *t) const;
+    // [class.mem]/1: one member of each name in a class, bases apart.
+    void refuseDuplicateMember(const std::vector<Member> &members,
+                               std::size_t ownFrom, const std::string &name,
+                               const std::string &tag, std::size_t pos);
     ExprPtr destructorCall(ExprPtr address, const Signature &dtor, std::size_t pos);
     void destroyObject(std::vector<StmtPtr> &into, const Alive &a, std::size_t pos);
 
@@ -1488,7 +1492,8 @@ private:
     // An operator this compiler can *name* but cannot yet reach from an expression is
     // refused where it is declared. The arity decides which - `operator-` is two
     // functions and only one is missing - so it is asked once the parameters are known.
-    void checkOperatorDeclarable(const std::string &name, std::size_t params,
+    void checkOperatorDeclarable(const std::string &name,
+                                 const std::vector<const Type *> &params,
                                  bool member, std::size_t pos);
     const Type *arraySuffix(const Type *base, std::size_t pos);
     const Type *promote(const Type *t) const;
@@ -1827,6 +1832,10 @@ private:
     // what [dcl.init.aggr]/1 in C++11 makes the difference between an
     // aggregate and a class that is not one.
     bool hasMemberInitialiser(const std::string &tag) const;
+    // [class.ctor]/5: default-initialising a class whose implicit default
+    // constructor is deleted - a const or reference member with no initialiser.
+    void refuseDeletedDefaultInit(const Type *t, const std::string &name,
+                                  std::size_t pos);
     // To the ',' or ';' that ends one, counting brackets.
     void skipMemberInitialiser();
     // The statements a constructor of this class needs for the members it did
@@ -1919,6 +1928,17 @@ private:
         Init &cur() const { return (*items)[at]; }
     };
 
+    // **[dcl.spec.auto]/7: every declarator of one `auto` declaration deduces
+    // the same type.** `auto a = 1, b = 2.0;` is ill-formed, and cxx1 deduced
+    // each on its own and took whatever each got - so `b` was an int holding
+    // 2, silently. The first declarator's answer is remembered and the rest
+    // are compared against it; `first` is null until there is one.
+    void checkOneDeducedType(const Type *&first, const Type *now,
+                             const std::string &name, std::size_t pos);
+    // What the last `auto` deduced *for itself* - `auto *p = &i` leaves `int`
+    // here and returns `int *`. Written by deduceAutoFrom and read by the
+    // declaration loops, which compare declarators of one declaration.
+    const Type *lastDeducedAuto_ = nullptr;
     Init parseInitialiser();
     // The initialiser inside the parentheses of `int z(5);` - one expression,
     // [dcl.init]/16.
@@ -2069,7 +2089,8 @@ private:
     // a multiplication. What it builds is the object's address plus the
     // offset the member pointer holds, read as the member's type.
     ExprPtr memberPointerExpr();
-    ExprPtr applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos);
+    ExprPtr applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos,
+                               bool constObject);
     // `&S::f` - the ABI's pair, built into a slot of this frame.
     ExprPtr boundMemberPointer(const Type *cls, const Signature &f,
                                std::size_t pos);

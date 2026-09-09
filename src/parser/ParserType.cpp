@@ -290,6 +290,12 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // same - which is why they share this function rather than having one each.
     Access access = isClass ? Access::Private : Access::Public;
 
+    // **Where this class's own members begin.** Everything before it was
+    // copied in from a base, and a member that hides one of those is ordinary
+    // C++ - [class.member.lookup]. Only a name declared twice *here* is the
+    // one [class.mem]/1 refuses.
+    const std::size_t ownFrom = members.size();
+
     while (!peek().is("}")) {
         if (peek().kind == TokenKind::End) src_.fail(pos, "unclosed '{'");
 
@@ -776,6 +782,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
                     bitOff = bitCursor % unitBits;
                     bitCursor += w;
                 }
+                refuseDuplicateMember(members, ownFrom, d.name, tag, d.pos);
                 members.push_back(Member{ d.name, d.type, static_cast<int>(at),
                                           static_cast<int>(w),
                                           static_cast<int>(bitOff), access,
@@ -788,6 +795,22 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             // declarator leaves the parameter list for its caller, as a free
             // function's does. It goes in the same table, under "Point::get".
             if (peek().is("(")) {
+                // **[class.ctor]/3: a constructor has no return type**, so a
+                // member with the class's own name and one written in front of
+                // it is not a declaration this compiler can make sense of. The
+                // constructor branch above never saw it - the type was read
+                // first and the name after it - so without this the class got
+                // a member function called `S` that nothing can ever call by
+                // that name, and `S s;` went on using the implicit default
+                // constructor. clang refuses it.
+                if (!tag.empty() && d.name == local)
+                    src_.fail(d.pos, "a constructor has no return type - "
+                                     "'" + local + "' names the class, so this "
+                                     "declares one, and [class.ctor] gives it "
+                                     "no type to return. Drop the '" +
+                                     d.type->describe() + "' - `void` is a "
+                                     "type like any other here, and clang "
+                                     "refuses that spelling too");
                 const bool memberIsStatic = msc == StorageStatic;
                 std::vector<const Type *> mparams;
                 bool mvariadic = false;
@@ -910,6 +933,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             long long byteCursor =
                 ((bitCursor > openEnd ? bitCursor : openEnd) + 7) / 8;
             long long at = (kind == Kind::Union) ? 0 : alignTo(byteCursor, a);
+            refuseDuplicateMember(members, ownFrom, d.name, tag, d.pos);
             members.push_back(Member{ d.name, d.type, static_cast<int>(at), 0, 0,
                                       access, isMutable });
             // `int x = 5;` - C++11's initialiser on the member itself. The tokens stay
@@ -1541,6 +1565,26 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
     src_.fail(start, "expected a type");
 }
 
+// **[class.mem]/1: a member may not be declared twice in one class.** cxx1 laid
+// both out and read whichever `findMember` reached - which is the *last*, since
+// that walk goes backwards so a derived member hides a base's - so the first
+// one was a hole in the object nothing could name. Only this class's own
+// members are compared: hiding a base's is ordinary C++ and `ownFrom` is where
+// the copied ones stop.
+void Parser::refuseDuplicateMember(const std::vector<Member> &members,
+                                   std::size_t ownFrom, const std::string &name,
+                                   const std::string &tag, std::size_t pos) {
+    if (name.empty()) return;               // an anonymous union's own entry
+    for (std::size_t i = ownFrom; i < members.size(); i++)
+        if (members[i].name == name)
+            src_.fail(pos, "'" + name + "' is declared twice in " +
+                           (tag.empty() ? std::string("this class")
+                                        : "'" + tag + "'") +
+                           " - a class has one member of each name, and the "
+                           "second would be a second place in the object that "
+                           "nothing could name");
+}
+
 bool Parser::podForLayout(const Type *t) const {
     if (t == nullptr) return true;
     const Type *u = t->unqualified();
@@ -1690,13 +1734,38 @@ std::string Parser::operatorName() {
 // An operator this compiler can *name* but cannot yet reach from an expression,
 // refused where it is declared. Which dispatch is missing depends on the parameter
 // list, so it is asked once that is read. Accepting one leaves an uncallable function.
-void Parser::checkOperatorDeclarable(const std::string &name, std::size_t params,
+void Parser::checkOperatorDeclarable(const std::string &name,
+                                     const std::vector<const Type *> &params,
                                      bool member, std::size_t pos) {
     const std::string spelling = operatorSpelling(name);
     if (spelling.empty() || findOperator(spelling) == nullptr) return;
 
+    // **[over.oper]/6: a non-member operator needs a class or an enumeration
+    // among its parameters**, or a reference to one. `int operator+(int, int)`
+    // is a second meaning for an operator on built-in types, which the
+    // language lets nobody give - and cxx1 declared it and then never called
+    // it, resolution on `1 + 2` taking the built-in, so the function sat in
+    // the object as a symbol nothing referred to. **A pointer to a class does
+    // not count**, which is the rule's own edge and is measured against clang.
+    // A member operator needs none of this: its object is the class.
+    if (!member && !params.empty()) {
+        bool overClass = false;
+        for (std::size_t k = 0; k < params.size(); k++) {
+            const Type *p = params[k];
+            if (p->isReference()) p = p->referent();
+            p = p->unqualified();
+            if (p->isStructOrUnion() || p->isEnumeration()) overClass = true;
+        }
+        if (!overClass)
+            src_.fail(pos, "'" + name + "' takes no parameter of class or "
+                           "enumeration type, and [over.oper] asks every "
+                           "operator function for one - an operator over "
+                           "built-in types already has its meaning, and this "
+                           "declaration could never be called");
+    }
+
     // `this` is the first operand of a member operator and is not in the list.
-    const std::size_t operands = params + (member ? 1 : 0);
+    const std::size_t operands = params.size() + (member ? 1 : 0);
 
     static const char *const binary[] = {
         "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>",

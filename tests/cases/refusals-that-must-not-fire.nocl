@@ -1,0 +1,3 @@
+One name, and it is the COMDAT difference every other .nocl in this directory records: `?twice@S@@QEBAHXZ`, a member function defined inside its class and called nowhere in this program. cl emits such a definition into a COMDAT the collector does not read and drops it when nothing calls it; cxx1 has no weak or linkonce linkage and emits an ordinary definition. Everything else agrees, `??0Q@@QEAA@H@Z` and `??8@YA_NAEBUQ@@0@Z` among them - the class operator this case exists to keep legal is spelled the same on both sides.
+
+What this case measures is behaviour rather than names: six legal shapes standing beside the six refusals added with them, and run-cases.cmd runs it here.

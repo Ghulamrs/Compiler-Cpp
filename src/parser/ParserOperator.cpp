@@ -109,7 +109,8 @@ ExprPtr Parser::boundMemberPointer(const Type *cls, const Signature &f,
     return made;
 }
 
-ExprPtr Parser::applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos) {
+ExprPtr Parser::applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos,
+                                   bool constObject) {
     const Type *mpt = mp->type()->unqualified();
     // A pointer to a member *function*: read the code pointer out of it and
     // leave the object's address for the call to pick up.
@@ -137,7 +138,13 @@ ExprPtr Parser::applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos) {
     ExprPtr at(new Cast(to, std::move(sum)));
     at->setType(to);
     ExprPtr read(new Unary('*', std::move(at)));
-    read->setType(member);
+    // **[expr.mptr.oper]/6: the result is const where the object is.** cxx1
+    // handed back the member's own type, so `(s.*p) = 3;` wrote through a
+    // `const S` with no diagnostic - the same hole V-09 was on the ordinary
+    // member path, one operator over. A reference member is the exception the
+    // other paths make too: what it refers to is not the object's to qualify.
+    read->setType(constObject && !member->isReference()
+                      ? types_.withConst(member) : member);
     return read;
 }
 
@@ -152,9 +159,11 @@ ExprPtr Parser::memberPointerExpr() {
             if (!of->unqualified()->isStructOrUnion())
                 src_.fail(pos, "the left of '.*' has to be an object of class "
                                "type, and this is '" + of->describe() + "'");
+            const bool constObject = of->isConst();
             ExprPtr addr(new Unary('&', std::move(n)));
             addr->setType(types_.pointerTo(of->unqualified()));
-            n = applyMemberPointer(std::move(addr), memberPointerExpr(), pos);
+            n = applyMemberPointer(std::move(addr), memberPointerExpr(), pos,
+                                   constObject);
             continue;
         }
         if (consume("->*")) {
@@ -163,7 +172,9 @@ ExprPtr Parser::memberPointerExpr() {
                 !of->pointee()->unqualified()->isStructOrUnion())
                 src_.fail(pos, "the left of '->*' has to be a pointer to a "
                                "class, and this is '" + of->describe() + "'");
-            n = applyMemberPointer(decay(std::move(n)), memberPointerExpr(), pos);
+            const bool constPointee = of->pointee()->isConst();
+            n = applyMemberPointer(decay(std::move(n)), memberPointerExpr(), pos,
+                                   constPointee);
             continue;
         }
         return n;

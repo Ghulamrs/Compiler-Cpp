@@ -6947,6 +6947,65 @@ nothing for the second to initialise.
 **No emitted file moved.** 0 of 766, because everything this touches was
 refused before it could be emitted; the six added are the new cases' own.
 
+## Six refusals in one round, and the boundary each of them has
+
+**2026-09-09.** Six entries of `tests/open/` were **over-acceptances** -
+programs clang refuses and cxx1 compiled - and they are closed together. Each
+is a rule with a citation and a message that gives it; what took the time was
+not the rules but the shapes *next* to them, which is where a refusal one case
+too wide would have landed.
+
+| | | |
+| --- | --- | --- |
+| `auto a = 1, b = 2.0;` | [dcl.spec.auto]/7 | one `auto`, one type |
+| `struct S { const int a; }; S s;` | [class.ctor]/5 | the implicit default constructor is deleted |
+| `struct S { int S(); };` | [class.ctor]/3 | a constructor has no return type |
+| `struct S { int a; int a; };` | [class.mem]/1 | one member of each name |
+| `(constS.*p) = 3;` | [expr.mptr.oper]/6 | the result is const where the object is |
+| `int operator+(int, int);` | [over.oper]/6 | an operator needs a class or enumeration parameter |
+
+**Each was doing something quietly wrong rather than nothing.** The `auto`
+declaration gave `b` an `int` holding 2 where the initialiser said `2.0`. The
+const member began life holding the frame, with a const promising it would not
+change. `int S()` became a member function nothing could call, and `S s;` went
+on using the implicit default constructor. The duplicate member laid out two
+places and read the *last* - `findMember` walks backwards so a derived member
+hides a base's - leaving the first unnameable. `.*` on a const object was
+V-09's hole one operator over. And the operator over two `int`s sat in the
+object as a symbol nothing referred to, because resolution on `1 + 2` takes the
+built-in.
+
+### The boundaries, and the one that was wrong first
+
+`refusals-that-must-not-fire.cpp` is the case that holds them, six legal shapes
+standing beside the six refusals, and it exists because **one of the rules was
+too wide when first written**:
+
+```cpp
+auto *p = &a, q = 5;      // legal: `auto` is int in both
+```
+
+The first version compared the *declarator's* type - `int *` against `int` -
+and refused a conforming program. [dcl.spec.auto]/7 is about what `auto`
+deduced, not about what each declarator built, so `deduceAutoFrom` records the
+binding it made and the declaration loops compare that. Caught by writing the
+legal case, not by the suites, which had nothing of the shape.
+
+The other five boundaries: a member **hiding a base's** is ordinary C++, so
+only names declared in this class are compared and `ownFrom` is where the
+copied ones stop; a const member **with an initialiser** is fine, and so is a
+class with a **written constructor**, which has no implicit default to delete;
+reading through a const object with `.*` and `->*` still works, only writing is
+refused; and an operator over a **class** or an **enumeration** is exactly what
+[over.oper]/6 asks for, either one.
+
+**A class with a base is left alone** by the const-member rule on purpose: the
+member list here is flattened, base members and all, so refusing on one would
+be a guess about which class it came from.
+
+**Nothing emitted moved** - 0 of 772 files - because every one of these is a
+program that now stops at the front end.
+
 ## A frame that skipped the guard page, and two wrong answers before it
 
 **Fixed 2026-09-06.** `matrix_main.cpp` of the C++ Vector Exercise died on

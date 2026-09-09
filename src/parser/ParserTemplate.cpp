@@ -1131,6 +1131,11 @@ const Type *Parser::deduceAutoFrom(const Type *declared, const Type *from,
         src_.fail(pos, "'" + name + "' is declared '" + declared->describe() +
                        "' and its initialiser is '" + from->describe() +
                        "', which does not fit: " + why);
+    // **What `auto` itself came out as**, which is not the declarator's type:
+    // `auto *p = &i` deduces `int` and declares `int *`. [dcl.spec.auto]/7 is
+    // about the first of those, so the second declarator of one declaration is
+    // compared against this rather than against the type it built.
+    lastDeducedAuto_ = binding[0];
     return substituteDeduced(declared, binding[0]);
 }
 

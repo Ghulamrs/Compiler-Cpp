@@ -302,9 +302,13 @@ void Parser::topLevel(Program &program) {
     }
 
     if ((!peek().is("(") || constructionAhead) && d.paramsAt == 0) {
+        const Type *deducedSoFar = nullptr;
         for (;;) {
-            if (mentionsDeduced(d.type))
+            if (mentionsDeduced(d.type)) {
                 d.type = deduceAuto(d.type, d.name, d.pos);
+                checkOneDeducedType(deducedSoFar, lastDeducedAuto_, d.name,
+                                    d.pos);
+            }
             if (d.type->isVoid()) src_.fail(d.pos, "'" + d.name + "' cannot have type void");
             // **A reference at file scope** holds a pointer, so its storage is
             // one; bound in the image where the initialiser is a global's

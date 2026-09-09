@@ -2667,7 +2667,7 @@ void Parser::declareMember(const std::string &cls, const Declared &d,
         src_.fail(d.pos, "a member function of a union is not supported yet");
 
     const Type *fn = d.type;
-    checkOperatorDeclarable(d.name, fn->params().size(), true, d.pos);
+    checkOperatorDeclarable(d.name, fn->params(), true, d.pos);
 
     std::string key = cls + "::" + d.name;
     std::vector<std::size_t> &set = functionIndex_[key];
@@ -2848,7 +2848,7 @@ void Parser::declareFunction(const std::string &name, const Type *returns,
         (cLinkage_ > 0 || plain == "main" || namespaceStack_.empty())
             ? plain : namespacePrefix() + plain;
     const std::string &key = qualified;
-    checkOperatorDeclarable(key, params.size(), false, pos);
+    checkOperatorDeclarable(key, params, false, pos);
     const bool cName = cLinkage_ > 0 || key == "main";
     std::vector<std::size_t> &set = functionIndex_[key];
 
@@ -3077,6 +3077,45 @@ void Parser::skipMemberInitialiser() {
 // **[class.base.init]/9: a member the constructor did not name is initialised by the
 // initialiser the class gave it.** Read again at each constructor that needs it, an
 // initialiser being evaluated once per construction; the locals are put aside.
+// **[class.ctor]/5: an implicit default constructor is deleted where a member
+// could never be initialised.** A `const` member with no initialiser of its
+// own is the shape that reaches this - the constructor the compiler would
+// write has nothing to give it, and the object would begin life holding
+// whatever the frame held, with the const promising it would not change.
+// cxx1 wrote the constructor and did exactly that; clang refuses the
+// declaration, and so does this now.
+//
+// **A class with a written constructor is not this rule**: there is no
+// implicit default constructor to delete, and a constructor that fails to
+// initialise a const member is refused where its list is read. Nor is a class
+// with bases: the member list here is flattened, so a base's member cannot be
+// told from this class's own, and refusing on one would be a guess.
+void Parser::refuseDeletedDefaultInit(const Type *t, const std::string &name,
+                                      std::size_t pos) {
+    const Type *plain = t->unqualified();
+    while (plain->isArray()) plain = plain->pointee()->unqualified();
+    if (!plain->isStructOrUnion() || plain->tag().empty()) return;
+    if (!plain->bases().empty()) return;
+    if (overloadsOf(constructorKey(plain->tag())) != nullptr) return;
+
+    const std::vector<Member> &all = plain->members();
+    for (std::size_t i = 0; i < all.size(); i++) {
+        const bool needsOne = all[i].type->isConst() || all[i].type->isReference();
+        if (!needsOne) continue;
+        if (memberInit_.find(plain->tag() + "::" + all[i].name) != memberInit_.end())
+            continue;
+        src_.fail(pos, "'" + name + "' has type '" + plain->describe() +
+                       "', whose member '" + all[i].name + "' is " +
+                       (all[i].type->isReference() ? "a reference"
+                                                   : "const") +
+                       " and has no initialiser - [class.ctor] deletes the "
+                       "default constructor of such a class, because nothing "
+                       "it could write would ever set that member. Give the "
+                       "member an initialiser, or the class a constructor "
+                       "that takes one");
+    }
+}
+
 bool Parser::hasMemberInitialiser(const std::string &tag) const {
     const std::string prefix = tag + "::";
     std::map<std::string, std::size_t>::const_iterator it =
