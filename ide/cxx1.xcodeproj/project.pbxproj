@@ -16,6 +16,7 @@
 		2375206DA1BADDDD664A3BF2 /* main.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0622243F82CE24842E74D759 /* main.cpp */; };
 		781C436E6FE3C805E913584B /* Parser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AE33A216B5D8537C37B1C11B /* Parser.cpp */; };
 		0C0A49252B10DC314A9F94DE /* ParserClass.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 67C0D31628F1AE770DA763B0 /* ParserClass.cpp */; };
+		05C9ABB097EDE7A7622CEDFA /* ParserConst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 63C98F684D262AB060AA2828 /* ParserConst.cpp */; };
 		0F66087E672AC554777D6939 /* ParserExpr.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C81BCDFDB0EEE96044A0E70D /* ParserExpr.cpp */; };
 		100487773F202353D4B4D2FE /* ParserExprCall.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 003FEF6EDE3829A29053145B /* ParserExprCall.cpp */; };
 		E4C59F458413CA1A0F2D44F8 /* ParserExprLambda.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F7E14BA7B844D82CA1511880 /* ParserExprLambda.cpp */; };
@@ -24,9 +25,8 @@
 		9B076A3BFE526CEAFEED50E5 /* ParserOperator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9007C25AD21D33132ABC93DE /* ParserOperator.cpp */; };
 		65AD20A97CDDFC3863511CD4 /* ParserOverload.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 3E0575791BD640A45CAAAE70 /* ParserOverload.cpp */; };
 		606601CADFDA5BDF7A41B73F /* ParserStmt.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C92CA000B1DB818A5C2997A /* ParserStmt.cpp */; };
-		7B2D79AE6D5544768A836A01 /* ParserTopLevel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1CAAA1421FBF418F98E4486C /* ParserTopLevel.cpp */; };
-		A5EE38DE88EB4D45A64ADD17 /* ParserConst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F3FD86A7597B4373A306D7AA /* ParserConst.cpp */; };
 		0B460DBD2B3B64579C2DFF64 /* ParserTemplate.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DC7CEDBC4778277FD98832AA /* ParserTemplate.cpp */; };
+		A2E5375FA8057ECCE5FA02F3 /* ParserTopLevel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2C5EEEC5C7EFA172D6DB24DE /* ParserTopLevel.cpp */; };
 		9D58D51CCC8F52B75713AAD5 /* ParserType.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BE1F463CA0C34065CAEF505B /* ParserType.cpp */; };
 		CEA9F161EB296A691B9FAD8F /* Arm64Darwin.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 201EE94DC01106B98E56A367 /* Arm64Darwin.cpp */; };
 		2B45FAC274DFDD7BB8B6D32A /* Backend.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 12856577CF3E39497DC00394 /* Backend.cpp */; };
@@ -49,6 +49,7 @@
 		0622243F82CE24842E74D759 /* main.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = main.cpp; path = "../src/main.cpp"; sourceTree = "<group>"; };
 		AE33A216B5D8537C37B1C11B /* Parser.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Parser.cpp; path = "../src/parser/Parser.cpp"; sourceTree = "<group>"; };
 		67C0D31628F1AE770DA763B0 /* ParserClass.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserClass.cpp; path = "../src/parser/ParserClass.cpp"; sourceTree = "<group>"; };
+		63C98F684D262AB060AA2828 /* ParserConst.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserConst.cpp; path = "../src/parser/ParserConst.cpp"; sourceTree = "<group>"; };
 		C81BCDFDB0EEE96044A0E70D /* ParserExpr.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserExpr.cpp; path = "../src/parser/ParserExpr.cpp"; sourceTree = "<group>"; };
 		003FEF6EDE3829A29053145B /* ParserExprCall.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserExprCall.cpp; path = "../src/parser/ParserExprCall.cpp"; sourceTree = "<group>"; };
 		F7E14BA7B844D82CA1511880 /* ParserExprLambda.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserExprLambda.cpp; path = "../src/parser/ParserExprLambda.cpp"; sourceTree = "<group>"; };
@@ -57,9 +58,8 @@
 		9007C25AD21D33132ABC93DE /* ParserOperator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserOperator.cpp; path = "../src/parser/ParserOperator.cpp"; sourceTree = "<group>"; };
 		3E0575791BD640A45CAAAE70 /* ParserOverload.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserOverload.cpp; path = "../src/parser/ParserOverload.cpp"; sourceTree = "<group>"; };
 		1C92CA000B1DB818A5C2997A /* ParserStmt.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserStmt.cpp; path = "../src/parser/ParserStmt.cpp"; sourceTree = "<group>"; };
-		1CAAA1421FBF418F98E4486C /* ParserTopLevel.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserTopLevel.cpp; path = "../src/parser/ParserTopLevel.cpp"; sourceTree = "<group>"; };
-		F3FD86A7597B4373A306D7AA /* ParserConst.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserConst.cpp; path = "../src/parser/ParserConst.cpp"; sourceTree = "<group>"; };
 		DC7CEDBC4778277FD98832AA /* ParserTemplate.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserTemplate.cpp; path = "../src/parser/ParserTemplate.cpp"; sourceTree = "<group>"; };
+		2C5EEEC5C7EFA172D6DB24DE /* ParserTopLevel.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserTopLevel.cpp; path = "../src/parser/ParserTopLevel.cpp"; sourceTree = "<group>"; };
 		BE1F463CA0C34065CAEF505B /* ParserType.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ParserType.cpp; path = "../src/parser/ParserType.cpp"; sourceTree = "<group>"; };
 		201EE94DC01106B98E56A367 /* Arm64Darwin.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Arm64Darwin.cpp; path = "../src/backend/Arm64Darwin.cpp"; sourceTree = "<group>"; };
 		12856577CF3E39497DC00394 /* Backend.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = Backend.cpp; path = "../src/backend/Backend.cpp"; sourceTree = "<group>"; };
@@ -163,6 +163,7 @@
 				AE33A216B5D8537C37B1C11B /* Parser.cpp */,
 				2D10825A2D722016661BDF14 /* Parser.h */,
 				67C0D31628F1AE770DA763B0 /* ParserClass.cpp */,
+				63C98F684D262AB060AA2828 /* ParserConst.cpp */,
 				C81BCDFDB0EEE96044A0E70D /* ParserExpr.cpp */,
 				003FEF6EDE3829A29053145B /* ParserExprCall.cpp */,
 				F7E14BA7B844D82CA1511880 /* ParserExprLambda.cpp */,
@@ -172,9 +173,8 @@
 				9007C25AD21D33132ABC93DE /* ParserOperator.cpp */,
 				3E0575791BD640A45CAAAE70 /* ParserOverload.cpp */,
 				1C92CA000B1DB818A5C2997A /* ParserStmt.cpp */,
-				1CAAA1421FBF418F98E4486C /* ParserTopLevel.cpp */,
-				F3FD86A7597B4373A306D7AA /* ParserConst.cpp */,
 				DC7CEDBC4778277FD98832AA /* ParserTemplate.cpp */,
+				2C5EEEC5C7EFA172D6DB24DE /* ParserTopLevel.cpp */,
 				BE1F463CA0C34065CAEF505B /* ParserType.cpp */,
 			);
 			name = "src/parser";
@@ -234,6 +234,7 @@
 				2375206DA1BADDDD664A3BF2 /* main.cpp in Sources */,
 				781C436E6FE3C805E913584B /* Parser.cpp in Sources */,
 				0C0A49252B10DC314A9F94DE /* ParserClass.cpp in Sources */,
+				05C9ABB097EDE7A7622CEDFA /* ParserConst.cpp in Sources */,
 				0F66087E672AC554777D6939 /* ParserExpr.cpp in Sources */,
 				100487773F202353D4B4D2FE /* ParserExprCall.cpp in Sources */,
 				E4C59F458413CA1A0F2D44F8 /* ParserExprLambda.cpp in Sources */,
@@ -242,9 +243,8 @@
 				9B076A3BFE526CEAFEED50E5 /* ParserOperator.cpp in Sources */,
 				65AD20A97CDDFC3863511CD4 /* ParserOverload.cpp in Sources */,
 				606601CADFDA5BDF7A41B73F /* ParserStmt.cpp in Sources */,
-				7B2D79AE6D5544768A836A01 /* ParserTopLevel.cpp in Sources */,
-				A5EE38DE88EB4D45A64ADD17 /* ParserConst.cpp in Sources */,
 				0B460DBD2B3B64579C2DFF64 /* ParserTemplate.cpp in Sources */,
+				A2E5375FA8057ECCE5FA02F3 /* ParserTopLevel.cpp in Sources */,
 				9D58D51CCC8F52B75713AAD5 /* ParserType.cpp in Sources */,
 				CEA9F161EB296A691B9FAD8F /* Arm64Darwin.cpp in Sources */,
 				2B45FAC274DFDD7BB8B6D32A /* Backend.cpp in Sources */,
@@ -278,6 +278,7 @@
 				);
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"CXX1_INCLUDE_DIR=\\\"/Users/g.r.akhtar/Documents/Claude/C++/lib\\\"",
+					"CXX1_CXX_INCLUDE_DIR=\\\"/Users/g.r.akhtar/Documents/Claude/C++/include\\\"",
 				);
 				PRODUCT_NAME = "cxx1";
 				HEADER_SEARCH_PATHS = "/Users/g.r.akhtar/Documents/Claude/C++/src";
@@ -303,6 +304,7 @@
 				);
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"CXX1_INCLUDE_DIR=\\\"/Users/g.r.akhtar/Documents/Claude/C++/lib\\\"",
+					"CXX1_CXX_INCLUDE_DIR=\\\"/Users/g.r.akhtar/Documents/Claude/C++/include\\\"",
 				);
 				PRODUCT_NAME = "cxx1";
 				HEADER_SEARCH_PATHS = "/Users/g.r.akhtar/Documents/Claude/C++/src";

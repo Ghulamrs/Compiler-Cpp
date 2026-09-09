@@ -82,6 +82,15 @@ def xcode(srcs, hdrs):
     src_phase = "\n".join('\t\t\t\t%s /* %s in Sources */,' % (uid("b:" + p), os.path.basename(p))
                           for p in srcs)
     inc = os.path.join(ROOT, "lib")
+    # **Both directories, or a compiler built here cannot find <vector>.**
+    # `lib/` holds the C headers and `include/` the C++ ones on top of them;
+    # the Makefile passes both and these projects passed only the first, so an
+    # IDE-built binary compiled `<stddef.h>` and answered "cannot find <vector>"
+    # - measured on 2026-09-09 with the Xcode binary, which is the only way this
+    # would ever have been noticed. The driver also looks *beside itself* now,
+    # which is what makes an unpacked release work; this is the other half, for
+    # a binary sitting in DerivedData or in x64\Release with nothing beside it.
+    cxxinc = os.path.join(ROOT, "include")
     common = ('\t\t\t\tALWAYS_SEARCH_USER_PATHS = NO;\n'
               # **The Makefile's warning line and no other.** Xcode's template
               # adds -Wshorten-64-to-32, which -Wall -Wextra do not, and it fires
@@ -102,9 +111,10 @@ def xcode(srcs, hdrs):
               '\t\t\t\t\t"-pedantic",\n\t\t\t\t);\n'
               # the include directory the driver bakes in, as the Makefile does
               '\t\t\t\tGCC_PREPROCESSOR_DEFINITIONS = (\n'
-              '\t\t\t\t\t"CXX1_INCLUDE_DIR=\\\\\\"%s\\\\\\"",\n\t\t\t\t);\n'
+              '\t\t\t\t\t"CXX1_INCLUDE_DIR=\\\\\\"%s\\\\\\"",\n'
+              '\t\t\t\t\t"CXX1_CXX_INCLUDE_DIR=\\\\\\"%s\\\\\\"",\n\t\t\t\t);\n'
               '\t\t\t\tPRODUCT_NAME = "%s";\n'
-              '\t\t\t\tHEADER_SEARCH_PATHS = "%s/src";\n' % (inc, NAME, ROOT))
+              '\t\t\t\tHEADER_SEARCH_PATHS = "%s/src";\n' % (inc, cxxinc, NAME, ROOT))
     return files, builds, group_secs, group_children, src_phase, common
 
 
@@ -329,6 +339,7 @@ def write_vs(srcs, hdrs, check):
     # so it must be spelled with forward slashes: a backslash there starts an
     # escape and the error lands in Driver.cpp, which is not the file at fault.
     incdir = "$([System.String]::Copy('$(ProjectDir)..\\lib').Replace('\\','/'))"
+    cxxincdir = "$([System.String]::Copy('$(ProjectDir)..\\include').Replace('\\','/'))"
 
     proj = f"""<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
@@ -370,7 +381,7 @@ def write_vs(srcs, hdrs, check):
       <TreatWarningAsError>true</TreatWarningAsError>
       <DisableSpecificWarnings>4996;4267;4244;4456;4146</DisableSpecificWarnings>
       <AdditionalIncludeDirectories>$(ProjectDir)..\\msvc\\compat;$(ProjectDir)..\\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;CXX1_INCLUDE_DIR="{incdir}";%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;CXX1_INCLUDE_DIR="{incdir}";CXX1_CXX_INCLUDE_DIR="{cxxincdir}";%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link><SubSystem>Console</SubSystem></Link>

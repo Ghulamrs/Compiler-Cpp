@@ -30,8 +30,18 @@ these are files rather than command lines.
 Each project carries the line the tree is already gated on, and nothing else:
 
 * `-std=c++14 -O2 -Wall -Wextra -pedantic` with warnings as errors, and
-  `CXX1_INCLUDE_DIR` pointing at `../C++/lib`, which the driver compiles into
-  the binary as an absolute path.
+  **both** header directories compiled into the binary - `CXX1_INCLUDE_DIR` for
+  `lib/`, the C headers, and `CXX1_CXX_INCLUDE_DIR` for `include/`, the C++ ones
+  on top of them.
+* **Only the first of those was here until 2026-09-09**, and the consequence was
+  invisible from inside the project: a binary built by Xcode or by Visual Studio
+  compiled `<stddef.h>` and answered `cannot find <vector>` for anything that
+  reached the C++ headers. The Makefile passed both all along. Measured with the
+  Xcode binary, which is the only place it would ever have shown.
+* Since 1.1 the driver also looks for both directories **beside itself** -
+  `<program>/include` and `<program>/../include`, and the same for `lib/` -
+  which is what makes an unpacked release work wherever it is put. The compiled-in
+  paths are the last resort rather than the only one; see README.1ST, section 2.
 * **Xcode's own template adds `-Wshorten-64-to-32`, which is off here.** It is
   not in `-Wall -Wextra`, and it fires on the bitfield arithmetic that is
   deliberately done in `long long` and narrowed after a check. A project that
@@ -57,6 +67,9 @@ hand rots the first time somebody adds a file:
   put in the checkout as `cxx1.exe` and run against the whole case suite -
   **266 passed, 0 failed**. It builds the compiler, not merely something that
   links.
+* **Re-measured 2026-09-09 for 1.1**, after both directories were added: the
+  Xcode build succeeds and its binary compiles a program that includes
+  `<vector>`, which is the thing that could not be done before.
 * **Visual Studio 2022**: `build-vs.cmd` compiled all 28 sources at `/W4 /WX`
   on the Windows box, and `check-vs.cmd` then had that binary compile
   `tests/cases/class.cpp`, assemble it with ml64, link it and run it - the same

@@ -39,11 +39,17 @@ STATUS=0
 # no `.expected` of its own name and the far side reports it as "did not run":
 # a red run that says nothing about the compiler. One three-box round was spent
 # on exactly that.
+# **The release material travels too**, and it is on this line rather than in a
+# comment somewhere: `examples/` so the four Makefiles can be run on the machine
+# each is written for, `README.1ST` because it is what a user is handed, and the
+# seal so `tools/seal check` answers the same question on all three boxes. None
+# of it changes what is built; all of it is part of what is released.
 COPYFILE_DISABLE=1 tar -C "$ROOT" --no-xattrs -czf "$TAR" \
     --exclude .git --exclude obj --exclude obj-msvc --exclude winout \
     --exclude 'tests/out-*' --exclude '*.exe' --exclude .DS_Store \
     --exclude '* [0-9]' --exclude '* [0-9].*' \
-    src tests lib include tools docs msvc ide Makefile CLAUDE.md README.md build \
+    src tests lib include tools docs msvc ide examples \
+    Makefile CLAUDE.md README.md README.1ST cxx1-1.1.dat build \
     2>/dev/null
 
 # **The Linux build goes through `./build`, which caps it.** That script runs

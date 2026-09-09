@@ -1,0 +1,45 @@
+# examples/Makefile.macos - this project, built for macOS on arm64.
+#
+# c2026 G. R. Akhtar - ISO C++ 11,  Compiler
+#
+#   make -f Makefile.macos            build ./demo
+#   make -f Makefile.macos run
+#   make -f Makefile.macos asm        the arm64 assembly, to read
+#   make -f Makefile.macos clean
+#
+# The only difference from the portable `Makefile` beside this one is that the
+# target is named rather than inferred: cxx1 compiles for the machine it runs
+# on unless it is told otherwise, so naming it here is documentation on a
+# machine that agrees and a mistake caught early on one that does not.
+
+TARGET    := demo
+ARCH      := arm64-darwin
+SRCS      := $(wildcard *.cpp)
+OBJS      := $(SRCS:.cpp=.o)
+ASMS      := $(SRCS:.cpp=.s)
+
+CXX1      ?= cxx1.exe
+CXX1FLAGS ?=
+
+.PHONY: all run asm clean
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CXX1) $(CXX1FLAGS) $(OBJS) -o $@
+
+%.o: %.cpp
+	$(CXX1) $(CXX1FLAGS) -c $< -o $@
+
+run: $(TARGET)
+	./$(TARGET)
+
+# `-arch` on this machine is the machine it already is, so the assembly is
+# both readable and assemblable here.
+asm: $(ASMS)
+
+%.s: %.cpp
+	$(CXX1) $(CXX1FLAGS) -S -arch $(ARCH) $< -o $@
+
+clean:
+	rm -f $(TARGET) $(OBJS) $(ASMS)

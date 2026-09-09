@@ -1,0 +1,49 @@
+# examples\Makefile.windows - this project, built for Windows on x86-64.
+#
+# c2026 G. R. Akhtar - ISO C++ 11,  Compiler
+#
+# **This one is for NMAKE**, which ships with Visual Studio, and its syntax is
+# not GNU make's: inference rules are written `.cpp.obj:`, there is no
+# `$(wildcard)`, and the sources are therefore listed. Run it from a Developer
+# Command Prompt, or from any shell that has run vcvars64.bat - `ml64` and
+# `link` reach PATH only there, and cxx1 runs both.
+#
+#   nmake /f Makefile.windows            build demo.exe
+#   nmake /f Makefile.windows run
+#   nmake /f Makefile.windows asm        the assembly, to read
+#   nmake /f Makefile.windows clean
+#
+# GNU make on Windows works too - use the portable Makefile beside this one and
+# say OBJS with .obj if you prefer that suffix; cxx1 takes either.
+
+# **One translation unit on this target**, and unity.cpp says why at length:
+# there is no COMDAT here, so two objects that both include <string> do not
+# link. The other three Makefiles build one object per source, which is what
+# this one will do too when that lands.
+TARGET    = demo.exe
+SRCS      = unity.cpp
+OBJS      = unity.obj
+ASMS      = unity.s
+
+CXX1      = cxx1.exe
+CXX1FLAGS =
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CXX1) $(CXX1FLAGS) $(OBJS) -o $(TARGET)
+
+.cpp.obj:
+	$(CXX1) $(CXX1FLAGS) -c $< -o $@
+
+run: $(TARGET)
+	.\$(TARGET)
+
+# **`-masm=gnu` is worth knowing about here.** The default spelling is MASM,
+# which ml64 assembles; the GNU spelling is assembled by clang and is what
+# carries a line table, so `-g` wants it. Neither changes the program.
+asm:
+	$(CXX1) $(CXX1FLAGS) -S -arch x86_64-windows unity.cpp -o unity.s
+
+clean:
+	-del /q $(TARGET) $(OBJS) $(ASMS) 2>nul

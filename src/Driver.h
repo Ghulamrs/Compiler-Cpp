@@ -18,6 +18,8 @@ private:
     std::string program_;
     std::vector<Job> jobs_;
     std::vector<std::string> searchPath_;
+    // Inputs that are already objects: not compiled, handed to the linker.
+    std::vector<std::string> alreadyObjects_;
     const Backend *backend_ = &defaultBackend();
     bool toStdout_ = false;
     bool timing_ = false;
@@ -69,4 +71,9 @@ private:
     static const char *hostGnuAssembler();
     static const char *hostLinker();
     static void usage(char *);
+    // The one line every run prints, and the switch that stops it - see
+    // Driver.cpp, where both are explained.
+    static const char *bannerLine();
+    void standardIncludeDirectories(const std::string &argv0);
+    bool quiet_ = false;
 };

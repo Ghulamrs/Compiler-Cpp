@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""The release seal: a CRC32 of every file the compiler is made of.
+
+    tools/seal write      write cxx1-<version>.dat from what is on disk
+    tools/seal check      verify every line of it, and say what moved
+
+**A seal nobody can check is decoration**, which is why writing and checking are
+one program and the checking half is the one that matters. It answers with a
+list of files that differ, added or gone, and a non-zero status - so a build
+script can gate on it.
+
+What is sealed is what a release *is*: the compiler's own sources, the two
+header directories every program it compiles reaches into, and the worked
+example that ships beside them. Nothing that is
+generated (obj/, cxx1.exe, tests/out-*) and nothing that is documentation, which
+changes without the compiler changing.
+
+CRC32 and not a cryptographic digest, because this answers "did this file
+change" and not "did somebody change it on purpose": it is a seal on a release,
+not a signature. It is also what the request asked for, and it is short enough
+to read off the page.
+"""
+import binascii
+import os
+import sys
+import datetime
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.normpath(os.path.join(HERE, ".."))
+def fromVersionHeader(macro, fallback):
+    """**One source of truth, and it is the compiler's own header.** A version
+    kept in two files is a version that disagrees with itself the first time
+    one of them is edited."""
+    path = os.path.join(ROOT, "src", "Version.h")
+    try:
+        for line in open(path):
+            parts = line.split()
+            # **The name, not a prefix of it**: the include guard is
+            # CXX1_VERSION_H, and `startswith` took that for CXX1_VERSION and
+            # came back with a line that has no string in it at all.
+            if len(parts) >= 3 and parts[0] == "#define" and parts[1] == macro:
+                return line.split('"')[1]
+    except IOError:
+        pass
+    return fallback
+
+
+VERSION = fromVersionHeader("CXX1_VERSION", "1.1")
+SEAL_DATE = fromVersionHeader("CXX1_SEAL_DATE", "10-09-2026")
+NAME = fromVersionHeader("CXX1_SEAL_FILE", "cxx1-%s.dat" % VERSION)
+BANNER = fromVersionHeader("CXX1_BANNER",
+                           "c2026 G. R. Akhtar - ISO C++ 11,  Compiler")
+
+# The directories a release is made of, each walked in full.
+SEALED = ("src", "include", "lib", "examples")
+# ... and these files beside them, which decide how it is built.
+SEALED_FILES = ("Makefile", "msvc/build.cmd", "ide/generate.py")
+
+
+def duplicate(name):
+    """macOS leaves `name 2.ext` copies under ~/Documents; they are not files
+    of this tree and CLAUDE.md records the phenomenon at length."""
+    stem = name.rsplit(".", 1)[0]
+    return len(stem) > 2 and stem[-1].isdigit() and stem[-2] == " "
+
+
+def files():
+    out = []
+    for d in SEALED:
+        base = os.path.join(ROOT, d)
+        for where, dirs, names in os.walk(base):
+            dirs.sort()
+            for n in sorted(names):
+                if n.startswith(".") or duplicate(n):
+                    continue
+                p = os.path.join(where, n)
+                out.append(os.path.relpath(p, ROOT).replace(os.sep, "/"))
+    for f in SEALED_FILES:
+        if os.path.exists(os.path.join(ROOT, f)):
+            out.append(f)
+    return sorted(out)
+
+
+def crc(path):
+    with open(os.path.join(ROOT, path), "rb") as fh:
+        return binascii.crc32(fh.read()) & 0xFFFFFFFF, os.path.getsize(
+            os.path.join(ROOT, path))
+
+
+def write():
+    rows = [(f,) + crc(f) for f in files()]
+    total = binascii.crc32(
+        ("".join("%s %08X" % (f, c) for f, c, _ in rows)).encode()) & 0xFFFFFFFF
+    with open(os.path.join(ROOT, NAME), "w") as fh:
+        fh.write(BANNER + "\n")
+        fh.write("Release seal, version %s, sealed %s\n" % (VERSION, SEAL_DATE))
+        fh.write("Written by tools/seal; check it with `tools/seal check`.\n")
+        fh.write("CRC32  size  file - %d files, seal %08X\n" % (len(rows), total))
+        fh.write("-" * 66 + "\n")
+        for f, c, n in rows:
+            fh.write("%08X %9d  %s\n" % (c, n, f))
+    print("wrote %s: %d files, seal %08X" % (NAME, len(rows), total))
+    return 0
+
+
+def check():
+    path = os.path.join(ROOT, NAME)
+    if not os.path.exists(path):
+        print("%s: no such seal - run `tools/seal write`" % NAME)
+        return 1
+    sealed = {}
+    for line in open(path):
+        parts = line.split()
+        if len(parts) == 3 and len(parts[0]) == 8:
+            try:
+                sealed[parts[2]] = (int(parts[0], 16), int(parts[1]))
+            except ValueError:
+                pass
+    now = set(files())
+    bad = 0
+    for f in sorted(set(sealed) | now):
+        if f not in sealed:
+            print("  added   %s" % f); bad += 1
+            continue
+        if f not in now:
+            print("  gone    %s" % f); bad += 1
+            continue
+        c, n = crc(f)
+        if (c, n) != sealed[f]:
+            print("  changed %s  %08X -> %08X" % (f, sealed[f][0], c)); bad += 1
+    print("seal %s: %d files, %d differ" % (VERSION, len(sealed), bad))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    what = sys.argv[1] if len(sys.argv) > 1 else "check"
+    if what == "write":
+        sys.exit(write())
+    if what == "check":
+        sys.exit(check())
+    print(__doc__)
+    sys.exit(2)

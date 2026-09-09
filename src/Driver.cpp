@@ -1,4 +1,5 @@
 #include "Driver.h"
+#include "Version.h"
 #include "backend/X86_64Windows.h"
 
 #include "backend/Backend.h"
@@ -35,6 +36,13 @@
 #include <sched.h>
 #endif
 
+// **Where the running program is**, which is how a *released* compiler finds
+// the headers it ships with: see standardIncludeDirectories(). One call each,
+// and the fallback below needs none of them.
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
 // **The environment a spawned tool inherits.** Apple gives an executable its
 // `environ` through this accessor rather than as a symbol; everything else
 // declares the variable.
@@ -66,6 +74,90 @@ const std::size_t kThreadFrom = 4;
 #define CXX1_CXX_INCLUDE_DIR ""
 #endif
 
+// **The line every run of this compiler prints**, and the one thing in the
+// output that is not about the program being compiled. It goes to *stderr*:
+// `-S -o -` writes assembly to stdout and a banner in front of it would be
+// part of the assembly. `cl` has printed one since 1993 and takes `/nologo`
+// to stop; this takes `-nologo`, which is what a build script wants and what
+// tools/verify-three passes.
+const char *Driver::bannerLine() { return CXX1_BANNER; }
+
+// **The directory the running program is in.** A released compiler is
+// unpacked somewhere nobody chose at build time, so the headers it ships with
+// cannot be found by a path compiled into it - they are found *beside it*.
+// Three platform calls and a fallback: `argv[0]` with its last component
+// removed, which is right whenever the program was run by a path.
+static std::string programDirectory(const std::string &argv0) {
+    std::string full;
+#if defined(_WIN32)
+    char buf[4096];
+    DWORD n = GetModuleFileNameA(nullptr, buf, sizeof(buf));
+    if (n > 0 && n < sizeof(buf)) full.assign(buf, n);
+#elif defined(__APPLE__)
+    char buf[4096];
+    uint32_t n = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &n) == 0) {
+        char real[4096];
+        full = realpath(buf, real) != nullptr ? real : buf;
+    }
+#elif defined(__linux__)
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) full.assign(buf, static_cast<std::size_t>(n));
+#endif
+    if (full.empty()) full = argv0;
+    std::size_t cut = full.find_last_of("/\\");
+    if (cut == std::string::npos) return std::string(".");
+    return full.substr(0, cut);
+}
+
+static bool directoryHas(const std::string &dir, const char *name) {
+    std::ifstream probe((dir + "/" + name).c_str());
+    return probe.good();
+}
+
+// **Where the standard headers are, asked in the order a release wants.**
+// `include/` holds the C++ headers and `lib/` the C ones underneath them, and
+// a program compiled by this compiler may reach either - so both have to be
+// found wherever the compiler was unpacked, not only where it was built.
+//
+//   1. `CXX1_INCLUDE` / `CXX1_LIB` in the environment, which is the override
+//      a packager or a test harness reaches for and nothing else touches.
+//   2. **Beside the program**: `<dir>/include` and `<dir>/lib`, then
+//      `<dir>/../include` and `<dir>/../lib` for a `bin/` layout. This is the
+//      one that makes an unpacked release work, and it is also what the
+//      checkout answers with, `cxx1.exe` being built beside its own headers.
+//   3. The path compiled in at build time, last and still there: a binary
+//      moved out of a tree that has neither of the above keeps working.
+//
+// Each directory is offered only if a header this compiler ships is actually
+// in it, so a `lib/` belonging to something else is not silently adopted.
+void Driver::standardIncludeDirectories(const std::string &argv0) {
+    const char *envCxx = std::getenv("CXX1_INCLUDE");
+    const char *envC = std::getenv("CXX1_LIB");
+    if (envCxx != nullptr && envCxx[0] != '\0') {
+        searchPath_.push_back(envCxx);
+        if (envC != nullptr && envC[0] != '\0') searchPath_.push_back(envC);
+        return;
+    }
+
+    const std::string here = programDirectory(argv0);
+    const std::string candidates[2] = { here, here + "/.." };
+    for (const std::string &at : candidates) {
+        const std::string cxxDir = at + "/include";
+        const std::string cDir = at + "/lib";
+        if (!directoryHas(cxxDir, "vector") || !directoryHas(cDir, "stddef.h"))
+            continue;
+        searchPath_.push_back(cxxDir);
+        searchPath_.push_back(cDir);
+        return;
+    }
+
+    if (CXX1_CXX_INCLUDE_DIR[0] != '\0')
+        searchPath_.push_back(CXX1_CXX_INCLUDE_DIR);
+    if (CXX1_INCLUDE_DIR[0] != '\0') searchPath_.push_back(CXX1_INCLUDE_DIR);
+}
+
 void Driver::usage(char *file) {
     std::fprintf(stderr,
         "usage: %s <file.cpp> [more.cpp ...] [-S|-c] [-o out] [-D n[=v]] [-U n]\n"
@@ -90,6 +182,10 @@ void Driver::usage(char *file) {
         "         ml64, which is the default, or 'gnu' for the GNU spelling\n"
         "       -g writes a line table, so a debugger can stop on a line of C++\n"
         "         and step through it; x86_64-linux and arm64-darwin only\n"
+        "       -nologo leaves out the line this compiler prints before it\n"
+        "         starts, which a build script may not want\n"
+        "       -version says which release this is, and which seal file\n"
+        "         carries the CRC32 of the sources it was built from\n"
         "       -time reports how long each phase took\n", file);
 }
 
@@ -422,6 +518,7 @@ bool Driver::link() {
         command += " /nologo /subsystem:console /stack:8388608 /out:"
                  + shellQuote(linkTo_);
         for (const std::string &o : objects) command += " " + shellQuote(o);
+        for (const std::string &o : alreadyObjects_) command += " " + shellQuote(o);
 
         command += " libcmt.lib libucrt.lib libvcruntime.lib kernel32.lib"
                    " legacy_stdio_definitions.lib";
@@ -430,6 +527,7 @@ bool Driver::link() {
 
         if (debug_) command += " -g";
         for (const std::string &t : temporaries_) command += " " + shellQuote(t);
+        for (const std::string &o : alreadyObjects_) command += " " + shellQuote(o);
         command += " -o " + shellQuote(linkTo_);
 
         command += " -lm";
@@ -557,6 +655,15 @@ bool Driver::parseArguments(int argc, char **argv) {
             objectOnly_ = true;
         } else if (std::strcmp(argv[i], "-time") == 0) {
             timing_ = true;
+        } else if (std::strcmp(argv[i], "-version") == 0 ||
+                   std::strcmp(argv[i], "--version") == 0) {
+            // Printed on stdout, unlike the banner: a version somebody asked
+            // for is the answer to the command, not an aside beside it.
+            std::printf("%s\nVersion %s, sealed %s - see %s\n", CXX1_BANNER,
+                        CXX1_VERSION, CXX1_SEAL_DATE, CXX1_SEAL_FILE);
+            std::exit(0);
+        } else if (std::strcmp(argv[i], "-nologo") == 0) {
+            quiet_ = true;
         } else if (std::strcmp(argv[i], "-g") == 0) {
             debug_ = true;
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
@@ -570,9 +677,7 @@ bool Driver::parseArguments(int argc, char **argv) {
     // C++ first, then C: `<cstddef>` has to be found before it can include
     // `<stddef.h>`, and a `-I` the user wrote comes before both because it is
     // already in the list by the time this runs.
-    if (CXX1_CXX_INCLUDE_DIR[0] != '\0')
-        searchPath_.push_back(CXX1_CXX_INCLUDE_DIR);
-    if (CXX1_INCLUDE_DIR[0] != '\0') searchPath_.push_back(CXX1_INCLUDE_DIR);
+    standardIncludeDirectories(argv[0]);
 
     if (inputs.empty()) { usage(argv[0]); return false; }
 
@@ -586,6 +691,38 @@ bool Driver::parseArguments(int argc, char **argv) {
                      "without -g.\n",
                      argv[0], backend_->name());
         return false;
+    }
+
+    // **An object file is an input too**, and it is not compiled: it is handed
+    // to the linker with everything this run produces. Without it a project
+    // built one file at a time - which is what any Makefile does, and what
+    // `examples/Makefile` shows - could compile with cxx1 and then had to link
+    // with something else, because `cxx1 a.o b.o -o prog` read `a.o` as C++
+    // and answered "stray character in program". Recognised by suffix, which
+    // is what every driver does: `.o` on the Itanium targets, `.obj` on
+    // Windows, and an archive is passed through the same way.
+    {
+        std::vector<std::string> sources;
+        for (std::size_t i = 0; i < inputs.size(); i++) {
+            const std::string &in = inputs[i];
+            const std::size_t dot = in.find_last_of('.');
+            const std::string ext = dot == std::string::npos
+                                  ? std::string() : in.substr(dot);
+            if (ext == ".o" || ext == ".obj" || ext == ".a" || ext == ".lib")
+                alreadyObjects_.push_back(in);
+            else
+                sources.push_back(in);
+        }
+        inputs.swap(sources);
+        if (!alreadyObjects_.empty() && (assemblyOnly_ || objectOnly_)) {
+            std::fprintf(stderr,
+                "%s: %s was given with %s, and there is nothing to compile in "
+                "it - an object file is an input to the link step only\n",
+                argv[0], alreadyObjects_[0].c_str(),
+                assemblyOnly_ ? "-S" : "-c");
+            return false;
+        }
+        if (inputs.empty() && alreadyObjects_.empty()) { usage(argv[0]); return false; }
     }
 
     if (assemblyOnly_ && objectOnly_) {
@@ -796,21 +933,36 @@ bool Driver::runJobs() {
                      jobs_.size(), n, n == 1 ? "" : "s");
 
     if (n <= 1) {
-        for (const Job &job : jobs_)
+        // **The same line for one thread**, because saying so is the point:
+        // below `kThreadFrom` files this compiler does the work in the thread
+        // it was started on, and a report that showed threads it did not use
+        // would be worse than none. `-j n` overrides the threshold.
+        for (const Job &job : jobs_) {
+            if (!quiet_ && jobs_.size() > 1)
+                std::fprintf(stderr, "  [thread 1] %s\n", job.input.c_str());
             if (!compile(job)) return false;
+        }
         return true;
     }
 
     std::atomic<std::size_t> next{0};
     std::atomic<bool> ok{true};
 
+    // **Which thread took which file, said as it happens.** A pool that hands
+    // out the next index has no fixed assignment - the numbers are the threads
+    // and not the files - so this is the only place the work can be seen. One
+    // `fprintf` is one write, and the numbering is what makes the interleaving
+    // readable rather than confusing.
     std::vector<std::thread> pool;
     pool.reserve(n);
     for (unsigned t = 0; t < n; t++) {
-        pool.emplace_back([this, &next, &ok] {
+        pool.emplace_back([this, t, &next, &ok] {
             for (;;) {
                 std::size_t i = next.fetch_add(1);
                 if (i >= jobs_.size()) return;
+                if (!quiet_)
+                    std::fprintf(stderr, "  [thread %u] %s\n", t + 1,
+                                 jobs_[i].input.c_str());
                 if (!compile(jobs_[i])) { ok.store(false); return; }
             }
         });
@@ -837,6 +989,17 @@ int Driver::run(int argc, char **argv) {
     toStdout_ = (sawS && inputs == 1 && !sawO);
 
     if (!parseArguments(argc, argv)) return 1;
+
+    // **Printed once the arguments are known to be good**, so a usage message
+    // is not preceded by a banner nobody asked for, and before any work so it
+    // is the first thing on the screen. `-nologo` is the way out.
+    if (!quiet_) {
+        std::fprintf(stderr, "%s\n", bannerLine());
+        const unsigned n = threadCount();
+        if (jobs_.size() > 1)
+            std::fprintf(stderr, "%zu source files, %u compilation thread%s\n",
+                         jobs_.size(), n, n == 1 ? "" : "s");
+    }
 
     std::atexit([] {
         std::vector<std::string> &names = temporaryNames();

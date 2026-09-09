@@ -125,6 +125,85 @@ new is refused with it, though plain `new` and `delete` work - and
 `<typeinfo>` waits on `typeid`, which is refused by name. `dynamic_cast` does
 work, and has since each vtable got a `type_info` beside it.
 
+## Known shortcomings in 1.1
+
+Everything here is measured and written down elsewhere in full; this is the
+short list a user of **1.1** should have in front of them. `docs/EXCLUSIONS.md`
+is the complete one, each entry citing the source line that refuses it.
+
+**The language is a subset, and these are the parts most likely to be missed.**
+`typeid` and `<typeinfo>`; an overloaded `operator new` or `operator delete`,
+and placement new with them; a `goto` that leaves a `catch` handler; an alias
+template (`template <class T> using X = ...`), a variable template and an
+`inline` variable, the last two being C++14 and C++17; a ref-qualifier on a
+member function; a scoped enumeration's `enum class` base clause; and raw
+string literals. Plain `new`/`delete`, `dynamic_cast`, exceptions, templates
+with partial specialization and lambdas all work.
+
+**Templates instantiate by replaying tokens**, so every name in a template body
+is looked up at instantiation - MSVC's old model. cxx1 therefore *accepts*
+some programs clang refuses, which `docs/CONFORMANCE.md` records rather than
+hides. Four shapes met while writing `<type_traits>` are still refused:
+`template <class T, T v>`, a typedef naming a template-id used as a base, a
+partial specialization on `X<T []>`, and an out-of-line constructor of a class
+template.
+
+**x86_64-windows lags the two Itanium targets on exceptions and layout**, and
+each refusal names itself:
+
+* a destructible local and a `try` in one function, function-wide;
+* `return`, `break` or `continue` that leaves a `catch` - a handler is a
+  funclet there;
+* a `try` inside another; a class-typed `throw`; a rethrow from inside a
+  handler;
+* a virtual base, whose Microsoft layout is a vbtable this compiler has not
+  measured against `cl` - it gives `sizeof` 16 where cl gives 24;
+* an override from a base that is not the first, where cl biases `this`
+  instead of emitting a thunk;
+* a `volatile` object with external linkage, whose name cl decorates.
+
+**One Windows defect is open rather than refused**: a function other than
+`main` that owns an unwind region emits a `.pdata` entry pointing at a
+`$cppxdata` label the compiler never lays down, and `ml64` answers
+`A2006: undefined symbol`. A constructor taking a class **by value** reaches
+it. Compile such a translation unit for another target, or avoid that shape,
+until it is fixed.
+
+**There is no COMDAT on x86_64-windows**, and the consequence is bigger than it
+sounds. A member function defined inside its class becomes an ordinary strong
+symbol in every object that includes the header - and this tree's own
+`<string>` defines its members that way - so on that target **two translation
+units that both include `<string>` do not link**: `link.exe` answers LNK2005
+for each duplicate. The two Itanium targets emit weak definitions and have no
+such trouble; it is why `examples/Makefile.windows` builds its program as one
+translation unit and the other three build one object per source, and why most
+`.nocl` and `.nonames` entries in `tests/cases/` exist. A Windows project of
+more than one file either compiles as a unity build - `examples/unity.cpp`
+shows the shape - or keeps the library headers to one file of it, until COMDAT
+lands there.
+
+**Five programs are known to answer differently from clang**, kept as programs
+in `tests/open/` with clang's answer beside each: a `catch` parameter whose
+copy constructor throws should call `std::terminate` and does not; a
+`constexpr double` does not fold; a lambda body naming a class's `static`
+member or enumerator is refused; a lambda whose only `return` is inside a `try`
+deduces `void`; and a mem-initialiser naming a template-id base -
+`D(int x) : P<int>(x) {}` - does not parse. `make open` runs them and gates
+nothing.
+
+**Two smaller ones worth knowing.** A static local's symbol is spelled
+`f.name` rather than the Itanium `_ZZ1fvE4name` - nothing links against it, a
+static local having no linkage, but a debugger will show the other name. And
+`Driver::runTool` names a temporary and then renames it, which on the Windows
+box can collide in a one-shot multi-file build: compile with `-c` and link
+separately if that appears.
+
+**What is verified, and where.** Every release is held to `tools/verify-three`:
+the four suites on macOS, the same on a Linux box with real g++, and the case
+suite plus a name-by-name comparison against `cl` on a Windows box. `make test`
+is the local half of that. The sources this release was built from are sealed -
+see `README.1ST`, section 6.
+
 ## What it is not
 
 **It cannot compile itself, and never will.** `src/` is C++14 and `cxx1`

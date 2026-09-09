@@ -38,7 +38,7 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <DisableSpecificWarnings>4996;4267;4244;4456;4146</DisableSpecificWarnings>
       <AdditionalIncludeDirectories>$(ProjectDir)..\msvc\compat;$(ProjectDir)..\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;CXX1_INCLUDE_DIR="$([System.String]::Copy('$(ProjectDir)..\lib').Replace('\','/'))";%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;CXX1_INCLUDE_DIR="$([System.String]::Copy('$(ProjectDir)..\lib').Replace('\','/'))";CXX1_CXX_INCLUDE_DIR="$([System.String]::Copy('$(ProjectDir)..\include').Replace('\','/'))";%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link><SubSystem>Console</SubSystem></Link>
@@ -60,6 +60,7 @@
     <ClCompile Include="..\src\main.cpp" />
     <ClCompile Include="..\src\parser\Parser.cpp" />
     <ClCompile Include="..\src\parser\ParserClass.cpp" />
+    <ClCompile Include="..\src\parser\ParserConst.cpp" />
     <ClCompile Include="..\src\parser\ParserExpr.cpp" />
     <ClCompile Include="..\src\parser\ParserExprCall.cpp" />
     <ClCompile Include="..\src\parser\ParserExprLambda.cpp" />
@@ -67,10 +68,9 @@
     <ClCompile Include="..\src\parser\ParserInit.cpp" />
     <ClCompile Include="..\src\parser\ParserOperator.cpp" />
     <ClCompile Include="..\src\parser\ParserOverload.cpp" />
-    <ClCompile Include="..\src\parser\ParserConst.cpp" />
     <ClCompile Include="..\src\parser\ParserStmt.cpp" />
-    <ClCompile Include="..\src\parser\ParserTopLevel.cpp" />
     <ClCompile Include="..\src\parser\ParserTemplate.cpp" />
+    <ClCompile Include="..\src\parser\ParserTopLevel.cpp" />
     <ClCompile Include="..\src\parser\ParserType.cpp" />
     <ClCompile Include="..\src\backend\Arm64Darwin.cpp" />
     <ClCompile Include="..\src\backend\Backend.cpp" />
