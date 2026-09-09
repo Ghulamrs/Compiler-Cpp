@@ -1270,6 +1270,10 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                             "after it could never run");
 
         Handler h;
+        // Where `alive_` stood before the caught object, if it turns out to be
+        // one: everything from here is this handler's to destroy, and nothing
+        // outside it may see the entry.
+        const std::size_t aliveBeforeCaught = alive_.size();
         std::string caughtName;
         const Type *caught = nullptr;      // what the type_info names
         const Type *declaredType = nullptr; // what the handler's own name is
@@ -1377,8 +1381,11 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
             const Type *slotType = byRef
                 ? types_.pointerTo(declaredType->referent())
                 : types_.pointerTo(caught);
-            ExprPtr cast(new Cast(slotType, std::move(began)));
-            cast->setType(slotType);
+            ExprPtr cast;
+            if (byRef) {
+                cast.reset(new Cast(slotType, std::move(began)));
+                cast->setType(slotType);
+            }
             if (byRef) {
                 ExprPtr to(Var::local(caughtName, slot));
                 to->setType(slotType);
@@ -1386,13 +1393,92 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 bind->setType(slotType);
                 steps.push_back(StmtPtr(new ExprStmt(std::move(bind))));
             } else {
-                ExprPtr from(new Unary('*', std::move(cast)));
-                from->setType(caught);
-                ExprPtr to(Var::local(caughtName, slot));
-                to->setType(caught);
-                ExprPtr copy(new Assign(std::move(to), std::move(from)));
-                copy->setType(caught);
-                steps.push_back(StmtPtr(new ExprStmt(std::move(copy))));
+                // **Caught by value, which is a copy-initialisation and was a
+                // block copy** - [except.handle]/3 initialises the parameter
+                // from the exception object, so a class with a copy
+                // constructor gets it called, and the parameter is an object
+                // of this scope with a destructor of its own. Neither ran: the
+                // bytes were assigned and nothing was ever destroyed, so a
+                // class owning a buffer handed the handler a second pointer to
+                // it and the copy's side effects - a refcount, a log - were
+                // skipped. The ledger balanced only because the copy this
+                // compiler does not elide at the `throw` made up the numbers.
+                //
+                // **And the pointer comes from `__cxa_get_exception_ptr`**,
+                // which the ABI asks for before `__cxa_begin_catch` where a
+                // by-value parameter is initialised: the catch is not entered
+                // until the copy has been made. `__cxa_begin_catch` hands back
+                // the same pointer, which is why copying through it worked at
+                // all - what it does not do is leave the runtime in the state
+                // the ABI describes while the copy constructor runs. Measured
+                // from clang: get_exception_ptr, the constructor, then
+                // begin_catch.
+                // **`__cxa_get_exception_ptr` only where a constructor
+                // runs.** Measured from clang: `catch (int)` and a trivially
+                // copyable class take the pointer `__cxa_begin_catch` returns
+                // and copy the bytes; only a class with a copy constructor
+                // gets the extra call, which exists so the catch is not
+                // entered until that constructor has returned.
+                const Signature *cc = copyConstructorOf(caught->unqualified());
+                ExprPtr fromPtr;
+                if (cc != nullptr) {
+                    std::vector<ExprPtr> ptrArgs;
+                    ExprPtr raw(Var::local(".ex.ptr", pointerSlot));
+                    raw->setType(voidPtr);
+                    ptrArgs.push_back(std::move(raw));
+                    ExprPtr adjusted =
+                        runtimeCall("__cxa_get_exception_ptr", voidPtr,
+                                    std::move(ptrArgs));
+                    fromPtr.reset(new Cast(slotType, std::move(adjusted)));
+                } else {
+                    fromPtr.reset(new Cast(slotType, std::move(began)));
+                }
+                fromPtr->setType(slotType);
+
+                if (cc != nullptr) {
+                    markUsed(cc);
+                    ExprPtr self(Var::local(caughtName, slot));
+                    self->setType(caught);
+                    ExprPtr at(new Unary('&', std::move(self)));
+                    at->setType(types_.pointerTo(caught));
+                    ExprPtr source(new Unary('*', std::move(fromPtr)));
+                    source->setType(caught);
+                    std::vector<ExprPtr> ctorArgs;
+                    ctorArgs.push_back(std::move(at));
+                    ctorArgs.push_back(std::move(source));
+                    std::vector<const Type *> ps;
+                    ps.push_back(types_.pointerTo(caught));
+                    ps.push_back(cc->params[0]);
+                    steps.push_back(StmtPtr(new ExprStmt(
+                        completeCall(caught->unqualified()->tag(), cc->symbol,
+                                     nullptr, types_.get(Kind::Void), ps,
+                                     false, cpos, std::move(ctorArgs)))));
+                } else {
+                    // No copy constructor is a trivially copyable class, or a
+                    // fundamental type, and the bytes are the copy.
+                    ExprPtr from(new Unary('*', std::move(fromPtr)));
+                    from->setType(caught);
+                    ExprPtr to(Var::local(caughtName, slot));
+                    to->setType(caught);
+                    ExprPtr copy(new Assign(std::move(to), std::move(from)));
+                    copy->setType(caught);
+                    steps.push_back(StmtPtr(new ExprStmt(std::move(copy))));
+                }
+                // **The catch is entered after the copy** where a
+                // constructor ran, which is the order the two calls exist to
+                // make possible. Where the bytes were the copy, the pointer
+                // came from `__cxa_begin_catch` itself and the call is already
+                // in the statement above.
+                if (cc != nullptr)
+                    steps.push_back(StmtPtr(new ExprStmt(std::move(began))));
+                // **An object of this scope from here on.** Every way out of
+                // the handler destroys it - a jump through emitDestructors,
+                // an exception through the end-catch region's pad, and falling
+                // off the end below - and each does it before the catch ends,
+                // which is the order [except.handle]/16 asks for.
+                if (destructorOf(caught->unqualified()) != nullptr)
+                    alive_.push_back(Alive{ caughtName, slot,
+                                            caught->unqualified() });
             }
         } else {
             steps.push_back(StmtPtr(new ExprStmt(std::move(began))));
@@ -1454,6 +1540,10 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
             std::vector<StmtPtr> guarded;
             guarded.push_back(std::move(handlerBody));
             std::vector<StmtPtr> padSteps;
+            // **The by-value parameter goes first**, being an object of the
+            // handler's own scope: [except.handle]/16 destroys those and then
+            // ends the handling, whichever way the handler is left.
+            emitDestructors(padSteps, aliveBeforeCaught, cpos);
             padSteps.push_back(StmtPtr(new ExprStmt(
                 runtimeCall("__cxa_end_catch", types_.get(Kind::Void),
                             std::vector<ExprPtr>()))));
@@ -1504,10 +1594,18 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         }
 
         // Falling off the end of the block, which is the way out that always
-        // reached this call; every other way out makes it for itself now.
+        // reached this call; every other way out makes it for itself now. The
+        // by-value parameter is destroyed here for the same reason and in the
+        // same order - a jump does both through emitDestructors, and the pad
+        // above does both too.
+        emitDestructors(steps, aliveBeforeCaught, cpos);
         ExprPtr ended = runtimeCall("__cxa_end_catch", types_.get(Kind::Void),
                                     std::vector<ExprPtr>());
         steps.push_back(StmtPtr(new ExprStmt(std::move(ended))));
+        // **And it is gone from here on.** Left in `alive_` it would be
+        // destroyed again by the block around the `try`, and every jump past
+        // this point would carry it too.
+        alive_.resize(aliveBeforeCaught);
         leaveScope();
         Block *b = new Block(std::move(steps));
         b->setScope(scope);

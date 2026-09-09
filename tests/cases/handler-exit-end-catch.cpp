@@ -30,12 +30,19 @@
 //   fell     off the end, the one way that always worked
 #include "lifetime.h"
 
+// Out of line, which is the suite's habit rather than the feature: clang emits
+// only the C2 form of a constructor defined inside its class on x86_64-linux,
+// and names.sh would report that as a difference of its own.
 struct E {
     int v;
-    E(int n) : v(n) { lfBuilt(this, "E"); }
-    E(const E &o) : v(o.v) { lfBuilt(this, "E"); }
-    ~E() { lfGone(this, "E"); }
+    E(int n);
+    E(const E &o);
+    ~E();
 };
+
+E::E(int n) : v(n) { lfBuilt(this, "E"); }
+E::E(const E &o) : v(o.v) { lfBuilt(this, "E"); }
+E::~E() { lfGone(this, "E"); }
 
 int one() { try { throw E(1); } catch (E &e) { return e.v; } return 0; }
 

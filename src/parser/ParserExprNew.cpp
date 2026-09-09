@@ -1047,10 +1047,34 @@ StmtPtr Parser::throwStatement(ExprPtr value, std::size_t pos) {
     // as one Comma there was nowhere to put the middle one, and the temporary
     // was left to whatever was parsed next: `throw E(1)` inside a `try` leaked
     // its E into the *handler's* block.
+    // **[except.throw]/4: storage the initialisation never finished with is
+    // freed.** `__cxa_allocate_exception` has handed it back and nothing owns
+    // it yet - the runtime learns of it at `__cxa_throw`, which an exception
+    // out of the copy constructor never reaches - so the whole object leaked,
+    // once per throw and silently. It is a temporary of this full expression
+    // and is registered as one: every cleanup pad already walks that list
+    // under a guard, so the region that frees it is the region that was going
+    // to run anyway, in the right order with everything else it destroys.
+    // What differs from an object is only the call - `__cxa_free_exception`
+    // rather than a destructor - which is where clang puts it too.
+    //
+    // **The guard is cleared before the throw**, not after it: from
+    // `__cxa_throw` on the runtime owns the storage, and a pad unwinding
+    // *this* exception must not give it back.
     std::vector<StmtPtr> steps;
+    const bool copyMayThrow = cc != nullptr && !cc->isNoexcept;
+    int storageGuard = 0;
+    if (copyMayThrow) {
+        storageGuard = guardFlag();
+        statementTemps_.push_back(Temporary{ slot, voidPtr, storageGuard, true });
+    }
     ExprPtr first(new Comma(std::move(save), std::move(store)));
     first->setType(types_.get(Kind::Void));
+    if (copyMayThrow)
+        steps.push_back(StmtPtr(new ExprStmt(setGuard(storageGuard, 1))));
     steps.push_back(StmtPtr(new ExprStmt(std::move(first))));
+    if (copyMayThrow)
+        steps.push_back(StmtPtr(new ExprStmt(setGuard(storageGuard, 0))));
     flushTemporaries(steps);
     steps.push_back(StmtPtr(new ExprStmt(std::move(thrower))));
     Block *b = new Block(std::move(steps));

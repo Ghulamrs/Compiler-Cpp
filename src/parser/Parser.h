@@ -1065,6 +1065,14 @@ private:
         int slot;
         const Type *type;
         int flag;
+        // **The storage `__cxa_allocate_exception` handed back**, which is a
+        // temporary of the throw's own full expression and is released with
+        // `__cxa_free_exception` rather than destroyed: nothing is
+        // constructed in it until the copy runs, and the runtime does not own
+        // it until `__cxa_throw` is reached. [except.throw]/4. Every pad that
+        // walks this list already tests the guard; this only changes what it
+        // emits inside the test.
+        bool exceptionStorage = false;
     };
 
     // **Everything that belongs to the function currently being parsed.**
@@ -1579,6 +1587,10 @@ private:
     // which is `_Unwind_Resume`. Empty for that last one; the slots it hands
     // back are the ones whatever it names reads.
     std::string unwindTarget(int *ptrSlot, int *selSlot) const;
+    // One temporary of a block, released under its guard by a pad - a
+    // destructor for an object, `__cxa_free_exception` for the storage a
+    // `throw` had allocated and not yet handed to the runtime.
+    void releaseGuarded(std::vector<StmtPtr> &steps, const Temporary &t);
     // Where each open handler's block begins, which is how a `goto` is told
     // from a jump that stays inside the handler: a label declared after this
     // is one of the handler's own.

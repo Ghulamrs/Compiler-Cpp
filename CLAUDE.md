@@ -6839,6 +6839,73 @@ copies through the pointer `__cxa_begin_catch` returns, which is the same
 pointer. Neither changes what any program here does; both are written down
 rather than left to be rediscovered.
 
+## The two runtime calls clang made and this did not, and the bug behind one
+
+**Fixed 2026-09-09.** `names.sh` had recorded both as clang-only for as long as
+there were exception cases to compare, in a `.nonames` that said what they were
+for. Writing that file down is what made them findable; both are gone now, and
+so are the three markers - **every name in those cases agrees with clang**.
+
+### `__cxa_free_exception`, and the temporary that is not an object
+
+**[except.throw]/4: storage the initialisation never finishes with is freed.**
+`__cxa_allocate_exception` hands back the room for the exception object and
+nothing owns it until `__cxa_throw` is reached - so a copy constructor that
+throws on the way in leaked the whole object, once per throw, invisibly.
+
+**The first version of the fix was a region of its own around the copy**, which
+is what clang emits, and it was wrong here: the region split the enclosing
+cleanup's range and its pad handed straight over, so a *local* alive beside the
+`throw` stopped being destroyed. Measured, `live=1` where HEAD had `live=0`,
+and the tree's own rule caught it - `git stash`, rebuild, and the leak was
+mine.
+
+**The storage is a temporary of the throw's full expression, and saying so is
+the whole fix.** Every cleanup pad already walks the block's temporaries under
+a guard flag; this one is released with `__cxa_free_exception` rather than a
+destructor. So the region that frees it is the region that was going to run
+anyway, in order with everything else it destroys, and nothing new decides
+where to hand over. The guard is set after the allocation and **cleared before
+`__cxa_throw`**, because from that call on the runtime owns the storage and a
+pad unwinding *this* exception must not give it back.
+
+`releaseTemporary` is where the two kinds meet, and it is one function now
+rather than the same fifteen lines in `wrapMsCleanups` and `cleanupPad`.
+
+### `__cxa_get_exception_ptr`, and what catching by value was doing
+
+**The call is the smaller half.** [except.handle]/3 copy-*initialises* the
+handler's parameter from the exception object, and cxx1 assigned the bytes: no
+copy constructor ran, and **the parameter was never destroyed**. A class owning
+a buffer handed the handler a second pointer to it; a copy constructor with a
+refcount or a log was skipped.
+
+**The ledger balanced the whole time**, which is why it survived: the copy this
+compiler does not elide at the `throw` is one construction and one destruction
+too many, and the missing parameter copy and destroy are one of each too few.
+They cancelled. `built` and `gone` moved by one in two cases when this landed,
+and both were re-recorded.
+
+The parameter is an object of the handler's scope now - copy-constructed where
+there is a constructor, entered in `alive_`, and destroyed by every way out:
+a jump through `emitDestructors`, an exception through the end-catch pad, and
+falling off the end. **Before the catch ends, in each of them**, which is the
+order [except.handle]/16 asks for. It is taken out of `alive_` at the end of
+the handler, or the block around the `try` would destroy it a second time.
+
+**And that is what the ABI call is for**: `__cxa_get_exception_ptr` hands back
+the adjusted pointer *before* `__cxa_begin_catch`, so the catch is not entered
+until the copy has been made. Measured from clang, and the measurement mattered
+twice: only a class with a **copy constructor** gets the call - `catch (int)`
+and a trivially copyable class take the pointer `__cxa_begin_catch` returns, as
+this always did. The first version called it for every by-value catch and
+`names.sh` said so on seven cases at once.
+
+**What is still open**, and now `tests/open/catch-copy-throws.cpp`: if that
+copy constructor throws, [except.handle]/3 calls `std::terminate` and clang
+emits `__clang_call_terminate` around the copy. cxx1 lets the exception leave,
+so the enclosing handler catches it.
+
 ## A frame that skipped the guard page, and two wrong answers before it
 
 **Fixed 2026-09-06.** `matrix_main.cpp` of the C++ Vector Exercise died on
