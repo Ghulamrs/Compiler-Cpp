@@ -909,6 +909,27 @@ void Parser::endCatches(std::vector<StmtPtr> &into, int count) {
                         std::vector<ExprPtr>()))));
 }
 
+// **Where an exception leaving this point goes, in this frame.** Three answers
+// and the innermost wins: a handler's own end-catch pad, which must run or the
+// catch is never ended; the enclosing `try`'s chain, whose row's action list
+// named the handlers phase 1 matched; or nothing, which is `_Unwind_Resume`
+// and leaves for the caller. The two are kept apart rather than in one stack
+// because a `try` body inside a handler answers with its own chain - the
+// handler's pad is reached from *that* chain's end, one step further out.
+std::string Parser::unwindTarget(int *ptrSlot, int *selSlot) const {
+    if (!handlerResumeLabel_.empty()) {
+        *ptrSlot = handlerResumePtr_;
+        *selSlot = handlerResumeSel_;
+        return handlerResumeLabel_;
+    }
+    if (!tryChainLabel_.empty()) {
+        *ptrSlot = tryChainPointerSlot_;
+        *selSlot = tryChainSelectorSlot_;
+        return tryChainLabel_;
+    }
+    return std::string();
+}
+
 // **A `break` leaves a handler exactly when the loop or switch it breaks out
 // of was entered before that handler was.** Handlers nest, so the ones left
 // are a run from the innermost outwards: the first that owns a loop of its own
@@ -1193,11 +1214,17 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     const int wasPtr = tryChainPointerSlot_, wasSel = tryChainSelectorSlot_;
     std::vector<Try *> wasSegments;
     wasSegments.swap(tryBodySegments_);
+    // **Inside this body the innermost answer is this `try`'s own chain**, not
+    // the pad of a handler this `try` happens to sit in - that one is reached
+    // from the end of this chain, a step further out.
+    const std::string wasHandlerLabel = handlerResumeLabel_;
+    const int wasHandlerPtr = handlerResumePtr_, wasHandlerSel = handlerResumeSel_;
     if (!microsoft) {
         tryChainLabel_ = chainLabel;
         tryChainPointerSlot_ = pointerSlot;
         tryChainSelectorSlot_ = selectorSlot;
         tryChainAliveFrom_ = aliveOutside;
+        handlerResumeLabel_.clear();
     }
 
     const bool wasInTry = inTryBody_;
@@ -1206,6 +1233,9 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         src_.fail(peek().pos, "'try' takes a block");
     StmtPtr body = block();
     inTryBody_ = wasInTry;
+    handlerResumeLabel_ = wasHandlerLabel;
+    handlerResumePtr_ = wasHandlerPtr;
+    handlerResumeSel_ = wasHandlerSel;
 
     // Off before the handlers: a handler's block is not inside this row.
     std::vector<Try *> segments;
@@ -1377,12 +1407,101 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         handlerLoopDepth_.push_back(loopDepth_);
         handlerSwitchDepth_.push_back(switchDepth_);
         handlerFrom_.push_back(peek().pos);
-        steps.push_back(block());
+        // **Whether anything in this handler could throw**, counted the way
+        // the `noexcept` region counts it: a region nobody can reach is a row
+        // in the table, a pad in the text and a golden file that moved for
+        // nothing.
+        const int throwsBefore = mayThrow_;
+        // **Named before the block is read**, because a region inside it hands
+        // over to this pad and has to know where that is. The `$` keeps it out
+        // of reach of any label a program can write, the way `$chain` does.
+        const std::string endCatchLabel =
+            "$endcatch" + std::to_string(refTemps_++);
+        int padPtr = 0, padSel = 0;
+        const std::string beyond = unwindTarget(&padPtr, &padSel);
+        if (beyond.empty()) {
+            padPtr = allocateFrameSlot(voidPtr);
+            padSel = allocateFrameSlot(types_.intType());
+        }
+        const std::string wasHandlerLabel2 = handlerResumeLabel_;
+        const int wasHandlerPtr2 = handlerResumePtr_;
+        const int wasHandlerSel2 = handlerResumeSel_;
+        if (!microsoft) {
+            handlerResumeLabel_ = endCatchLabel;
+            handlerResumePtr_ = padPtr;
+            handlerResumeSel_ = padSel;
+        }
+        StmtPtr handlerBody = block();
+        handlerResumeLabel_ = wasHandlerLabel2;
+        handlerResumePtr_ = wasHandlerPtr2;
+        handlerResumeSel_ = wasHandlerSel2;
+        const bool canThrow = mayThrow_ > throwsBefore;
         handlerFrom_.pop_back();
         handlerSwitchDepth_.pop_back();
         handlerLoopDepth_.pop_back();
         handlerDepth_--;
         inHandlerBody_ = wasBody;
+
+        // **An exception leaving the handler has to end the catch too**, and
+        // it is the one way out no jump can be written for: the unwinder takes
+        // it. So the handler's block becomes a cleanup region of its own,
+        // whose pad calls `__cxa_end_catch` and then carries on - which is
+        // what clang emits, an invoke of `__cxa_throw` with a cleanup pad
+        // beside it. Without it a `throw` from inside a `catch` left the
+        // runtime's caught-exception chain set and the object undestroyed:
+        // the ledger read live=1 where clang read live=0.
+        if (canThrow && !microsoft) {
+            std::vector<StmtPtr> guarded;
+            guarded.push_back(std::move(handlerBody));
+            std::vector<StmtPtr> padSteps;
+            padSteps.push_back(StmtPtr(new ExprStmt(
+                runtimeCall("__cxa_end_catch", types_.get(Kind::Void),
+                            std::vector<ExprPtr>()))));
+            // **And the objects outside the `try`, where this pad is the last
+            // one in the frame.** A `try` is not covered by the enclosing
+            // block's cleanup region - it answers for itself, and its own
+            // chain destroys them where nothing matched - so a pad inside its
+            // handler has to do the same job or nothing does: measured as a
+            // leak of a local *outside* the `try` when its handler threw.
+            // Where this hands over, the pad it hands to owes them instead.
+            if (aliveOutside > bodyCleanupFrom_ && beyond.empty())
+                emitDestructors(padSteps, bodyCleanupFrom_, pos, -1,
+                                aliveOutside);
+            if (!beyond.empty()) {
+                // **Handed on rather than resumed.** What is out there is
+                // either an enclosing `try`'s chain, which may be the one that
+                // catches this and is the only place the selector is tested
+                // for those types, or another handler's pad, which has its own
+                // catch to end first. `_Unwind_Resume` would leave the frame
+                // and try neither.
+                padSteps.push_back(StmtPtr(new Goto(beyond)));
+            } else {
+                std::vector<ExprPtr> resumeArgs;
+                ExprPtr held(Var::local(".ex.ptr", padPtr));
+                held->setType(voidPtr);
+                resumeArgs.push_back(std::move(held));
+                padSteps.push_back(StmtPtr(new ExprStmt(
+                    runtimeCall("_Unwind_Resume", types_.get(Kind::Void),
+                                std::move(resumeArgs)))));
+            }
+            Block *padBlock = new Block(std::move(padSteps));
+            padBlock->setScope(-1);
+            // Behind the label a region inside this handler jumps to.
+            StmtPtr padLabelled(new Label(endCatchLabel, StmtPtr(padBlock)));
+            Try *region = new Try(std::move(guarded), std::move(padLabelled),
+                                  padPtr, padSel, std::vector<std::string>());
+            // **Only where the row will carry types.** An enclosing `try`
+            // means the walker puts its handlers on this row's action chain,
+            // and phase 2 installs a pad for a row with actions only where one
+            // of them matched - so without the trailing filter-0 an exception
+            // nothing out there catches would leave without ending the catch,
+            // which is the bug this is fixing. With no enclosing types the
+            // row's action is 0, which already means cleanup.
+            if (!enclosingChain.empty()) region->setAlsoCleanup();
+            steps.push_back(StmtPtr(region));
+        } else {
+            steps.push_back(std::move(handlerBody));
+        }
 
         // Falling off the end of the block, which is the way out that always
         // reached this call; every other way out makes it for itself now.
@@ -1430,16 +1549,24 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     //
     // The objects alive outside are left to the enclosing pad as well: they are
     // its to destroy, and doing it here would destroy them twice.
+    // **And the same three answers as everywhere else.** This `try` may sit
+    // inside a *handler*, whose catch has to be ended on the way out: its pad
+    // is the innermost thing here, one step in front of the enclosing chain
+    // `enclosingChain` names. Jumping straight past it was a leak the ledger
+    // found - a handler inside a handler, the inner one throwing, ending one
+    // catch of the two.
+    int outPtr = 0, outSel = 0;
+    const std::string beyondTry = unwindTarget(&outPtr, &outSel);
     const bool unwindsHere = aliveOutside > bodyCleanupFrom_ &&
-                             enclosingChain.empty();
+                             beyondTry.empty();
     if (unwindsHere) emitDestructors(resume, bodyCleanupFrom_, pos,
                                      -1, aliveOutside);
-    if (enclosingChain.empty())
+    if (beyondTry.empty())
         resume.push_back(StmtPtr(new ExprStmt(
             runtimeCall("_Unwind_Resume", types_.get(Kind::Void),
                         std::move(resumeArgs)))));
     else
-        resume.push_back(StmtPtr(new Goto(enclosingChain)));
+        resume.push_back(StmtPtr(new Goto(beyondTry)));
     Block *resumeBlock = new Block(std::move(resume));
     resumeBlock->setScope(-1);
     StmtPtr chain(resumeBlock);

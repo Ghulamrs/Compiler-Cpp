@@ -78,6 +78,7 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     handlerLoopDepth_.clear();
     handlerSwitchDepth_.clear();
     handlerFrom_.clear();
+    handlerResumeLabel_.clear();
     mayThrow_ = 0;
     loopDepth_ = 0;
     switchDepth_ = 0;

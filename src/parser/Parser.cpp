@@ -564,6 +564,9 @@ Parser::FunctionState Parser::captureFunctionState() const {
     s.handlerLoopDepth = handlerLoopDepth_;
     s.handlerSwitchDepth = handlerSwitchDepth_;
     s.handlerFrom = handlerFrom_;
+    s.handlerResumeLabel = handlerResumeLabel_;
+    s.handlerResumePtr = handlerResumePtr_;
+    s.handlerResumeSel = handlerResumeSel_;
     s.mayThrow = mayThrow_;
     s.conditionDecl = conditionDecl_;
     s.conditionName = conditionName_;
@@ -615,6 +618,9 @@ void Parser::restoreFunctionState(const FunctionState &s) {
     handlerLoopDepth_ = s.handlerLoopDepth;
     handlerSwitchDepth_ = s.handlerSwitchDepth;
     handlerFrom_ = s.handlerFrom;
+    handlerResumeLabel_ = s.handlerResumeLabel;
+    handlerResumePtr_ = s.handlerResumePtr;
+    handlerResumeSel_ = s.handlerResumeSel;
     mayThrow_ = s.mayThrow;
     conditionDecl_ = s.conditionDecl;
     conditionName_ = s.conditionName;
@@ -666,6 +672,9 @@ void Parser::clearFunctionState() {
     handlerLoopDepth_.clear();
     handlerSwitchDepth_.clear();
     handlerFrom_.clear();
+    handlerResumeLabel_.clear();
+    handlerResumePtr_ = 0;
+    handlerResumeSel_ = 0;
     mayThrow_ = 0;
     conditionDecl_ = false;
     conditionName_.clear();

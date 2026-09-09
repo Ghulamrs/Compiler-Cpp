@@ -1122,6 +1122,8 @@ private:
         int handlerDepth = 0;
         std::vector<int> handlerLoopDepth, handlerSwitchDepth;
         std::vector<std::size_t> handlerFrom;
+        std::string handlerResumeLabel;
+        int handlerResumePtr = 0, handlerResumeSel = 0;
         int mayThrow = 0;
         bool conditionDecl = false;
         std::string conditionName;
@@ -1561,6 +1563,22 @@ private:
     int handlerDepth_ = 0;
     std::vector<int> handlerLoopDepth_;
     std::vector<int> handlerSwitchDepth_;
+    // **The pad that ends the catch this statement is inside**, for the way
+    // out no jump can be written for: an exception. A handler's block is a
+    // cleanup region of its own whose pad calls `__cxa_end_catch`, and
+    // anything unwinding from inside that block has to reach it - so a
+    // nested region hands over here rather than to the enclosing `try`'s
+    // chain, which would skip the call. Empty outside a handler's block, and
+    // emptied again inside a `try` body within one, where the innermost
+    // answer is that `try`'s own chain.
+    std::string handlerResumeLabel_;
+    int handlerResumePtr_ = 0;
+    int handlerResumeSel_ = 0;
+    // Where an exception leaving this point goes: the innermost enclosing
+    // handler's end-catch pad, else the enclosing `try`'s chain, else nowhere,
+    // which is `_Unwind_Resume`. Empty for that last one; the slots it hands
+    // back are the ones whatever it names reads.
+    std::string unwindTarget(int *ptrSlot, int *selSlot) const;
     // Where each open handler's block begins, which is how a `goto` is told
     // from a jump that stays inside the handler: a label declared after this
     // is one of the handler's own.

@@ -6752,6 +6752,71 @@ recorded, from `names.sh` on the new case: cxx1 emits neither
 constructor throws - nor `__cxa_get_exception_ptr`, which the ABI asks for
 before `__cxa_begin_catch` when a by-value parameter is copy-initialised.
 
+## A `throw` out of a handler, which is the one exit the parser cannot write
+
+**Fixed 2026-09-09**, and it is the half `handler-exit-end-catch` left open.
+Every jump out of a handler ends the catch for itself now; an **exception**
+leaving one cannot, because the unwinder takes that path and no statement is
+executed on it. So `__cxa_end_catch` never ran, the runtime's caught-exception
+chain stayed set and the object was never destroyed - `live=1` per call, with
+the same output above the ledger line.
+
+**The handler's block becomes a cleanup region of its own**, and its pad calls
+`__cxa_end_catch`. That is what clang emits: an invoke of `__cxa_throw` with a
+cleanup landing pad beside it. Everything needed for the region already
+existed - `openRegion` splits whatever encloses it, so the rows stay disjoint,
+and `visit(Try)` puts the enclosing handlers on the row's action chain.
+
+**Only where the block can throw.** `mayThrow_` counts calls and throws the way
+the `noexcept` region does, and a handler that calls nothing gets no region -
+which is why 20 of 762 emitted files moved rather than every case with a
+`catch` in it.
+
+### Where the pad hands over, and the leak that taught it
+
+The pad ends *this* catch and then has to reach whatever is outside it. Three
+answers, innermost first, and `unwindTarget` is the one place that decides:
+
+| | |
+| --- | --- |
+| a handler's own end-catch pad | another `catch` is open around this one, and its catch has to be ended too |
+| the enclosing `try`'s chain | that chain is the only place the selector is tested for those types |
+| nothing | `_Unwind_Resume`, which leaves for the caller |
+
+**The first row is the one that had to be learned.** The first version jumped
+straight to the enclosing `try`'s chain, which is right for a handler directly
+inside a `try` and wrong the moment a handler sits inside another handler: the
+jump went past the outer handler's pad and ended one catch of the two.
+`twoDeep` in the case is that shape, and the ledger read `live=1` while every
+printed value was correct. So a handler's pad is named - `$endcatch<n>`, the
+same `$` trick `$chain` uses - and an inner region hands to it rather than past
+it. A `try` **body** inside a handler still answers with its own chain, which
+is one step in front; the chain's own end then hands to the handler's pad.
+
+**And the pad owes the objects outside the `try`.** A `try` is covered by no
+enclosing cleanup region - it answers for itself, and its chain destroys them
+where nothing matched - so a pad inside its handler is the last row in the
+frame and has to run those destructors too. Measured as a leak of a local
+declared *before* the `try` whose handler threw: `~A` never ran, and clang's
+order is the exception object first and then that local, which is what this
+emits.
+
+### What the case covers, and the two names clang has that this does not
+
+`throw-out-of-handler.cpp` pins eight shapes against clang: a new exception out
+of one handler, `throw;`, an enclosing `try` in the same function catching it,
+one that does not match, two-deep handlers, a local outside the `try`, catch by
+value, and `catch (...)` rethrowing. Every value agrees and the balance is
+zero on both sides.
+
+`names.sh` records two runtime calls clang makes and cxx1 does not:
+`__cxa_free_exception`, the cleanup for a throw whose *object's own
+constructor* throws, and `__cxa_get_exception_ptr`, which the ABI asks for
+before `__cxa_begin_catch` when a by-value parameter is copy-initialised. cxx1
+copies through the pointer `__cxa_begin_catch` returns, which is the same
+pointer. Neither changes what any program here does; both are written down
+rather than left to be rediscovered.
+
 ## A frame that skipped the guard page, and two wrong answers before it
 
 **Fixed 2026-09-06.** `matrix_main.cpp` of the C++ Vector Exercise died on
