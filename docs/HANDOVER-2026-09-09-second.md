@@ -1,6 +1,6 @@
 # The second round of 2026-09-09: the register was built in the morning and closed two by the evening
 
-**HEAD was `3782fac` on `main` when this was written, and is `b1d97a5` now** -
+**HEAD was `3782fac` on `main` when this was written, and is `b139ec2` now** -
 the round below carried on into the evening and closed the third item of its
 own open list, which is noted where that item stands. Four commits since
 `48f28a3` at the time of writing, and the first of them is the round the
@@ -82,9 +82,15 @@ namespaced specializations in the tree.
    against the loop depth each handler was entered at and `goto` refused by
    name. The Microsoft side gained the two refusals it was missing - `break`
    and `continue` out of a funclet, which `return` had been refused for alone.
-   What is left of it: an exception thrown *out* of a handler still leaves the
-   chain set, which wants a cleanup row rather than a statement. `tests/open/`
-   holds twelve.
+   And the exception thrown *out* of a handler is closed too, at `2b4f64a`:
+   the handler's block is a cleanup region whose pad makes the call, handing
+   over to the next handler's pad, then to an enclosing `try`'s chain, then to
+   `_Unwind_Resume` - the first of those learned from a leak, an inner handler
+   jumping past an outer one and ending one catch of the two. **That region
+   then lifted an exclusion**: a local with a destructor inside a handler
+   compiles on both Itanium targets as of `b139ec2`, the row it needed being
+   the one the region added. `tests/open/` holds thirteen -
+   `lambda-return-through-try` arrived with it.
 4. Everything the 09-09 handover lists that this round did not touch: the
    Microsoft virtual-base layout, `noexcept` where the function owns a region,
    a mem-initialiser needing a temporary, `-masm=gnu` as the Windows default,
