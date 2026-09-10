@@ -7,8 +7,23 @@ and *run* before this file was written, see "What was measured" below.
 
     cxx1.xcworkspace / cxx1.xcodeproj    Xcode, on macOS
     cxx1.sln / cxx1.vcxproj              Visual Studio 2022, on Windows
-    generate.py                          writes all four from the source tree
+    cxx1.vcxproj.filters                 the folder tree VS shows
+    ../cxx1.sln                          the same project, opened from the root
+    generate.py                          writes all six from the source tree
     build-vs.cmd, check-vs.cmd           MSBuild and a smoke test, from a shell
+
+**Two configurations, both built and both run**: Debug|x64 and Release|x64 are
+in the solution and in the project, each with its own runtime library and
+`ProgramDatabase` debug information. `build-vs.cmd Debug` builds the other one.
+
+**`/WX` is on in Release and off in Debug**, and that is measured rather than
+preferred: at `/Od` MSVC reports diagnostics `/O2` does not - `C4702`,
+unreachable code, in `ParserExpr.cpp` - so a Debug build gated on warnings-as-
+errors fails on something no other toolchain mentions. Release keeps the gate,
+and Release is what `msvc\build.cmd` and `tools/verify-three` use.
+
+**A solution at the root**, `../cxx1.sln`, opens the same project: `ide/` is not
+where somebody who has just unpacked the tree looks first.
 
 ## Building
 
@@ -70,6 +85,12 @@ hand rots the first time somebody adds a file:
 * **Re-measured 2026-09-09 for 1.1**, after both directories were added: the
   Xcode build succeeds and its binary compiles a program that includes
   `<vector>`, which is the thing that could not be done before.
+* **Re-measured 2026-09-10 for 1.2**: Xcode builds; Visual Studio builds
+  **both** configurations, and the Debug-built `cxx1.exe` compiled and ran a
+  case from `tests/cases`. The project file is validated as XML by
+  `generate.py` before it is written - a single backslash in a comment once put
+  an 0x08 in it and MSBuild answered `MSB4025` rather than anything about the
+  compiler.
 * **Visual Studio 2022**: `build-vs.cmd` compiled all 28 sources at `/W4 /WX`
   on the Windows box, and `check-vs.cmd` then had that binary compile
   `tests/cases/class.cpp`, assemble it with ml64, link it and run it - the same

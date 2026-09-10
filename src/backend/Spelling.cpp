@@ -216,8 +216,20 @@ void CoffSpelling::weakDefinition(const std::string &name) {
 
 // Measured from clang for x86_64-pc-windows-msvc: the same pointer, in the
 // section the CRT walks before main.
+// **`.CRT$XCU` carries no COMDAT clause**, and the `unique,0` that used to be
+// here is why this is a comment. It was copied from what clang on *this* Mac
+// emits for the Microsoft target - and `unique` is an **ELF** section flag.
+// COFF has no such thing: the clang that assembles on the Windows box, 19.1.5,
+// answers `unrecognized COMDAT type 'unique'` and the four cases with a global
+// constructor stopped there. Newer LLVM accepts the spelling it prints; the
+// portable one, which both take, is the section with its attributes and
+// nothing else - and it is what MSVC itself emits. Several entries then share
+// one section per object, which is exactly what the linker concatenating
+// `$`-suffixed sections is for.
+//
+// Measured 2026-09-10 by assembling both spellings with the box's own clang.
 void CoffSpelling::initialiserEntry(const std::string &fn, bool) {
-    o_ += "  .section .CRT$XCU,\"dr\",unique,0\n  .p2align 3, 0x0\n  .quad ";
+    o_ += "  .section .CRT$XCU,\"dr\"\n  .p2align 3, 0x0\n  .quad ";
     o_ += sym(fn);
     o_ += '\n';
 }

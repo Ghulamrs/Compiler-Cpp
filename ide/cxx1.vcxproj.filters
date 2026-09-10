@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Header Files"><UniqueIdentifier>{B1043908-38C6-799F-9FFA-F085E08CBA37}</UniqueIdentifier></Filter>
+    <Filter Include="Header Files\backend"><UniqueIdentifier>{DA402ED2-5280-A303-1883-541A88579ED4}</UniqueIdentifier></Filter>
+    <Filter Include="Header Files\parser"><UniqueIdentifier>{4EF6DBE6-71E9-9BB6-D7FF-6A93564BBB34}</UniqueIdentifier></Filter>
+    <Filter Include="Source Files"><UniqueIdentifier>{17D24EA4-A08E-901F-6B67-41767BC0C46F}</UniqueIdentifier></Filter>
+    <Filter Include="Source Files\backend"><UniqueIdentifier>{BAC44DA1-1890-263F-43B6-2DBBD19F7288}</UniqueIdentifier></Filter>
+    <Filter Include="Source Files\parser"><UniqueIdentifier>{F7683C0D-65EA-CABF-2CF9-EF5D0C23C3DF}</UniqueIdentifier></Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\Driver.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\src\Lexer.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\src\Mangle.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\src\Operator.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\src\Preprocessor.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\src\Source.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\src\Type.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\src\main.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\Parser.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserClass.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserConst.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserExpr.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserExprCall.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserExprLambda.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserExprNew.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserInit.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserOperator.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserOverload.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserStmt.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserTemplate.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserTopLevel.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\parser\ParserType.cpp"><Filter>Source Files\parser</Filter></ClCompile>
+    <ClCompile Include="..\src\backend\Arm64Darwin.cpp"><Filter>Source Files\backend</Filter></ClCompile>
+    <ClCompile Include="..\src\backend\Backend.cpp"><Filter>Source Files\backend</Filter></ClCompile>
+    <ClCompile Include="..\src\backend\Dwarf.cpp"><Filter>Source Files\backend</Filter></ClCompile>
+    <ClCompile Include="..\src\backend\Masm.cpp"><Filter>Source Files\backend</Filter></ClCompile>
+    <ClCompile Include="..\src\backend\Spelling.cpp"><Filter>Source Files\backend</Filter></ClCompile>
+    <ClCompile Include="..\src\backend\Walker.cpp"><Filter>Source Files\backend</Filter></ClCompile>
+    <ClCompile Include="..\src\backend\X86_64Linux.cpp"><Filter>Source Files\backend</Filter></ClCompile>
+    <ClCompile Include="..\src\backend\X86_64Windows.cpp"><Filter>Source Files\backend</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\src\Abi.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\src\Ast.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\src\Driver.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\src\Lexer.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\src\Mangle.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\src\Operator.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\src\Preprocessor.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\src\Source.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\src\Type.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\src\Version.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\src\parser\Parser.h"><Filter>Header Files\parser</Filter></ClInclude>
+    <ClInclude Include="..\src\parser\ParserInternal.h"><Filter>Header Files\parser</Filter></ClInclude>
+    <ClInclude Include="..\src\backend\Arm64Darwin.h"><Filter>Header Files\backend</Filter></ClInclude>
+    <ClInclude Include="..\src\backend\Backend.h"><Filter>Header Files\backend</Filter></ClInclude>
+    <ClInclude Include="..\src\backend\Dwarf.h"><Filter>Header Files\backend</Filter></ClInclude>
+    <ClInclude Include="..\src\backend\Masm.h"><Filter>Header Files\backend</Filter></ClInclude>
+    <ClInclude Include="..\src\backend\Spelling.h"><Filter>Header Files\backend</Filter></ClInclude>
+    <ClInclude Include="..\src\backend\Walker.h"><Filter>Header Files\backend</Filter></ClInclude>
+    <ClInclude Include="..\src\backend\X86_64Linux.h"><Filter>Header Files\backend</Filter></ClInclude>
+    <ClInclude Include="..\src\backend\X86_64Windows.h"><Filter>Header Files\backend</Filter></ClInclude>
+  </ItemGroup>
+</Project>

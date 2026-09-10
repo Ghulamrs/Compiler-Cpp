@@ -78,6 +78,7 @@
 		2FB500085E7EEEBDFE98884D /* Preprocessor.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Preprocessor.h; path = "../src/Preprocessor.h"; sourceTree = "<group>"; };
 		89135EFA2CE6CD9678C83164 /* Source.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Source.h; path = "../src/Source.h"; sourceTree = "<group>"; };
 		EFB2C2FE15E86CFA56F6C459 /* Type.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Type.h; path = "../src/Type.h"; sourceTree = "<group>"; };
+		BB09D9D67B9E2F9D511E588A /* Version.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Version.h; path = "../src/Version.h"; sourceTree = "<group>"; };
 		2D10825A2D722016661BDF14 /* Parser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Parser.h; path = "../src/parser/Parser.h"; sourceTree = "<group>"; };
 		EBB5148CBB42CE56CD122883 /* ParserInternal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ParserInternal.h; path = "../src/parser/ParserInternal.h"; sourceTree = "<group>"; };
 		343C1B79389BBF31FEC696F5 /* Arm64Darwin.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = Arm64Darwin.h; path = "../src/backend/Arm64Darwin.h"; sourceTree = "<group>"; };
@@ -129,6 +130,7 @@
 				89135EFA2CE6CD9678C83164 /* Source.h */,
 				DDE8B9A37A9782BB379AF4B9 /* Type.cpp */,
 				EFB2C2FE15E86CFA56F6C459 /* Type.h */,
+				BB09D9D67B9E2F9D511E588A /* Version.h */,
 				0622243F82CE24842E74D759 /* main.cpp */,
 			);
 			name = "src";

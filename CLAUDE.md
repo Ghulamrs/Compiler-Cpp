@@ -7036,6 +7036,43 @@ this survived: **no case in the tree had a multi-dimensional array member.**
 scalar `int[2][3]` with nothing to build. Both compilers report **42 objects
 built and 42 destroyed**, so what agrees is the count and not only the balance.
 
+## The GNU spelling is x86_64-windows's default now, and COMDAT is why
+
+**Decided 2026-09-10**, and it is the open item the 09-09 handover left as
+"make `-masm=gnu` the Windows default, or decide not to". What settled it was
+not the line table: it was that **`ml64` cannot link a C++ program of more than
+one file**.
+
+**The chain, measured rather than reasoned.** A member function defined inside
+its class is a strong symbol in every object that includes the header - this
+tree's own `<string>` defines its members that way - and folding them needs a
+COMDAT section. `ml64` has **no directive that reaches the COMDAT bit at all**.
+So two objects that both include `<string>` do not link, and `link.exe` answers
+`LNK2005` once per duplicate. Found by building `examples/` on the box: three
+translation units, and the second one duplicated `std::string::assignFrom`,
+`appendBytes` and `reserveExactly`.
+
+**The GNU spelling already emitted them.** `CoffSpelling::functionBegin` takes
+a `mergeable` flag and writes `.section .text,"xr",discard,"<sym>"` - 123 such
+sections in one file of that example, vtables and inline functions alike, which
+is what cl's own objects carry. Nothing had to be written; the default had to
+move.
+
+| | |
+| --- | --- |
+| what it buys | a multi-file program links; `-g` works, that spelling being the only one with a line table |
+| what it costs | a clang on the Windows machine - Visual Studio 2022 ships one as an optional component, and this tree has assembled through it since `6a6813f` |
+| what it moved | 245 of 778 emitted goldens, all x86_64-windows, re-recorded |
+| what is kept | `-masm=masm` for a machine with no clang, at one translation unit per program - `examples/unity.cpp` is that build |
+
+**"GNU spelling" is a syntax and not a toolchain**, which is worth saying in
+the tree because the name misleads: clang reads it and writes an ordinary
+MSVC-ABI COFF object, `link.exe` links it against the Microsoft CRT, and
+nothing of MinGW or a GNU runtime is anywhere near it.
+
+**The version went to 1.2 rather than re-sealing 1.1.** A seal names a set of
+sources; 1.1 named one and this is not it.
+
 ## A frame that skipped the guard page, and two wrong answers before it
 
 **Fixed 2026-09-06.** `matrix_main.cpp` of the C++ Vector Exercise died on

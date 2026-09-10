@@ -1,21 +1,21 @@
 c2026 G. R. Akhtar - ISO C++ 11,  Compiler
-Release seal, version 1.1, sealed 10-09-2026
+Release seal, version 1.2, sealed 10-09-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 110 files, seal AE9AD748
+CRC32  size  file - 110 files, seal 724FCD9C
 ------------------------------------------------------------------
 04C65507      8465  Makefile
 30A7FD32      2830  examples/Makefile
 53DD8769      1176  examples/Makefile.linux
 B69B2DAC      1174  examples/Makefile.macos
-DE7EB1C0      1706  examples/Makefile.windows
+7DD9F0BC      2007  examples/Makefile.windows
 BC65D6BF      1096  examples/build-win.cmd
 8F99A0EB      1214  examples/demo.cpp
 64DD98E8       397  examples/report.cpp
 A58B27FA       365  examples/report.h
 834E5B52       403  examples/shapes.cpp
 BCF2B27D      1081  examples/shapes.h
-B204662C       952  examples/unity.cpp
-6F9D500E     18335  ide/generate.py
+C450DBBD      1272  examples/unity.cpp
+ED4AA0C9     22352  ide/generate.py
 327B6854      4167  include/algorithm
 24D34375       483  include/cassert
 8DA08DB0       868  include/cctype
@@ -65,8 +65,8 @@ E20D4640      3250  lib/time.h
 EA3CDC9D      2797  msvc/build.cmd
 0689A4DC      2886  src/Abi.h
 C7C1D08E     26255  src/Ast.h
-F29AE832     40598  src/Driver.cpp
-17FE1183      2633  src/Driver.h
+42716C40     42453  src/Driver.cpp
+50384B72      3559  src/Driver.h
 26806DCD     17463  src/Lexer.cpp
 569C8061      2543  src/Lexer.h
 111D92E0     71106  src/Mangle.cpp
@@ -79,7 +79,7 @@ FD6F8457      3795  src/Preprocessor.h
 5F3B1BCE      1836  src/Source.h
 354B40CD     18337  src/Type.cpp
 55ACF165     23274  src/Type.h
-826FE490       663  src/Version.h
+E4A4C41F       878  src/Version.h
 10FBE247     43763  src/backend/Arm64Darwin.cpp
 F0CDF365      5277  src/backend/Arm64Darwin.h
 53E2D519      3791  src/backend/Backend.cpp
@@ -88,7 +88,7 @@ E0AFFCF2     15315  src/backend/Dwarf.cpp
 8F7CD499      1047  src/backend/Dwarf.h
 E1B564C6     40507  src/backend/Masm.cpp
 5C50B7A2      5307  src/backend/Masm.h
-CF7EB3FB     14241  src/backend/Spelling.cpp
+6848D3EC     15043  src/backend/Spelling.cpp
 B83E57C7     11068  src/backend/Spelling.h
 A8CFB1E1     16615  src/backend/Walker.cpp
 1BFDE2F0      9785  src/backend/Walker.h

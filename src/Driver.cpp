@@ -178,8 +178,12 @@ void Driver::usage(char *file) {
         "         x86_64-linux, x86_64-windows, arm64-darwin; the host by default,\n"
         "         and another one only reaches -S, since the assembler here is\n"
         "         this machine's\n"
-        "       -masm picks the assembly syntax for x86_64-windows: 'masm' for\n"
-        "         ml64, which is the default, or 'gnu' for the GNU spelling\n"
+        "       -masm picks the assembly syntax for x86_64-windows: 'gnu' is\n"
+        "         the default and is assembled by clang - it is the only one\n"
+        "         that can mark a definition COMDAT, which a program of more\n"
+        "         than one file needs, and the only one that carries a line\n"
+        "         table; 'masm' is ml64's, which needs no clang and links one\n"
+        "         translation unit at a time\n"
         "       -g writes a line table, so a debugger can stop on a line of C++\n"
         "         and step through it; x86_64-linux and arm64-darwin only\n"
         "       -nologo leaves out the line this compiler prints before it\n"
@@ -368,9 +372,42 @@ const char *Driver::hostAssembler() {
 // **clang, and it is asked for the Microsoft target explicitly.** Its default
 // target is whatever it was built for; this has to produce COFF for the
 // linker beside it, and the triple is what says so.
+//
+// **It is looked for rather than assumed**, and that is what the GNU spelling
+// being this target's default rests on: clang is *installed* on a Windows
+// machine with Visual Studio's "C++ Clang tools" component, or with the LLVM
+// installer, and is on PATH in neither case - `vcvars64.bat` puts the MSVC
+// tools there and not those. Measured on the box: `where clang` finds nothing
+// while both installations are present. So the two places they land are asked
+// first, and a bare `clang` last, which is what an unusual installation or a
+// PATH the user arranged answers with. `CXX1_AS` overrides the lot.
 const char *Driver::hostGnuAssembler() {
+    static std::string found;
+    if (!found.empty()) return found.c_str();
+
     const char *env = std::getenv("CXX1_AS");
-    return (env != nullptr && env[0] != '\0') ? env : "clang";
+    if (env != nullptr && env[0] != '\0') { found = env; return found.c_str(); }
+
+#ifdef _WIN32
+    std::vector<std::string> tries;
+    // Visual Studio's own, which vcvars64 names the root of.
+    const char *vc = std::getenv("VCINSTALLDIR");
+    if (vc != nullptr && vc[0] != '\0')
+        tries.push_back(std::string(vc) + "Tools\\Llvm\\x64\\bin\\clang.exe");
+    const char *pf = std::getenv("ProgramFiles");
+    if (pf != nullptr && pf[0] != '\0') {
+        tries.push_back(std::string(pf) +
+                        "\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools"
+                        "\\Llvm\\x64\\bin\\clang.exe");
+        tries.push_back(std::string(pf) + "\\LLVM\\bin\\clang.exe");
+    }
+    for (std::size_t i = 0; i < tries.size(); i++) {
+        std::ifstream probe(tries[i].c_str());
+        if (probe.good()) { found = tries[i]; return found.c_str(); }
+    }
+#endif
+    found = "clang";
+    return found.c_str();
 }
 
 const char *Driver::hostLinker() {

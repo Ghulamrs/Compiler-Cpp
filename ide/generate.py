@@ -320,6 +320,21 @@ def write_xcode(srcs, hdrs, check):
 
 # ------------------------------------------------------- Visual Studio 2022
 
+def validXml(text, what):
+    """**A project file is XML, and MSBuild will not read a control byte.**
+    One backslash in a comment - `msvc\\build.cmd` written with one rather than
+    two inside an f-string - put 0x08 in the file, and Visual Studio answered
+    `MSB4025: hexadecimal value 0x08, is an invalid character` rather than
+    anything about the compiler. Checked here so the generator cannot ship one
+    again."""
+    import xml.dom.minidom
+    xml.dom.minidom.parseString(text.encode("utf-8"))
+    for ch in text:
+        if ord(ch) < 9 or ord(ch) in (11, 12) or 14 <= ord(ch) <= 31:
+            raise ValueError("%s holds a control byte 0x%02X" % (what, ord(ch)))
+    return text
+
+
 def write_vs(srcs, hdrs, check):
     """cxx1.vcxproj and cxx1.sln, carrying msvc/build.cmd's flags exactly.
 
@@ -387,10 +402,27 @@ def write_vs(srcs, hdrs, check):
     <Link><SubSystem>Console</SubSystem></Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
-    <ClCompile><Optimization>MaxSpeed</Optimization></ClCompile>
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+    </ClCompile>
+    <Link><GenerateDebugInformation>true</GenerateDebugInformation></Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
-    <ClCompile><Optimization>Disabled</Optimization></ClCompile>
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <!-- **/WX is off in Debug, and on in Release.** MSVC warns about things
+           at /Od that /O2 hides - C4701 and C4703, "potentially uninitialized",
+           are reported from a flow analysis that optimisation does differently
+           - so a Debug build gated on -Werror fails on diagnostics the gate
+           was never measured against. Release keeps the gate, which is the
+           configuration msvc/build.cmd and tools/verify-three both use. -->
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <Link><GenerateDebugInformation>true</GenerateDebugInformation></Link>
   </ItemDefinitionGroup>
   <ItemGroup>
 {cl}
@@ -420,12 +452,70 @@ Global
 \tEndGlobalSection
 EndGlobal
 """
-    pp, sp = os.path.join(HERE, NAME + ".vcxproj"), os.path.join(HERE, NAME + ".sln")
+    # **The filters file is what makes it look like a project in the IDE.**
+    # Without one Visual Studio shows 49 files in one flat list; with it the
+    # tree is the tree - src, src\parser, src\backend - which is how the
+    # Xcode project has always presented it and how CLAUDE.md's "the parser is
+    # twelve files" reads on disk.
+    def folder(p):
+        parts = p.split("/")
+        return "\\".join(parts[:-1]).replace("src", "Source Files", 1)
+
+    def hfolder(p):
+        parts = p.split("/")
+        return "\\".join(parts[:-1]).replace("src", "Header Files", 1)
+
+    dirs = sorted({folder(p) for p in srcs} | {hfolder(p) for p in hdrs})
+    unique = []
+    for d in dirs:                      # every parent folder, once each
+        parts = d.split("\\")
+        for i in range(1, len(parts) + 1):
+            joined = "\\".join(parts[:i])
+            if joined and joined not in unique:
+                unique.append(joined)
+    filt_dirs = "\n".join(
+        '    <Filter Include="%s"><UniqueIdentifier>{%s}</UniqueIdentifier></Filter>'
+        % (d, uid("filt:" + d)[:8] + "-" + uid("f1:" + d)[:4] + "-" +
+           uid("f2:" + d)[:4] + "-" + uid("f3:" + d)[:4] + "-" +
+           uid("f4:" + d)[:12]) for d in unique)
+    filt_src = "\n".join(
+        '    <ClCompile Include="%s"><Filter>%s</Filter></ClCompile>'
+        % (win(p), folder(p)) for p in srcs)
+    filt_hdr = "\n".join(
+        '    <ClInclude Include="%s"><Filter>%s</Filter></ClInclude>'
+        % (win(p), hfolder(p)) for p in hdrs)
+    filters = f"""<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+{filt_dirs}
+  </ItemGroup>
+  <ItemGroup>
+{filt_src}
+  </ItemGroup>
+  <ItemGroup>
+{filt_hdr}
+  </ItemGroup>
+</Project>
+"""
+
+    # **And a solution at the root of the tree**, which is where somebody who
+    # has just unpacked this looks first. It is the same project, named by a
+    # path: two files, one project, no copy of anything.
+    rootSln = sln.replace('"%s.vcxproj"' % NAME, '"ide\\%s.vcxproj"' % NAME)
+
+    pp = os.path.join(HERE, NAME + ".vcxproj")
+    sp = os.path.join(HERE, NAME + ".sln")
+    fp = pp + ".filters"
+    rp = os.path.join(ROOT, NAME + ".sln")
     if check:
-        ok = os.path.exists(pp) and open(pp).read() == proj
-        return ok and os.path.exists(sp) and open(sp).read() == sln
-    open(pp, "w", newline="\r\n").write(proj)
-    open(sp, "w", newline="\r\n").write(sln)
+        for path, want in ((pp, proj), (sp, sln), (fp, filters), (rp, rootSln)):
+            if not os.path.exists(path) or open(path).read() != want:
+                return False
+        return True
+    validXml(proj, "cxx1.vcxproj")
+    validXml(filters, "cxx1.vcxproj.filters")
+    for path, want in ((pp, proj), (sp, sln), (fp, filters), (rp, rootSln)):
+        open(path, "w", newline="\r\n").write(want)
     return True
 
 

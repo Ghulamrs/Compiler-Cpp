@@ -125,7 +125,7 @@ new is refused with it, though plain `new` and `delete` work - and
 `<typeinfo>` waits on `typeid`, which is refused by name. `dynamic_cast` does
 work, and has since each vtable got a `type_info` beside it.
 
-## Known shortcomings in 1.1
+## Known shortcomings in 1.2
 
 Everything here is measured and written down elsewhere in full; this is the
 short list a user of **1.1** should have in front of them. `docs/EXCLUSIONS.md`
@@ -169,18 +169,24 @@ each refusal names itself:
 it. Compile such a translation unit for another target, or avoid that shape,
 until it is fixed.
 
-**There is no COMDAT on x86_64-windows**, and the consequence is bigger than it
-sounds. A member function defined inside its class becomes an ordinary strong
-symbol in every object that includes the header - and this tree's own
-`<string>` defines its members that way - so on that target **two translation
-units that both include `<string>` do not link**: `link.exe` answers LNK2005
-for each duplicate. The two Itanium targets emit weak definitions and have no
-such trouble; it is why `examples/Makefile.windows` builds its program as one
-translation unit and the other three build one object per source, and why most
-`.nocl` and `.nonames` entries in `tests/cases/` exist. A Windows project of
-more than one file either compiles as a unity build - `examples/unity.cpp`
-shows the shape - or keeps the library headers to one file of it, until COMDAT
-lands there.
+**`-masm=masm` cannot link a program of more than one file**, and that is
+ml64's limit rather than this compiler's. A member function defined inside its
+class becomes a strong symbol in every object that includes the header - this
+tree's own `<string>` defines its members that way - and folding them needs a
+COMDAT section, which **ml64 has no directive for at all**. `link.exe` answers
+LNK2005 for each duplicate.
+
+Since 1.2 that is no longer the default: x86_64-windows assembles through the
+**GNU spelling**, which clang turns into an ordinary MSVC-ABI COFF object and
+which does mark each such definition COMDAT - the same thing cl's own objects
+do. So a multi-file Windows project links. What it costs is a clang on that
+machine, which Visual Studio 2022 ships as an optional component; `-masm=masm`
+keeps the ml64 path for a machine without one, and `examples/unity.cpp` shows
+the single-translation-unit build that path needs.
+
+This is still why most `.nocl` and `.nonames` entries in `tests/cases/` exist:
+cl folds an inline definition into a COMDAT and drops it when nothing calls it,
+where cxx1 emits it.
 
 **Five programs are known to answer differently from clang**, kept as programs
 in `tests/open/` with clang's answer beside each: a `catch` parameter whose

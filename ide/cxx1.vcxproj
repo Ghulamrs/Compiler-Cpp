@@ -44,10 +44,27 @@
     <Link><SubSystem>Console</SubSystem></Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
-    <ClCompile><Optimization>MaxSpeed</Optimization></ClCompile>
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+    </ClCompile>
+    <Link><GenerateDebugInformation>true</GenerateDebugInformation></Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
-    <ClCompile><Optimization>Disabled</Optimization></ClCompile>
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <!-- **/WX is off in Debug, and on in Release.** MSVC warns about things
+           at /Od that /O2 hides - C4701 and C4703, "potentially uninitialized",
+           are reported from a flow analysis that optimisation does differently
+           - so a Debug build gated on -Werror fails on diagnostics the gate
+           was never measured against. Release keeps the gate, which is the
+           configuration msvc/build.cmd and tools/verify-three both use. -->
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <Link><GenerateDebugInformation>true</GenerateDebugInformation></Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\src\Driver.cpp" />
@@ -91,6 +108,7 @@
     <ClInclude Include="..\src\Preprocessor.h" />
     <ClInclude Include="..\src\Source.h" />
     <ClInclude Include="..\src\Type.h" />
+    <ClInclude Include="..\src\Version.h" />
     <ClInclude Include="..\src\parser\Parser.h" />
     <ClInclude Include="..\src\parser\ParserInternal.h" />
     <ClInclude Include="..\src\backend\Arm64Darwin.h" />

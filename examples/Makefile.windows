@@ -16,14 +16,14 @@
 # GNU make on Windows works too - use the portable Makefile beside this one and
 # say OBJS with .obj if you prefer that suffix; cxx1 takes either.
 
-# **One translation unit on this target**, and unity.cpp says why at length:
-# there is no COMDAT here, so two objects that both include <string> do not
-# link. The other three Makefiles build one object per source, which is what
-# this one will do too when that lands.
+# One object per source, as the other three Makefiles do. **That works here
+# because the default assembly spelling for this target is the GNU one**, which
+# clang assembles and which can mark a definition COMDAT; ml64's cannot, so
+# `-masm=masm` still needs the unity build unity.cpp holds.
 TARGET    = demo.exe
-SRCS      = unity.cpp
-OBJS      = unity.obj
-ASMS      = unity.s
+SRCS      = demo.cpp report.cpp shapes.cpp
+OBJS      = demo.obj report.obj shapes.obj
+ASMS      = demo.s report.s shapes.s
 
 CXX1      = cxx1.exe
 CXX1FLAGS =
@@ -39,11 +39,14 @@ $(TARGET): $(OBJS)
 run: $(TARGET)
 	.\$(TARGET)
 
-# **`-masm=gnu` is worth knowing about here.** The default spelling is MASM,
-# which ml64 assembles; the GNU spelling is assembled by clang and is what
-# carries a line table, so `-g` wants it. Neither changes the program.
+# **`-masm=masm` is the other spelling**, ml64's, for a machine with no clang.
+# It cannot mark a definition COMDAT, so a program built that way has to be one
+# translation unit - `nmake /f Makefile.windows CXX1FLAGS=-masm=masm` on
+# unity.cpp is that build. Neither spelling changes what the program does.
 asm:
-	$(CXX1) $(CXX1FLAGS) -S -arch x86_64-windows unity.cpp -o unity.s
+	$(CXX1) $(CXX1FLAGS) -S -arch x86_64-windows demo.cpp -o demo.s
+	$(CXX1) $(CXX1FLAGS) -S -arch x86_64-windows report.cpp -o report.s
+	$(CXX1) $(CXX1FLAGS) -S -arch x86_64-windows shapes.cpp -o shapes.s
 
 clean:
 	-del /q $(TARGET) $(OBJS) $(ASMS) 2>nul

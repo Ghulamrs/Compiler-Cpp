@@ -194,10 +194,10 @@ two header directories of section 2.
 6.  THIS RELEASE, AND ITS SEAL
 ------------------------------
 
-This is **version 1.1**, sealed **10-09-2026**.
+This is **version 1.2**, sealed **10-09-2026**.
 
     cxx1.exe -version            says both, and names the seal file
-    cxx1-1.1.dat                 the seal: a CRC32 and a size per file
+    cxx1-1.2.dat                 the seal: a CRC32 and a size per file
     tools/seal check             verifies every line of it
 
 The seal covers what the compiler *is*: every file under `src/`, `include/`,
@@ -233,15 +233,11 @@ which is the point of shipping them: a build that names its target says what it
 meant, and fails on the machine where that was a mistake instead of quietly
 building something else.
 
-**`Makefile.windows` differs in one more way, and it is not a style choice.**
-There is no COMDAT on that target yet, so two objects that both include
-`<string>` - or any header defining a member inside its class - do not link:
-`link.exe` answers LNK2005 for every duplicate. It therefore compiles the
-program as **one translation unit**, which `examples/unity.cpp` is, and
-`examples/build-win.cmd` runs the whole thing from a plain shell.  The two
-Itanium targets emit weak definitions and build one object per source, as the
-other three Makefiles do.  README.md, "Known shortcomings in 1.1", carries the
-same note.  Copy whichever fits, change the first three lines,
+`Makefile.windows` builds one object per source like the other three, and
+`examples/build-win.cmd` runs the whole thing from a plain shell - it calls
+`vcvars64.bat` first, because that is where `link.exe` and `clang` are.  With
+`-masm=masm` it would need the single-translation-unit build `examples/unity.cpp`
+holds; section 7 says why.  Copy whichever fits, change the first three lines,
 and it builds any project of C++ sources in one directory:
 
     TARGET  := demo
@@ -293,12 +289,28 @@ then runs two programs that are already on the machine:
     what                 Linux and macOS          Windows
     ----------------------------------------------------------------------
     compile to assembly  cxx1                     cxx1
-    assemble             c++     (-c on the .s)   ml64.exe  /c /Fo
-                                                  or clang -target
-                                                  x86_64-pc-windows-msvc
-                                                  with -masm=gnu
+    assemble             c++     (-c on the .s)   clang -target
+                                                  x86_64-pc-windows-msvc -c
+                                                  (or ml64.exe /c /Fo, with
+                                                  -masm=masm)
     link                 c++     (and -lm)        link.exe /subsystem:console
                                                   with the UCRT libraries
+
+**"GNU spelling" is a syntax, not a toolchain.**  Nothing of MinGW, gcc or a
+GNU runtime is involved on Windows: clang reads the assembly, writes an
+ordinary MSVC-ABI COFF object, and `link.exe` links it against the Microsoft
+CRT exactly as it would an object from `cl`.  clang ships inside Visual Studio
+2022 as the optional "C++ Clang tools for Windows" component, or as the
+standalone LLVM installer.
+
+**Why it is the default there.**  Only that spelling can mark a definition
+COMDAT, and without one a program of more than one file does not link: a member
+function defined inside its class - `std::string`'s own, in this compiler's own
+`<string>` - is a strong symbol in every object that includes the header, and
+`ml64` has no directive that reaches the COMDAT bit at all.  It is also the only
+spelling that carries a line table, which `-g` already required.  `-masm=masm`
+is there for a machine with no clang, at the cost of one translation unit per
+program.
 
 `c++` rather than `cc` on the Itanium targets, because `operator new` lives in
 the C++ runtime and the C driver links neither libc++ nor libstdc++.  On

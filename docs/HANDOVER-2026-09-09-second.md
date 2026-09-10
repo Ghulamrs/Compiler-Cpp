@@ -93,9 +93,11 @@ namespaced specializations in the tree.
    `lambda-return-through-try` arrived with it.
 4. Everything the 09-09 handover lists that this round did not touch: the
    Microsoft virtual-base layout, `noexcept` where the function owns a region,
-   a mem-initialiser needing a temporary, `-masm=gnu` as the Windows default,
-   the `runTool` temp-batch race, `run.sh` on the Windows box, and the four
-   `<type_traits>` gaps.
+   a mem-initialiser needing a temporary, ~~`-masm=gnu` as the Windows
+   default~~ - **decided 2026-09-10 and it is the default now**, because ml64
+   has no COMDAT directive and so cannot link a program of more than one file;
+   see CLAUDE.md - the `runTool` temp-batch race, `run.sh` on the Windows box,
+   and the four `<type_traits>` gaps.
 
 ## What is measured, and at which commit
 
