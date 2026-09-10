@@ -168,12 +168,12 @@ virtual base once rather than once per class that names it. What remains is
 three defects the work uncovered, all of them **Itanium-side or shared** and
 all registered in `tests/open`: a second base's own virtual base is read
 through the wrong pointer, and `delete` through a pointer to a polymorphic
-virtual base misses the most-derived destructor. **The primary-base rule they
-were found beside is fixed** - the first non-virtual base carrying a vptr is
-laid at offset 0 on the Itanium targets, whatever its place in the
-base-clause - and it uncovered one more: a class that introduces its own vptr
-over a plain base still lays that base at 0 and stores the vptr over its first
-member.
+virtual base misses the most-derived destructor. Two more that the work found
+are **fixed**: the first non-virtual base carrying a vptr is laid at offset 0
+on the Itanium targets whatever its place in the base-clause, and a class that
+introduces its own vptr puts it in front of every base rather than over the
+first one's members - with `__vmi_class_type_info` beside it, so that a
+`catch` by a base at a non-zero offset lands where the object is.
 
 **That Windows defect is closed as of 1.2**: a function other than `main` that
 owned an unwind region used to emit a `.pdata` entry pointing at a `$cppxdata`

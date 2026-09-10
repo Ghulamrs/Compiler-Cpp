@@ -304,12 +304,20 @@ public:
         // non-virtual byte of the *most derived* class - so its offset belongs
         // to that class and not to whoever wrote `virtual`.
         bool isVirtual = false;
+        // **Written in this class's base-clause, rather than reached through
+        // one.** A virtual base is laid down by the most-derived class
+        // whoever named it, so `Dia : D1, D2` carries V in this list though
+        // it never wrote the word - and the Itanium type_info lists a class's
+        // *direct* bases only, which is the one place the difference shows:
+        // clang gives Dia's `__vmi` two bases and cxx1 gave it three.
+        bool direct = true;
     };
     const std::vector<BaseSpec> &bases() const {
         return cls().bases_;
     }
-    void addBase(const Type *b, int offset, Access how, bool isVirtual = false) {
-        bases_.push_back(BaseSpec{ b, offset, how, isVirtual });
+    void addBase(const Type *b, int offset, Access how, bool isVirtual = false,
+                 bool direct = true) {
+        bases_.push_back(BaseSpec{ b, offset, how, isVirtual, direct });
     }
     bool hasVirtualBase() const {
         const std::vector<BaseSpec> &b = bases();
@@ -379,6 +387,16 @@ public:
     // they are destroyed, and only the offsets say where each one landed.
     const Type *primaryBase() const { return cls().primaryBase_; }
     void setPrimaryBase(const Type *t) { primaryBase_ = t; }
+
+    // **A pointer the class introduces at offset 0 pushes every base down.**
+    // `Z : A { int z; virtual int f(); }` has no primary base to take a vptr
+    // from, so it puts one in front of A - clang and cl both lay A at 8 - and
+    // the bases were recorded before the body said there were virtual
+    // functions at all. Called once, from the layout, while only the
+    // non-virtual bases are in the list.
+    void shiftBaseOffsets(int by) {
+        for (std::size_t i = 0; i < bases_.size(); i++) bases_[i].offset += by;
+    }
 
     // The first base - the only one for most classes, and the only one that
     // needs no adjustment. Kept because most callers ask exactly that.

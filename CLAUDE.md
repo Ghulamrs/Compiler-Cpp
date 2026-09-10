@@ -9646,6 +9646,63 @@ This round was written by a Fable 5.1 subagent in its own worktree, and every
 number above was re-measured here before it landed - which is the only way a
 handed-over green is worth anything.
 
+## A class's own vptr goes in front of its bases - and then the type_info
+
+`Z : A { int z; virtual int f(); }` with A a plain struct: Z is dynamic and A
+is not, so there is no base to take a vptr from and Z must put one at offset 0
+**in front of** A. Both oracles give the same four numbers - vptr 0, A 8, z 12,
+sizeof 16, from clang's `-fdump-record-layouts` and cl's
+`/d1reportSingleClassLayout` - and cxx1 laid A at 0 and moved only Z's *own*
+members down, so the constructor's vtable store landed on `A::x` and the first
+virtual call after a write to it **segfaulted**. On a shape as ordinary as they
+come, and nothing in 460 cases had it.
+
+The fix is `Type::shiftBaseOffsets`: the pointer moves every base, not only the
+members. It is 8 wide and goes at 0, so member alignment survives the shift.
+
+**The Microsoft vbtable pointer does not go in front, and that had to be
+measured separately.** cl lays `N : A, virtual V { int n; }` as A 0, vbptr 8,
+n 16, V 24 and `Q : A, virtual V { int q; virtual void h(); }` as vfptr 0, A 8,
+**vbptr 16**, q 24, V 32: the vfptr leads, the bases follow, the vbptr comes
+after them and before the class's own members. So that slot is now *reserved*
+before the members are laid rather than shifted in afterwards - which is also
+the only way a `double` member's alignment comes out right, since the padding
+before the vbptr makes the delta something other than a multiple of 8.
+Whether a class needs one is known from the base-clause alone; the vftable has
+to wait for the body.
+
+**And the layout fix made the type_info a lie, which is the other half of the
+round.** With A at 8, `__si_class_type_info` - which *means* "one public base,
+at offset zero" - describes an object that does not exist, and `catch (A &)` on
+a thrown Z read eight bytes early and printed rubbish. That shape needs the
+third kind, `__vmi_class_type_info`: flags, a base count, and per base its
+`_ZTI` and `(offset << 8) | flags` with `__virtual_mask` 1 and `__public_mask`
+2. cxx1 emits it now, and it agrees with clang byte for byte on every shape
+checked:
+
+    Z   : A                    flags 0, 1 base   _ZTI1A, 2050    (8 << 8 | 2)
+    C   : A, B                 flags 0, 2 bases  _ZTI1A, 2; _ZTI1B, 1026
+    M   : A, V                 flags 0, 2 bases  _ZTI1A, 3074; _ZTI1V, 2
+    D1  : virtual V            flags 0, 1 base   _ZTI1V, -6141   (-24 << 8 | 3)
+    Dia : D1, D2               flags 2, 2 bases  _ZTI2D1, 2; _ZTI2D2, 4098
+
+Three things that record teaches. **A virtual base's number is not where the
+base is** - it is where its `vbase_offset` sits in the vtable, negative, and
+-24 is exactly the slot `virtualBaseMember` already reads. **The list is the
+*direct* bases only**: `bases()` carries a virtual base the class merely
+inherits, because the most-derived class lays it down, so Dia's record named
+three bases where clang names two - hence `BaseSpec::direct`. And **the flags
+are about repetition**: 2 for a diamond, which the walk over the base graph
+computes rather than guesses.
+
+Two consequences beyond the case. `throw-multiple-bases-refused` is no longer
+refused, so it became `throw-multiple-bases` with an `.expected` - it catches a
+two-base class by *either* base, which is exactly what the offsets in the
+record decide. And twelve golden files changed, all of them Itanium, all of
+them a type_info that was previously absent or `__si`: every record in the
+three cases spot-checked is now byte-identical to clang's, where before the
+change they were not.
+
 ## `<type_traits>`, and four gaps of one family
 
 The header is the C++11 core - `is_integral`, `is_floating_point`, `is_same`,

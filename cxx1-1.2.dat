@@ -1,7 +1,7 @@
 c2026 G. R. Akhtar - ISO C++ 11,  Compiler
 Release seal, version 1.2, sealed 10-09-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 110 files, seal 78A5B919
+CRC32  size  file - 110 files, seal C0580D5A
 ------------------------------------------------------------------
 04C65507      8465  Makefile
 30A7FD32      2830  examples/Makefile
@@ -78,7 +78,7 @@ FD6F8457      3795  src/Preprocessor.h
 85DA7817      3942  src/Source.cpp
 5F3B1BCE      1836  src/Source.h
 354B40CD     18337  src/Type.cpp
-68894EE5     26553  src/Type.h
+5D63B006     27621  src/Type.h
 E4A4C41F       878  src/Version.h
 10FBE247     43763  src/backend/Arm64Darwin.cpp
 F0CDF365      5277  src/backend/Arm64Darwin.h
@@ -98,8 +98,8 @@ C48E8201     84392  src/backend/X86_64Linux.cpp
 51289591      1566  src/backend/X86_64Windows.h
 3F12405D       111  src/main.cpp
 BC202484     37062  src/parser/Parser.cpp
-8E512A6B    126740  src/parser/Parser.h
-C428D9D3    191050  src/parser/ParserClass.cpp
+01B38715    127045  src/parser/Parser.h
+C005A106    196132  src/parser/ParserClass.cpp
 96A32C25     13074  src/parser/ParserConst.cpp
 AA4C8C92    106596  src/parser/ParserExpr.cpp
 4423FC41     36545  src/parser/ParserExprCall.cpp
@@ -112,4 +112,4 @@ DB5C38B8      2527  src/parser/ParserInternal.h
 C1460070    118220  src/parser/ParserStmt.cpp
 8C605556    105305  src/parser/ParserTemplate.cpp
 1E168C71     89864  src/parser/ParserTopLevel.cpp
-92220B2F    115470  src/parser/ParserType.cpp
+531AAA92    118046  src/parser/ParserType.cpp

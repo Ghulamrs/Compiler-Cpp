@@ -325,7 +325,33 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // (Read only on the Itanium branch below; the Microsoft one asks its own
     // question about vfptr and vbptr separately.)
     const bool inheritsVptr = primary != nullptr;
-    const std::size_t firstOwnMember = members.size();
+
+    // **The Microsoft vbtable pointer goes after the bases**, not in front of
+    // them: cl lays `N : A, virtual V { int n; }` as A 0, vbptr 8, n 16, V 24,
+    // and `Q : A, virtual V { int q; virtual void h(); }` as vfptr 0, A 8,
+    // vbptr 16, q 24. So the slot is reserved *here*, before this class's own
+    // members are laid, and they are laid after it - which is also the only
+    // way their alignment comes out right, a `double` member wanting 8 from
+    // wherever it actually sits rather than a shift applied afterwards.
+    //
+    // Whether the class needs one is known from the base-clause alone, unlike
+    // the vftable, which waits for the body to say whether a function is
+    // virtual. That one goes at offset 0 and moves everything, and is applied
+    // below.
+    int msVbptrAt = -1;
+    if (target_.microsoftNames() && kind != Kind::Union) {
+        bool wantsVbptr = false, carried = false;
+        for (std::size_t bi = 0; bi < written.size(); bi++) {
+            if (written[bi].isVirtual) { wantsVbptr = true; continue; }
+            if (written[bi].type->hasVirtualBase()) wantsVbptr = true;
+            if (written[bi].type->vbptrOffset() >= 0) carried = true;
+        }
+        if (wantsVbptr && !carried) {
+            msVbptrAt = alignTo(static_cast<int>((bitCursor + 7) / 8), 8);
+            bitCursor = static_cast<long long>(msVbptrAt + 8) * 8;
+            if (widest < 8) widest = 8;
+        }
+    }
 
     // **The one difference between the two keywords.** [class.access]: a class starts
     // private and a struct starts public, and everything else about them is the
@@ -1033,18 +1059,28 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     //     one already. `R : D1` uses D1's and writes its own table into it.
     if (target_.microsoftNames() && kind != Kind::Union) {
         const Type *firstNv = nullptr;
-        int carriers = 0;
         for (std::size_t bi = 0; bi < written.size(); bi++) {
             if (written[bi].isVirtual) continue;
             if (firstNv == nullptr) firstNv = written[bi].type;
-            if (written[bi].type->vbptrOffset() >= 0) carriers++;
         }
         const bool inheritsVfptr = firstNv != nullptr && firstNv->polymorphic();
-        int added = 0;
-        if (anyVirtual && !inheritsVfptr) added += 8;
-        if (writesVirtualBase && carriers == 0) {
-            type->addVbptr(added, type, nullptr);
-            added += 8;
+        // **The vftable pointer goes in front of everything the class holds**,
+        // bases included, and no base supplies one here. Measured: cl lays
+        // `Z : A { int z; virtual int f(); }` as vfptr 0, A 8, z 12, sizeof 16
+        // - and clang lays it identically, which is why one rule serves both
+        // ABIs. Shifting only this class's *own* members, which is what stood
+        // here, left A at 0 and stored the vftable address over `A::x`.
+        const int added = anyVirtual && !inheritsVfptr ? 8 : 0;
+        if (added != 0) {
+            for (std::size_t i = 0; i < members.size(); i++)
+                members[i].offset += added;
+            type->shiftBaseOffsets(added);
+            if (msVbptrAt >= 0) msVbptrAt += added;
+            bitCursor += static_cast<long long>(added) * 8;
+            if (widest < 8) widest = 8;
+        }
+        if (msVbptrAt >= 0) {
+            type->addVbptr(msVbptrAt, type, nullptr);
         } else if (writesVirtualBase) {
             // **Inherited, and there can be more than one.** The pointer stays
             // where the base put it - *inside* that base - so its offset here
@@ -1064,22 +1100,23 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             for (std::size_t bi = 0; bi < laid.size(); bi++) {
                 if (laid[bi].isVirtual) continue;
                 if (laid[bi].type->vbptrOffset() < 0) continue;
-                type->addVbptr(laid[bi].offset + added +
+                type->addVbptr(laid[bi].offset +
                                    laid[bi].type->vbptrOffset(),
                                laid[bi].type->vbptrOwner(), laid[bi].type);
             }
         }
-        if (added != 0) {
-            for (std::size_t i = firstOwnMember; i < members.size(); i++)
-                members[i].offset += added;
-            bitCursor += static_cast<long long>(added) * 8;
-            if (widest < 8) widest = 8;
-        }
     } else if ((anyVirtual || writesVirtualBase) && !inheritsVptr &&
                kind != Kind::Union) {
+        // **The same rule on Itanium, and the same correction.** A class with
+        // no primary base to take a vptr from puts one at offset 0, in front
+        // of every base: clang lays `Z : A` as vptr 0, A 8, z 12. Moving only
+        // this class's own members left A at 0 for the vptr to be written
+        // over - the first virtual call after `z.x = 1` was a segfault, on a
+        // shape as ordinary as they come. tests/cases/own-vptr-plain-base.cpp.
         const int slot = 8;
-        for (std::size_t i = firstOwnMember; i < members.size(); i++)
+        for (std::size_t i = 0; i < members.size(); i++)
             members[i].offset += slot;
+        type->shiftBaseOffsets(slot);
         bitCursor += static_cast<long long>(slot) * 8;
         if (widest < slot) widest = slot;
     }
@@ -1140,6 +1177,10 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     };
     std::vector<const Type *> vbases;
     std::vector<Access> vaccess;
+    // The ones this class *wrote* `virtual` for. The gather below adds those
+    // it only inherits, which are laid down here all the same but are not
+    // direct bases of it - see BaseSpec::direct.
+    std::size_t vbasesWritten = 0;
     for (std::size_t bi = 0; bi < written.size(); bi++)
         if (written[bi].isVirtual) {
             bool seen = false;
@@ -1148,6 +1189,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (!seen) { vbases.push_back(written[bi].type);
                          vaccess.push_back(written[bi].access); }
         }
+    vbasesWritten = vbases.size();
     for (std::size_t bi = 0; bi < written.size(); bi++)
         Gather::of(written[bi].type, vbases, vaccess, written[bi].access);
 
@@ -1167,7 +1209,7 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (m.inVirtualBase == nullptr) m.inVirtualBase = b;
             members.push_back(m);
         }
-        type->addBase(b, at, vaccess[bi], true);
+        type->addBase(b, at, vaccess[bi], true, bi < vbasesWritten);
         totalBits = static_cast<long long>(at + b->dataSize()) * 8;
         if (b->align(target_) > widest) widest = b->align(target_);
     }

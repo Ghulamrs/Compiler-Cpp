@@ -1434,11 +1434,72 @@ std::string Parser::typeInfoSymbolFor(const Type *t, std::size_t pos,
         // - emitClassTypeInfo answers empty for it and says so here.
         const std::string ti = emitClassTypeInfo(u, u->tag(), pos);
         if (!ti.empty()) { why->clear(); return ti; }
-        *why = "'" + u->describe() + "' has more than one base, and a "
-               "type_info for that shape is not built yet";
+        *why = "'" + u->describe() + "' has a base this compiler cannot "
+               "describe a type_info for";
         return std::string();
     }
     return std::string();
+}
+
+// **The flags word of a `__vmi_class_type_info`**, [ABI 2.9.5]: bit 0 says a
+// base class appears more than once but not diamond-shaped, bit 1 says it
+// does. The runtime reads them to know whether a `dynamic_cast` can stop at
+// the first match or has to keep looking, so a class with neither - which is
+// most of them, and every shape clang was checked against here - gets 0.
+long long Parser::itaniumVmiFlags(const Type *cls) {
+    std::vector<const Type *> seen;
+    std::vector<int> count;
+    std::vector<bool> virtualPath;
+    std::vector<const Type *> stack;
+    std::vector<bool> stackVirtual;
+    const std::vector<Type::BaseSpec> &direct = cls->bases();
+    for (std::size_t i = 0; i < direct.size(); i++) {
+        stack.push_back(direct[i].type);
+        stackVirtual.push_back(direct[i].isVirtual);
+    }
+    while (!stack.empty()) {
+        const Type *b = stack.back();
+        const bool wasVirtual = stackVirtual.back();
+        stack.pop_back();
+        stackVirtual.pop_back();
+        std::size_t k = 0;
+        while (k < seen.size() && seen[k] != b) k++;
+        if (k == seen.size()) {
+            seen.push_back(b);
+            count.push_back(0);
+            virtualPath.push_back(false);
+        }
+        count[k]++;
+        if (wasVirtual) virtualPath[k] = true;
+        const std::vector<Type::BaseSpec> &up = b->bases();
+        for (std::size_t i = 0; i < up.size(); i++) {
+            stack.push_back(up[i].type);
+            stackVirtual.push_back(wasVirtual || up[i].isVirtual);
+        }
+    }
+    long long flags = 0;
+    for (std::size_t k = 0; k < seen.size(); k++) {
+        if (count[k] < 2) continue;
+        flags |= virtualPath[k] ? 2 : 1;
+    }
+    return flags;
+}
+
+// Where a virtual base's `vbase_offset` sits in this class's vtable, which is
+// what the type_info names rather than the base's place in the object. The
+// same arithmetic `virtualBaseMember` walks: the slots sit in reverse
+// declaration order ahead of offset-to-top and the typeinfo word.
+long long Parser::itaniumVbaseOffsetSlot(const Type *cls, const Type *vbase) {
+    const std::vector<Type::BaseSpec> &bs = cls->bases();
+    int nvb = 0, seen = 0;
+    for (std::size_t i = 0; i < bs.size(); i++) if (bs[i].isVirtual) nvb++;
+    for (std::size_t i = bs.size(); i-- > 0; ) {
+        if (!bs[i].isVirtual) continue;
+        if (bs[i].type == vbase)
+            return -static_cast<long long>(nvb + 2 - seen) * 8;
+        seen++;
+    }
+    return 0;
 }
 
 std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
@@ -1449,24 +1510,41 @@ std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
     for (std::size_t i = 0; i < current_->globals.size(); i++)
         if (current_->globals[i].symbol == ti) return ti;      // one per class
 
-    // **A class this cannot describe gets none, and that is not an error here.**
-    // More than one base wants `__vmi_class_type_info`, a third shape carrying
-    // the bases' offsets and flags, which is not built. Such a class kept
-    // working before there was any type_info at all, so it keeps working now:
-    // the vtable's slot stays the zero it always held, and the only thing that
-    // cannot be done is a `dynamic_cast` naming it - which is refused there, by
-    // name, where the reader is asking for the thing that is missing.
-    const std::vector<Type::BaseSpec> &bases = cls->bases();
-    if (bases.size() > 1) return std::string();
+    // **Which of the three shapes this class is.** [ABI 2.9.5]: no base is
+    // `__class_type_info`; a single public non-virtual base **at offset zero**
+    // is `__si_class_type_info`, whose whole content is that base's `_ZTI`;
+    // anything else is `__vmi_class_type_info`, which carries an offset and a
+    // set of flags per base and so can say what the other two cannot.
+    //
+    // **The offset is why this stopped being optional.** `Z : A { virtual }`
+    // puts its own vptr at 0 and A at 8, so `__si` - which means "at zero" -
+    // became a lie the moment the layout was mended: `catch (A &)` on a thrown
+    // Z read eight bytes early and printed rubbish. clang emits `__vmi` there
+    // with `(8 << 8) | 2`, and so does this now.
+    // **Direct bases only**, [ABI 2.9.5]: a virtual base this class merely
+    // inherits is in `bases()` because the most-derived class lays it down,
+    // and clang's `__vmi` for `Dia : D1, D2` names two bases where that list
+    // holds three.
+    std::vector<Type::BaseSpec> bases;
+    {
+        const std::vector<Type::BaseSpec> &all = cls->bases();
+        for (std::size_t i = 0; i < all.size(); i++)
+            if (all[i].direct) bases.push_back(all[i]);
+    }
+    const bool simple = bases.size() == 1 && !bases[0].isVirtual &&
+                        bases[0].offset == 0 &&
+                        bases[0].access == Access::Public;
 
-    // **The base first, and nothing is laid down until it answers.** A chain is
-    // only as describable as its links - with no `_ZTI` for the base there is
-    // nothing to point the third word at - and giving up after emitting the
+    // **Every base first, and nothing is laid down until they all answer.** A
+    // chain is only as describable as its links - with no `_ZTI` for a base
+    // there is nothing to point a word at - and giving up after emitting the
     // name string would leave a `_ZTS` in the object that nothing refers to.
-    std::string baseTypeInfo;
-    if (!bases.empty()) {
-        baseTypeInfo = emitClassTypeInfo(bases[0].type, bases[0].type->tag(), pos);
-        if (baseTypeInfo.empty()) return std::string();
+    std::vector<std::string> baseTypeInfo;
+    for (std::size_t i = 0; i < bases.size(); i++) {
+        const std::string one = emitClassTypeInfo(bases[i].type,
+                                                  bases[i].type->tag(), pos);
+        if (one.empty()) return std::string();
+        baseTypeInfo.push_back(one);
     }
 
     const bool own = cls->unqualified()->tag() == tag;
@@ -1492,14 +1570,47 @@ std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
     pieces.push_back(GlobalPiece{
         0, 8, 16,
         bases.empty() ? "_ZTVN10__cxxabiv117__class_type_infoE"
-                      : "_ZTVN10__cxxabiv120__si_class_type_infoE" });
+                      : simple ? "_ZTVN10__cxxabiv120__si_class_type_infoE"
+                               : "_ZTVN10__cxxabiv121__vmi_class_type_infoE" });
     pieces.push_back(GlobalPiece{ 8, 8, 0, ts });
-    if (!baseTypeInfo.empty())
-        pieces.push_back(GlobalPiece{ 16, 8, 0, baseTypeInfo });
+    int words = 2;
+    if (simple) {
+        pieces.push_back(GlobalPiece{ 16, 8, 0, baseTypeInfo[0] });
+        words = 3;
+    } else if (!bases.empty()) {
+        // Two `unsigned int` in the third word - the class's flags and the
+        // number of bases - and then a pair of words per base: its `_ZTI` and
+        // an offset with four flag bits under it.
+        pieces.push_back(GlobalPiece{ 16, 4, itaniumVmiFlags(cls),
+                                      std::string() });
+        pieces.push_back(GlobalPiece{ 20, 4,
+                                      static_cast<long long>(bases.size()),
+                                      std::string() });
+        int at = 24;
+        for (std::size_t i = 0; i < bases.size(); i++) {
+            pieces.push_back(GlobalPiece{ at, 8, 0, baseTypeInfo[i] });
+            // **`__public_mask` is 2 and `__virtual_mask` is 1**, and the
+            // offset above them is where the base *is* - except for a virtual
+            // one, where it is where its `vbase_offset` sits in the vtable, a
+            // negative number the runtime reads through the object's vptr.
+            // Measured against clang: `D1 : virtual V` gives -6141, which is
+            // (-24 << 8) | 3, and -24 is the slot this compiler's own vtable
+            // puts that offset in.
+            long long flags = bases[i].access == Access::Public ? 2 : 0;
+            long long where = bases[i].offset;
+            if (bases[i].isVirtual) {
+                flags |= 1;
+                where = itaniumVbaseOffsetSlot(cls, bases[i].type);
+            }
+            pieces.push_back(GlobalPiece{ at + 8, 8, (where << 8) | flags,
+                                          std::string() });
+            at += 16;
+        }
+        words = 3 + static_cast<int>(bases.size()) * 2;
+    }
 
     const Type *word = types_.pointerTo(types_.get(Kind::Void));
-    const Type *object = types_.arrayOf(word,
-                                        static_cast<long long>(pieces.size()));
+    const Type *object = types_.arrayOf(word, static_cast<long long>(words));
     current_->globals.push_back(Global{ ti, ti, object, std::move(pieces),
                                         true, false, true,
                                         std::string(), true });

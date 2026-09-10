@@ -678,6 +678,11 @@ private:
     // Answers empty and fills `why` where this compiler cannot describe it.
     std::string typeInfoSymbolFor(const Type *t, std::size_t pos,
                                   std::string *why);
+    // The flags word and a virtual base's vtable slot, both for the
+    // `__vmi_class_type_info` a class with anything but a single base at
+    // offset zero needs.
+    static long long itaniumVmiFlags(const Type *cls);
+    static long long itaniumVbaseOffsetSlot(const Type *cls, const Type *vbase);
     std::string emitClassTypeInfo(const Type *cls, const std::string &tag,
                                   std::size_t pos);
     void emitVtable(const Type *cls, const std::string &tag, std::size_t pos);
