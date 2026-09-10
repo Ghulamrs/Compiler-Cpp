@@ -162,12 +162,11 @@ each refusal names itself:
   instead of emitting a thunk;
 * a `volatile` object with external linkage, whose name cl decorates.
 
-**One Windows defect is open rather than refused**: a function other than
-`main` that owns an unwind region emits a `.pdata` entry pointing at a
-`$cppxdata` label the compiler never lays down, and `ml64` answers
-`A2006: undefined symbol`. A constructor taking a class **by value** reaches
-it. Compile such a translation unit for another target, or avoid that shape,
-until it is fixed.
+**That Windows defect is closed as of 1.2**: a function other than `main` that
+owned an unwind region used to emit a `.pdata` entry pointing at a `$cppxdata`
+label the compiler never laid down, and `ml64` answered
+`A2006: undefined symbol`. Both spellings take the answer from one place now,
+and `by-value-parameter-unwind.cpp` is the case that keeps it that way.
 
 **`-masm=masm` cannot link a program of more than one file**, and that is
 ml64's limit rather than this compiler's. A member function defined inside its

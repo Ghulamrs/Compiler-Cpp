@@ -7099,6 +7099,35 @@ programs still running.
 a vftable. Nothing else in the object changed: the records, their contents and
 their symbol names are what they were, and `names-vs-cl` still agrees on 172.
 
+## `$cppxdata$`, and a question asked of the wrong witness
+
+**Fixed 2026-09-10.** A function other than `main` that owned an unwind region
+emitted `DD imagerel $cppxdata$<its name>` into its Microsoft unwind info and
+never wrote that label, so ml64 stopped with `A2006: undefined symbol`. The
+shape that reaches it is ordinary - a constructor taking a class **by value**,
+which on that ABI the callee destroys, so the function owes a destructor on the
+exceptional path and cxx1 gives it a landing pad.
+
+**Two places decided the same thing and one of them could not know.** The GNU
+spelling was told by the code generator - `noteHasEh(!msTries().empty())`,
+written the moment the tables are about to be emitted, with a comment saying
+its unwind info must not name a FuncInfo that never appears. The MASM spelling
+was never told: that call sat behind `!emitsOwnRtti()`, which is about who
+writes the RTTI records and has nothing to do with exception tables. So
+`MasmSpelling::prologue` decided for itself, from whether the **Itanium** LSDA
+name it is handed was empty - and that says a landing pad exists, not that a
+Microsoft table will be written for it.
+
+The guard is gone, `MasmSpelling` takes the note like the other spelling, and
+the prologue decides nothing. One signal, one place.
+
+**No golden moved** - 0 of 778 - which is the measurement that says why this
+lasted: **no case in the tree had the shape.** `by-value.cpp` passes classes by
+value, and none of them has a destructor, which is exactly what makes the
+callee owe one. `by-value-parameter-unwind.cpp` has it now, in a constructor
+and in a plain function, and both spellings compile, assemble, link and run it
+on the box.
+
 ## A frame that skipped the guard page, and two wrong answers before it
 
 **Fixed 2026-09-06.** `matrix_main.cpp` of the C++ Vector Exercise died on

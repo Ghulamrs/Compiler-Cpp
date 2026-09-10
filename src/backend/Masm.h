@@ -21,6 +21,11 @@ public:
     void functionBegin(const std::string &name, bool exported,
                        bool mergeable = false) override;
     void prologue(int frameSize, const std::string &lsda) override;
+    // **Whether a FuncInfo follows is the code generator's answer, not this
+    // one's.** It used to be inferred from the Itanium LSDA name the prologue
+    // is handed, which says a landing pad exists and not that a Microsoft
+    // table will be written for it - see X86_64Linux's call site.
+    void noteHasEh(bool yes) override { hasEh_ = yes; }
     // The unwind codes the prologue described, written out by functionEnd -
     // which is where the labels they measure against exist.
     std::string unwindData_;

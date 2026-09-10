@@ -284,10 +284,12 @@ void MasmSpelling::raw(const std::string &text) {
 }
 
 void MasmSpelling::prologue(int frameSize, const std::string &lsda) {
-    // The caller passes a non-empty name when the function has handlers. What it
-    // *is* does not matter here - an Itanium table label means nothing to MASM -
-    // only that there is one, which sets the flags and whether a FuncInfo follows.
-    hasEh_ = !lsda.empty();
+    // **The LSDA name says a landing pad exists, which is not the same
+    // question.** A Microsoft FuncInfo follows only where one is written, and
+    // the code generator says so through `noteHasEh` before `functionEnd`.
+    // Deciding it here made a constructor with a by-value class parameter name
+    // a `$cppxdata$` nothing defined; ml64 answered `A2006`.
+    (void)lsda;
     frameSize_ = frameSize;
     const std::string m = mangle(fnName_);
 

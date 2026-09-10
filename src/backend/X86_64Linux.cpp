@@ -1581,8 +1581,17 @@ void X86_64Linux::emit(const Function &fn) {
         a_->defLabel(".Lfunc.end." + fn.symbol());
     // The tables are written below; tell the spelling whether there are any,
     // so its unwind info does not name a FuncInfo that never appears.
-    if (target_.microsoftNames() && !emitsOwnRtti())
-        a_->noteHasEh(!msTries().empty());
+    //
+    // **Both spellings, and the `emitsOwnRtti()` that used to be here was the
+    // whole of the `$cppxdata$` defect.** That question is about who writes
+    // the RTTI records, which has nothing to do with whether this function has
+    // exception tables - and excluding the MASM spelling from the answer left
+    // it deciding for itself, from whether the *Itanium* LSDA name was empty.
+    // A function with a landing pad and no Microsoft region - a constructor
+    // taking a class by value, whose parameter the callee destroys - then got
+    // unwind info naming `$cppxdata$<fn>` that nothing defined, and ml64
+    // stopped with `A2006: undefined symbol`.
+    if (target_.microsoftNames()) a_->noteHasEh(!msTries().empty());
     a_->functionEnd(fn.symbol());
     emitExceptionTables(fn);
     if (lineSource()) {

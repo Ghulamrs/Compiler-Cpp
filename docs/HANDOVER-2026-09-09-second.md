@@ -67,11 +67,12 @@ namespaced specializations in the tree.
 
 ## What is open, added to what the earlier handover lists
 
-1. **A function other than `main` that owns an unwind region emits a `.pdata`
-   entry pointing at a `$cppxdata$` label it never lays down**, so ml64 answers
-   `A2006: undefined symbol`. A constructor taking a class **by value** reaches
-   it, template or not. No existing case emits such a reference at all, which
-   is why nothing had caught it; found by a new case failing on the box.
+1. ~~**A function other than `main` that owns an unwind region emits a `.pdata`
+   entry pointing at a `$cppxdata$` label it never lays down**~~ - **fixed
+   2026-09-10.** The MASM spelling decided from the Itanium LSDA name because
+   the code generator's `noteHasEh` sat behind a guard about who writes RTTI;
+   both spellings take it from one place now. No case in the tree had the
+   shape, which is why it lasted - `by-value-parameter-unwind.cpp` has it.
 2. **`tests/open/` holds thirteen**, one of them new:
    `mem-init-template-id-base` - `D(int x) : P<int>(x) {}` is answered
    "expected '('" at the `<`, so a class deriving from a specialization cannot
