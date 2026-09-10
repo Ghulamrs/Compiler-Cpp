@@ -1839,7 +1839,7 @@ ExprPtr Parser::postfix() {
             // `dynamic_cast` three passes later. Refused by name now, which is
             // what every other Microsoft virtual-base shape already does.
             if (m->inVirtualBase != nullptr) {
-                refuseVirtualBaseMember(*m, name, pos);
+                refuseVirtualBaseMember(obj, *m, name, pos);
                 if (ExprPtr viaVb = virtualBaseMember(std::move(n), obj, *m)) {
                     n = std::move(viaVb);
                     continue;
@@ -1923,7 +1923,7 @@ ExprPtr Parser::postfix() {
             // `dynamic_cast` three passes later. Refused by name now, which is
             // what every other Microsoft virtual-base shape already does.
             if (m->inVirtualBase != nullptr) {
-                refuseVirtualBaseMember(*m, name, pos);
+                refuseVirtualBaseMember(obj, *m, name, pos);
                 if (ExprPtr viaVb = virtualBaseMember(std::move(n), obj, *m)) {
                     n = std::move(viaVb);
                     continue;

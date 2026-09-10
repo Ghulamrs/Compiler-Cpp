@@ -976,8 +976,78 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     for (std::size_t bi = 0; bi < written.size() && !writesVirtualBase; bi++)
         if (written[bi].type->hasVirtualBase()) writesVirtualBase = true;
 
-    if ((anyVirtual || writesVirtualBase) && !inheritsVptr &&
-        kind != Kind::Union) {
+    // **The Microsoft ABI has two pointers where Itanium has one.** A vftable
+    // pointer for virtual functions and a *vbtable* pointer for virtual bases,
+    // and a class can carry both - measured with cl:
+    // `Q : virtual V { virtual void f(); int q; }` is vfptr 0, vbptr 8, q 16,
+    // V 24. Itanium keeps the `vbase_offset` in the vftable, so one pointer
+    // answers both questions there and the branch below is the whole of it.
+    //
+    // Which pointers this class introduces, rather than inherits:
+    //   - a vfptr where it declares virtual functions and no *non-virtual*
+    //     base already carries one. `P : virtual W` with W polymorphic gets
+    //     none: W's vfptr lives inside W, which is at the end of the object.
+    //   - a vbptr where it has a virtual base and no non-virtual base carries
+    //     one already. `R : D1` uses D1's and writes its own table into it.
+    if (target_.microsoftNames() && kind != Kind::Union) {
+        const Type *firstNv = nullptr;
+        int carriers = 0;
+        for (std::size_t bi = 0; bi < written.size(); bi++) {
+            if (written[bi].isVirtual) continue;
+            if (firstNv == nullptr) firstNv = written[bi].type;
+            if (written[bi].type->vbptrOffset() >= 0) carriers++;
+        }
+        // **Two bases each carrying a vbptr is the diamond, and it is refused.**
+        // cl gives such a class *two* vbtables, named for the base each one
+        // serves - `??_8Dia@@7BD1@@@` and `??_8Dia@@7BD2@@@`, where a class
+        // with one table gets the plain `??_8X@@7B@` - and the constructor
+        // stores each into its own subobject. Emitting one table under the
+        // plain name would leave a `D2 *` reading D2's own table, which says
+        // where V is in a D2 and not where it is here: a silent miscompile.
+        // Measured on the box, `vbfull.cpp`, 2026-09-10.
+        if (carriers > 1)
+            src_.fail(pos, "'" + tag + "' inherits a virtual base along more "
+                           "than one path, and x86_64-windows gives such a "
+                           "class one vbtable per path, which this compiler "
+                           "does not emit yet. Both Itanium targets compile "
+                           "this");
+        const bool inheritsVfptr = firstNv != nullptr && firstNv->polymorphic();
+        int added = 0;
+        if (anyVirtual && !inheritsVfptr) added += 8;
+        if (writesVirtualBase && carriers == 0) {
+            type->setVbptrOffset(added);
+            type->setVbptrOwner(type);
+            added += 8;
+        } else if (writesVirtualBase) {
+            // Inherited: the pointer stays where the base put it - **inside
+            // that base**, so its offset here is the base's own plus where the
+            // base sits. `X : A, D1` keeps it at 8 and not at 0, which is what
+            // cl's layout for X says and what makes its table read 0, 24.
+            // The owner is carried down as well: entry 0 of the table is the
+            // step back to the top of the class that *introduced* the pointer,
+            // which is 0 for X (D1 puts it at its own offset 0) and -8 for a
+            // class that put its vfptr in front of it.
+            // `bases()` already holds where each non-virtual base sits -
+            // it was laid down above - and `added` covers the vfptr this
+            // class may have put in front of all of them.
+            const std::vector<Type::BaseSpec> &laid = type->bases();
+            for (std::size_t bi = 0; bi < laid.size(); bi++) {
+                if (laid[bi].isVirtual) continue;
+                if (laid[bi].type->vbptrOffset() < 0) continue;
+                type->setVbptrOffset(laid[bi].offset + added +
+                                     laid[bi].type->vbptrOffset());
+                type->setVbptrOwner(laid[bi].type->vbptrOwner());
+                break;
+            }
+        }
+        if (added != 0) {
+            for (std::size_t i = firstOwnMember; i < members.size(); i++)
+                members[i].offset += added;
+            bitCursor += static_cast<long long>(added) * 8;
+            if (widest < 8) widest = 8;
+        }
+    } else if ((anyVirtual || writesVirtualBase) && !inheritsVptr &&
+               kind != Kind::Union) {
         const int slot = 8;
         for (std::size_t i = firstOwnMember; i < members.size(); i++)
             members[i].offset += slot;
@@ -1001,6 +1071,17 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
         if (written[bi].isVirtual) anyVirtualBase = true;
     for (std::size_t bi = 0; bi < written.size() && !anyVirtualBase; bi++)
         if (written[bi].type->hasVirtualBase()) anyVirtualBase = true;
+    // **cl rounds the non-virtual part up to the class's alignment before it
+    // appends the virtual bases**, where Itanium packs them into the padding.
+    // Measured: `D1 : virtual V { int b; }` is vbptr 8 + b 4 = 12, rounded to
+    // 16, V at 16, sizeof 24 - clang gives 16 with V at 12.
+    //
+    // **Before the non-virtual size is recorded, not after**: that number is
+    // where a derived class starts its own members, so rounding it later left
+    // `R : D1 { int r; }` putting `r` at 12 and coming out 24 where cl says 32.
+    if (target_.microsoftNames() && anyVirtualBase && widest > 0)
+        totalBits = alignTo(static_cast<int>((totalBits + 7) / 8), widest) * 8LL;
+
     if (anyVirtualBase)
         type->setNvDataSize(static_cast<int>((totalBits + 7) / 8));
 
@@ -1116,7 +1197,17 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     }
     // A class with a virtual base needs a table though it has no virtual
     // function: the table is where the offset to that base is kept.
-    if (type->hasVptr()) emitVtable(type, tag, pos);
+    //
+    // **On the Microsoft ABI those are two tables**, and a class can want one,
+    // the other or both: a vftable where it dispatches, a vbtable where it has
+    // a virtual base. `emitVtable` is asked only for the first now - a class
+    // with a virtual base and no virtual function has no vftable there at all.
+    if (target_.microsoftNames()) {
+        if (type->polymorphic()) emitVtable(type, tag, pos);
+        emitVbtable(type, tag, pos);
+    } else if (type->hasVptr()) {
+        emitVtable(type, tag, pos);
+    }
     // **A specialization's member bodies are not replayed here.** This is in the
     // middle of whatever asked for the class, and a replay goes through topLevel,
     // which clears the locals; they are handed to the pass that defines them.

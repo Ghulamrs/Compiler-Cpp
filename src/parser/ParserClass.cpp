@@ -157,12 +157,68 @@ void Parser::registerDestructor(const std::string &cls, std::size_t pos,
     if (!ms) slots.push_back(VSlot{ "~$deleting", deleting, none, false });
 }
 
+// **The vbtable pointer, which only the Microsoft ABI has.** A class that has
+// a virtual base keeps the offset to it in a table and a pointer to that table
+// in the object, and *every* class along the chain stores its own: the base's
+// constructor writes the base's table, then the derived constructor overwrites
+// the same slot with its own, whose entries measure from the complete object.
+// That is why this is stored whenever the class has a vbptr at all and not
+// only where it introduced one - `R : D1` shares D1's slot and needs its own
+// table in it, because V sits at 24 in an R and at 16 in a D1.
+void Parser::storeVbptr(const std::string &cls, const Type *memberOf,
+                        int thisSlot, std::vector<StmtPtr> &into) {
+    const int vbp = memberOf->vbptrOffset();
+    if (vbp < 0) return;
+
+    const Type *charPtr = types_.pointerTo(types_.get(Kind::Char));
+    const Type *entry = types_.intType();
+
+    // The table's address, the same way the vftable's is taken: a global with
+    // an array type, decayed, so what is stored is where it is and not what
+    // its first word happens to hold.
+    int entries = 1;
+    const std::vector<Type::BaseSpec> &bs = memberOf->bases();
+    for (std::size_t i = 0; i < bs.size(); i++) if (bs[i].isVirtual) entries++;
+    ExprPtr table(Var::global(vbtableSymbol(cls)));
+    table->setType(types_.arrayOf(entry, entries));
+    ExprPtr value(new Cast(charPtr, decay(std::move(table))));
+    value->setType(charPtr);
+
+    ExprPtr self(Var::local("this", thisSlot));
+    self->setType(charPtr);
+    ExprPtr where = std::move(self);
+    if (vbp != 0) {
+        ExprPtr at(new Num(static_cast<long long>(vbp)));
+        at->setType(types_.get(Kind::LongLong));
+        ExprPtr sum(new Binary(BinOp::Add, std::move(where), std::move(at)));
+        sum->setType(charPtr);
+        where = std::move(sum);
+    }
+    ExprPtr slot(new Cast(types_.pointerTo(charPtr), std::move(where)));
+    slot->setType(types_.pointerTo(charPtr));
+    ExprPtr there(new Unary('*', std::move(slot)));
+    there->setType(charPtr);
+    ExprPtr store(new Assign(std::move(there), std::move(value)));
+    store->setType(charPtr);
+    into.push_back(StmtPtr(new ExprStmt(std::move(store))));
+}
+
 // **Setting the vptr, for whoever is building the object**, pulled out of the
 // constructor path when implicit constructors arrived. What is stored is the table's
 // address plus the header: Itanium's is two pointers, and Microsoft has none.
 std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
                                         const Type *memberOf, int thisSlot) {
     const bool ms = target_.microsoftNames();
+    std::vector<StmtPtr> withVptr;
+    // **Microsoft has two pointers and a class can want either alone.**
+    // `struct D : virtual V { int b; };` declares no virtual function, so it
+    // has no vftable to store - offset 0 holds its vbptr instead. Writing a
+    // vftable address there put the wrong thing in the vbptr and every read
+    // of a virtual base's member went through it.
+    if (ms && !memberOf->polymorphic()) {
+        storeVbptr(cls, memberOf, thisSlot, withVptr);
+        return withVptr;
+    }
     // **The class itself where it is the one named**, so a specialization's
     // table is spelled by the mangler rather than by counting the letters of
     // `P<int>`. Every caller passes the class whose tag this is; the guard is
@@ -209,7 +265,6 @@ std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
     ExprPtr store(new Assign(std::move(where), std::move(asVoid)));
     store->setType(entry);
 
-    std::vector<StmtPtr> withVptr;
     withVptr.push_back(StmtPtr(new ExprStmt(std::move(store))));
 
     // **A class with a polymorphic second base has a second vptr**, inside that
@@ -248,6 +303,8 @@ std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
         withVptr.push_back(StmtPtr(new ExprStmt(std::move(store2))));
     }
 
+    // A polymorphic class with a virtual base has both pointers, in that order.
+    if (ms) storeVbptr(cls, memberOf, thisSlot, withVptr);
     return withVptr;
 }
 
@@ -1024,11 +1081,12 @@ void Parser::requireConstInitialised(const Type *t, const std::string &name,
 // sit in reverse declaration order ahead of offset-to-top and the typeinfo - so
 // the slot is known here even though its contents are not. The member's place
 // inside the base is added after, and that much is constant.
-// **Reading a member of a virtual base, on the ABI that cannot do it yet.**
-// The Itanium targets reach one through the vtable's `vbase_offset`;
-// x86_64-windows keeps the offset in a vbtable, and nothing emits one. The
-// measurement is in CLAUDE.md, "The Microsoft virtual-base layout, measured";
-// what is missing is the implementation.
+// **What is left unsupported on the Microsoft ABI, now that the ordinary
+// shapes work.** A class reaches its virtual bases through *its own* vbtable,
+// so the access below needs a vbptr in the static type and the base among the
+// entries that table holds. What fails this is the shape where a second
+// non-virtual base brought a second vbptr of its own - the diamond - and that
+// is refused at the class rather than here as well.
 //
 // **This used to be a crash rather than a refusal**, and the shape of the bug
 // is worth keeping: `virtualBaseMember` answered nothing for this target, but
@@ -1036,22 +1094,162 @@ void Parser::requireConstInitialised(const Type *t, const std::string &name,
 // access below was built on a moved-from pointer. A null `Expr *` then reached
 // a `dynamic_cast` and the compiler died with no message at all, on a program
 // both other targets compile.
-void Parser::refuseVirtualBaseMember(const Member &m, const std::string &name,
+void Parser::refuseVirtualBaseMember(const Type *staticType, const Member &m,
+                                     const std::string &name,
                                      std::size_t pos) {
     if (m.inVirtualBase == nullptr || !target_.microsoftNames()) return;
+    const Type *owner = staticType->unqualified();
+    int baseAt = 0;
+    if (owner->isStructOrUnion() && owner->vbptrOffset() >= 0 &&
+        virtualBaseSlot(owner, m.inVirtualBase, &baseAt) > 0)
+        return;                       // reachable through this class's vbtable
     src_.fail(pos, "'" + name + "' is a member of '" +
-                   m.inVirtualBase->describe() + "', which is a virtual base, "
-                   "and reaching one is not supported yet for x86_64-windows: "
-                   "that ABI keeps the offset in a vbtable, which this "
-                   "compiler measures but does not emit. Both Itanium targets "
-                   "compile this");
+                   m.inVirtualBase->describe() + "', which is a virtual base "
+                   "this class does not reach through a vbtable of its own, "
+                   "and x86_64-windows has no other way there. Both Itanium "
+                   "targets compile this");
+}
+
+// **Which entry of the vbtable holds this base**, and where the base sits in
+// the complete object. Entry 0 is the vbptr's own offset back to the top, so
+// the first virtual base is entry 1 and a zero answer means "not there".
+int Parser::virtualBaseSlot(const Type *owner, const Type *vbase, int *baseAt) {
+    const std::vector<Type::BaseSpec> &bs = owner->bases();
+    int seen = 0;
+    for (std::size_t i = 0; i < bs.size(); i++) {
+        if (!bs[i].isVirtual) continue;
+        seen++;
+        if (bs[i].type == vbase) {
+            if (baseAt != nullptr) *baseAt = bs[i].offset;
+            return seen;
+        }
+    }
+    return 0;
+}
+
+// **The step from a derived object to its virtual base, on the Microsoft
+// ABI**: `vbptrOffset + table[slot]`, where the table is the one the object's
+// vbptr points at. Two callers want exactly this - reading a member of the
+// base, and converting a `Derived *` to a `Base *` - and the second was
+// missed when the first landed, which cost a wrong answer the Windows box
+// caught: `throughBase(r)` walked to a constant 16, the offset of V inside a
+// D1, where V sits at 24 in an R.
+//
+// `temp` names a char * lvalue already holding the object's address; the
+// answer is the number of bytes to add to it. Null back means this class does
+// not reach that base through a table of its own.
+ExprPtr Parser::microsoftVirtualBaseStep(const Type *owner, const Type *vbase,
+                                         const std::string &temp, int held,
+                                         int *baseAt) const {
+    const int vbp = owner->vbptrOffset();
+    const int slot = virtualBaseSlot(owner, vbase, baseAt);
+    if (vbp < 0 || slot <= 0) return ExprPtr();
+
+    const Type *charPtr = types_.pointerTo(types_.get(Kind::Char));
+    const Type *offType = types_.get(Kind::LongLong);
+    const Type *entry = types_.intType();
+
+    // `p = this + vbptrOffset`, the one address both the table and the base
+    // are measured from.
+    ExprPtr atVbptr(Var::local(temp, held));
+    atVbptr->setType(charPtr);
+    if (vbp != 0) {
+        ExprPtr n(new Num(static_cast<long long>(vbp)));
+        n->setType(offType);
+        ExprPtr sum(new Binary(BinOp::Add, std::move(atVbptr), std::move(n)));
+        sum->setType(charPtr);
+        atVbptr = std::move(sum);
+    }
+
+    // `delta = ((int *)*(char **)p)[slot]`, four bytes and signed.
+    ExprPtr asTable(new Cast(types_.pointerTo(charPtr), std::move(atVbptr)));
+    asTable->setType(types_.pointerTo(charPtr));
+    ExprPtr table(new Unary('*', std::move(asTable)));
+    table->setType(charPtr);
+    ExprPtr step(new Num(static_cast<long long>(slot) * 4));
+    step->setType(offType);
+    ExprPtr entryAt(new Binary(BinOp::Add, std::move(table), std::move(step)));
+    entryAt->setType(charPtr);
+    ExprPtr asEntry(new Cast(types_.pointerTo(entry), std::move(entryAt)));
+    asEntry->setType(types_.pointerTo(entry));
+    ExprPtr delta(new Unary('*', std::move(asEntry)));
+    delta->setType(entry);
+    ExprPtr wide(new Cast(offType, std::move(delta)));
+    wide->setType(offType);
+    if (vbp == 0) return wide;
+
+    // The pointer stepped to the vbptr first, so that much is part of the
+    // answer: the entry is measured from there and not from the object.
+    ExprPtr n(new Num(static_cast<long long>(vbp)));
+    n->setType(offType);
+    ExprPtr sum(new Binary(BinOp::Add, std::move(wide), std::move(n)));
+    sum->setType(offType);
+    return sum;
+}
+
+// **Reaching a virtual base's member on the Microsoft ABI.** The object holds
+// a pointer to a vbtable; the table's entries are 4-byte offsets measured from
+// where that pointer lives, so the base is at `this + vbptrOffset +
+// table[slot]` however derived the complete object turns out to be. Measured
+// from cl: `??_8Q@@7B@ DD 0fffffff8H, DD 010H` - entry 0 is minus the vbptr's
+// own offset, entry 1 says V is 16 past the vbptr.
+//
+// Itanium keeps the same number in the vtable at a negative index instead,
+// which is why the two paths share nothing but their shape.
+ExprPtr Parser::microsoftVirtualBaseMember(ExprPtr object, const Type *owner,
+                                           const Member &m) {
+    if (owner->vbptrOffset() < 0) return ExprPtr();     // refused before this
+
+    const Type *charPtr = types_.pointerTo(types_.get(Kind::Char));
+    const Type *offType = types_.get(Kind::LongLong);
+
+    // The object's address, kept in a slot: the step below reads it twice and
+    // evaluating the expression twice would run its side effects twice.
+    ExprPtr addr(new Unary('&', std::move(object)));
+    addr->setType(types_.pointerTo(owner));
+    const int held = allocateFrameSlot(charPtr);
+    const std::string temp = ".vb" + std::to_string(refTemps_++);
+    ExprPtr keep(Var::local(temp, held));
+    keep->setType(charPtr);
+    ExprPtr asChar(new Cast(charPtr, std::move(addr)));
+    asChar->setType(charPtr);
+    ExprPtr save(new Assign(std::move(keep), std::move(asChar)));
+    save->setType(charPtr);
+
+    int baseAt = 0;
+    ExprPtr step = microsoftVirtualBaseStep(owner, m.inVirtualBase, temp, held,
+                                            &baseAt);
+    if (!step) return ExprPtr();
+
+    ExprPtr from(Var::local(temp, held));
+    from->setType(charPtr);
+    ExprPtr moved(new Binary(BinOp::Add, std::move(from), std::move(step)));
+    moved->setType(charPtr);
+    // And where the member sits inside that base, which is constant.
+    if (m.offset != baseAt) {
+        ExprPtr n(new Num(static_cast<long long>(m.offset - baseAt)));
+        n->setType(offType);
+        ExprPtr sum(new Binary(BinOp::Add, std::move(moved), std::move(n)));
+        sum->setType(charPtr);
+        moved = std::move(sum);
+    }
+
+    ExprPtr asT(new Cast(types_.pointerTo(m.type), std::move(moved)));
+    asT->setType(types_.pointerTo(m.type));
+    ExprPtr whole(new Comma(std::move(save), std::move(asT)));
+    whole->setType(types_.pointerTo(m.type));
+    ExprPtr deref(new Unary('*', std::move(whole)));
+    deref->setType(m.type);
+    return deref;
 }
 
 ExprPtr Parser::virtualBaseMember(ExprPtr object, const Type *staticType,
                                   const Member &m) {
-    if (m.inVirtualBase == nullptr || target_.microsoftNames()) return ExprPtr();
+    if (m.inVirtualBase == nullptr) return ExprPtr();
     const Type *owner = staticType->unqualified();
     if (!owner->isStructOrUnion()) return ExprPtr();
+    if (target_.microsoftNames())
+        return microsoftVirtualBaseMember(std::move(object), owner, m);
 
     const std::vector<Type::BaseSpec> &bs = owner->bases();
     int nvb = 0, slot = -1, seen = 0, baseAt = 0;
@@ -1224,6 +1422,59 @@ std::string Parser::emitClassTypeInfo(const Type *cls, const std::string &tag,
     return ti;
 }
 
+// **The Microsoft vbtable**, which has no Itanium counterpart: that ABI keeps a
+// virtual base's offset in the vftable and this one keeps it in a table of its
+// own, reached through a second pointer. Measured from cl's listing, and both
+// halves of the shape matter:
+//
+//     ??_8D1@@7B@ DD 00H, DD 010H          vbptr at 0, V at 16
+//     ??_8Q@@7B@  DD 0fffffff8H, DD 010H   vbptr at 8, so back is -8
+//
+// **Entry zero is minus the vbptr's own offset** - the delta from the pointer
+// to the top of the subobject holding it - and each entry after it is a
+// virtual base measured *from the vbptr*, not from the object. Four bytes
+// each, which is the one place this ABI is not word-sized.
+void Parser::emitVbtable(const Type *cls, const std::string &tag,
+                         std::size_t pos) {
+    if (!target_.microsoftNames()) return;
+    const Type *plain = cls->unqualified();
+    const int vbp = plain->vbptrOffset();
+    if (vbp < 0) return;
+    (void)pos;
+
+    const std::string symbol = vbtableSymbol(tag);
+    for (std::size_t i = 0; i < current_->globals.size(); i++)
+        if (current_->globals[i].symbol == symbol) return;    // one per class
+
+    // **Entry 0 steps back to the top of the class that introduced the
+    // pointer**, not to the top of this one. cl: `??_8Q@@7B@ DD 0fffffff8H`
+    // where Q put its vfptr in front of the vbptr, but `??_8X@@7B@ DD 00H`
+    // for `X : A, D1` whose vbptr sits at 8 - because D1 introduced it at its
+    // own offset 0. Measured on the box, `vbx.cpp`, 2026-09-10.
+    const Type *owner = plain->vbptrOwner() != nullptr ? plain->vbptrOwner()
+                                                       : plain;
+    std::vector<GlobalPiece> pieces;
+    int at = 0;
+    pieces.push_back(GlobalPiece{ at, 4,
+                                  -static_cast<long long>(owner->vbptrOffset()),
+                                  std::string() });
+    at += 4;
+    const std::vector<Type::BaseSpec> &bs = plain->bases();
+    for (std::size_t i = 0; i < bs.size(); i++) {
+        if (!bs[i].isVirtual) continue;
+        pieces.push_back(GlobalPiece{ at, 4,
+            static_cast<long long>(bs[i].offset - vbp), std::string() });
+        at += 4;
+    }
+
+    const Type *entry = types_.intType();
+    const Type *table = types_.arrayOf(entry,
+                                       static_cast<long long>(pieces.size()));
+    current_->globals.push_back(Global{ symbol, symbol, table,
+                                        std::move(pieces), true, false, true,
+                                        std::string(), true });
+}
+
 void Parser::emitVtable(const Type *cls, const std::string &tag,
                         std::size_t pos) {
     if (tag.empty())
@@ -1294,12 +1545,26 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
         // **The Microsoft ABI arranges this differently, and it is not the same thing
         // under other names.** Measured with clang: two vftable symbols rather than
         // one table in two parts, and no thunk. Whether cl agrees is unmeasured.
-        if (ms)
-            src_.fail(pos, "'" + tag + "' has virtual functions in a base that "
-                           "is not the first, and the Microsoft ABI lays that "
-                           "out differently - two vftable symbols rather than "
-                           "one table in two parts. Not supported yet; it is "
-                           "measured for Itanium only");
+        // **`hasVptr()` is two questions on this ABI and the refusal only
+        // answers one.** It is `polymorphic() || hasVirtualBase()` because
+        // Itanium keeps the `vbase_offset` in the vftable; Microsoft has a
+        // separate vbtable pointer, so a base carrying only *that* has no
+        // second vftable to be refused over - and `Dia : D1, D2`, with no
+        // virtual function anywhere in it, was turned away with a message
+        // about virtual functions.
+        if (ms) {
+            if (b->polymorphic())
+                src_.fail(pos, "'" + tag + "' has virtual functions in a base "
+                               "that is not the first, and the Microsoft ABI "
+                               "lays that out differently - two vftable "
+                               "symbols rather than one table in two parts. "
+                               "Not supported yet; it is measured for Itanium "
+                               "only");
+            // Only a vbptr, then: its table is the Microsoft one, written
+            // where the vbtables are, and the vbase_offset work below is
+            // Itanium's alone.
+            continue;
+        }
         int vbHere = 0;
         for (std::size_t k = 0; k < bases.size(); k++)
             if (bases[k].isVirtual) vbHere++;

@@ -329,6 +329,24 @@ public:
     int nvDataSize() const { return nvDataSize_ ? nvDataSize_ : dataSize(); }
     void setNvDataSize(int n) { nvDataSize_ = n; }
 
+    // **Where this class's own vbptr sits, on the Microsoft ABI.** That ABI
+    // reaches a virtual base through a table of its own rather than through
+    // the vftable, so a class with virtual bases carries a second pointer -
+    // measured: `Q : virtual V { virtual void f(); int q; }` puts the vfptr at
+    // 0 and the vbptr at 8. -1 means the class has none, either because it has
+    // no virtual base or because it inherited the pointer from a base, which
+    // is the common case: `R : D1` uses D1's, and writes its *own* table into
+    // it, the offsets from R being different ones.
+    //
+    // Nothing on the Itanium targets sets this: there the vftable carries a
+    // `vbase_offset` and one pointer answers both questions.
+    int vbptrOffset() const { return cls().vbptrOffset_; }
+    void setVbptrOffset(int n) { vbptrOffset_ = n; }
+    // The class whose vbptr this one uses - itself when it introduced the
+    // pointer, or the base it came down from. Null where there is none.
+    const Type *vbptrOwner() const { return cls().vbptrOwner_; }
+    void setVbptrOwner(const Type *t) { vbptrOwner_ = t; }
+
     // The first base - the only one for most classes, and the only one that
     // needs no adjustment. Kept because most callers ask exactly that.
     const Type *base() const {
@@ -431,6 +449,8 @@ private:
     bool hasDestructor_ = false;
     std::vector<BaseSpec> bases_;
     int nvDataSize_ = 0;
+    int vbptrOffset_ = -1;
+    const Type *vbptrOwner_ = nullptr;
     std::vector<Member> members_;
     std::vector<StaticMember> statics_;
     int size_ = 0;

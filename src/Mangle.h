@@ -183,6 +183,13 @@ std::string itaniumClassTypeNameSymbol(const std::string &tag);
 // wherever a type is written; every other class takes the path above and gets
 // the same answer it always did. Pass the class itself where there is one.
 std::string vtableSymbol(const Type *cls, bool microsoft);
+
+// **A class's vbtable, which only the Microsoft ABI has.** It holds the offset
+// of each virtual base from the vbptr, and its name is `??_8` where a vftable
+// is `??_7`: `??_8D1@@7B@`. Measured from cl's own listing. Itanium keeps the
+// same numbers in the vftable and needs no such symbol, so this is asked for
+// on that target alone.
+std::string vbtableSymbol(const std::string &tag);
 std::string itaniumClassNameString(const Type *cls);
 std::string itaniumClassTypeInfoSymbol(const Type *cls);
 std::string itaniumClassTypeNameSymbol(const Type *cls);

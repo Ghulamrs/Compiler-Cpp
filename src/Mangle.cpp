@@ -1216,6 +1216,16 @@ std::string vtableSymbol(const std::string &tag, bool microsoft) {
 // text of the name IS the type as a signature spells it, so the same nested
 // form vtableSymbol builds serves all three. Measured against clang for a
 // top-level class and one in a namespace.
+// `??_8D1@@7B@` - the same scope list a vftable's name carries, under `_8`
+// instead of `_7`. Measured against cl for a top-level class and one in a
+// namespace.
+std::string vbtableSymbol(const std::string &tag) {
+    const std::vector<std::string> parts = scopeComponents(tag);
+    std::string out = "??_8";
+    for (std::size_t i = parts.size(); i-- > 0; ) { out += parts[i]; out += '@'; }
+    return out + "@7B@";
+}
+
 std::string itaniumClassNameString(const std::string &tag) {
     const std::vector<std::string> parts = scopeComponents(tag);
     std::string out;

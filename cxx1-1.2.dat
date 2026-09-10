@@ -1,7 +1,7 @@
 c2026 G. R. Akhtar - ISO C++ 11,  Compiler
 Release seal, version 1.2, sealed 10-09-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 110 files, seal 5CAA608D
+CRC32  size  file - 110 files, seal 5C756E9C
 ------------------------------------------------------------------
 04C65507      8465  Makefile
 30A7FD32      2830  examples/Makefile
@@ -69,8 +69,8 @@ C7C1D08E     26255  src/Ast.h
 50384B72      3559  src/Driver.h
 26806DCD     17463  src/Lexer.cpp
 569C8061      2543  src/Lexer.h
-111D92E0     71106  src/Mangle.cpp
-75C8C970     10285  src/Mangle.h
+A982A04C     71529  src/Mangle.cpp
+27E01B78     10678  src/Mangle.h
 3A84EC94      2875  src/Operator.cpp
 7128FF5A      1424  src/Operator.h
 D59F774D     49434  src/Preprocessor.cpp
@@ -78,7 +78,7 @@ FD6F8457      3795  src/Preprocessor.h
 85DA7817      3942  src/Source.cpp
 5F3B1BCE      1836  src/Source.h
 354B40CD     18337  src/Type.cpp
-55ACF165     23274  src/Type.h
+644114F6     24471  src/Type.h
 E4A4C41F       878  src/Version.h
 10FBE247     43763  src/backend/Arm64Darwin.cpp
 F0CDF365      5277  src/backend/Arm64Darwin.h
@@ -98,18 +98,18 @@ C48E8201     84392  src/backend/X86_64Linux.cpp
 51289591      1566  src/backend/X86_64Windows.h
 3F12405D       111  src/main.cpp
 BC202484     37062  src/parser/Parser.cpp
-E81D5EEC    124264  src/parser/Parser.h
-8109701B    169479  src/parser/ParserClass.cpp
+AB3D9A83    125440  src/parser/Parser.h
+D522131E    182190  src/parser/ParserClass.cpp
 96A32C25     13074  src/parser/ParserConst.cpp
-BAAD2FC9    106586  src/parser/ParserExpr.cpp
+AA4C8C92    106596  src/parser/ParserExpr.cpp
 AAA41FCB     35505  src/parser/ParserExprCall.cpp
 B1FDC696     29646  src/parser/ParserExprLambda.cpp
 6D4263EF     71243  src/parser/ParserExprNew.cpp
 E951E603     58939  src/parser/ParserInit.cpp
 DB5C38B8      2527  src/parser/ParserInternal.h
 26C2DC19     34589  src/parser/ParserOperator.cpp
-FD5AB46F     48766  src/parser/ParserOverload.cpp
+9606C64F     50504  src/parser/ParserOverload.cpp
 C1460070    118220  src/parser/ParserStmt.cpp
 8C605556    105305  src/parser/ParserTemplate.cpp
 1B0DAA31     87046  src/parser/ParserTopLevel.cpp
-B2DF51B9    107875  src/parser/ParserType.cpp
+3B9D3EF2    113226  src/parser/ParserType.cpp

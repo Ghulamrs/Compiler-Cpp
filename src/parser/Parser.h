@@ -666,6 +666,9 @@ private:
     std::string emitClassTypeInfo(const Type *cls, const std::string &tag,
                                   std::size_t pos);
     void emitVtable(const Type *cls, const std::string &tag, std::size_t pos);
+    // The Microsoft vbtable: where each virtual base is, measured from the
+    // vbptr. Nothing on the Itanium targets calls it.
+    void emitVbtable(const Type *cls, const std::string &tag, std::size_t pos);
     // **Emitting a vtable uses everything the table points at.** The `used` flag
     // otherwise only ever comes from a call, and a slot holding a function's address is
     // not one - so an implicit virtual destructor got an entry and no body.
@@ -701,10 +704,21 @@ private:
     // ordinary member and the caller builds the constant-offset access.
     // x86_64-windows cannot reach a virtual base's member yet, and saying so
     // has to happen before the object is moved into virtualBaseMember.
-    void refuseVirtualBaseMember(const Member &m, const std::string &name,
-                                 std::size_t pos);
+    void refuseVirtualBaseMember(const Type *staticType, const Member &m,
+                                 const std::string &name, std::size_t pos);
     ExprPtr virtualBaseMember(ExprPtr object, const Type *staticType,
                               const Member &m);
+    ExprPtr microsoftVirtualBaseMember(ExprPtr object, const Type *owner,
+                                       const Member &m);
+    // The bytes from an object to its virtual base, read out of the vbtable.
+    // `temp`/`held` name a char * lvalue already holding the address.
+    ExprPtr microsoftVirtualBaseStep(const Type *owner, const Type *vbase,
+                                     const std::string &temp, int held,
+                                     int *baseAt) const;
+    // Which vbtable entry holds a virtual base, and where that base sits.
+    // Entry 0 is the vbptr's own offset, so 0 back means "not in this table".
+    static int virtualBaseSlot(const Type *owner, const Type *vbase,
+                               int *baseAt);
 
     // A member the layout copied down from a base, told by the offset it sits
     // at: a base occupies its data size, so anything inside that range came
@@ -724,6 +738,9 @@ private:
     // or implicit, which is why they live in one place.
     std::vector<StmtPtr> storeVptrs(const std::string &cls, const Type *memberOf,
                                     int thisSlot);
+    // And the vbtable pointer beside them, Microsoft only.
+    void storeVbptr(const std::string &cls, const Type *memberOf, int thisSlot,
+                    std::vector<StmtPtr> &into);
     // A thunk: the entry a secondary table holds for a function this class
     // overrides. It moves `this` back to the complete object and calls the
     // real one. Named for the offset it undoes - _ZThn16_N1C1gEv.

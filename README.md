@@ -156,8 +156,11 @@ each refusal names itself:
   funclet there;
 * a `try` inside another; a class-typed `throw`; a rethrow from inside a
   handler;
-* a virtual base, whose Microsoft layout is a vbtable this compiler has not
-  measured against `cl` - it gives `sizeof` 16 where cl gives 24;
+* a virtual base inherited along **more than one path** - a true diamond.
+  The ordinary shapes landed in this version and match cl byte for byte,
+  vbptr, vbtable and all; cl gives a diamond one table per path, named for the
+  base each serves, and this compiler emits one, so it refuses the shape
+  rather than miscompile it silently;
 * an override from a base that is not the first, where cl biases `this`
   instead of emitting a thunk;
 * a `volatile` object with external linkage, whose name cl decorates.

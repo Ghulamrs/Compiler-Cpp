@@ -130,6 +130,38 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
                 seen++;
             }
         }
+        // **The same walk on the Microsoft ABI, through the vbtable.** It was
+        // missing while the member read was not, so `throughBase(r)` - an
+        // `R *` handed to a `const V &` - stepped to the constant
+        // `publicBaseOffset` gives, which is V's place inside a D1 and not
+        // inside an R. It read the derived class's own member instead, and the
+        // Windows box caught it in the round's own case.
+        if (target_.microsoftNames() && srcCls->vbptrOffset() >= 0 &&
+            virtualBaseSlot(srcCls, dstCls, nullptr) > 0) {
+            Parser *self = const_cast<Parser *>(this);
+            const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+            ExprPtr asChars(new Cast(chars, std::move(e)));
+            asChars->setType(chars);
+            const int slot = self->allocateFrameSlot(chars);
+            const std::string temp = ".vp" + std::to_string(self->refTemps_++);
+            ExprPtr held(Var::local(temp, slot));
+            held->setType(chars);
+            ExprPtr save(new Assign(std::move(held), std::move(asChars)));
+            save->setType(chars);
+
+            ExprPtr step = microsoftVirtualBaseStep(srcCls, dstCls, temp, slot,
+                                                    nullptr);
+            ExprPtr from(Var::local(temp, slot));
+            from->setType(chars);
+            ExprPtr moved(new Binary(BinOp::Add, std::move(from),
+                                     std::move(step)));
+            moved->setType(chars);
+            ExprPtr asTo(new Cast(to, std::move(moved)));
+            asTo->setType(to);
+            ExprPtr whole(new Comma(std::move(save), std::move(asTo)));
+            whole->setType(to);
+            return whole;
+        }
         if (vbBack != 0 && !target_.microsoftNames()) {
             const Type *chars = types_.pointerTo(types_.get(Kind::Char));
             const Type *offType = types_.get(Kind::LongLong);

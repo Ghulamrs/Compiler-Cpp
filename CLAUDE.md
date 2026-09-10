@@ -9480,6 +9480,67 @@ x86_64-windows, where a virtual base is a vbtable: **cl says `sizeof(D)` is 24
 where cxx1 says 16**, and reading a member of one stops with `codegen: this has
 no address` - a message naming no feature, which is the invisible bucket again.
 
+## The Microsoft virtual-base layout, written
+
+The measurement above became code on 2026-09-10. What an object with a virtual
+base holds on this ABI, and what cxx1 now emits for it:
+
+  - a **vbptr** wherever a class has a virtual base and no non-virtual base
+    already carries one. `Type` keeps two numbers: `vbptrOffset()`, where the
+    pointer sits in this class, and `vbptrOwner()`, the class that introduced
+    it.
+  - a **vbtable** `??_8Cls@@7B@` of four-byte offsets measured **from the
+    vbptr's own address**. Entry 0 steps back to the top of the class that
+    introduced the pointer; the rest name the virtual bases in order.
+  - a **store in every constructor**, once per class along the chain: the
+    base's constructor writes the base's table and the derived one overwrites
+    the same slot with its own, whose entries measure this object's layout.
+  - **reaching the base** through `this + vbptrOffset + table[slot]`, where
+    Itanium reads a `vbase_offset` from the vtable at a negative index.
+
+Every size and every table matches cl: V 4, D1 24, R 32, Q 32, X 40, and
+`??_8D1@@7B@ 0, 16`, `??_8R@@7B@ 0, 24`, `??_8Q@@7B@ -8, 16`,
+`??_8X@@7B@ 0, 24`.
+
+**Two numbers cl settled that would have been guessed wrong.** Entry 0 is *not*
+minus this class's vbptr offset: `??_8Q@@7B@` is -8 because Q put its vfptr in
+front of the pointer, but `??_8X@@7B@` for `X : A, D1` is 0 although X's vbptr
+sits at 8 - because D1, which introduced it, keeps it at its own offset 0.
+Hence `vbptrOwner`. And an inherited vbptr is *inside* its base, so its offset
+here is the base's own plus where that base sits; reading it as the base's
+number alone put X's table at 0 and made every entry eight bytes too large.
+
+**`storeVptrs` had to be split.** `hasVptr()` is `polymorphic() ||
+hasVirtualBase()` and the Microsoft path stored a vftable address at offset 0
+for either reason, so `struct D : virtual V { int b; }` - which has no vftable
+at all - got one written into its vbptr. A class gets a vftable where it
+dispatches and a vbtable where it has a virtual base, either alone or both.
+
+**The third box earned its place again.** The member read landed and the
+*conversion* did not: `convert` had a `!target_.microsoftNames()` on the
+virtual-base walk, so an `R *` handed to a `const V &` stepped to the constant
+`publicBaseOffset` gives - V's place inside a D1, 16, where V sits at 24 in an
+R - and read R's own member instead. Both suites on the Mac were green and so
+was Linux; `windows cases: 437 passed, 1 failed` said `1 5` where every other
+line of the same case was right. The two callers share
+`microsoftVirtualBaseStep` now, which is the shape of the fix as much as the
+fix: one arithmetic, two users.
+
+**What is refused, and why one round did not close it.** A true diamond -
+`Dia : D1, D2`, each naming V virtually - gets *two* tables from cl, named for
+the base each serves: `??_8Dia@@7BD1@@@` (0, 40) and `??_8Dia@@7BD2@@@`
+(0, 24), where a class with one table gets the plain name. One table under the
+plain name would leave a `D2 *` reading D2's own, which says where V is in a
+D2 and not where it is here: a silent miscompile where a refusal is honest.
+Refused at the class, by name.
+
+**And a defect this round found but did not cause.** `X : A, D1` needs the
+*dynamic* base at offset 0 on the Itanium ABI - clang lays D1 first and A at 12
+- where cxx1 lays the bases in the order written, leaves nothing dynamic at 0,
+and segfaults reading the virtual base. x86_64-windows is right here for a
+reason that is not luck: a vbptr need not sit at offset 0 the way a vptr must,
+and cl lays A first too. tests/open/itanium-primary-base.cpp.
+
 ## `<type_traits>`, and four gaps of one family
 
 The header is the C++11 core - `is_integral`, `is_floating_point`, `is_same`,
