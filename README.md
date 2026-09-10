@@ -166,10 +166,14 @@ read one - landed on 2026-09-10 and matches `cl` byte for byte, diamonds
 included; so did cl's hidden most-derived flag, which is how that ABI builds a
 virtual base once rather than once per class that names it. What remains is
 three defects the work uncovered, all of them **Itanium-side or shared** and
-all registered in `tests/open`: the dynamic base does not become the primary
-one, a second base's own virtual base is read through the wrong pointer, and
-`delete` through a pointer to a polymorphic virtual base misses the
-most-derived destructor.
+all registered in `tests/open`: a second base's own virtual base is read
+through the wrong pointer, and `delete` through a pointer to a polymorphic
+virtual base misses the most-derived destructor. **The primary-base rule they
+were found beside is fixed** - the first non-virtual base carrying a vptr is
+laid at offset 0 on the Itanium targets, whatever its place in the
+base-clause - and it uncovered one more: a class that introduces its own vptr
+over a plain base still lays that base at 0 and stores the vptr over its first
+member.
 
 **That Windows defect is closed as of 1.2**: a function other than `main` that
 owned an unwind region used to emit a `.pdata` entry pointing at a `$cppxdata`

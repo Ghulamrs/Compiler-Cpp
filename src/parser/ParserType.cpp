@@ -226,10 +226,40 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     // **The base subobject is laid down first, at offset 0**, its members copied in
     // at the offsets they already have - that is what the layout IS, so `d.b` needs
     // no second search. Access travels through the inheritance.
-    for (std::size_t bi = 0; bi < written.size(); bi++) {
-        // A virtual base waits: it goes after every non-virtual byte, which is
-        // not known until the members have been read.
-        if (written[bi].isVirtual) continue;
+    //
+    // **Which base is first is the ABI's choice, not the writer's.** Itanium
+    // makes the first non-virtual base *with a vptr* the primary base and lays
+    // it at 0, so that this class's vptr is that base's and a pointer to the
+    // base finds one where it expects to. `X : A, D1`, A plain and D1 holding
+    // a virtual base: clang puts D1 at 0 with its vptr, A at 12, and cxx1 put
+    // A at 0 - so a `D1 *` into an X read A's first int as a vptr and the
+    // program died on the first virtual-base member. Measured with
+    // -fdump-record-layouts; the case is tests/cases/itanium-primary-base.cpp.
+    //
+    // cl lays the bases in the order written - A at 0, D1's vbptr at 8 - and
+    // cxx1 already matched that byte for byte, so the rule is Itanium's alone.
+    // A vbptr does not have to be at 0 the way a vptr does, which is why the
+    // two ABIs genuinely differ here. Nothing changes in `bases()` either
+    // way: it keeps the written order, which is the order they are built in.
+    const Type *primary = nullptr;
+    if (!target_.microsoftNames())
+        for (std::size_t bi = 0; bi < written.size() && primary == nullptr; bi++)
+            if (!written[bi].isVirtual && written[bi].type->hasVptr())
+                primary = written[bi].type;
+    type->setPrimaryBase(primary);
+    std::vector<std::size_t> layOrder;
+    for (std::size_t bi = 0; bi < written.size(); bi++)
+        if (!written[bi].isVirtual && written[bi].type == primary)
+            layOrder.push_back(bi);
+    for (std::size_t bi = 0; bi < written.size(); bi++)
+        if (!written[bi].isVirtual && written[bi].type != primary)
+            layOrder.push_back(bi);
+    std::vector<int> baseAt(written.size(), 0);
+
+    for (std::size_t li = 0; li < layOrder.size(); li++) {
+        // A virtual base is not in that order at all: it goes after every
+        // non-virtual byte, which is not known until the members have been read.
+        const std::size_t bi = layOrder[li];
         const Type *b = written[bi].type;
         const Access how = written[bi].access;
 
@@ -267,22 +297,34 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             else if (how == Access::Protected) m.access = Access::Protected;
             members.push_back(m);
         }
-        type->addBase(b, at, how);
+        baseAt[bi] = at;
 
         // The base's DATA size, not its sizeof - see Type::dataSize.
         bitCursor = static_cast<long long>(at + b->nvDataSize()) * 8;
         if (b->align(target_) > widest) widest = b->align(target_);
-        // The first base's slots come down in order, and an override in this
-        // class replaces one rather than appending - declareMember does that.
-        if (!tag.empty() && bi == 0 && b->polymorphic())
+        // The base at offset 0 hands its slots down in order, and an override
+        // in this class replaces one rather than appending - declareMember
+        // does that. That base is the primary one where there is one, and
+        // otherwise the first written, which is the Microsoft rule as well.
+        const bool atZero = primary != nullptr ? b == primary : bi == 0;
+        if (!tag.empty() && atZero && b->polymorphic())
             vtables_[tag] = vtables_[b->tag()];
     }
+    // Recorded in the order written, whatever order they were laid in: the
+    // constructor and the destructor walk this list.
+    for (std::size_t bi = 0; bi < written.size(); bi++)
+        if (!written[bi].isVirtual)
+            type->addBase(written[bi].type, baseAt[bi], written[bi].access);
 
     // **A polymorphic object carries a vptr at offset 0**, so its members start after
     // it - measured: one int and one virtual is 16 bytes with the int at 8. A derived
     // class inherits the base's: one class, one vptr, however deep the chain.
-    // A base carrying a vptr for *either* reason has already counted it.
-    const bool inheritsVptr = base != nullptr && base->hasVptr();
+    // A base carrying a vptr for *either* reason has already counted it - and
+    // that base is the primary one, which is at 0 by construction; a virtual
+    // base with a vptr is at the end of the object and hands nothing down.
+    // (Read only on the Itanium branch below; the Microsoft one asks its own
+    // question about vfptr and vbptr separately.)
+    const bool inheritsVptr = primary != nullptr;
     const std::size_t firstOwnMember = members.size();
 
     // **The one difference between the two keywords.** [class.access]: a class starts

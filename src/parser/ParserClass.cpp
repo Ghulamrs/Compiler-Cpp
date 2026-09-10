@@ -259,7 +259,8 @@ std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
     {
         const std::vector<Type::BaseSpec> &all = memberOf->bases();
         for (std::size_t bi = 1; bi < all.size(); bi++)
-            if (all[bi].type->polymorphic())
+            if (all[bi].type->polymorphic() &&
+                all[bi].type != memberOf->primaryBase())
                 entryCount += vtables_[all[bi].type->tag()].size() + (ms ? 0 : 2);
     }
     ExprPtr base(Var::global(table));
@@ -296,7 +297,10 @@ std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
     for (std::size_t bi = 1; bi < bs.size(); bi++) {
         // A base carrying a vptr for either reason has a secondary table, and
         // a `D2 *` into this object reads that vptr rather than the first.
+        // **Unless it is the primary base**, which sits at 0 whatever its
+        // place in the list: its vptr is the one stored above.
         if (!bs[bi].type->hasVptr() || bs[bi].isVirtual) continue;
+        if (bs[bi].type == memberOf->primaryBase()) continue;
         std::map<std::string, int>::const_iterator where =
             secondaryVptr_.find(cls + "::" + bs[bi].type->tag());
         if (where == secondaryVptr_.end()) continue;
@@ -1649,6 +1653,11 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
     // **A secondary table for every polymorphic base after the first**, laid down
     // behind the primary one in the same symbol - _ZTV1C holds both, the second
     // beginning with an offset-to-top of -16. An override there is a thunk.
+    //
+    // "After the first" means after the one at offset 0. On Itanium that is
+    // the primary base, which need not be the first written - `X : A, D1`
+    // lays D1 at 0 - and its part of the table is the primary one above, so
+    // it is skipped here by name as well as by position.
     const std::vector<Type::BaseSpec> &bases = cls->bases();
     for (std::size_t bi = 1; bi < bases.size(); bi++) {
         const Type *b = bases[bi].type;
@@ -1657,6 +1666,7 @@ void Parser::emitVtable(const Type *cls, const std::string &tag,
         // object reads the vptr at its own offset and wants a `vbase_offset`
         // measured from there. A virtual base's own part is not laid here.
         if (!b->hasVptr() || bases[bi].isVirtual) continue;
+        if (b == cls->primaryBase()) continue;
         const int off = bases[bi].offset;
 
         // **The Microsoft ABI arranges this differently, and it is not the same thing

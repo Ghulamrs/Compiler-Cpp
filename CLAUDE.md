@@ -9601,6 +9601,51 @@ wrong one there (virtual-base-second-base); and `delete p` through a pointer to
 a *polymorphic virtual base* never reaches the most-derived destructor on
 either ABI (virtual-dtor-through-virtual-base). The register is eight.
 
+## The primary base, which need not be the one written first
+
+Itanium requires a dynamic class's vptr at offset 0, so the **first
+non-virtual base carrying a vptr is laid there** whatever its place in the
+base-clause. `X : A, D1` with A plain and D1 holding a virtual base: clang
+puts D1 at 0 with its vptr and A at 12, and cxx1 put A at 0 - so a `D1 *` into
+an X read A's first int as a vptr and the program died on the first
+virtual-base member. `Type::primaryBase()` records the choice.
+
+**`bases()` is not reordered**, and that is the whole trick to keeping the
+change small: the list stays in the order written, which is the order the
+bases are built and the reverse of the order they are destroyed, and only the
+offsets say where each one landed. The construction trace is `V A D1 X` before
+and after, which is what clang prints.
+
+Two places had been treating "the first base" as "the base at offset 0" - the
+secondary-table loop in `emitVtable` and the secondary-vptr store in
+`storeVptrs` - and both now skip the primary by identity as well as by
+position. `inheritsVptr` becomes "there is a primary base", which is also the
+right answer for a class whose first *written* base is virtual: that one sits
+at the end of the object and hands nothing down.
+
+**Microsoft has no such rule and must not get one.** cl lays the bases in the
+order written - A at 0, D1's vbptr at 8, V at 32, sizeof 40 - because a vbptr
+need not sit at offset 0 the way a vptr must, and cxx1 already matched that
+byte for byte. `primaryBase()` is null there and the layout loop degenerates to
+the written order. The evidence that it stayed that way is the golden: **0 of
+789 files changed**, three added, and the new case's x86_64-windows emission
+byte-identical before and after.
+
+**And a worse defect found beside it**, registered rather than fixed:
+`struct Z : A { int z; virtual int f(); }` with A plain **segfaults**. There is
+no primary base to take the vptr from, so Z must put one at offset 0 *in front
+of* A; cxx1 keeps A at 0 and shifts only Z's own members, and the vtable store
+lands on `A::x`. Mending it moves every base, after which a single base is no
+longer at offset 0 and Z's type_info becomes `__vmi_class_type_info`, which
+this compiler does not write - so `dynamic_cast` and `catch` on such a class
+belong to the same round. The Microsoft branch shifts only the class's own
+members too, so that target is expected to fail alike, but cl has not been
+asked. tests/open/own-vptr-plain-base.cpp.
+
+This round was written by a Fable 5.1 subagent in its own worktree, and every
+number above was re-measured here before it landed - which is the only way a
+handed-over green is worth anything.
+
 ## `<type_traits>`, and four gaps of one family
 
 The header is the C++11 core - `is_integral`, `is_floating_point`, `is_same`,

@@ -365,6 +365,21 @@ public:
         vbptrs_.push_back(VbPtr{ offset, owner, base });
     }
 
+    // **The Itanium ABI's primary base**: the first non-virtual base written
+    // that carries a vptr, laid at offset 0 whatever its place in the
+    // base-clause, so that this class's vptr *is* that base's. `X : A, D1`
+    // with A plain and D1 holding a virtual base puts D1 at 0 and A after it
+    // - measured with clang, and the only order that lets a `D1 *` into an X
+    // find a vptr where D1 keeps one. Null where no non-virtual base has a
+    // vptr, and always null on the Microsoft targets, where the bases stay in
+    // the order written: a vbptr need not sit at 0 the way a vptr must.
+    //
+    // `bases()` is *not* reordered by this. It stays in the order written,
+    // which is the order the bases are built and the reverse of the order
+    // they are destroyed, and only the offsets say where each one landed.
+    const Type *primaryBase() const { return cls().primaryBase_; }
+    void setPrimaryBase(const Type *t) { primaryBase_ = t; }
+
     // The first base - the only one for most classes, and the only one that
     // needs no adjustment. Kept because most callers ask exactly that.
     const Type *base() const {
@@ -467,6 +482,7 @@ private:
     bool hasDestructor_ = false;
     std::vector<BaseSpec> bases_;
     int nvDataSize_ = 0;
+    const Type *primaryBase_ = nullptr;
     int vbptrOffset_ = -1;
     const Type *vbptrOwner_ = nullptr;
     std::vector<VbPtr> vbptrs_;
