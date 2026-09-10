@@ -56,9 +56,7 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
     if (e->type() == to) return e;
 
     // **A class converted by its own conversion function**, which is where a
-    // class reaches a number, a pointer or a bool. Written here so that every
-    // caller of convert gets it - an initialisation, an assignment, an
-    // argument, a return - rather than at each of those in turn.
+    // class reaches a number, a pointer or a bool.
     if (e->type() != nullptr && e->type()->unqualified()->isStructOrUnion() &&
         !to->unqualified()->isStructOrUnion()) {
         Parser *self = const_cast<Parser *>(this);
@@ -73,10 +71,8 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
     }
 
     // **A class converted to another class by its own conversion function**,
-    // [class.conv.fct] - the same one rule as above, only the target is a class
-    // too: `operator B()` on an A makes a B. A base subobject is a different
-    // thing (offset 0, no call) and is left to the pointer/reference paths
-    // below, so only a genuinely unrelated target reaches the operator here.
+    // [class.conv.fct] - the same one rule as above, only the target is a
+    // class too: `operator B()` on an A makes a B.
     if (e->type() != nullptr && e->type()->unqualified()->isStructOrUnion() &&
         to->unqualified()->isStructOrUnion() &&
         e->type()->unqualified() != to->unqualified() &&
@@ -92,12 +88,7 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
 
     // **A class differing only in const-ness is the same object**, so there is
     // nothing here to convert: [conv.qual] changes the type and not the value,
-    // and the object keeps its address and its bytes. Re-labelled rather than
-    // cast, because the Cast below reaches `genConversion`, which reads a class
-    // as a scalar and truncates its address to the object's *size* - so a 1, 2
-    // or 4-byte class copied from a `const` reference segfaulted, while 8 bytes
-    // and up survived because the truncation happened to keep the whole
-    // pointer. `struct N { int id; };` in a `vector` is how it was met.
+    // and the object keeps its address and its bytes.
     if (to->unqualified() == e->type()->unqualified() &&
         to->unqualified()->isStructOrUnion()) {
         e->setType(to);
@@ -112,8 +103,7 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
         const int off = publicBaseOffset(e->type()->pointee(), to->pointee());
         // **A virtual base is not at a constant offset from the derived
         // pointer**, so the walk forward is a number read out of the vtable
-        // rather than one written here. Which entry is fixed by how many
-        // virtual bases the source type has; its contents are not.
+        // rather than one written here.
         const Type *srcCls = e->type()->pointee()->unqualified();
         const Type *dstCls = to->pointee()->unqualified();
         long long vbBack = 0;
@@ -130,12 +120,7 @@ ExprPtr Parser::convert(ExprPtr e, const Type *to, bool allowExplicit) const {
                 seen++;
             }
         }
-        // **The same walk on the Microsoft ABI, through the vbtable.** It was
-        // missing while the member read was not, so `throughBase(r)` - an
-        // `R *` handed to a `const V &` - stepped to the constant
-        // `publicBaseOffset` gives, which is V's place inside a D1 and not
-        // inside an R. It read the derived class's own member instead, and the
-        // Windows box caught it in the round's own case.
+        // **The same walk on the Microsoft ABI, through the vbtable.**
         if (target_.microsoftNames() && srcCls->vbptrOffset() >= 0 &&
             virtualBaseSlot(srcCls, dstCls, nullptr) > 0) {
             Parser *self = const_cast<Parser *>(this);
@@ -360,22 +345,13 @@ static bool isPromotion(const Type *from, const Type *to) {
 Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     const Type *given = arg.type();
 
-    // A reference parameter binds or it does not; there is no conversion to rank.
-    // The referents must be one type, or the argument's must derive from the
-    // parameter's, and a non-const reference cannot bind a const object - not a
-    // worse match, no match.
+    // A reference parameter binds or it does not; there is no conversion to
+    // rank.
     if (param->isReference()) {
         const Type *want = param->pointee();
 
         // **A reference to an array binds to an array of the same length**,
-        // without the decay a by-value parameter would apply - `const double
-        // (&)[N]` takes a `double[N]` lvalue, the element gaining const, which
-        // is a qualification for a const reference and refused for a non-const
-        // one that would drop it. [dcl.init.ref], [conv.qual]. An array is
-        // always an lvalue, so there is no temporary to consider.
-        // **Every dimension, not just the first.** The pointee of a
-        // `const double[2][3]` is a `const double[3]`, never a `double[3]`, so
-        // it is the innermost element's constness that decides the rank.
+        // without the decay a by-value parameter would apply.
         if (want->isArray() && given->isArray() && want->sameArrayShape(given)) {
             const Type *we = want->innermostElement();
             const Type *ge = given->innermostElement();
@@ -386,11 +362,9 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
             }
         }
 
-        // **A reference to a base binds to a derived object** - [dcl.init.ref],
-        // and the sequence is a derived-to-base Conversion, which is what makes
-        // `f(Base &)` lose to `f(Derived &)` for a Derived rather than tie with
-        // it. The pointer form of this has always worked; the reference form
-        // was left out, and `std::getline(istringstream, s)` is what found it.
+        // **A reference to a base binds to a derived object** - [dcl.init.ref], and the sequence is
+        // a derived-to-base Conversion, which is what makes `f(Base &)` lose to `f(Derived &)` for
+        // a Derived rather than tie with it.
         if (want->unqualified() != given->unqualified() &&
             publicBaseOffset(given, want) > -1 &&
             isLvalue(arg) && !param->isRValueReference()) {
@@ -401,10 +375,7 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
         if (want->unqualified() != given->unqualified()) {
             // **A `const T &` takes a temporary, so it takes a conversion.**
             // [over.ics.user] with [dcl.init.ref]: the converting constructor
-            // makes an object and the reference binds to it. A non-const
-            // reference gets nothing, because that object has nowhere to live
-            // beyond the call and binding to it would be a promise to write
-            // somewhere the caller can read.
+            // makes an object and the reference binds to it.
             if (want->isConst() && rankingConversion_ == 0) {
                 rankingConversion_++;
                 // A class target is reached by its converting constructor or by
@@ -421,12 +392,6 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
                 if (usable) return Rank::UserDefined;
             }
             // **And a standard conversion makes that temporary too.**
-            // [dcl.init.ref]/5 binds a const lvalue reference to a temporary
-            // initialised by *any* implicit conversion sequence, and the
-            // sequence's rank is the reference binding's rank. Only the
-            // user-defined half was here, so `v.push_back(new Derived)` into a
-            // `vector<Base *>` and `v.assign(8, 0)` into a
-            // `vector<unsigned char>` were both refused as no viable function.
             if (want->isConst()) {
                 const Rank direct = rankArgument(arg, want->unqualified());
                 if (direct != Rank::None) return direct;
@@ -441,20 +406,7 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
         if (param->isRValueReference() && isLvalue(arg)) return Rank::None;
         if (param->isRValueReference()) return Rank::Identity;
 
-        // **A value has no lvalue to bind, so `T &` is not viable for one** -
-        // and that was missing here, where a candidate is *ranked*. With one
-        // candidate it did not show: the call path refuses the binding later,
-        // by name. With two it did, and wrongly - `hold(int &)` was ranked
-        // beside `hold(const int &)` for `hold(7)`, and the pair came out
-        // ambiguous where clang, g++ and cl all pick the const one.
-        //
-        // **And a value bound to `const T &` keeps the qualification it is
-        // charged**, because that charge is how two tiebreaks are encoded here:
-        // [over.ics.rank]/3.2.3, an rvalue reference beating a const lvalue
-        // reference for an rvalue, and /3.2.6, the less qualified of two
-        // references winning. Both only ever compare two *references*;
-        // against a by-value parameter the charge is neutralised in
-        // betterCandidate, which is where `take(4)` becomes the ambiguity it is.
+        // **A value has no lvalue to bind, so `T &` is not viable for one**.
         if (!isLvalue(arg)) return want->isConst() ? Rank::Qualification : Rank::None;
 
         return want->isConst() && !given->isConst() ? Rank::Qualification
@@ -465,18 +417,14 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
     const Type *to = param;
 
     if (from == to) return Rank::Identity;
-    // Top-level const on the parameter is not part of its type for this
-    // purpose: void f(int) and void f(const int) are one function, and an
-    // argument matches both the same way.
+    // Top-level const on the parameter is not part of its type for this purpose.
     if (from->unqualified() == to->unqualified()) return Rank::Identity;
 
     if (from->isArithmetic() && to->isArithmetic())
         return isPromotion(from, to) ? Rank::Promotion : Rank::Conversion;
 
     if (to->isPointer() && from->isPointer()) {
-        // A qualification conversion - char * to const char * - is an Exact
-        // Match, so it still beats a promotion. It loses to the identity
-        // conversion alone, which is the whole reason the two are separate.
+        // A qualification conversion - char * to const char *.
         if (qualificationConvertible(from, to)) return Rank::Qualification;
         // Derived * to Base * is a pointer conversion, which ranks below a
         // promotion - so f(Base *) loses to f(Derived *) for a Derived *,
@@ -509,10 +457,7 @@ Parser::Rank Parser::rankArgument(const Expr &arg, const Type *param) {
 
     // **Last of all, a user-defined conversion** - [over.ics.rank]/2 puts one
     // below every standard conversion, so this is asked only where nothing
-    // above it answered. Both directions live here: a constructor of the target
-    // when the target is a class, and a conversion function on the source when
-    // the source is one. The counter is [over.ics.user]/1 - at most one per
-    // sequence - and is also what stops either search recursing into the other.
+    // above it answered.
     if (rankingConversion_ == 0) {
         rankingConversion_++;
         const bool usable =
@@ -539,11 +484,9 @@ std::string Parser::describeSignature(const Signature &f) {
     return out + ")";
 }
 
-// The best viable function, or a refusal naming every candidate: F beats G when it
-// is no worse on every argument and better on one, and two that each win an
-// argument are the ambiguity. All conversions equal, a specialization loses.
-// The parameter a rank position came from, or null for an implicit object
-// parameter and for anything the ellipsis swallowed.
+// The best viable function, or a refusal naming every candidate: F beats G
+// when it is no worse on every argument and better on one, and two that each
+// win an argument are the ambiguity.
 const Type *Parser::rankedParameter(const Signature &f, std::size_t i,
                                     bool ranksObject) {
     if (ranksObject) {
@@ -553,16 +496,9 @@ const Type *Parser::rankedParameter(const Signature &f, std::size_t i,
     return i < f.params.size() ? f.params[i] : nullptr;
 }
 
-// **A by-value parameter and a reference to the same type are the same match**,
-// and [over.ics.rank] gives neither a way to beat the other: one copies the
-// argument, one binds it, and both are the identity conversion. The
-// qualification a reference binding is charged in rankArgument is there to
-// separate two *references* - `T &` from `const T &`, where /3.2.6 does give an
-// answer - and against a by-value parameter it is not a difference at all.
-//
-// Letting it decide made `f(int)` quietly beat `f(const int &)` for an lvalue,
-// where clang and g++ both call the pair ambiguous. Measured on both, and on
-// four neighbouring shapes that were already right and had to stay so.
+// **A by-value parameter and a reference to the same type are the same
+// match**, and [over.ics.rank] gives neither a way to beat the other: one
+// copies the argument, one binds it, and both are the identity conversion.
 bool Parser::sameMatchEitherWay(const Type *pa, const Type *pb) {
     if (pa == nullptr || pb == nullptr) return false;
     const bool ra = pa->isReference(), rb = pb->isReference();
@@ -628,9 +564,8 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
                                                const Expr *right,
                                                std::size_t pos) {
     // **A non-member operator may be a function template.** Deduce and
-    // instantiate every one that applies before ranking, so `a + b` for a class
-    // template reaches `template <int N> V<N> operator+(V<N>, V<N>)`. The
-    // specializations land in functions_ and are ranked with everything else.
+    // instantiate every one that applies before ranking, so `a + b` for a
+    // class template reaches `template <int N> V<N> operator+(V<N>, V<N>)`.
     {
         std::vector<const Type *> argTypes;
         argTypes.push_back(left.type());
@@ -640,9 +575,6 @@ Parser::OperatorChoice Parser::resolveOperator(const std::string &name,
 
     // **A member operator may be a template too**, `H * x` where operator* is
     // written `template <int VMAX> V<VMAX> operator*(const V<VMAX> &) const`.
-    // Its parameters are deduced from the right operand alone - the left is the
-    // object - and the specialization lands under the plain member name, where
-    // the ranking below finds it.
     if (right != nullptr) {
         const Type *lp = left.type()->unqualified();
         if (lp->isStructOrUnion()) {
@@ -770,11 +702,7 @@ void Parser::applyDefaults(Signature f, std::vector<ExprPtr> &args,
     currentFunction_.clear();
     currentFunctionName_.clear();
     // **And the rest of the declaration's scope**, which the locals were only
-    // part of: the namespace it was declared in, recorded beside the token
-    // positions because the parser is now wherever the *call* was written, and
-    // the class if it is a member's, so a default may name its own class's
-    // enumerator or static member. Without these a default in `namespace N`
-    // naming N's `k` found the caller's `::k` and answered 7 where clang says 5.
+    // part of.
     const std::vector<std::string> outerNs = namespaceStack_;
     std::map<std::string, std::vector<std::string> >::const_iterator ns =
         defaultArgNamespace_.find(f.symbol);
@@ -821,14 +749,7 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
     const std::vector<std::size_t> *set = overloadsOf(name);
 
     // **For an operator the candidate set is the union, not the first scope
-    // that answers.** [over.match.oper] gathers the ordinary unqualified
-    // lookup *and* the operands' own namespaces, and the fallback above
-    // consults the second only where the first found nothing at all. That is a
-    // defensible approximation for an ordinary call - a name in scope is not
-    // quietly outranked by a far one - and it is wrong for an operator: one
-    // `operator==` template instantiated anywhere at file scope hid every
-    // `std::operator==`, so comparing a std::string with a literal failed in
-    // any program that also compares two objects of its own class.
+    // that answers.**
     std::vector<std::size_t> merged;
     if (object == nullptr && !args.empty() &&
         written.compare(0, 8, "operator") == 0) {
@@ -860,9 +781,7 @@ Parser::Signature Parser::resolveOverload(const std::string &written,
 
     std::vector<std::size_t> viable;
     std::vector<std::vector<Rank> > ranks;
-    // Set when the only thing that stopped a candidate was the constness of
-    // the object, so that "no function takes these arguments" can be replaced
-    // by the message that says what actually went wrong.
+    // Set when only the object's constness stopped a candidate, for the message.
     bool droppedForConst = false;
 
     for (std::size_t k = 0; k < set->size(); k++) {
@@ -948,17 +867,14 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
 
     if (ft == to) return;
 
-    // Copying ignores the const at the top: [dcl.init]/2 strips it from the
-    // destination and a const source is read rather than moved. Without this
-    // `const S b = a;` was refused where `const int b = a;` was not.
+    // Copying ignores the const at the top.
     if (ft->unqualified() == to->unqualified()) return;
 
     if (ft->isArithmetic() && to->isArithmetic()) return;
 
-    // **A class converts by its own conversion function**, [class.conv.fct] -
-    // the mirror of the converting constructor, and the same one rule: at most
-    // one user-defined conversion in a sequence, so what the function answers is
-    // finished by a standard conversion and no further.
+    // **A class converts by its own conversion function**, [class.conv.fct] - the mirror of the
+    // converting constructor, and the same one rule: at most one user-defined conversion in a
+    // sequence, so what the function answers is finished by a standard conversion and no further.
     if (ft->unqualified()->isStructOrUnion() &&
         ft->unqualified() != to->unqualified() &&
         !publiclyDerivedFrom(ft->unqualified(), to->unqualified()) &&
@@ -967,9 +883,7 @@ void Parser::checkAssignable(const Expr &from, const Type *to, std::size_t pos,
 
     // **A lambda with no capture converts to a function pointer** -
     // [expr.prim.lambda]/6 gives the closure a conversion function returning
-    // one that calls the body. The closure is a real class here and that
-    // function is not synthesised, so say which conversion is missing rather
-    // than name a closure type the program never wrote.
+    // one that calls the body.
     if (to->isPointer() && to->pointee()->isFunction() &&
         ft->unqualified()->isStructOrUnion() &&
         ft->unqualified()->tag().find("$_") != std::string::npos)

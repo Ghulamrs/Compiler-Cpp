@@ -72,13 +72,11 @@ Source::Place Source::locate(std::size_t pos) const {
 }
 
 void Source::fail(std::size_t pos, const std::string &message) const {
-    // Inside a trial nothing is printed and nothing exits: the caller asked a
-    // question and this is the answer to it.
+    // Inside a trial nothing is printed and nothing exits.
     if (trials_ > 0) {
-        // **The same rule tools/exclusions derives the exclusion list from**,
-        // bare "yet" included - which is what catches the mangler's "no
-        // Itanium linkage name yet", a limitation that reads nothing like the
-        // parser's refusals and is just as much a fact about the compiler.
+        // **The same rule tools/exclusions derives the exclusion list from**, bare "yet" included -
+        // which is what catches the mangler's "no Itanium linkage name yet", a limitation that
+        // reads nothing like the parser's refusals and is just as much a fact about the compiler.
         const bool unsupported =
             message.find("not supported") != std::string::npos ||
             message.find("not implemented") != std::string::npos ||

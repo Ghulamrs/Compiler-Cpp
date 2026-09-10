@@ -137,12 +137,7 @@ bool Parser::insideClass(const Type *cls) const {
     return false;
 }
 
-// **Does the declarator after `from` define a member of `cls`?** The scan stops
-// at the first `(` or `;` at depth zero, which bounds it to this declaration,
-// and takes the longest prefix of `A::B::` names that is a type - so
-// `Outer::Inner::f` asks about `Outer::Inner` rather than about `Outer`. A
-// class nested inside `cls` counts, because its members reach `cls`'s private
-// names exactly as `cls`'s own do.
+// **Does the declarator after `from` define a member of `cls`?**
 bool Parser::definesMemberOf(const Type *cls, std::size_t from) const {
     if (cls == nullptr) return false;
     for (std::size_t k = from; ; k++) {
@@ -182,14 +177,8 @@ bool Parser::hasTypeNamed(const std::string &key) const {
     return typedefIndex_.find(key) != typedefIndex_.end();
 }
 
-// **Unqualified lookup inside a namespace, and it is a search and not a rule.**
-// The enclosing namespaces innermost outwards, then what `using namespace` has
-// opened, then the name as written - [basic.lookup.unqual] closely enough.
-// **A using-declaration is followed here and nowhere else.** Every lookup that
-// forms a candidate key asks this first, so the one rule serves `std::size_t`
-// written out and `size_t` found by the search alike. The hop count is a guard,
-// not a limit: a chain longer than this is a cycle, and a cycle must fail a
-// lookup rather than hang the parser.
+// **Unqualified lookup inside a namespace, and it is a search and not a
+// rule.**
 std::string Parser::followUsingDeclaration(const std::string &key) const {
     std::string at = key;
     for (int hops = 0; hops < 16; hops++) {
@@ -299,8 +288,7 @@ const Parser::EnumConst *Parser::enumInClass(const Type *cls,
 
 // **An enumerator is named through what encloses it**, the same as a class -
 // `Layout::StepBase`, `n::Red` - so the scopes findTypedef walks are walked
-// here too. Without this an enum in a class or a namespace was findable only
-// by the bare name it was written with, and `n::Kind` found nothing at all.
+// here too.
 const Parser::EnumConst *Parser::findEnum(const std::string &name) const {
     auto it = enumIndex_.find(name);
     if (it != enumIndex_.end()) return &enums_[it->second];
@@ -361,8 +349,7 @@ bool Parser::atTypeName() const {
                                      "float", "double",
                                      "struct", "union", "enum",
                                      "const", "volatile",
-                                     // It says the next thing is a type, and
-                                     // saying so is the whole of what it does.
+                                     // It says the next thing is a type, and saying so is the whole of what it does.
                                      "typename",
                                      // And this one *is* a type, written as a
                                      // question about an expression.
@@ -399,12 +386,6 @@ std::size_t Parser::qualifiedTypeEnd() const {
         q += "::" + peekAt(k + 1).text;
         if (findTypedef(q) != nullptr) typeEnd = k + 2;
         // **`std::vector<int> v;` - the name stops at a class template too.**
-        // A template is not a type until its arguments are given, so the `<`
-        // is part of the question: without it `std::vector` names nothing that
-        // could be declared, and with it the whole thing is a type. Read as a
-        // typedef only, a qualified template name was not a declaration at all
-        // and the statement went to the expression path, which reported the
-        // template "was not declared in 'std'".
         if (peekAt(k + 2).is("<") && isClassTemplate(q)) typeEnd = k + 2;
     }
     return typeEnd;
@@ -440,26 +421,18 @@ bool Parser::atDeclarationStart() const {
             // `Outer::Inner::shared = 1;` goes on past the type and assigns.
             const std::size_t typeEnd = qualifiedTypeEnd();
             if (typeEnd == 0 || peekAt(typeEnd).is("::")) return false;
-            // **`std::vector<int>().swap(v);` is a statement**, and an empty
-            // pair after the type is what says so: a declaration needs a name
-            // between the type and the `(`, so `T ();` could only be a function
-            // declaration with no name, which is not a thing. `int (*p)();`
-            // has a `*` there and is unaffected.
-            //
-            // The walk above stops at the `<` of a template-id, so the
-            // argument list is stepped over first - by depth, and counting a
-            // `>>` as two, which is how the lexer hands it over.
+            // **`std::vector<int>().swap(v);` is a statement**, and an empty pair after the type is
+            // what says so: a declaration needs a name between the type and the `(`, so `T ();`
+            // could only be a function declaration with no name, which is not a thing.
             const std::size_t after = qualifiedTypeEndPastArgs();
             if (after == 0) return true;
             return !(peekAt(after).is("(") && peekAt(after + 1).is(")"));
         }
     }
 
-    // **A leading class template-id as a qualifier**: `CNeeds<(N==3)>::check()`
-    // is a static-member call, a statement, where `CNeeds<3>::Inner x;` would be
-    // a declaration. Stepping past the argument list by depth, a member after the
-    // `::` that is followed by `(` is a call or a nested-type temporary - an
-    // expression either way - so it does not begin a declaration.
+    // **A leading class template-id as a qualifier**:
+    // `CNeeds<(N==3)>::check()` is a static-member call, a statement, where
+    // `CNeeds<3>::Inner x;` would be a declaration.
     if (peek().kind == TokenKind::Ident && peekAt(1).is("<") &&
         isClassTemplate(peek().text)) {
         std::size_t after = 1;
@@ -491,8 +464,7 @@ bool Parser::atDeclarationStart() const {
         || peek().is("constexpr");
 }
 
-// From the '{' to the '}' that closes it, counting depth. The body is not
-// looked at here at all - only found and stepped over.
+// From the '{' to the '}' that closes it, counting depth.
 void Parser::skipBracedBlock() {
     // A constructor's body may be preceded by its mem-initializer list, so
     // what is skipped starts at the ':' and the '{' is found from there.
@@ -514,11 +486,6 @@ void Parser::skipBracedBlock() {
 // Each held body re-read as though it had been written outside the class. The
 // tokens are the ones already there, so the ordinary definition path runs over
 // them, and `inlineOwner_` supplies the `Class::` the source does not have.
-// **Capture, clear and restore, in one place for all eight nested-parse
-// doors.** Each door used to write its own list and each list was written
-// separately; `alive_` was missing from one of them and six more fields from
-// another. Adding a per-function field to the parser now means adding it here
-// and nowhere else.
 Parser::FunctionState Parser::captureFunctionState() const {
     FunctionState s;
     s.at = at_;
@@ -682,16 +649,10 @@ void Parser::clearFunctionState() {
 
 void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
     if (mine.empty()) return;
-    // **One capture for the whole nested parse.** Eight doors re-enter parsing
-    // from a saved token index and each used to write its own list of what to
-    // put back; that is how `alive_` came to be missing from this one, and six
-    // more fields besides. captureFunctionState is the single list now, so a
-    // field added to the parser is added there and nowhere else.
+    // **One capture for the whole nested parse.**
     const FunctionState outer = captureFunctionState();
     clearFunctionState();
-    // A body replayed here was written inside a class body, so every definition
-    // it produces is implicitly inline. Set after the clear, not restored: a
-    // replay can happen inside another one and the inner one is inline too.
+    // A body replayed here was written inside a class body, so every definition it produces is implicitly inline.
     replayingInline_ = true;
 
     for (std::size_t i = 0; i < mine.size(); i++) {
@@ -701,15 +662,8 @@ void Parser::replayInlineBodies(std::vector<PendingBody> mine) {
         inlineOwner_ = mine[i].freeFunction ? std::string() : mine[i].tag;
         inlineOwnerName_ = mine[i].freeFunction ? std::string()
                          : (mine[i].local.empty() ? mine[i].tag : mine[i].local);
-        // **A friend is not a member, but it is still looked up in the class.**
-        // [basic.lookup.unqual]/9: a friend defined in the class body sees the
-        // class's own names - the injected class name above all, which is what
-        // makes `const V &` a legal parameter there. So the class goes on the
-        // lookup stack for the replay while the *owner* stays empty: scope
-        // without ownership, which is exactly what a friend has.
-        // Cleared for *each* body, not once for the run: the hand-off is
-        // per-declaration, so a constructor's default must not reach the friend
-        // replayed after it.
+        // **A friend is not a member, but it is still looked up in the
+        // class.**
         pendingDefaults_.clear();
         pendingNoexcept_ = false;
         const bool scoped = mine[i].freeFunction && !mine[i].tag.empty();

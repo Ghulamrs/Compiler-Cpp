@@ -69,9 +69,7 @@ protected:
 
     virtual std::size_t emittedSize() = 0;
 
-    // **What a backend has to be told about a landing pad, and no more.** The
-    // runtime arrives with the exception pointer and the selector in two
-    // registers; this stores them into slots, after which they are locals.
+    // **What a backend has to be told about a landing pad, and no more.**
     virtual void landingPad(int pointerSlot, int selectorSlot) = 0;
 
     // One row of the call-site table: a call between `begin` and `end` that
@@ -91,33 +89,17 @@ protected:
         int at = 0;
     };
 
-    // **A region open right now, and the segments of it already closed.** A
-    // region nested inside another does not overlap it: the enclosing one is
-    // *split* around it, closing at the inner's first label and reopening at
-    // its last. That is what makes every row disjoint, and disjointness is what
-    // makes sorting them safe - the sort that was reverted was not wrong about
-    // address order, it was premature, because overlapping rows need the
-    // innermost first and a linear scan cannot be given both.
+    // **A region open right now, and the segments of it already closed.**
     struct OpenRegion {
         std::string start;
         int at = 0;
         std::vector<CallSite> closed;
         // **What this region catches**, carried so a region nested inside it
-        // can put these on the end of its own action chain. One record's chain
-        // has to name every handler that encloses the address: clang writes
-        // `catch double, continue to action 4` where action 4 is the enclosing
-        // `catch int`, and phase 1 walks the whole chain before deciding this
-        // frame has no handler.
+        // can put these on the end of its own action chain.
         std::vector<std::string> types;
         std::vector<int> indices;
     };
-    // **Rows are used in the order they are registered and never sorted.** A
-    // field holding a label id lived here to sort them by address, which looks
-    // obviously right and silently breaks unwinding through a nested scope -
-    // the personality takes the *first* row whose range holds the address, so
-    // an inner region has to come before the outer one containing it. The sort
-    // was reverted; the field outlived it, assigned and read by nothing. See
-    // CLAUDE.md, "The sort, which looked right and was not".
+    // **Rows are used in the order they are registered and never sorted.**
     void callSite(const std::string &begin, const std::string &end,
                   const std::string &pad,
                   const std::vector<std::string> &types,
@@ -140,8 +122,7 @@ protected:
                     const std::vector<int> &indices);
     // Close it, hand back its segments, and reopen the enclosing one past
     // `resume` - which is the inner's end, so the enclosing still covers the
-    // inner's landing pad and handler. A throw from inside a `catch` belongs to
-    // the `try` outside it.
+    // inner's landing pad and handler.
     std::vector<CallSite> closeRegion(const std::string &end,
                                       const std::string &resume);
     const std::vector<CallSite> &callSites() const { return callSites_; }
@@ -153,19 +134,13 @@ protected:
     std::string lsdaTable(const LsdaSpelling &sp, const std::string &symbol,
                           std::vector<std::string> &types) const;
 
-    // **Does this target call handlers, or jump to them?** Itanium unwinds to a
-    // pad inside the frame; the Microsoft runtime calls the handler as a
-    // separate function. One question; the rest of a `try` is the same shape.
+    // **Does this target call handlers, or jump to them?**
     virtual bool usesFunclets() const { return false; }
 
-    // Write -2 into the runtime's scratch word. The personality routine reads it
-    // through the FuncInfo's dispUnwindHelp to know how far this frame had got,
-    // and -2 is the value that means "not inside anything yet".
+    // Write -2 into the runtime's scratch word.
     virtual void storeUnwindHelp(int slot) { (void)slot; }
 
-    // A cleanup funclet is opened the same way and closed differently: it
-    // returns nothing, because nothing continues here - the runtime goes on
-    // unwinding once the destructors have run.
+    // A cleanup funclet is opened the same way and closed differently.
     virtual void endCleanupFunclet() {}
 
     // Open a handler funclet and answer its symbol; close it naming the address

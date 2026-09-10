@@ -41,12 +41,7 @@ private:
 
     std::string out_;
     std::vector<std::string> files_;
-    // **`#pragma once` - the include guard a file writes as a pragma.** Not in
-    // the standard, which leaves a pragma implementation-defined, but every
-    // compiler a real program is written against honours it, and a header that
-    // uses it in place of an #ifndef is included twice without it - which is a
-    // class defined twice. Keyed by the resolved path, so the same header
-    // reached through two different -I directories is still one file.
+    // **`#pragma once` - the include guard a file writes as a pragma.**
     std::set<std::string> pragmaOnce_;
     std::vector<Source::Line> lines_;
 

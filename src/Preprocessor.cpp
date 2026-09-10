@@ -6,10 +6,8 @@
 #include <cstdlib>
 
 // **The same header reached two ways is one file.** `#pragma once` is keyed by
-// the resolved path, and `-Idir` plus a relative include can spell one file two
-// ways - so the name is put through the platform's own resolver first. Falling
-// back to the spelling as written is safe: the worst it costs is reading a
-// header twice, which is what happened before the pragma was honoured at all.
+// the resolved path, and `-Idir` plus a relative include can spell one file
+// two ways - so the name is put through the platform's own resolver first.
 static std::string canonicalPath(const std::string &p) {
     char buf[4096];
 #ifdef _WIN32
@@ -147,21 +145,7 @@ void Preprocessor::emitLine(const std::string &text, int fileIndex, int lineNo) 
 
 // [cpp.stringize]/2: the spelling of the argument, a backslash before each `"`
 // and `\`, leading and trailing white space deleted - and **each run of white
-// space between two preprocessing tokens replaced by a single space**. That
-// last clause was missing, so `S(  a   b  )` gave "a   b" where the standard
-// and every other compiler give "a b".
-//
-// White space inside a string or character literal is part of that token and
-// is not touched, which is why this walks the argument instead of collapsing
-// it in one blind pass: `S("a   b")` still stringifies with its three spaces.
-//
-// One deliberate divergence, kept from the older version of this function: the
-// standard escapes a `\` only inside a literal, so `S(a\b)` conforming-ly
-// yields the two characters `a` and a backspace. A stray backslash outside a
-// literal is not valid C++ in the first place, and escaping it produces a
-// string literal that can be read rather than an accidental escape sequence,
-// so this escapes it. Every well-formed argument stringifies as the standard
-// says.
+// space between two preprocessing tokens replaced by a single space**.
 std::string Preprocessor::stringify(const std::string &arg) {
     const std::string s = trim(arg);
     std::string out = "\"";
@@ -175,8 +159,7 @@ std::string Preprocessor::stringify(const std::string &arg) {
         if (c == '"' || c == '\'') {
             // A literal, copied through whole. Its delimiters are escaped, an
             // escape sequence inside it keeps both characters, and the closing
-            // quote ends it. An unterminated one runs to the end of the
-            // argument, which is what the rest of the preprocessor does too.
+            // quote ends it.
             const char quote = c;
             out += '\\';
             out += c;
@@ -500,11 +483,7 @@ std::string Preprocessor::resolveDefined(const std::string &expr, int fileIndex,
                 fail(fileIndex, lineNo, line, 0, "'defined(' is missing its ')'");
             i++;
         }
-        // **These are defined, though no `#define` wrote them.** A library asks
-        // `#if defined(__has_builtin)` before using it, and answering no there
-        // sends it down a path that then uses the predicate anyway - or, in
-        // libstdc++'s case, defines `_GLIBCXX_HAS_BUILTIN` to something this
-        // preprocessor never sees through.
+        // **These are defined, though no `#define` wrote them.**
         out += (macros_.count(operand) || isHasPredicate(operand)) ? "1" : "0";
     }
     return out;
@@ -540,16 +519,6 @@ static std::string spellAlternativeTokens(const std::string &expr) {
 // **The `__has_*` predicates, resolved before expansion for `defined`'s
 // reason**: `__has_include(<vector>)` holds a header name, not an expression,
 // and macro-expanding it first would make nonsense of the `<` and `>`.
-//
-// **`__has_include` is answered truthfully** - the same search `#include` does,
-// so a header that asks whether another exists gets the right answer. The rest
-// answer **0**, which is not a dodge: `#if __has_builtin(X)` is written by a
-// library precisely so it can be told no, and 0 is the answer C++ gives for a
-// builtin a compiler does not have. Saying nothing at all is what left the
-// whole family unrecognised, so `#if __has_builtin(__builtin_is_constant_evaluated)`
-// reached the expression parser as a bare identifier and stopped there - which
-// is where every libstdc++ header stopped, in `bits/c++config.h` and not in any
-// library code.
 bool Preprocessor::isHasPredicate(const std::string &name) {
     static const char *const kAll[] = {
         "__has_builtin", "__has_feature", "__has_extension", "__has_attribute",
@@ -568,12 +537,9 @@ std::string Preprocessor::resolveHasChecks(const std::string &expr, int fileInde
         "__has_cpp_attribute", "__has_declspec_attribute", "__has_warning",
         "__has_keyword", "__building_module", 0
     };
-    // **`__is_identifier` is the one that answers 1, not 0.** It asks whether a
-    // token is an ordinary identifier rather than a keyword or a builtin, and
-    // here everything is - cxx1 has no builtins to shadow one. Answering 0
-    // says "that name is special", and libstdc++'s
-    // `__has_builtin(B) || ! __is_identifier(B)` then reads 0 || !0 and
-    // concludes the builtin exists.
+    // **`__is_identifier` is the one that answers 1, not 0.** It asks whether
+    // a token is an ordinary identifier rather than a keyword or a builtin,
+    // and here everything is - cxx1 has no builtins to shadow one.
     static const char *const kOne[] = { "__is_identifier", 0 };
     std::string out;
     std::size_t i = 0;
@@ -638,14 +604,9 @@ long long Preprocessor::evalCondition(const std::string &raw, int fileIndex, int
     std::string expanded = resolveHasChecks(raw, fileIndex, lineNo, line);
     expanded = resolveDefined(expanded, fileIndex, lineNo, line);
     expanded = expandLine(expanded, fileIndex, lineNo);
-    // **And again after expansion**, because a macro may spell one:
-    // libstdc++'s `_GLIBCXX_HAS_BUILTIN(B)` is `__has_builtin(B)`, which does
-    // not exist as those tokens until the line has been expanded. The first
-    // pass is still needed - it is what keeps `__has_include(<vector>)`'s
-    // argument from being expanded as though it were an expression.
+    // **And again after expansion**, because a macro may spell one.
     expanded = resolveHasChecks(expanded, fileIndex, lineNo, line);
-    // After expansion, because a macro body may spell one and a keyword may
-    // not itself be a macro name.
+    // After expansion, because a macro body may spell one and a keyword may not itself be a macro name.
     expanded = spellAlternativeTokens(expanded);
 
     struct E {
@@ -876,10 +837,7 @@ void Preprocessor::directive(const std::string &line, int fileIndex, int lineNo)
         if (rest.empty() || !identStart(rest[0]))
             fail(fileIndex, lineNo, line, nameStart, "'#" + what + "' needs a name");
         // **`#ifdef __has_builtin` is a directive and not `defined()`**, and
-        // libstdc++ guards its whole builtin layer with exactly that. Teaching
-        // only the `#if` path left the guard false, the macro undefined, and a
-        // use of it 2000 lines later reaching the expression parser as
-        // `0(__has_unique_object_representations)`.
+        // libstdc++ guards its whole builtin layer with exactly that.
         bool defined = macros_.count(rest) != 0 || isHasPredicate(rest);
         bool want = (what == "ifdef") ? defined : !defined;
         bool on = emitting() && want;
@@ -888,10 +846,8 @@ void Preprocessor::directive(const std::string &line, int fileIndex, int lineNo)
     }
     if (what == "if") {
         // **A comment is whitespace before a directive is executed** -
-        // [lex.phases]/3 replaces it in phase 3 and directives run in phase 4 -
-        // and `#define`'s body already went through this. A condition did not,
-        // so `#if EXPR // why` reached the expression parser with the comment
-        // still on it and stopped at the '/'. Every real header writes them.
+        // [lex.phases]/3 replaces it in phase 3 and directives run in phase 4
+        // - and `#define`'s body already went through this.
         bool on = emitting() &&
                   evalCondition(stripComments(rest), fileIndex, lineNo, line) != 0;
         conds_.push_back(Cond{ on, on, false });
@@ -1084,8 +1040,7 @@ void Preprocessor::directive(const std::string &line, int fileIndex, int lineNo)
                  " - looked in " + where);
         }
 
-        // A file that said `#pragma once` is read once, however often it is
-        // named - the whole of what the pragma promises.
+        // A file that said `#pragma once` is read once, however often it is named.
         if (pragmaOnce_.count(canonicalPath(path)) != 0) return;
 
         files_.push_back(path);

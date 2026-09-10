@@ -90,7 +90,7 @@ BINDIR  ?= .
 # suffix that changes by platform is one more thing a script has to know.
 TARGET   = $(BINDIR)/cxx1.exe
 
-.PHONY: all test golden corpus open clean help
+.PHONY: all test golden corpus open comments clean help
 
 all: $(TARGET)
 
@@ -124,6 +124,12 @@ test: $(TARGET)
 	@./tests/emit.sh
 	@./tests/names.sh
 	@./tests/overload.sh
+	@./tools/comment-lines --count
+
+# The comment-line policy, on its own, because it is about the source and not
+# about the compiler: three lines to a group, one over a one-liner.
+comments:
+	@./tools/comment-lines
 
 help:
 	@echo "make            build cxx1 with $(CXX)"
@@ -131,6 +137,7 @@ help:
 	@echo "make golden     record what emit.sh emits now, to compare a change against"
 	@echo "make corpus     run the 424 inherited C cases; gates nothing"
 	@echo "make open       run the register of known-open defects; gates nothing"
+	@echo "make comments   check the comment-line policy and name every breach"
 	@echo "make clean"
 	@echo ""
 	@echo "cxx1 emits assembly for x86_64-linux, x86_64-windows and"

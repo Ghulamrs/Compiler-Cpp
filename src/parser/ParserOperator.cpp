@@ -15,11 +15,7 @@ ExprPtr Parser::castExpr() {
         const std::size_t openPos = peek().pos;
         at_++;
         if (atTypeName()) {
-            // **`(T(2.5) == ...)` is not a cast to a function type.** A `(` after
-            // the type opens a declarator only when what follows is one - so the
-            // cast is attempted tentatively, and where the type-id does not close
-            // with its own `)` the `(` was a parenthesised expression after all:
-            // `V<3>(2.5)` is a functional-cast temporary, not `(V<3>(2.5))` cast.
+            // **`(T(2.5) == ...)` is not a cast to a function type.**
             bool isCast = false;
             try {
                 Trial trial(this);
@@ -28,12 +24,9 @@ ExprPtr Parser::castExpr() {
                 declarator(pt, true);
                 isCast = peek().is(")");
             } catch (const SubstitutionFailure &f) {
-                // **A refusal that names a feature is an answer, not a
-                // no.** The trial is asking whether this parenthesis holds a
-                // type-id; "not supported yet" says it does and that the type
-                // cannot be built, and swallowing it reports `expected an
-                // expression` about a cast the reader wrote deliberately. The
-                // same rule ParserTemplate applies to a substitution.
+                // **A refusal that names a feature is an answer, not a no.**
+                // The trial is asking whether this parenthesis holds a
+                // type-id.
                 if (f.unsupported) src_.fail(f.pos, f.why);
                 isCast = false;
             }
@@ -138,11 +131,9 @@ ExprPtr Parser::applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos,
     ExprPtr at(new Cast(to, std::move(sum)));
     at->setType(to);
     ExprPtr read(new Unary('*', std::move(at)));
-    // **[expr.mptr.oper]/6: the result is const where the object is.** cxx1
-    // handed back the member's own type, so `(s.*p) = 3;` wrote through a
-    // `const S` with no diagnostic - the same hole V-09 was on the ordinary
-    // member path, one operator over. A reference member is the exception the
-    // other paths make too: what it refers to is not the object's to qualify.
+    // **[expr.mptr.oper]/6: the result is const where the object is.** cxx1 handed back the
+    // member's own type, so `(s.*p) = 3;` wrote through a `const S` with no diagnostic - the same
+    // hole V-09 was on the ordinary member path, one operator over.
     read->setType(constObject && !member->isReference()
                       ? types_.withConst(member) : member);
     return read;
@@ -594,17 +585,7 @@ ExprPtr Parser::conditional() {
     const Type *result = nullptr;
 
     // **[expr.cond]/4: both arms glvalues of one type, and the `?:` is one
-    // too.** `IRReg &r = pl ? b : a;` is an ordinary reference binding in C++
-    // and was refused here for want of a shape - so the shape is the addresses:
-    // `*(c ? &a : &b)` puts two pointers where the arms were, which every
-    // backend already moves, and the dereference around them is an lvalue that
-    // can be assigned to, taken the address of, or bound to a reference.
-    //
-    // **Asked before the class path below**, which copies into a slot of its
-    // own: for two lvalues of one type there is nothing to copy, and copying
-    // would take the reference binding away again. The types have to match
-    // exactly, cv-qualification included - a difference there makes them
-    // different types, and [expr.cond]/5 sends those to the prvalue answer.
+    // too.**
     if (ta == tb && isLvalue(*a) && isLvalue(*b)) {
         const Type *ptr = types_.pointerTo(ta);
         ExprPtr at(new Unary('&', std::move(a)));
@@ -651,10 +632,8 @@ ExprPtr Parser::conditional() {
         }
 
         // **The answer needs storage of its own**, which is the whole of why
-        // this was refused: a `Conditional` yields a value the backends move as
-        // a scalar and a class has nowhere to be moved to. Both arms build into
-        // one slot, the conditional becomes the `int` they answer with, and the
-        // expression wears the `*(build, &tmp)` shape a class temporary wears.
+        // this was refused: a `Conditional` yields a value the backends move
+        // as a scalar and a class has nowhere to be moved to.
         const int slot = allocateFrameSlot(want);
         int guard = 0;
         if (destructorOf(want) != nullptr) {
@@ -725,14 +704,6 @@ ExprPtr Parser::assign() {
     ExprPtr value = decay(assign());
 
     // **`t = 5` where the class declares an `operator=` that takes an int.**
-    // [over.ass] makes assignment a member, so resolveOperator's member half is
-    // the whole lookup - and it has to be asked before the built-in check,
-    // which knows only that an int is not a T.
-    //
-    // Asked only when the right side is *not* the class itself: the copy
-    // assignment below already answers that one, and answers it with the
-    // reference convention this compiler's calls use. Narrowed that way so
-    // that ordinary struct assignment reaches exactly the path it always has.
     if (to->unqualified()->isStructOrUnion() && value->type() != nullptr &&
         value->type()->unqualified() != to->unqualified() &&
         resolveOperator("operator=", *n, value.get(), pos) ==

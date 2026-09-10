@@ -35,13 +35,7 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     i++;
     if (i < bodyTo && tokens_[i].is(";")) return types_.get(Kind::Void);
 
-    // **This is a nested parse of a different function and was saving three
-    // fields of it.** The statements before the `return` are read for real, in
-    // the middle of the enclosing function, so everything per-function has to
-    // go back - `alive_` above all, whose entry survived into the enclosing
-    // function and had `main` destroy an object nothing constructed. The same
-    // omission `replayInlineBodies` had, in the door beside it, and the reason
-    // there is one capture list for all of them now.
+    // **This is a nested parse of a different function and was saving three fields of it.**
     const FunctionState outer = captureFunctionState();
     // **`this` is the exception**: a member is reached through it, and the body
     // may name one, so it is carried across the clear.
@@ -50,12 +44,7 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     const bool haveThis = hadThis != nullptr;
     if (haveThis) keptThis = *hadThis;
 
-    // **This door is not `clearFunctionState`'s kind.** A replayed body is a
-    // different function and starts with nothing; this parse happens *inside*
-    // the enclosing function - its closures are numbered in that function's
-    // sequence and named after it, and a nested `[=]` reaches its captures.
-    // So the identity stays and only what the body *accumulates* is emptied,
-    // which is exactly the set that was leaking out of here.
+    // **This door is not `clearFunctionState`'s kind.**
     locals_.clear();
     if (haveThis) locals_.push_back(keptThis);
     scopeStarts_.clear();
@@ -71,9 +60,7 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
     inMsHandler_ = false;
     // **A lambda's body is a different function**, so a `return` in it ends no
     // catch of the function around it - [except.handle]/16 is about leaving
-    // the *handler*, and this body is left through a call. `inHandlerBody_` is
-    // not cleared here on purpose: it says a cleanup region cannot be
-    // expressed at this point in the enclosing function, which is still true.
+    // the *handler*, and this body is left through a call.
     handlerDepth_ = 0;
     handlerLoopDepth_.clear();
     handlerSwitchDepth_.clear();
@@ -131,9 +118,7 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
         }
     }
 
-    // **The statements before the return are read too, not skipped to**: the
-    // expression may name a local the body declared. Read in a throwaway scope and
-    // discarded - the same reading twice 7.1 does for an `auto` initialiser.
+    // **The statements before the return are read too, not skipped to**.
     at_ = bodyFrom + 1;                                 // past the '{'
     // The same choice the block loop makes: a declaration or a statement.
     // Calling statement() alone reads `auto i = ...;` as an expression and
@@ -158,10 +143,7 @@ const Type *Parser::deduceLambdaReturn(std::size_t paramsFrom,
 }
 
 // **The captured pointer has the type `this` has in the enclosing function** -
-// [expr.prim.lambda]/18. In a const member function that is `const S *`, and
-// capturing the unqualified class let a lambda write an object its own function
-// could not. `currentClass_` is unqualified by construction, so the type comes
-// from the enclosing `this` itself, which `topLevel` gave `pointerTo(withConst)`.
+// [expr.prim.lambda]/18.
 const Type *Parser::capturedThisClass() {
     const Local *enclosing = findLocal("this");
     if (enclosing != nullptr && enclosing->type->pointee() != nullptr)
@@ -283,9 +265,7 @@ ExprPtr Parser::lambdaExpression() {
     if (variadic)
         src_.fail(pos, "a lambda cannot be variadic");
 
-    // **`mutable` is the whole of the difference between a const call operator and
-    // a non-const one**: [expr.prim.lambda] makes `operator()` const unless the
-    // lambda says otherwise. What is written is the closure's own copy.
+    // **`mutable` decides whether `operator()` is const** - [expr.prim.lambda].
     const bool isMutable = consume("mutable");
 
     const Type *returns = nullptr;
@@ -317,15 +297,9 @@ ExprPtr Parser::lambdaExpression() {
             const Type *raw = have != nullptr ? have->type : nullptr;
             if (raw == nullptr) {
                 // **A lambda inside a lambda, taking the outer one's capture.**
-                // By the time the inner is read that name is a member of the
-                // outer closure, so it is reached through the outer `this`.
                 if (ExprPtr reach = outerCaptureAccess(n)) raw = reach->type();
                 // **A capture-default captures `this` as well**, and both of
-                // them do - [expr.prim.lambda]/8. A name that is neither a
-                // local nor an enclosing closure's capture may still be this
-                // class's own member, reached through the enclosing object's
-                // pointer, which the closure then has to hold. `[=]` copies
-                // that pointer, not the object: `[=, *this]` is C++17.
+                // them do - [expr.prim.lambda]/8.
                 if (raw == nullptr) {
                     if (namesOwnMember(n)) defaultTakesThis = true;
                     continue;
@@ -352,9 +326,7 @@ ExprPtr Parser::lambdaExpression() {
         returns = deduceLambdaReturn(paramsFrom, paramsTo, bodyFrom, bodyTo,
                                      capNames, capTypes);
 
-    // The closure type, named `$_0` upward within the enclosing function, which is
-    // what clang calls one. The numbering is not clang's and does not have to be,
-    // a closure type having no name anybody is obliged to match.
+    // The closure type, named `$_0` upward within the enclosing function, which is what clang calls one.
     const std::string local = "$_" + std::to_string(lambdaCount_++);
     // **The tag has to be unique and the function's *name* is not enough.** In a
     // replay `currentFunctionName_` is `operator()`, so every nested lambda built
@@ -399,10 +371,7 @@ ExprPtr Parser::lambdaExpression() {
     }
     const int size = members.empty() ? 1 : alignTo(at, widest);
     closure->complete(members, size, widest);
-    // **A closure is a class and gets the members a class gets.** Without this
-    // it had no implicit destructor, so a captured object with one was never
-    // destroyed - [expr.prim.lambda]/21 makes a by-copy capture a member like
-    // any other, and [class.dtor]/8 destroys it with the closure.
+    // **A closure is a class and gets the members a class gets.**
     declareImplicitSpecials(tag, closure, pos);
 
     // `operator()`, declared as a const member of it.
@@ -500,17 +469,10 @@ ExprPtr Parser::buildClosure(const MadeLambda &made, std::size_t pos) {
             continue;
         }
         // **An array captured by value is copied element by element.**
-        // [expr.prim.lambda]/21 copies the array; `decay` handed the member a
-        // pointer to the original instead, and since the member *is* the
-        // array the closure then read whatever the frame held - `[arr]` and
-        // `[=]` alike returned garbage. An Assign cannot do it either: an
-        // array is not assignable, which is why the copy constructor copies an
-        // array member with a loop rather than with one store.
         if (made.types[i]->isArray()) {
-            // Flattened to the innermost element, so `int g[2][3]` is six
-            // copies rather than two of a row: the decayed pointer to a
-            // multi-dimensional array steps by rows, and casting it to the
-            // element type is what makes the arithmetic step by elements.
+            // Flattened to the innermost element, so `int g[2][3]` is six copies rather than two of
+            // a row: the decayed pointer to a multi-dimensional array steps by rows, and casting it
+            // to the element type is what makes the arithmetic step by elements.
             const Type *elem = made.types[i];
             long long count = 1;
             while (elem->isArray()) {

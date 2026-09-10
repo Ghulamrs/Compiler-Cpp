@@ -229,13 +229,6 @@ void Arm64Darwin::genAddr(const Expr &e) {
         if (q->type()->isStructOrUnion()) { q->accept(*this); return; }
     }
     // **A constructed temporary is a Comma, and it has an address.**
-    // `return string(p, n);` builds the object into a slot and yields the slot -
-    // `Comma(build, slot)`, from completeCall - so the address of the whole is
-    // the address of the right side, once the left has run. Without this a class
-    // with a user copy constructor *and* a destructor could not return a
-    // temporary built by one of its own constructors, which is the shape of
-    // every `substr`; the two halves were needed together, which is why nothing
-    // simpler than a string class reached it.
     if (const Comma *c = dynamic_cast<const Comma *>(&e)) {
         c->left().accept(*this);
         genAddr(c->right());
@@ -366,11 +359,8 @@ void Arm64Darwin::landingPad(int pointerSlot, int selectorSlot) {
 }
 
 // **The language-specific data area, laid out exactly as clang lays it out** -
-// every number read off clang's output, since the personality routine trusts the
-// header. 255 LPStart omitted, 155 indirect pc-relative types, 1 uleb call sites.
-// The same table the x86 backend writes, in Mach-O's spelling: `L` temporaries,
-// a real symbol so `.subsections_via_symbols` cannot cut the second table away,
-// and a type_info reached through the GOT rather than through a local stub.
+// every number read off clang's output, since the personality routine trusts
+// the header.
 static const Walker::LsdaSpelling kMachOLsda = {
     "L", ".section __TEXT,__gcc_except_tab", true, "_", "@GOT"
 };
@@ -1068,9 +1058,7 @@ void Arm64Darwin::emitFunction(const Function &fn) {
     clearCallSites();
 
     markLine(fn.pos());
-    // **Unwind data, and it is the same three lines in every function here.** A
-    // cxx1 frame has one shape, so the CFA is x29 + 16 throughout; emitted once
-    // the frame is established, since a return address is never in a prologue.
+    // **Unwind data, and it is the same three lines in every function here.**
     out_ << "  .cfi_startproc\n";
     // **A function with a landing pad names its personality and its table here**,
     // before anything else: the unwinder finds both through the CFI, and the

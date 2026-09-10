@@ -101,14 +101,7 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
     bool builtArgs = false;
 
     // **A braced list as the argument of a temporary**, `Row({1, 2})` -
-    // [over.match.list]'s pick, made where only an expression fits. Building an
-    // initializer_list emits statements that declare a backing array and fill
-    // it, and the declaration form has a statement list to receive them where
-    // this has none. They are folded into a comma instead: every one of them is
-    // an ExprStmt by construction - buildInitializerList and emitInit make
-    // nothing else - so each hands its expression back and they are sequenced
-    // in front of the list. A comma is an lvalue when its right operand is,
-    // which is what lets the list still be taken by the constructor.
+    // [over.match.list]'s pick, made where only an expression fits.
     if (peek().is("{")) {
         const Type *ilType = nullptr;
         if (initializerListConstructor(plain, &ilType) != nullptr) {
@@ -221,24 +214,16 @@ ExprPtr Parser::classTemporary(const Type *cls, std::size_t pos) {
 
 // **The conversion function on `from` that answers something usable.** The
 // mirror of the converting constructor: that one is a constructor of the
-// *target*, this one a member of the *source*. Where `to` is given, an exact
-// answer wins and anything a standard conversion can finish is taken otherwise;
-// where it is null - a condition, `!`, `&&` - any scalar will do and `bool` is
-// preferred, which is what a contextual conversion asks for.
-//
-// Two that could each serve is an ambiguity and answers null, the same rule and
-// for the same reason as the constructor search.
+// *target*, this one a member of the *source*.
 const Parser::Signature *Parser::conversionFunction(const Type *from,
                                                     const Type *to,
                                                     bool allowExplicit) {
     const Type *plain = from->unqualified();
     if (!plain->isStructOrUnion()) return nullptr;
 
-    // **Walked over the signature table and not over a member list**, because
-    // there is no member list: the table is keyed by `Class::name`, so a class's
-    // conversions cannot be asked for without already knowing what they convert
-    // to. A class has very few, and this runs only where a class stands where a
-    // scalar was wanted.
+    // **Walked over the signature table and not over a member list**, because there is no member
+    // list: the table is keyed by `Class::name`, so a class's conversions cannot be asked for
+    // without already knowing what they convert to.
     const Signature *best = nullptr;
     bool exact = false;
     for (const Type *c = plain; c != nullptr; c = c->base()) {
@@ -271,13 +256,7 @@ const Parser::Signature *Parser::conversionFunction(const Type *from,
 }
 
 // **The one conversion this class has to a number or a pointer**, or null when
-// it has none or has more than one. Not the same question as the contextual
-// conversion above, and the difference is the whole of a bug this caught:
-// [conv]/3 says a condition wants *bool*, so a class with `operator bool` and
-// `operator int` converts unambiguously there - and [over.match.oper]/9 offers
-// the built-in operators *every* conversion the class has, so the same class in
-// `a + 1` is ambiguous and clang refuses it. Preferring bool in both places
-// answered 2 where the program has no meaning.
+// it has none or has more than one.
 const Parser::Signature *Parser::soleNumericConversion(const Type *from) {
     const Type *plain = from->unqualified();
     if (!plain->isStructOrUnion()) return nullptr;
@@ -295,10 +274,7 @@ const Parser::Signature *Parser::soleNumericConversion(const Type *from) {
 }
 
 // **A class where a number or a pointer is wanted**, converted by its own
-// conversion function - a condition, `!`, `&&`, `||`, `?:`. [conv]/3 calls this
-// the contextual conversion to bool; here any scalar the class offers will do,
-// with bool preferred, because what the operand is then used for is a test
-// against zero either way.
+// conversion function - a condition, `!`, `&&`, `||`, `?:`.
 ExprPtr Parser::contextualScalar(ExprPtr e, std::size_t pos, const char *what) {
     if (e->type() != nullptr && e->type()->unqualified()->isStructOrUnion()) {
         if (const Signature *how = conversionFunction(e->type(), nullptr, true)) {
@@ -313,10 +289,6 @@ ExprPtr Parser::contextualScalar(ExprPtr e, std::size_t pos, const char *what) {
 }
 
 // **[over.ics.user]: the constructor that could make `to` out of `from`.**
-// One parameter, not `explicit`, and not a copy of `to` itself - copying is not
-// converting, and letting it count here would make every argument of the right
-// type look like a conversion. Two candidates is an ambiguity and answers null:
-// the standard refuses such a call, and so does this by finding nothing.
 const Parser::Signature *Parser::convertingConstructor(const Type *to,
                                                        const Expr &from) {
     const Type *plain = to->unqualified();
@@ -339,10 +311,8 @@ const Parser::Signature *Parser::convertingConstructor(const Type *to,
     return found;
 }
 
-// **The conversion an argument needs to become the parameter's class**, or null
-// where none is needed or possible. A reference parameter takes one only where
-// it is const: a temporary has nowhere to live otherwise, which is the rule that
-// stops `f(string &)` accepting a literal.
+// **The conversion an argument needs to become the parameter's class**, or
+// null where none is needed or possible.
 ExprPtr Parser::userConversion(const Type *param, ExprPtr &arg, std::size_t pos) {
     const Type *want = param->isReference() ? param->pointee() : param;
     const Type *plain = want->unqualified();
@@ -392,9 +362,6 @@ bool Parser::constructorViable(const Type *cls, const std::vector<ExprPtr> &args
 // **[over.match.copy]/1: direct-initialising a T from one argument of another
 // class considers that class's conversion functions to T, the explicit ones
 // included** - `CMatrix<3>(v)` reaching `explicit operator CMatrix<3, 3>()`.
-// Asked only where no constructor takes the argument as it stands, since one
-// that does wins the ordinary ranking. The converted temporary then stands
-// where the argument was, and the copy rules take it from there.
 bool Parser::convertThroughConversionFunction(std::vector<ExprPtr> &args,
                                               const Type *cls, bool directInit,
                                               std::size_t pos) {
@@ -415,12 +382,7 @@ bool Parser::convertThroughConversionFunction(std::vector<ExprPtr> &args,
 
 // **A temporary an arm of a `?:` made belongs to that arm.** The other arm did
 // not build it, so nothing may destroy it - and a guard set at the end of the
-// arm says so, being reached only if the arm ran. Most temporaries carry one
-// already, from their own construction; what this catches is the object a call
-// returns, which cannot be marked where it is built without wrapping the `Call`
-// node that the elision paths find by `dynamic_cast`.
-//
-// The arm's value is an int the conditional discards, so the mark can follow it.
+// arm says so, being reached only if the arm ran.
 ExprPtr Parser::markArmTemporaries(ExprPtr arm, std::size_t from,
                                    std::size_t to) {
     for (std::size_t k = from; k < to && k < pendingTemps_.size(); k++) {
@@ -436,9 +398,7 @@ ExprPtr Parser::markArmTemporaries(ExprPtr arm, std::size_t from,
 }
 
 // **The right operand of `&&` or `||` may not run at all**, and a temporary it
-// would have built must not be destroyed when it did not. Same guard a `?:` arm
-// takes - but this operand's *value* is what the comparison uses, so it is kept
-// in a slot of its own and handed back after the guards are set.
+// would have built must not be destroyed when it did not.
 ExprPtr Parser::markSkippableTemporaries(ExprPtr operand, std::size_t from,
                                          std::size_t to) {
     std::vector<std::size_t> needed;
@@ -470,8 +430,7 @@ ExprPtr Parser::markSkippableTemporaries(ExprPtr operand, std::size_t from,
 
 // **Copy-initialise `cls` into a slot the caller owns**, as one expression of
 // type int - the copy constructor where there is one, the bytes where the copy
-// is trivial, which are the two answers a declaration gives. The guard is set
-// after, because from there the object exists.
+// is trivial, which are the two answers a declaration gives.
 ExprPtr Parser::buildInto(const Type *cls, int slot, ExprPtr value, int guard,
                           std::size_t pos) {
     const Type *ptr = types_.pointerTo(cls);
@@ -515,10 +474,6 @@ ExprPtr Parser::buildInto(const Type *cls, int slot, ExprPtr value, int guard,
 }
 
 // **A temporary of `plain`, built by `ctor`, from arguments already parsed.**
-// The tail of `T(...)` with the reading taken off the front, so that an implicit
-// conversion - which has an argument but no tokens - builds the same thing the
-// written form does. One shape, not two: the alternative was a second copy of
-// this in the conversion path, which is the house bug.
 ExprPtr Parser::constructTemporary(const Type *plain, const Signature &ctor,
                                    std::vector<ExprPtr> args, bool zeroFirst,
                                    std::size_t pos) {
@@ -583,66 +538,10 @@ ExprPtr Parser::constructTemporary(const Type *plain, const Signature &ctor,
 }
 
 // ---------------------------------------------------------------- new and delete
-// **The four operator functions are called by name, and the names were measured**
-// at -O0 on all three targets. The platform's own: a cxx1 `new` meets clang's.
-// **`dynamic_cast<T *>(p)` - the one cast that asks the object.** Every other
-// cast is answered from the types written down; this one reads the vtable and
-// walks the inheritance graph the type_info objects carry, so all the compiler
-// emits is the question: the two `_ZTI`s and a call.
-//
-// The shape is clang's, measured: a null pointer casts to a null pointer
-// without asking, because `__dynamic_cast` reads the vtable through the pointer
-// it is given and would fault. The hint is -1, "unspecified" in the ABI, which
-// is always correct - clang computes the offset where it can prove one, and
-// that is a speed difference and not an answer difference.
-// **`dynamic_cast<void *>(p)` - [expr.dynamic.cast]/7, and the one form that
-// asks the object without asking the type graph.** The result is a pointer to
-// the most derived object, so there is no target class to name, no `_ZTI` to
-// hand over and no runtime to call: the answer is a number the vtable already
-// carries.
-//
-// **Measured from clang at -O0 on arm64-darwin**, which generates it inline:
-//
-//     ldr  x9, [x8]          ; the vptr, at the front of the object
-//     ldur x9, [x9, #-16]    ; offset-to-top, two words before the address point
-//     add  x8, x8, x9        ; and that is the complete object
-//
-// The Itanium ABI puts offset-to-top at the address point minus two words, with
-// the `_ZTI` between it and the first entry. It is signed, and it is zero for
-// the most derived class itself - so this is correct for a `B *` that is
-// already the whole object as well as for one pointing into a base.
-//
-// **The null test is not an optimisation.** The load goes through the pointer,
-// so a null operand would fault where the standard says the answer is null.
-// clang emits the same branch for the same reason.
+// **The four operator functions are called by name**, measured at -O0.
 ExprPtr Parser::dynamicCastToVoid(ExprPtr v, const Type *to) {
     // **The Microsoft ABI keeps no offset-to-top, and does not do this
-    // inline.** It reaches the complete object through the Complete Object
-    // Locator in front of the vftable, whose `offset` dword at +4 holds the
-    // subobject's position - and rather than read that here, it calls the
-    // runtime, which is what the oracle emits.
-    //
-    // `__RTCastToVoid` takes the pointer and nothing else: one argument where
-    // `__RTDynamicCast` a few lines below takes five. **Measured from
-    // `clang++ --target=x86_64-pc-windows-msvc -O0`**, which emits
-    // `movq %rcx, ...; callq __RTCastToVoid` and, in LLVM IR,
-    // `declare ptr @__RTCastToVoid(ptr)`; the symbol is undecorated on x64,
-    // as `__RTDynamicCast` already is, and comes from the same
-    // `libvcruntime.lib` the link line already names.
-    //
-    // **Written from clang and since confirmed by cl**, which is the oracle a
-    // Microsoft-ABI question is owed. Asked with RTTI on - `measure.cmd` passes
-    // `/GR-`, which suppresses the very thing in question - cl emits
-    // `mov rcx, p` and `call __RTCastToVoid` and nothing else, against five
-    // arguments for a `dynamic_cast<D *>` in the same file. Same undecorated
-    // symbol, same single argument.
-    //
-    // **cl emits no null test**, relying on the runtime to answer null for
-    // null; the guard below is kept anyway, because it costs a compare and
-    // removing it would trade a fact for an assumption about the CRT. What
-    // cxx1 already emits is enough for the call - the runtime reads the locator
-    // pointer at `vftable[-1]` and the `offset` dword, both of which
-    // `Masm.cpp` lays down for every polymorphic class.
+    // inline.**
     if (target_.microsoftNames()) {
         const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
         const int msSlot = allocateFrameSlot(voidPtr);
@@ -747,10 +646,7 @@ ExprPtr Parser::dynamicCast(std::size_t pos) {
                        "'std::bad_cast', and there is no C++ standard library "
                        "here to throw it from; the pointer form works and "
                        "answers with a null");
-    // **[expr.dynamic.cast]/7: `void *` is the other target, and it asks a
-    // different question.** Not "is this object a D?" but "where does the
-    // complete object begin?" - which is answered out of the object alone, so
-    // no type_info is named and no runtime is called.
+    // **[expr.dynamic.cast]/7: `void *` is the other target, and it asks a different question.**
     const bool toVoid = to->isPointer() && to->pointee()->unqualified()->isVoid();
 
     if (!toVoid &&
@@ -774,12 +670,7 @@ ExprPtr Parser::dynamicCast(std::size_t pos) {
     if (toVoid) return dynamicCastToVoid(std::move(v), to);
 
     const Type *target = to->pointee()->unqualified();
-    // **[expr.dynamic.cast]/5: an upcast is not a question.** If the target is
-    // the operand's own class, or a public base of it, the answer follows from
-    // the types and the object is never asked - which is also why the runtime
-    // cannot be used for it: libc++abi's `__dynamic_cast` is written for the
-    // other direction and answers null here. That is how this was found, on a
-    // `dynamic_cast<Base *>(b)` that came back null and was then dereferenced.
+    // **[expr.dynamic.cast]/5: an upcast is not a question.**
     if (publicBaseOffset(source, target) >= 0)
         return convert(std::move(v), to);
 
@@ -798,12 +689,6 @@ ExprPtr Parser::dynamicCast(std::size_t pos) {
     const bool ms = target_.microsoftNames();
 
     // **The name of the object that describes a class, on whichever ABI.**
-    // Itanium reads a `_ZTI` hung off the back of the vtable; the Microsoft
-    // runtime reads a `??_R0` type descriptor reached through the locator in
-    // front of it. Either may be absent for the same reason - a class with more
-    // than one base is not describable here - and that is refused where the
-    // reader asked for it rather than at the class, which is legal and works
-    // for everything else.
     auto describe = [&](const Type *cls) {
         std::string sym;
         if (ms) {
@@ -845,9 +730,6 @@ ExprPtr Parser::dynamicCast(std::size_t pos) {
 
     // **The two runtimes take their arguments in a different order and a
     // different number**, which is the whole of the difference at the call.
-    // Microsoft: (p, the vfptr's offset in the object, source, target, is this
-    // a reference?). Itanium: (p, source, target, a hint at where the source
-    // sits inside the target - -1 being "unspecified", which is always right).
     if (ms) {
         ExprPtr delta(new Num(0LL));
         delta->setType(types_.get(Kind::Int));
@@ -972,13 +854,8 @@ StmtPtr Parser::throwStatement(ExprPtr value, std::size_t pos) {
     ExprPtr cast(new Cast(thrownPtr, std::move(asT)));
     cast->setType(thrownPtr);
 
-    // **[except.throw]/3 copy-initialises the exception object**, and that means
-    // the copy constructor where there is one. An `Assign` of a class is a block
-    // copy - neither the copy constructor nor `operator=` runs, measured by
-    // making both print - so a class owning a buffer handed the exception object
-    // a pointer into the temporary. Left alone that leaked; destroying the
-    // temporary made it a use-after-free, and the handler read `[]` where clang
-    // read `[hello]`. Both are gone because the copy is a real one now.
+    // **[except.throw]/3 copy-initialises the exception object**, and that
+    // means the copy constructor where there is one.
     ExprPtr store;
     const Signature *cc = copyConstructorOf(thrown);
     if (cc != nullptr) {
@@ -1019,9 +896,7 @@ StmtPtr Parser::throwStatement(ExprPtr value, std::size_t pos) {
 
     // **The third argument is the destructor the runtime runs on the exception
     // object**, and it was a null written when only fundamental types could be
-    // thrown. A class with one needs it named, or `__cxa_end_catch` frees the
-    // storage and destroys nothing - which for a class holding a buffer is the
-    // buffer leaked, once per throw, invisibly.
+    // thrown.
     const Signature *dtor = destructorOf(thrown);
     if (dtor != nullptr) {
         markUsed(dtor);
@@ -1043,24 +918,7 @@ StmtPtr Parser::throwStatement(ExprPtr value, std::size_t pos) {
 
     // **Three statements, because something happens between them.** The
     // exception object is initialised, *then* the operand's temporaries are
-    // destroyed - [except.throw]/3 - and only then does the throw leave. Built
-    // as one Comma there was nowhere to put the middle one, and the temporary
-    // was left to whatever was parsed next: `throw E(1)` inside a `try` leaked
-    // its E into the *handler's* block.
-    // **[except.throw]/4: storage the initialisation never finished with is
-    // freed.** `__cxa_allocate_exception` has handed it back and nothing owns
-    // it yet - the runtime learns of it at `__cxa_throw`, which an exception
-    // out of the copy constructor never reaches - so the whole object leaked,
-    // once per throw and silently. It is a temporary of this full expression
-    // and is registered as one: every cleanup pad already walks that list
-    // under a guard, so the region that frees it is the region that was going
-    // to run anyway, in the right order with everything else it destroys.
-    // What differs from an object is only the call - `__cxa_free_exception`
-    // rather than a destructor - which is where clang puts it too.
-    //
-    // **The guard is cleared before the throw**, not after it: from
-    // `__cxa_throw` on the runtime owns the storage, and a pad unwinding
-    // *this* exception must not give it back.
+    // destroyed - [except.throw]/3 - and only then does the throw leave.
     std::vector<StmtPtr> steps;
     const bool copyMayThrow = cc != nullptr && !cc->isNoexcept;
     int storageGuard = 0;
@@ -1273,19 +1131,15 @@ ExprPtr Parser::newExpression(std::size_t pos) {
         convertThroughConversionFunction(ctorArgs, made, true, pos);
         const Signature &ctor = resolveOverload(constructorKey(made->tag()),
                                                 ctorArgs, pos);
-        // **[class.access]/1 applies to a constructor a new-expression calls**,
-        // as it does to every other way of building one. Every other site
-        // checked and this one did not, so `new S(1)` reached a private
-        // constructor that `S s(1);` two lines up is refused.
+        // **[class.access]/1 applies to a constructor a new-expression
+        // calls**, as it does to every other way of building one.
         if (!accessibleFrom(currentClass_, made, ctor.access) &&
             !isFriendOf(made))
             src_.fail(pos, "'" + made->describe() + "' is built here and the "
                            "constructor that matches is " +
                            (ctor.access == Access::Private ? "private"
                                                            : "protected"));
-        // `new V()` and not `new V`, for a class whose default constructor nobody
-        // wrote: zeroed first, then built. **Read before applyDefaults**, which
-        // appends to ctorArgs and would make "is the list empty" another question.
+        // `new V()` and not `new V`, for a class whose default constructor nobody wrote.
         const bool zeroFirst = hasInit && ctorArgs.empty() && ctor.implicit;
         // **The defaults, as every other constructor call reads them.** This call
         // is built by hand, one argument per parameter, and `new M` of an
@@ -1391,9 +1245,7 @@ ExprPtr Parser::deleteExpression(std::size_t pos) {
         src_.fail(pos, "'delete' of a 'void *' does not know what it is "
                        "freeing - give it the pointer's real type");
 
-    // **The destructor runs before the memory goes back**, which is the order
-    // clang emits and the only one that can work: the destructor reads the
-    // object. A class with no destructor skips straight to the free.
+    // **The destructor runs before the memory goes back**, as clang emits it.
     const Signature *dtor = destructorOf(t->pointee());
 
     // **A virtual destructor is reached through the vtable**, the static type not

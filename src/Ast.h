@@ -229,8 +229,7 @@ public:
     const Expr *callee() const { return callee_.get(); }
     bool isVariadic() const { return variadic_; }
     int resultSlot() const { return resultSlot_; }
-    // Copy elision points this at the variable being initialised, so the
-    // callee builds its result there and no copy constructor runs.
+    // Copy elision points this at the variable being initialised, so the callee builds its result there and no copy constructor runs.
     void setResultSlot(int s) { resultSlot_ = s; }
 
     int namedArgs() const { return namedArgs_; }
@@ -329,15 +328,7 @@ class ExprStmt final : public Stmt {
 public:
     explicit ExprStmt(ExprPtr e) : expr_(std::move(e)) {}
     const Expr &expr() const { return *expr_; }
-    // **Handing the expression back out.** Some setup is built as statements
-    // because its usual home is a statement list - filling the backing array
-    // of an `initializer_list` is the case this exists for - and the same
-    // setup is sometimes needed where only an expression fits, a braced list
-    // written as the argument of a temporary. A comma is what an expression
-    // can carry, so the statements are unwrapped into one. The statement is
-    // left empty afterwards and must be dropped rather than walked: nothing
-    // here keeps one, and `expr()` on a released statement would dereference
-    // null.
+    // **Handing the expression back out.**
     ExprPtr release() { return std::move(expr_); }
     void accept(Visitor &v) const override { v.visit(*this); }
 private:
@@ -358,9 +349,7 @@ class Block final : public Stmt {
 public:
     explicit Block(std::vector<StmtPtr> body) : body_(std::move(body)) {}
     const std::vector<StmtPtr> &body() const { return body_; }
-    // For the one block that is filled in after it is placed: the
-    // destructor calls a goto makes on its way out, known only once its
-    // label has been read.
+    // For the one block that is filled in after it is placed.
     void append(StmtPtr s) { body_.push_back(std::move(s)); }
 
     int scope() const { return scope_; }
@@ -521,9 +510,7 @@ public:
           types_(std::move(types)) {}
     const std::vector<StmtPtr> &body() const { return body_; }
 
-    // **Null on Windows.** The two ABIs disagree about who chooses the handler -
-    // Itanium hands the frame a selector, Microsoft decides in the runtime and
-    // calls a funclet - so one target fills the pad and the other the list.
+    // **Null on Windows.**
     bool hasPad() const { return pad_ != nullptr; }
     // **A `try` whose pad also unwinds this frame's objects.** Its call sites
     // then need a trailing cleanup action, or phase 2 installs no pad where
@@ -534,16 +521,12 @@ public:
     int pointerSlot() const { return pointerSlot_; }
     int selectorSlot() const { return selectorSlot_; }
     const std::vector<std::string> &types() const { return types_; }
-    // **Set late, and only for a `try` body's cleanup rows.** Those rows carry
-    // the enclosing `try`'s catch types so phase 1 finds a handler at a PC
-    // inside the body - and the body is parsed before the handlers are read.
+    // **Set late, and only for a `try` body's cleanup rows.**
     void setTypes(std::vector<std::string> t) { types_ = std::move(t); }
 
     // **The selector index of each of those types, as the parser numbered
-    // them.** It writes `if (sel == n)` into the handler chain, so it - and not
-    // the backend - is where n comes from. The backend used to rederive the
-    // same numbering from the order it met the rows in, and the two agreed by
-    // convention: that convention hung one program and miscompiled another.
+    // them.** It writes `if (sel == n)` into the handler chain, so it - and
+    // not the backend - is where n comes from.
     const std::vector<int> &typeIndices() const { return typeIndices_; }
     void setTypeIndices(std::vector<int> ix) { typeIndices_ = std::move(ix); }
 
@@ -608,8 +591,7 @@ public:
 
     // **Implicitly inline** - [dcl.inline]/6 - so the definition may appear in
     // several translation units and the linker has to fold the copies rather
-    // than reject them. The backends say so with `.weak` and its neighbours;
-    // without it, two units that include one class collide on every member.
+    // than reject them.
     bool isInline() const { return isInline_; }
     void setInline(bool v) { isInline_ = v; }
 
@@ -681,18 +663,11 @@ struct Global {
     bool isConst;
 
     // **One 8-byte pointer laid down immediately before this object's label.**
-    // The Microsoft ABI puts a complete-object locator in *front* of a vftable
-    // and the table's symbol names the word after it, so the object and the
-    // symbol do not start in the same place. Empty for everything else, which
-    // is every object on every other target. Defaulted, so that the six other
-    // places that build a Global positionally do not have to say so.
     std::string prefixWord = std::string();
 
-    // **Folded rather than rejected**, for an object several translation units
-    // each define: a vtable, a typeinfo and its name string. clang marks all
-    // three weak, and without it two units that share a polymorphic class
-    // collide on every one of them. Defaulted, like `prefixWord`, so the
-    // places that build a Global positionally need not say so.
+    // **Folded rather than rejected**, for an object several translation units each define: a
+    // vtable, a typeinfo and its name string. clang marks all three weak, and without it two units
+    // that share a polymorphic class collide on every one of them.
     bool isInline = false;
 };
 
@@ -706,19 +681,11 @@ struct Program {
     std::vector<Function> functions;
     std::vector<Global> globals;
     std::vector<StringLit> strings;
-    // **The types this file throws**, which only the Microsoft backend reads: it
-    // wants a chain of four objects per thrown type in the object file where
-    // Itanium names one the library carries. Collected by the parser.
+    // **The types this file throws**, which only the Microsoft backend reads.
     std::vector<const Type *> thrown;
-    // **The classes this file needs a Microsoft run-time description for**,
-    // which only that backend reads: five objects per class where Itanium has
-    // two, and the base chain of each is walked when they are emitted. Itanium
-    // needs no such list because its type_info is an ordinary global the parser
-    // can push as it goes.
+    // **The classes wanting a Microsoft run-time description**, five each.
     std::vector<const Type *> rtti;
-    // **The function that runs before main** - [basic.start.init]/2 - holding
-    // this file's dynamic initialisation in declaration order. Empty where the
-    // file has none; each backend registers it in its own section.
+    // **The function that runs before main** - [basic.start.init]/2.
     std::string initFunction;
     // Whether it names __dso_handle, which ELF wants declared hidden.
     bool usesDsoHandle = false;

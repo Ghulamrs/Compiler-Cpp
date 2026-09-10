@@ -36,10 +36,7 @@ private:
 
 class X86_64Linux : public Walker {
 public:
-    // **The COFF spelling where the names are Microsoft's.** Same syntax and
-    // the same code generator; what differs is that a mangled name is quoted
-    // and a mergeable definition gets a COMDAT section, neither of which
-    // GNU-as on ELF wants. Reached by `-masm=gnu` for x86_64-windows.
+    // **The COFF spelling where the names are Microsoft's.**
     X86_64Linux(std::ostream &sink, const Target &target, const Abi &abi)
         : target_(target), sink_(sink), abi_(abi) {
         if (target.microsoftNames()) a_ = &coff_;
@@ -65,19 +62,10 @@ public:
 protected:
 
     virtual bool writesDwarf() const { return true; }
-    // **The MASM path writes its own RTTI records**, in its own run(), so the
-    // COFF ones must not be written as well - both reach here through the same
-    // base run() and the second set is a duplicate symbol.
+    // **The MASM path writes its own RTTI records**, so the COFF ones must not.
     virtual bool emitsOwnRtti() const { return false; }
 
-    // **The exception model follows the target, not the spelling.** This
-    // generator serves x86_64-linux, arm64-darwin, and - under `-masm=gnu` -
-    // x86_64-windows, where the parser builds the Microsoft shape of a `try`:
-    // no landing pad, a funclet per handler. Answering false there sent a
-    // Microsoft `Try` down the Itanium branch and dereferenced a pad that is
-    // null by construction, which is a segfault rather than a diagnostic. The
-    // funclets themselves are written by the MASM spelling alone, so this mode
-    // now refuses by name where it used to crash.
+    // **The exception model follows the target, not the spelling.**
     bool usesFunclets() const override { return target_.microsoftNames(); }
     std::string beginFunclet() override;
     void endCleanupFunclet() override;
@@ -86,24 +74,19 @@ protected:
     void closeFunclet(const std::string &tail);
     // A Windows local is `frameSize - slot` above the establisher frame, which
     // is the whole translation between how cxx1 addresses a local and how an
-    // FH3 table describes one. The MASM path says the same thing in its own
-    // class; both are the same arithmetic on the same frame.
+    // FH3 table describes one.
     int establisherOffset(int slot) const { return frameSize_ - slot; }
     void emitCoffCleanupTables(const Function &fn);
-    // The same tables for a frame that *catches*: a try map and a handler map
-    // beside the state map, which a cleanup-only frame has neither of.
+    // The same tables for a frame that *catches*.
     void emitCoffTryTables(const Function &fn);
     // The five objects the Microsoft ABI wants per class with a vftable.
     void emitCoffClassRtti(const Program &program);
     // The four objects a Microsoft throw is identified by, in GNU syntax.
-    // MasmCodeGen::emitThrowInfo is the twin; without this one anything that
-    // throws assembles and then fails at link on _TI.
     void emitCoffThrowInfo(const Program &program);
 
     // A funclet is written by walking the handler into the ordinary output and
     // lifting the text back out - what the body appended, in order, IS the
-    // funclet, so moving it costs no second code path. Same device the MASM
-    // path uses, and for the same reason.
+    // funclet, so moving it costs no second code path.
     std::string funclets_;
     std::size_t funcletMark_ = 0;
     int funcletIndex_ = 0;
@@ -111,14 +94,9 @@ protected:
     const char *funcletKind_ = "$catch$";
     // The function being emitted, which the tables and funclets name.
     std::string fnSymbol_;
-    // Whether the function being emitted went into a COMDAT, which its
-    // funclets and their unwind data have to join - see closeFunclet.
+    // Whether the function being emitted went into a COMDAT, which its funclets and their unwind data have to join - see closeFunclet.
     bool fnMergeable_ = false;
-    // **A funclet's .pdata goes last, after every ordinary function's.** A
-    // .pdata contribution is sorted by the address it describes and every
-    // funclet lives in .text$x, which the linker lays after .text - so emitting
-    // one beside its parent interleaves the two orders and the linker says
-    // LNK1223. The MASM path keeps the same pile for the same reason.
+    // **A funclet's .pdata goes last, after every ordinary function's.**
     std::string funcletPdata_;
 
     std::string out_;
@@ -128,20 +106,10 @@ protected:
     void landingPad(int pointerSlot, int selectorSlot) override;
 
 protected:
-    // The `.gcc_except_table` for the function just emitted. Its shape is
-    // documented beside the arm64 one; only the spelling differs here.
+    // The `.gcc_except_table` for the function just emitted.
     void emitLsda(const std::string &symbol);
 
-    // **Where the frame base sits, relative to the locals.** Itanium takes rbp
-    // before allocating, so a local is [rbp-slot]; Microsoft wants the base at
-    // the bottom of it, so a local is [rbp + (frameSize - slot)].
-    // **Where the frame pointer sits, which is the target's shape and not the
-    // spelling's.** Microsoft takes rbp *after* the allocation so that every FH3
-    // displacement is an unsigned offset up from the establisher; Itanium takes
-    // it before. This answered false for `-masm=gnu` on x86_64-windows, so the
-    // epilogue restored rsp to the bottom of the frame and `pop rbp` read the
-    // wrong word - the second property found living in the MASM subclass that
-    // belongs to the target, after usesFunclets().
+    // **Where the frame base sits, relative to the locals.**
     virtual bool localsAboveFrameBase() const { return target_.microsoftNames(); }
 
     // One local. Every frame-relative operand in this file is written against
@@ -151,16 +119,12 @@ protected:
     int frameSize_ = 0;
 
     // Whatever this target writes after a function to describe its handlers.
-    // Itanium writes one .gcc_except_table; the Microsoft ABI writes funclets
-    // and four tables, so the hook is the shape rather than the table.
     virtual void emitExceptionTables(const Function &fn) {
-        // Microsoft frames carry FH3 tables, not an LSDA. The MASM path says
-        // this in its own class; this is the same decision for the COFF one.
+        // Microsoft frames carry FH3 tables, not an LSDA.
         if (target_.microsoftNames()) {
             // **Cleanups and handlers never share a function**, which the
             // parser enforces on every target - so the first region decides
-            // which shape of table this frame wants. The MASM path asks the
-            // same question in the same words.
+            // which shape of table this frame wants.
             if (msTries().empty()) {
                 out_ += funclets_; funclets_.clear(); funcletIndex_ = 0;
             } else if (msTries()[0].isCleanup) {
@@ -175,8 +139,7 @@ protected:
     std::vector<std::string> lsdaTypes_;
     std::vector<std::string> lsdaStubs_;
     bool lsdaPersonality_ = false;
-    // Reachable from the MASM subclass, which needs the target to size the
-    // objects the Microsoft ABI wants a throw to carry.
+    // Reachable from the MASM subclass, which needs the target to size the objects the Microsoft ABI wants a throw to carry.
     const Target &target_;
 
 private:
@@ -257,10 +220,7 @@ private:
     void msCopyToSlot(const Type *t, int slot, const char *from);
     int takeSlot(bool sse, int &ints, int &sses) const;
 
-    // **Where one argument goes, decided once for both ends of the call.** The
-    // caller and the callee each classified the parameter list by hand, and
-    // agreeing was a property of two copies staying in step - which is what A-01
-    // broke, consistently on both sides, where no suite could see it.
+    // **Where one argument goes, decided once for both ends of the call.**
     struct ArgPlace {
         std::vector<bool> lanes;   // empty when the argument travels in memory
         std::vector<int> regs;     // one register slot per lane
@@ -271,10 +231,8 @@ private:
     };
 
     // The whole list, in order. `sret` says a hidden return pointer is passed,
-    // `hasThis` that the first argument is an object - between them they decide
-    // which register the first written argument actually gets.
-    // The list, and what it used up: the register counts a variadic call needs
-    // for its save area and al, and the words the arguments occupy on the stack.
+    // `hasThis` that the first argument is an object - between them they
+    // decide which register the first written argument actually gets.
     struct Placement {
         std::vector<ArgPlace> args;
         int intsUsed = 0;

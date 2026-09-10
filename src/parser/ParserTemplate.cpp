@@ -80,8 +80,6 @@ void Parser::templateParameters(std::vector<TemplateParam> &params) {
         // **A default argument, kept as tokens.** [temp.param]/9 lets a
         // parameter carry one, and a use that omits it replays these tokens
         // with the earlier parameters bound - which is how `N = M` sees `M`.
-        // Skipped by balanced depth so a default of `foo<int>` or `(a > b)`
-        // does not stop at its own inner `>`.
         if (consume("=")) {
             p.defBegin = at_;
             int depth = 0;
@@ -191,13 +189,9 @@ void Parser::bindTemplateParameters(const std::vector<TemplateParam> &params,
             typedefs_.push_back(TypedefName{ p.name, binding[i] });
         } else if (i < binding.size() && binding[i] != nullptr &&
                    binding[i]->kind() == Kind::TemplateParam) {
-            // **A non-type parameter read as a pattern**, the same signal a pack
-            // uses: its binding is a Kind::TemplateParam rather than a value, so
-            // a bare `V<N>` reads as a reference to N. **The concrete value is
-            // bound too**, so a param *expression* - `V<N + M>` - which is not a
-            // bare reference and cannot be spelled `XT_E`, folds to a number
-            // instead of failing to look N up. Its Itanium name then diverges
-            // from clang's symbolic form, recorded per case.
+            // **A non-type parameter read as a pattern**, the same signal a
+            // pack uses: its binding is a Kind::TemplateParam rather than a
+            // value, so a bare `V<N>` reads as a reference to N.
             s.isParamRef = true;
             auto it = nonTypePatternParams_.find(p.name);
             if (it != nonTypePatternParams_.end()) {
@@ -283,9 +277,7 @@ const Type *Parser::readTemplateDeclaration(const TemplateDecl &decl,
     const Type *base = specifiers(&sc, &quals);
     Declared d = declarator(base);
 
-    // **The declarator records where the parameter list is and does not read it**,
-    // which is how a definition gets to read the parameters once with their names.
-    // Here there is none, so they are read for their types as a prototype's are.
+    // **The declarator records where the parameter list is, and does not read it.**
     bool constructs = false;
     // `S K<T>::m(4);` - a static member defined out of line by a construction,
     // told from a parameter list as file scope tells them: a list is empty or
@@ -328,10 +320,9 @@ bool Parser::skipTemplatedDefinition(bool *sawInit) {
     for (;;) {
         if (peek().kind == TokenKind::End)
             src_.fail(peek().pos, "this template's definition is never closed");
-        // **An `=` at depth zero is an initialiser**, so what is being skipped
-        // is a definition even though it has no braces: a static data member of
-        // a class template is defined out of line as
-        // `template <class T> const R C<T>::k = R();`, which ends at a `;`.
+        // **An `=` at depth zero is an initialiser**, so what is being skipped is a definition even
+        // though it has no braces: a static data member of a class template is defined out of line
+        // as `template <class T> const R C<T>::k = R();`, which ends at a `;`.
         if (sawInit != nullptr && depth == 0 && peek().is("=")) *sawInit = true;
         if (peek().is("{")) { depth++; body = true; at_++; continue; }
         if (peek().is("}")) {
@@ -472,9 +463,6 @@ bool Parser::templateDeclaration() {
                                 "template");
         // The template's own name, not the qualifier: that is the pattern's
         // internal tag and holds a `$` no reader ever wrote.
-        // A static data member defined out of line has an initialiser and no
-        // body, and is a definition all the same - the only thing a qualified
-        // declaration at namespace scope can be.
         if (!defined && !sawInit && !constructs)
             src_.fail(decl.pos, "'" + of->templateName() + "::" + decl.name +
                                 "' is declared here and not defined - a member "
@@ -491,9 +479,7 @@ bool Parser::templateDeclaration() {
     decl.defined = defined;
     // **Function templates overload; class templates do not.** A function
     // template of a name already seen is another overload, kept beside the
-    // first; a call tries each by deduction. A class template of a name already
-    // a class template is still refused - overloading a class template is
-    // partial specialization, which is a different path.
+    // first; a call tries each by deduction.
     if (!decl.isClass) {
         if (decl.defined) fnTemplates_[decl.name].push_back(decl);
         auto it = templates_.find(decl.name);
@@ -565,13 +551,7 @@ bool Parser::explicitSpecialization() {
         src_.fail(pos, "'" + tag + "' has already been used further up, so "
                        "specializing it here is too late - the specialization "
                        "goes before the first use");
-    // **A base-clause is a body too.** `template <> struct is_integral<int> :
-    // true_type {};` is how every trait in <type_traits> is written, and
-    // asking only for `{` refused all of them with a message saying the
-    // definition had no body - which it did, four tokens further on.
-    // `structOrUnionSpecifier` already treats `{` and `:` alike (its
-    // `defining` is one or the other), and `final` may precede either, so
-    // nothing below this needed to change.
+    // **A base-clause is a body too.**
     if (!peek().is("{") && !peek().is(":") && !peek().is("final"))
         src_.fail(peek().pos, "an explicit specialization is a definition, and "
                               "this one has no body");
@@ -665,10 +645,7 @@ void Parser::templateArguments(const TemplateDecl &decl,
     inTemplateArgs_ = true;
     if (packs != nullptr) packs->assign(decl.params.size(),
                                         std::vector<const Type *>());
-    // **Defaults are replayed with the earlier parameters bound.** They are
-    // trailing by construction, so no explicit argument is ever parsed after
-    // one is used - which means the parameters bound here shadow nothing during
-    // ordinary argument parsing, and are undone when this returns.
+    // **Defaults are replayed with the earlier parameters bound.**
     std::vector<Shadow> undo;
     struct Unbind {
         Parser *p; std::vector<Shadow> *u;
@@ -871,11 +848,9 @@ Parser::instantiate(const TemplateDecl &decl,
     const Type *fn = readTemplateDeclaration(decl, binding, values, &name,
                                              nullptr, &packs);
 
-    // **Two function-template overloads can share a name and arguments and
-    // differ only in signature** - operator*(V<N>, double) and operator*(double,
-    // V<N>) both key operator*<3> without the parameter types, so the second was
-    // deduped to the first and the wrong one called. The key carries the
-    // substituted parameters; the mangled symbol is separate and unaffected.
+    // **Two function-template overloads can share a name and arguments and differ only in
+    // signature** - operator*(V<N>, double) and operator*(double, V<N>) both key operator*<3>
+    // without the parameter types, so the second was deduped to the first and the wrong one called.
     const std::string display = specializationKey(decl.name, args);
     std::string key = display;
     for (std::size_t i = 0; i < fn->params().size(); i++)
@@ -884,10 +859,9 @@ Parser::instantiate(const TemplateDecl &decl,
     if (const std::vector<std::size_t> *had = overloadsOf(key))
         return functions_[(*had)[0]];
 
-    // **The pattern the Itanium name is spelled from** keeps every parameter as
-    // a reference to itself - a type parameter as Kind::TemplateParam, a non-type
-    // one as the param-ref `V<N>` reads to - so the return and arguments come out
-    // T_ and V<XT_E> the way clang spells them, not the substituted int and V<3>.
+    // **The pattern the Itanium name is spelled from** keeps every parameter
+    // as a reference to itself - a type parameter as Kind::TemplateParam, a
+    // non-type one as the param-ref `V<N>` reads to.
     std::vector<const Type *> pattern(decl.params.size());
     for (std::size_t i = 0; i < decl.params.size(); i++)
         pattern[i] = types_.templateParam(static_cast<int>(i));
@@ -927,11 +901,7 @@ Parser::instantiate(const TemplateDecl &decl,
                                     fn->isVariadicFn(), false, pos, false,
                                     std::string(), false, Access::Public });
     functions_.back().fromTemplate = true;
-    // **The defaults the pattern's parameter list just read.** Nothing in the
-    // template path recorded them, so a function template with a default
-    // argument could not be called without one: leastArguments counts the
-    // parameters that have none, so overload resolution refused the call
-    // before completeCall ever counted them.
+    // **The defaults the pattern's parameter list just read.**
     if (!pendingDefaults_.empty()) {
         defaultArgs_[symbol] = pendingDefaults_;
         defaultArgNamespace_[symbol] = namespaceStack_;
@@ -1013,29 +983,13 @@ void Parser::instantiatePending() {
             instantiationOf_ = sp.isClass ? std::string() : sp.name;
 
             const std::size_t resume = at_;
-            // **An instantiated definition has vague linkage** - [basic.link]
-            // and [temp.spec]: the same specialization may be produced by every
-            // translation unit that uses it, and the linker folds the copies
-            // rather than rejecting them. That is the same rule an inline
-            // function lives under, and `setInline` is what carries it to the
-            // backends, so the flag is set for every body replayed here.
-            //
-            // `replayInlineBodies` sets it itself for the bodies written inside
-            // a class template. The other two doors did not, so a function
-            // template - or a member defined outside its class template - was
-            // emitted as an ordinary strong symbol, and a header defining one
-            // then failed to link the moment two translation units used it:
-            //
-            //     duplicate symbol 'int tmax<int>(int, int)'   ld: 1 duplicate
-            //
-            // Saved and restored rather than just set: `instantiatePending` is
-            // re-entered, and the outer replay's answer is not this one's.
+            // **An instantiated definition has vague linkage** - [basic.link] and [temp.spec]: the
+            // same specialization may be produced by every translation unit that uses it, and the
+            // linker folds the copies rather than rejecting them.
             const bool wasReplayingInline = replayingInline_;
             replayingInline_ = true;
             if (sp.isClass) {
-                // Its member functions, written inside the class and held
-                // there. inlineOwner_ supplies the "Box<int,3>::" that the
-                // source does not have, the same way it does for any class.
+                // Its member functions, held here; inlineOwner_ gives the scope.
                 replayInlineBodies(now);
                 // And the ones written outside it, which need no owner: the
                 // tokens say `Box<T>::get`, so with T bound the ordinary
@@ -1085,14 +1039,9 @@ const Type *Parser::substituteDeduced(const Type *t, const Type *with) {
 // what it would have seen with the type written out.
 const Type *Parser::deduceAuto(const Type *declared, const std::string &name,
                                std::size_t pos) {
-    // `auto x{...}` has an initialiser and is refused for the reason below, not
-    // for having none - the braces are what cannot be deduced from, however
-    // they were introduced.
-    // **`auto z(5);` deduces from a parenthesised initialiser too**, which is
-    // the direct-initialisation [dcl.init]/16 describes and the same shape
-    // `int z(5);` takes. An empty pair, or one that could be a parameter list,
-    // is a function declaration and is left to the code that reads those -
-    // [dcl.ambig.res]/1, the same test the declaration path makes.
+    // `auto x{...}` has an initialiser and is refused for the reason below,
+    // not for having none - the braces are what cannot be deduced from,
+    // however they were introduced.
     const bool paren = peek().is("(") && atParenInitialiser();
     if (!peek().is("=") && !peek().is("{") && !paren)
         src_.fail(pos, "'" + name + "' is declared 'auto' and has no "
@@ -1108,10 +1057,7 @@ const Type *Parser::deduceAuto(const Type *declared, const std::string &name,
                               "initializer_list, which this compiler has no "
                               "library for");
     // **Read for its type and rewound**, so this reading built nothing: the
-    // real one happens below, from the same tokens. Whatever it registered for
-    // destruction goes back with the token position, or the initialiser's own
-    // temporary is destroyed twice - once here for an object that was never
-    // constructed.
+    // real one happens below, from the same tokens.
     const Type *from = nullptr;
     {
         Discarded held(this);
@@ -1132,9 +1078,7 @@ const Type *Parser::deduceAutoFrom(const Type *declared, const Type *from,
                        "' and its initialiser is '" + from->describe() +
                        "', which does not fit: " + why);
     // **What `auto` itself came out as**, which is not the declarator's type:
-    // `auto *p = &i` deduces `int` and declares `int *`. [dcl.spec.auto]/7 is
-    // about the first of those, so the second declarator of one declaration is
-    // compared against this rather than against the type it built.
+    // `auto *p = &i` deduces `int` and declares `int *`.
     lastDeducedAuto_ = binding[0];
     return substituteDeduced(declared, binding[0]);
 }
@@ -1266,12 +1210,9 @@ bool Parser::deduceTemplateArguments(const TemplateDecl &decl,
     const bool hasPack = !decl.params.empty() && decl.params.back().isPack;
     const std::size_t fixed = hasPack ? fn->params().size() - 1
                                       : fn->params().size();
-    // **A parameter with a default needs no argument.** readTemplateDeclaration
-    // above has just read the pattern's parameter list, so pendingDefaults_ says
-    // which of them have one - and they are a suffix, [dcl.fct.default]/4. This
-    // asked for an exact count, so a function template with a default argument
-    // could not be called without one: deduction refused before overload
-    // resolution or completeCall ever saw the call.
+    // **A parameter with a default needs no argument.** readTemplateDeclaration above has just read
+    // the pattern's parameter list, so pendingDefaults_ says which of them have one - and they are
+    // a suffix, [dcl.fct.default]/4.
     std::size_t least = fixed;
     for (std::size_t i = 0; i < pendingDefaults_.size() && i < fixed; i++)
         if (pendingDefaults_[i] != 0) { least = i; break; }
@@ -1664,18 +1605,7 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
     const bool partial = which != static_cast<std::size_t>(-1);
     if (partial) useParams = decl.partials[which].params;
 
-    // **Asked after the partial is chosen, not before.** A variadic template is
-    // very often declared and never defined, every definition it has being a
-    // specialization: there is a body to replay whenever one of them matched.
-    // **Declared but not defined is an incomplete type, not an error.**
-    // [basic.types]/5: naming one is legal - a function's return type or
-    // parameter, a pointer to it - and only an operation that needs it complete
-    // (a member, `sizeof`, laying out an object) requires the definition, and
-    // that operation fails on its own where it is written. A conversion operator
-    // returning a forward-declared class template is the shape that needs this:
-    // the class is defined in a header the declaring one has not reached. The
-    // shallow type is interned by tag, so the real instantiation - if the
-    // definition does arrive later - completes this very object.
+    // **Asked after the partial is chosen, not before.**
     if (!partial && !decl.defined) {
         Type *shallow = types_.structType(Kind::Struct, tag);
         if (!shallow->isSpecialization()) {
@@ -1696,27 +1626,13 @@ const Type *Parser::instantiateClass(const TemplateDecl &decl, std::size_t pos) 
 
     at_ = partial ? decl.partials[which].bodyAt : decl.afterParams;
     // **A specialization is not a member of whatever class asked for it.**
-    // `inner<K> held_;` inside `outer<K>` instantiates `inner<int>` while
-    // `outer<int>`'s body is being read, and the class context still in effect
-    // made the new class nested: it took the tag `outer<int>::inner<int>`, a
-    // name nothing else forms, so its constructor and destructor were declared
-    // under one name and emitted under none. `vector` inside `map` is that
-    // shape, and it is the shape of any container built out of another.
-    //
-    // The enclosing namespace is deliberately left alone - a template declared
-    // in `std` specializes into `std` - and only the class nesting is dropped.
     std::vector<const Type *> outerClasses;
     outerClasses.swap(classStack_);
     const Type *outerCurrent = currentClass_;
     currentClass_ = nullptr;
     const std::string outerInline = inlineOwner_;
     inlineOwner_.clear();
-    // **The `>>` mark is one slot and this parse can spend it.** [temp.names]/3
-    // splits the first `>` of a `>>` by leaving `angleSplit_` at that token
-    // without advancing; a body replayed here contains angle brackets of its
-    // own, so `Box<Box<int>>` instantiated the inner class between the halves
-    // and the outer list met a mark that had been used. Saved and put back,
-    // as `Trial` already does for the same field and the same reason.
+    // **The `>>` mark is one slot and this parse can spend it.**
     const std::size_t outerAngle = angleSplit_;
 
     classInstantiationTag_ = tag;
@@ -1778,11 +1694,7 @@ ExprPtr Parser::templateCall(Program *program) {
     const TemplateDecl decl = templates_[name];
     if (decl.isClass) {
         // **`vector<int>()` is a temporary, not an instantiation this cannot
-        // do.** The type is made perfectly well; what was missing is reading a
-        // template-id where a plain class name already reaches
-        // `classTemporary`. `std::vector<IRInstr>().swap(v)` is the idiom that
-        // wants it - the shortest way to empty a vector and give its buffer
-        // back.
+        // do.**
         const std::size_t save = at_;
         at_++;
         if (peek().is("<")) {
@@ -1792,22 +1704,15 @@ ExprPtr Parser::templateCall(Program *program) {
                 return classTemporary(cls, pos);
             }
             // **`CNeeds<(N == 3)>::check()` - a static member through a
-            // template-id.** The class is made; what follows the `::` is a
-            // qualified access to a member of it, keyed on the instantiated tag
-            // the same way `C::check()` is. Only a *static* member is reachable
-            // with no object - which is the whole of the CNeeds dimension check:
-            // CNeeds<true> is defined and CNeeds<false> is not, so the false one
-            // has no `check` and the call is ill-formed, as it should be.
+            // template-id.**
             if (cls != nullptr && cls->isStructOrUnion() && peek().is("::")) {
                 at_++;
                 return templateIdMember(cls, pos);
             }
         }
-        // **The injected class name.** Inside V<T>'s own members `V` means this
-        // specialization, not the template - [temp.local] - so `V(x)` is a
-        // temporary of it and needs no argument list. The template check above
-        // claims the name first, so the type is asked for here, where the name
-        // is known to be followed by a `(` rather than a `<`.
+        // **The injected class name.** Inside V<T>'s own members `V` means
+        // this specialization, not the template - [temp.local] - so `V(x)` is
+        // a temporary of it and needs no argument list.
         if (peek().is("(")) {
             if (const Type *self = findTypedef(name))
                 if (self->isStructOrUnion()) {
@@ -1835,9 +1740,7 @@ ExprPtr Parser::templateCall(Program *program) {
         for (std::size_t i = 0; i < callArgs.size(); i++)
             argTypes.push_back(callArgs[i]->type());
 
-        // **Every function template of this name is a candidate.** Each that
-        // deduces is instantiated; overload resolution then ranks the
-        // specializations with any ordinary functions.
+        // **Every function template of this name is a candidate.**
         instantiateViableTemplates(name, argTypes, pos);
 
         // Nothing deduced and no ordinary function - so say why the template
@@ -1871,10 +1774,8 @@ ExprPtr Parser::templateCall(Program *program) {
     std::vector<std::vector<const Type *> > packs;
     templateArguments(decl, &binding, &values, &args, &packs);
 
-    // **A copy, not a reference**: `sig.params` is handed to `completeCall`, and
-    // parsing the arguments can declare a function and move `functions_`. The key
-    // now carries the signature, so the specialization is taken from the return
-    // rather than looked up by a key the caller would have to rebuild.
+    // **A copy, not a reference**: `sig.params` is handed to `completeCall`,
+    // and parsing the arguments can declare a function and move `functions_`.
     const Signature sig = instantiate(decl, binding, values, args, pos, packs);
     if (!peek().is("("))
         src_.fail(peek().pos, "'" + name + "' is a function template, and "
@@ -1914,11 +1815,7 @@ void Parser::refuseTemplateId() {
 }
 
 
-// **A member function template call, v.head<3>().** The arguments are read
-// against the member's own parameter list, the specialization is made if it is
-// new - its body replayed with the class's parameters and the member's both
-// bound - and then it is called like an ordinary non-virtual member: a member
-// template can never be virtual, so there is no slot to read.
+// **A member function template call, v.head<3>().**
 ExprPtr Parser::memberTemplateCall(ExprPtr object, const Type *obj,
                                    const std::string &name, std::size_t pos) {
     const Type *plain = obj->unqualified();
@@ -2014,12 +1911,7 @@ ExprPtr Parser::memberTemplateCall(ExprPtr object, const Type *obj,
                         chosen.variadic, pos, std::move(all), true);
 }
 
-// The specialization these arguments ask for, made if it is new. The body is
-// replayed *synchronously* - a member template is always used when called, so
-// there is nothing to defer and gate - through the inline-member path, which
-// saves and restores the enclosing function's whole state. declareMember is
-// told, through memberTemplateInst_, to key and mangle the function it reads as
-// this specialization rather than as a plain member.
+// The specialization these arguments ask for, made if it is new.
 const Parser::Signature *Parser::instantiateMemberTemplate(
     const TemplateDecl &mt, const std::vector<const Type *> &binding,
     const std::vector<long long> &values,
@@ -2069,13 +1961,7 @@ const Parser::Signature *Parser::instantiateMemberTemplate(
     return had != nullptr ? &functions_[(*had)[0]] : nullptr;
 }
 
-// **Function templates as overload-resolution candidates.** Every function
-// template of this name is tried against the argument types; each that deduces
-// is instantiated into functions_ under the name, where the ordinary ranking
-// then chooses among the specializations and any non-template functions. A
-// substitution failure - [temp.deduct]/8 - drops that one template rather than
-// ending the compile, which is what lets two templates of one name coexist and
-// the wrong one simply not apply.
+// **Function templates as overload-resolution candidates.**
 void Parser::instantiateViableTemplates(const std::string &name,
                                         const std::vector<const Type *> &argTypes,
                                         std::size_t pos) {
@@ -2117,10 +2003,7 @@ void Parser::instantiateViableTemplates(const std::string &name,
 }
 
 // **A static member reached through a class template-id**, `CNeeds<(N==3)>::
-// check()` or `std::numeric_limits<int>::max()`. The class is already made; what
-// follows the `::` is a qualified access to a member of it, keyed on the
-// instantiated tag the same way `C::check()` is. Only a *static* member is
-// reachable with no object.
+// check()` or `std::numeric_limits<int>::max()`.
 ExprPtr Parser::templateIdMember(const Type *cls, std::size_t pos) {
     (void)pos;
     const std::size_t mpos = peek().pos;
@@ -2160,8 +2043,7 @@ ExprPtr Parser::templateIdMember(const Type *cls, std::size_t pos) {
         return staticMemberRef(cls, *sm, cls->tag(), mpos);
     // **An enumerator of the specialization is reached the same way**, and is
     // a value rather than an object - so there is nothing to take the address
-    // of and the number is the whole of it. A plain class already answered
-    // here; a template-id qualifier asked only about static members.
+    // of and the number is the whole of it.
     if (const EnumConst *e = enumInClass(cls, member)) {
         ExprPtr n(new Num(e->value));
         n->setType(types_.intType());
@@ -2171,11 +2053,7 @@ ExprPtr Parser::templateIdMember(const Type *cls, std::size_t pos) {
                     "enumerator called '" + member + "'");
 }
 
-// **A member function template as an overload-resolution candidate.** The same
-// door instantiateViableTemplates opens for a free template, for a member: the
-// arguments are deduced from the call's own, the class's parameters bound
-// alongside the member's, and the specialization registered under the plain
-// member name where the ranking finds it. A deduction failure drops it.
+// **A member function template as an overload-resolution candidate.**
 void Parser::instantiateViableMemberTemplates(
     const Type *cls, const std::string &name,
     const std::vector<const Type *> &argTypes, std::size_t pos) {

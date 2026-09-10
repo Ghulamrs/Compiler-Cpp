@@ -1,10 +1,6 @@
 // The parser: statements. Declarations as statements, every control-flow
-// statement including try and the range-based for, and the goto labels resolved
-// at a function's end.
-//
-// Two neighbours were split out of this file when it outgrew being read in one
-// sitting: ParserConst.cpp holds the constant folding a statement is checked
-// against, and ParserTopLevel.cpp holds what a translation unit is made of.
+// statement including try and the range-based for, and the goto labels
+// resolved at a function's end.
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
@@ -13,11 +9,7 @@
 #include <climits>
 #include <cstring>
 
-// **The initialiser inside `(...)` of a direct-initialised scalar.** One
-// expression and no braces: `int z(5);` and `int z(f());` are this shape, and
-// `int z(1, 2)` is refused by name rather than by the parser running out of
-// tokens - a scalar has one initialiser, and the reader who wrote two is owed
-// the rule rather than a complaint about a comma.
+// **The initialiser inside `(...)` of a direct-initialised scalar.**
 Parser::Init Parser::parenthesisedInitialiser(const Declared &d) {
     expect("(");
     Init in;
@@ -32,26 +24,15 @@ Parser::Init Parser::parenthesisedInitialiser(const Declared &d) {
     return in;
 }
 
-// **Is the `(` ahead an initialiser or a parameter list?** [dcl.ambig.res]/1
-// settles it one way - anything that *can* be a declaration is one - so this
-// answers only for what could not: an empty pair is `f()`, a type name begins
-// a parameter, an ellipsis begins `(...)`, and `Ts... a` is a parameter pack
-// whose name is not a type until the template is instantiated. Everything
-// else is an expression, which makes it an initialiser.
+// **Is the `(` ahead an initialiser or a parameter list?**
 bool Parser::atParenInitialiser() {
     const std::size_t save = at_;
     at_++;                                    // the '('
-    // **A parameter list begins with a decl-specifier-seq**, and that is the
-    // whole question - `atTypeName` and not `atDeclarationStart`, which asks
-    // whether a *statement* is a declaration and answers no to `T()`. Inside
-    // parentheses `T()` is a parameter of function type, which is what makes
-    // `S s(T());` the most vexing parse: a function declaration, as clang
-    // reads it. Asking the statement question here declared an object instead.
+    // **A parameter list begins with a decl-specifier-seq**, and that is the whole question.
     const bool pack = peek().kind == TokenKind::Ident && peekAt(1).is("...");
     // `auto` among them: a parameter declared with it is C++14 and is refused
     // by name where the parameter list is read, which only happens if this
-    // says parameter list. Answering "initialiser" here turned that message
-    // into "expected an expression".
+    // says parameter list.
     const bool parameters = peek().is(")") || peek().is("...") || pack ||
                             peek().is("static") || peek().is("register") ||
                             peek().is("auto") || atTypeName();
@@ -148,11 +129,8 @@ StmtPtr Parser::declarationBody() {
             checkOneDeducedType(deducedSoFar, lastDeducedAuto_, d.name, d.pos);
         }
 
-        // **A const object has to be initialised where it is declared**, and this
-        // is asked before the branch below rather than after it: a class whose
-        // constructor the *compiler* wrote initialises only what its members ask
-        // for, so `const S s;` reaches a constructor and still leaves a member
-        // holding the stack. sc is not read here - a `static` one is as const.
+        // **A const object has to be initialised where it is declared**, and
+        // this is asked before the branch below rather than after it.
         if (d.type->isConst() && !peek().is("=") && !peek().is("(") &&
             !peek().is("{"))
             requireConstInitialised(d.type, d.name, d.pos);
@@ -192,10 +170,7 @@ StmtPtr Parser::declarationBody() {
                 locals_.back().guardsJump = true;
                 int indexSlot = allocateFrameSlot(types_.intType());
                 inits.push_back(constructLocalArray(d, off, indexSlot));
-                // **The comma belongs to the loop condition.** `continue` in
-                // a do/while jumps to that condition, which consumes one - so
-                // taking it here as well ate two and left the next declarator
-                // unread: `std::string a, b;` came back as `expected ';'`.
+                // **The comma belongs to the loop condition.**
                 continue;
             }
         }
@@ -218,14 +193,9 @@ StmtPtr Parser::declarationBody() {
             for (std::size_t z = 0; z < ci.ilSetup.size(); z++)
                 inits.push_back(std::move(ci.ilSetup[z]));
 
-            // **Copy elision, in the one case worth having it**: where the initialiser
-            // is a call already returning through a hidden pointer, the object is built
-            // straight into this variable. clang does it at -O0, cl does not; both may.
-            // **A destructor makes the copy observable even where it is
-            // trivial**, which is why this asks about more than the copy: a
-            // class of plain members with a `~T` is copied by bytes and then
-            // destroyed twice, once per object. clang elides it at -O0 and so
-            // does this now.
+            // **Copy elision, in the one case worth having it**: where the initialiser is a call
+            // already returning through a hidden pointer, the object is built straight into this
+            // variable. clang does it at -O0, cl does not; both may.
             Call *made = ci.args.size() == 1 &&
                          (d.type->nonTrivialCopy() ||
                           destructorOf(d.type) != nullptr)
@@ -248,10 +218,7 @@ StmtPtr Parser::declarationBody() {
             flushTemporaries(inits);
             if (destructorOf(d.type) != nullptr)
                 alive_.push_back(Alive{ d.name, off, d.type->unqualified() });
-            // **The comma belongs to the loop condition.** `continue` in a
-            // do/while jumps to that condition, which consumes one - so taking
-            // it here as well ate two and left the next declarator unread:
-            // `std::string a, b;` came back as `expected ';'`.
+            // **The comma belongs to the loop condition.**
             continue;
         }
 
@@ -279,33 +246,18 @@ StmtPtr Parser::declarationBody() {
                 inits.push_back(StmtPtr(new ExprStmt(std::move(store))));
                 if (destructorOf(d.type) != nullptr)
                     alive_.push_back(Alive{ d.name, off, d.type->unqualified() });
-                // **The comma belongs to the loop condition.** `continue` in
-                // a do/while jumps to that condition, which consumes one - so
-                // taking it here as well ate two and left the next declarator
-                // unread: `std::string a, b;` came back as `expected ';'`.
+                // **The comma belongs to the loop condition.**
                 continue;
             }
         }
 
         // **`int z(5);` is direct-initialisation, not a function.**
-        // [dcl.init]/16, and [dcl.ambig.res]/1 is what tells the two apart:
-        // anything that *can* be a declaration is one, so `int f();` and
-        // `int f(int);` stay functions and a parenthesised list that could not
-        // be parameters is an initialiser. `5` cannot begin a parameter, which
-        // is the same test the class branch above makes.
-        //
-        // The class case has worked since rung 3 and this one had not, so
-        // `int z(5);` was read as a function declaration and answered
-        // "expected a type" pointing at the 5. This tree's own `<utility>`
-        // writes `T held(a);`, so `std::swap` on two `int`s failed inside the
-        // header - which is how the shape was found.
         const bool parenInit = peek().is("(") && !d.type->isStructOrUnion() &&
                                !d.type->isArray() && !d.type->isReference() &&
                                atParenInitialiser();
         // **Not in a condition**, which takes `= expr` or braces and nothing
         // else - [stmt.select]/1 spells the grammar out, and clang says so by
-        // name. Refused rather than accepted quietly: `if (int a(5))` reads
-        // like a call to a reader and is neither.
+        // name.
         if (parenInit && conditionDecl_)
             src_.fail(peek().pos, "a declaration in a condition is initialised "
                                   "with '=' or with braces, not with "
@@ -355,25 +307,14 @@ StmtPtr Parser::declarationBody() {
             target->setType(slot);
             // **The temporary this reference binds to, if it made one**, is
             // extended to the scope rather than destroyed at the semicolon -
-            // [class.temporary]/5. Asked before `addr` is moved into the
-            // assignment, because the walk that finds the slot goes through
-            // commas and address-ofs and not through an `Assign`.
+            // [class.temporary]/5.
             const bool extended = extendTemporary(*addr, d.name + "$held");
             ExprPtr bind(new Assign(std::move(target), std::move(addr)));
             bind->setType(slot);
             inits.push_back(StmtPtr(new ExprStmt(std::move(bind))));
-            // And anything else the initialiser built - `const T &r = f(T(1));`
-            // makes T(1) as well, and that one does die here.
-            //
-            // **Only once something was extended.** Where the reference binds
-            // to an object this statement did not make - `const T &r = t;` -
-            // there is nothing of this statement's to flush. And where it binds
-            // to a call's result, cxx1 copies that result into a `.ref` slot
-            // and the pending entry still names the *call's* slot, not the one
-            // the reference points at: flushing would destroy the source while
-            // the reference goes on naming the copy. That case keeps the
-            // behaviour it had - the copy outlives everything, which leaks but
-            // does not dangle - and is written up in docs/CONFORMANCE.md.
+            // And anything else the initialiser built - `const T &r =
+            // f(T(1));` makes T(1) as well, and that one does die here. **Only
+            // once something was extended.**
             if (extended) flushTemporaries(inits);
             continue;
         }
@@ -498,24 +439,9 @@ bool Parser::atRangeFor() const {
     }
 }
 
-// **[stmt.ranged] is a rewrite, and this does the rewrite.** The standard says what
-// `for (T x : a)` means by writing another loop, and every node that loop needs was
-// already here. The range is evaluated once, which assigning it to `__b` buys.
-// **[stmt.ranged]'s `begin-expr` and `end-expr` for a class range.** The
-// standard writes the loop as `auto &&__range = expr;` and then
-// `__range.begin()`, `__range.end()` - so the range is evaluated **once**, and
-// what the loop walks is whatever those two return.
-//
-// **The reference is a pointer here.** cxx1 has no way to declare
-// `auto &&__r = expr`, so `__r` is `R *` holding `&expr` and every use is
-// `*__r`. That is the same object, evaluated once, and it is what lets a
-// `v.push_back()` inside the body be seen by the loop - which a copy of the
-// range would not.
-//
-// **The member form only.** [stmt.ranged]/1 says that if `begin` and `end` are
-// found as members they are used, and only otherwise are free `begin(r)` and
-// `end(r)` looked up with argument-dependent lookup. Every container in
-// `include/` has them as members. The free form is refused by name.
+// **[stmt.ranged] is a rewrite, and this does the rewrite.** The standard says
+// what `for (T x : a)` means by writing another loop, and every node that loop
+// needs was already here.
 const Type *Parser::classRangeEnds(ExprPtr range, std::size_t rpos,
                                    std::vector<StmtPtr> &setup,
                                    int *bSlot, int *eSlot,
@@ -524,9 +450,7 @@ const Type *Parser::classRangeEnds(ExprPtr range, std::size_t rpos,
     const Type *cls = rangeType->unqualified();
 
     // **A temporary range needs its lifetime extended and this does not do
-    // that.** `auto &&__range = f()` keeps what `f()` returned alive to the end
-    // of the loop; taking its address here would leave the loop walking a dead
-    // object, which is worse than refusing.
+    // that.**
     if (!isGlvalue(*range))
         src_.fail(rpos, "the range here is a temporary, and a range-based "
                         "'for' binds the range to a reference that keeps it "
@@ -569,9 +493,6 @@ const Type *Parser::classRangeEnds(ExprPtr range, std::size_t rpos,
     const Type *iter = first->type();
 
     // **The iterator has to be a pointer, and every one in `include/` is.**
-    // `vector<T>::iterator` is `T *` here; a class iterator would need its
-    // `!=`, `++` and `*` resolved as overloaded operators, each of which is
-    // built, but none of which this has been measured against.
     if (!iter->isPointer())
         src_.fail(rpos, "'" + cls->describe() + "::begin()' returns '" +
                         iter->describe() + "', and a range-based 'for' over a "
@@ -614,10 +535,8 @@ StmtPtr Parser::rangeForStatement(int scope) {
     expect(":");
 
     const std::size_t rpos = peek().pos;
-    // **A braced list as the range is an `initializer_list`** -
-    // [stmt.ranged] binds the range to `auto &&`, and for braces that makes
-    // one of those. There is no such class here, so the list has no type to
-    // take begin() and end() from.
+    // **A braced list as the range is an `initializer_list`** - [stmt.ranged]
+    // binds the range to `auto &&`, and for braces that makes one of those.
     if (peek().is("{"))
         src_.fail(rpos, "a range-based 'for' over a braced list is not "
                         "supported yet - the list would be an "
@@ -632,11 +551,7 @@ StmtPtr Parser::rangeForStatement(int scope) {
                          "yet - the loop variable is copied for now");
 
     // **The two ends of the loop, and the only thing the two kinds of range
-    // disagree about.** [stmt.ranged] names them `begin-expr` and `end-expr`
-    // and everything after them is one loop, so they are what the branch
-    // computes and the rest is shared. An array's are the decayed pointer and
-    // that plus the bound; a class's are what its own `begin()` and `end()`
-    // return.
+    // disagree about.**
     const Type *elemPtr = nullptr;
     std::vector<StmtPtr> setup;
     int bSlot = 0, eSlot = 0;
@@ -757,10 +672,7 @@ struct ConditionFlag {
 }
 
 // **[stmt.select]/2: an `if` may declare a name in its condition**, and that
-// name is in scope in both arms. It is evaluated once, before the branch, so
-// the declaration is hoisted in front of the `If` and the two wrapped in a
-// block - which is what gives the object its scope and its destructor at the
-// end of the whole statement rather than at the end of an arm.
+// name is in scope in both arms.
 ExprPtr Parser::ifConditionDeclaration(std::vector<StmtPtr> &setup) {
     std::string name;
     {
@@ -778,10 +690,7 @@ ExprPtr Parser::ifConditionDeclaration(std::vector<StmtPtr> &setup) {
 
 // **[stmt.iter]/2 creates and destroys the variable on every turn**, which is
 // the whole difference from the `if` form: hoisting the initialiser out would
-// evaluate it once and then loop for ever on the value it got. The slot is
-// declared once - it is one object as far as the frame is concerned - and the
-// initialisation moves into the condition, which is exactly what the standard
-// asks for as long as there is no constructor or destructor to run.
+// evaluate it once and then loop for ever on the value it got.
 ExprPtr Parser::whileConditionDeclaration() {
     StorageClass sc;
     Qualifiers quals;
@@ -799,10 +708,9 @@ ExprPtr Parser::whileConditionDeclaration() {
     ExprPtr init = decay(assign());
     if (mentionsDeduced(d.type))
         d.type = deduceAutoFrom(d.type, init->type(), d.name, d.pos);
-    // A class would have to be constructed and destroyed once per turn, and
-    // the construction is written where the test is - so it is refused here
-    // and not in an `if`, where the object is built once and the ordinary
-    // declaration path does all of it.
+    // A class would have to be constructed and destroyed once per turn, and the construction is
+    // written where the test is - so it is refused here and not in an `if`, where the object is
+    // built once and the ordinary declaration path does all of it.
     if (d.type->isStructOrUnion() || d.type->isReference() || d.type->isArray())
         src_.fail(d.pos, "a '" + d.type->describe() + "' declared in the "
                          "condition of a loop is not supported yet - "
@@ -823,8 +731,7 @@ StmtPtr Parser::forStatement() {
     expect("(");
     enterScope();
     int scope = enterBlock();
-    // What the init-statement builds lives to the end of the for statement
-    // and no further - [stmt.for]/1 puts the whole loop in its own block.
+    // What the init-statement builds lives to the end of the for statement and no further.
     const std::size_t aliveAtEntry = alive_.size();
 
     if (atRangeFor()) return rangeForStatement(scope);
@@ -982,15 +889,7 @@ std::vector<Parser::JumpGuard> Parser::jumpGuards() const {
     return out;
 }
 
-// A jump that leaves a scope destroys what the scope built, innermost first, before it
-// goes - the calls the scope's end would have made, made here instead. [stmt.jump]/2.
-// `break` and `continue` destroy everything built since their loop was entered.
-// **[except.handle]/16: leaving a handler ends the handling**, and on Itanium
-// what ends it is `__cxa_end_catch` - the call that pops the caught-exception
-// chain and destroys the exception object. It is appended after the handler's
-// block, so falling off the end reaches it and every jump out did not: the
-// object was never destroyed and the chain was left set. One call per handler
-// left, innermost first, which is the order the runtime's stack of them wants.
+// A jump that leaves a scope destroys what the scope built, innermost first, before it goes.
 void Parser::endCatches(std::vector<StmtPtr> &into, int count) {
     // **Nothing to call on the Microsoft ABI**: a handler there is a funclet
     // and the runtime ends the catch when it returns, so the counts this asks
@@ -1002,13 +901,7 @@ void Parser::endCatches(std::vector<StmtPtr> &into, int count) {
                         std::vector<ExprPtr>()))));
 }
 
-// **Where an exception leaving this point goes, in this frame.** Three answers
-// and the innermost wins: a handler's own end-catch pad, which must run or the
-// catch is never ended; the enclosing `try`'s chain, whose row's action list
-// named the handlers phase 1 matched; or nothing, which is `_Unwind_Resume`
-// and leaves for the caller. The two are kept apart rather than in one stack
-// because a `try` body inside a handler answers with its own chain - the
-// handler's pad is reached from *that* chain's end, one step further out.
+// **Where an exception leaving this point goes, in this frame.**
 std::string Parser::unwindTarget(int *ptrSlot, int *selSlot) const {
     if (!handlerResumeLabel_.empty()) {
         *ptrSlot = handlerResumePtr_;
@@ -1024,9 +917,7 @@ std::string Parser::unwindTarget(int *ptrSlot, int *selSlot) const {
 }
 
 // **A `break` leaves a handler exactly when the loop or switch it breaks out
-// of was entered before that handler was.** Handlers nest, so the ones left
-// are a run from the innermost outwards: the first that owns a loop of its own
-// stops the count, and nothing further out can be left by this jump either.
+// of was entered before that handler was.**
 int Parser::handlersLeftByBreak() const {
     int left = 0;
     for (std::size_t i = handlerLoopDepth_.size(); i-- > 0; ) {
@@ -1130,9 +1021,6 @@ StmtPtr Parser::block() {
     std::vector<std::size_t> tryAt;
     std::vector<StmtPtr> body;
     // **What this block's statements made and destroyed within themselves.**
-    // A temporary lives inside one full expression, so it is never in
-    // `alive_` and the regions below would not know about it - but an
-    // exception can still leave the statement in the middle of one.
     std::vector<Temporary> temps;
     std::vector<Temporary> outer;
     outer.swap(statementTemps_);
@@ -1142,10 +1030,7 @@ StmtPtr Parser::block() {
         const std::size_t aliveBefore = alive_.size();
         body.push_back(atDeclarationStart() ? declaration() : statement());
         // **A `try` is not covered by a cleanup region, it answers for
-        // itself.** Both are rows in a table of sorted disjoint ranges, so one
-        // has to split the other - and the `try`'s own pad already destroys
-        // what was alive when it was reached. A Try here came straight from
-        // `statement()`; the cleanup ones are made below, after this loop.
+        // itself.**
         if (dynamic_cast<const Try *>(body.back().get()) != nullptr)
             tryAt.push_back(body.size() - 1);
         for (std::size_t k = 0; k < statementTemps_.size(); k++)
@@ -1162,30 +1047,12 @@ StmtPtr Parser::block() {
         (built.empty() || built[0].first != 0))
         built.insert(built.begin(), std::make_pair(std::size_t(0), aliveAtEntry));
 
-    // Everything this block constructed is destroyed here, last first. The
-    // objects are found by where they are in `alive_` rather than by walking
-    // the block again: what a scope built is exactly what it added.
+    // Everything this block constructed is destroyed here, last first.
     emitDestructors(body, aliveAtEntry, peek().pos);
 
     if (!built.empty()) {
         // **A `try` among these statements is split around, not refused.** It
-        // is a row of its own and its pad destroys what it found alive. What
-        // is still refused is a `try` *inside* one of them - an if, a loop, a
-        // nested block - where the region would span a row it cannot see.
-        // **Only a block inside a `try`'s body overlaps it.** A handler's
-        // statements are emitted past the range's end, and a block elsewhere
-        // in the function is disjoint from it - so neither needs refusing,
-        // and `functionHasTry_` was answering for all three.
-        // **Only the Itanium path learned to split.** A Microsoft cleanup is
-        // a funclet and a state in the FH3 tables rather than a row in a
-        // sorted list, and `wrapMsCleanups` is untouched - so that target
-        // keeps the refusal it had, function-wide, until the same work is
-        // done there.
-        // **A `try` body's objects are built now**: the region becomes a row
-        // *inside* the `try`'s, carrying its catch types and handing over to
-        // its chain. A *handler*'s are not - a handler is emitted past the
-        // `try`'s range, so its region is not inside any row and has nowhere
-        // to hand over to.
+        // is a row of its own and its pad destroys what it found alive.
         const bool overlapping = target_.microsoftNames()
                                      ? (functionHasTry_ || inTryBody_)
                                      : false;
@@ -1227,12 +1094,9 @@ StmtPtr Parser::statement() {
     return s;
 }
 
-// **`try` is a block, a landing pad, and no new statement machinery.** Everything from
-// the pad on is built out of nodes that already existed: the selector compared in the
-// order the handlers are written, each arm begin/copy/body/end, the rest resumed.
+// **`try` is a block, a landing pad, and no new statement machinery.**
 StmtPtr Parser::tryStatement(std::size_t pos) {
-    // What is alive when the `try` is reached: the enclosing block's cleanup
-    // region is split around this statement, so its pad answers for these.
+    // What is alive when the `try` is reached.
     const std::size_t aliveOutside = alive_.size();
     // **The two ABIs disagree about who picks the handler**, so this reads one grammar
     // and builds two shapes: Itanium's if/else chain on a selector, and Microsoft's
@@ -1240,37 +1104,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
     const bool microsoft = target_.microsoftNames();
     functionHasTry_ = true;
     // **A handler's body is inside the same table and was not refused**, which
-    // made this compile and terminate rather than say so: the parser numbers
-    // the outer handlers before parsing the body, the backend registers the
-    // inner row first, and the two disagree about which index means which type.
-    // Measured at e731456 - clang prints `outer int 7 inner double 2.5` where
-    // cxx1 called terminate. Refused with its sibling until indices travel on
-    // the Try node instead of being rederived.
-    // **A `try` inside a `catch` works now**; one inside a `try` *body* does
-    // not, and the two fail for different reasons. Both are rows and the
-    // enclosing region is split around the inner one, so nothing overlaps -
-    // that part is done, and it is what fixed the handler case.
-    //
-    // What the body case needs beyond it is the **action chain continuing into
-    // the enclosing region**. Measured from clang: the record covering the
-    // inner body reads `catch double, continue to action 4` and action 4 is
-    // `catch int` - the outer's handler. cxx1 gives a row its own types and
-    // stops, so phase 1 finds no `int` there and unwinds past the whole frame.
-    // With that, the pad has to hand over to the enclosing pad as well, since
-    // `_Unwind_Resume` leaves for the caller rather than trying the region
-    // outside this one. Neither is built; refused by name until they are.
-    // **A `try` inside another one is built now, body or handler.** The
-    // enclosing region is split around it so nothing overlaps; its row's action
-    // chain carries the enclosing handlers, so phase 1 finds them there; and
-    // its pad hands the selector to the enclosing chain rather than resuming,
-    // because `_Unwind_Resume` leaves for the caller and never tries the region
-    // outside this one in the same frame.
-    // **The handler half is Itanium's only.** A Microsoft handler is a funclet
-    // named `<fn>$catch$N` from a per-function counter, and a nested one gets a
-    // name already taken: ml64 answers `A2005: symbol redefinition` and then
-    // `A1010: unmatched block nesting`. The splitting this round did is to the
-    // call-site list, which that ABI does not have - `msTryStatement` is
-    // untouched. Found by the Windows box, both Itanium targets being green.
+    // made this compile and terminate rather than say so.
     if ((inTryBody_ || inHandlerBody_) && target_.microsoftNames())
         src_.fail(pos, "a 'try' inside another one is not supported yet for "
                        "x86_64-windows - a handler there is a funclet named "
@@ -1280,11 +1114,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                        "targets");
 
     const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
-    // **A nested `try` shares the slots of the one it sits in.** Its pad may
-    // hand the selector to the enclosing chain, and that chain reads the
-    // enclosing region's `.ex.sel` - so a pair of its own would leave the chain
-    // testing a slot nothing on that path ever wrote. Measured as a crash. The
-    // cleanup segments of a `try` body share them for the same reason.
+    // **A nested `try` shares the slots of the one it sits in.**
     const bool nested = !microsoft && !tryChainLabel_.empty();
     const int pointerSlot = nested ? tryChainPointerSlot_
                                    : allocateFrameSlot(voidPtr);
@@ -1292,12 +1122,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                                     : allocateFrameSlot(types_.intType());
     functionHasPads_ = true;
 
-    // **The chain the body's cleanup rows hand over to.** A `$` is in the name
-    // because no C++ identifier can hold one, so it cannot collide with a
-    // user's label - the same trick `$guard` uses for a frame slot.
-    // **Unique per `try`, and not derived from the slot.** A nested one shares
-    // the enclosing region's slots, so a name built from those collided -
-    // `symbol 'L.main.user.$chain0.8' is already defined`.
+    // **The chain the body's cleanup rows hand over to.**
     const std::string chainLabel = "$chain" + std::to_string(refTemps_++);
     // **The chain of the `try` this one sits inside**, captured before this
     // statement overwrites it. A nested `try` that matches nothing must reach
@@ -1384,10 +1209,9 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 src_.fail(d.pos, "a handler cannot catch by rvalue reference - "
                                  "the exception object is the runtime's, so "
                                  "catch by value or by 'const &'");
-            // **A handler of type `cv T &` matches exactly what `T` matches**
-            // - [except.handle]/3 - so the type_info names the referent with
-            // its qualifiers off, and the reference is a slot holding the
-            // pointer the runtime already has.
+            // **A handler of type `cv T &` matches exactly what `T` matches** - [except.handle]/3 -
+            // so the type_info names the referent with its qualifiers off, and the reference is a
+            // slot holding the pointer the runtime already has.
             byRef = d.type->isReference();
             declaredType = byRef ? d.type : d.type->unqualified();
             caught = byRef ? d.type->referent()->unqualified()
@@ -1436,11 +1260,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
             const bool wasBody = inHandlerBody_;
             inMsHandler_ = true;
             inHandlerBody_ = true;
-            // **The same bookkeeping, for the opposite purpose.** This ABI ends
-            // the catch by returning from the funclet, so there is no call to
-            // make - but a jump that leaves the funclet early is the thing
-            // `return` is already refused for here, and the counts are how
-            // `break` and `continue` are told from the ones that stay inside.
+            // **The same bookkeeping, for the opposite purpose.**
             handlerDepth_++;
             handlerLoopDepth_.push_back(loopDepth_);
             handlerSwitchDepth_.push_back(switchDepth_);
@@ -1466,11 +1286,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
 
         if (caught != nullptr && !caughtName.empty()) {
             const int slot = declare(caughtName, declaredType, cpos);
-            // **A reference holds what __cxa_begin_catch handed back.** It
-            // returns the address of the exception object, which is the thing
-            // the reference is to - so the slot takes the pointer and every
-            // mention of the name dereferences it, as any reference does.
-            // Measured: clang stores %rax and reads through it.
+            // **A reference holds what __cxa_begin_catch handed back.**
             const Type *slotType = byRef
                 ? types_.pointerTo(declaredType->referent())
                 : types_.pointerTo(caught);
@@ -1487,31 +1303,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 steps.push_back(StmtPtr(new ExprStmt(std::move(bind))));
             } else {
                 // **Caught by value, which is a copy-initialisation and was a
-                // block copy** - [except.handle]/3 initialises the parameter
-                // from the exception object, so a class with a copy
-                // constructor gets it called, and the parameter is an object
-                // of this scope with a destructor of its own. Neither ran: the
-                // bytes were assigned and nothing was ever destroyed, so a
-                // class owning a buffer handed the handler a second pointer to
-                // it and the copy's side effects - a refcount, a log - were
-                // skipped. The ledger balanced only because the copy this
-                // compiler does not elide at the `throw` made up the numbers.
-                //
-                // **And the pointer comes from `__cxa_get_exception_ptr`**,
-                // which the ABI asks for before `__cxa_begin_catch` where a
-                // by-value parameter is initialised: the catch is not entered
-                // until the copy has been made. `__cxa_begin_catch` hands back
-                // the same pointer, which is why copying through it worked at
-                // all - what it does not do is leave the runtime in the state
-                // the ABI describes while the copy constructor runs. Measured
-                // from clang: get_exception_ptr, the constructor, then
-                // begin_catch.
-                // **`__cxa_get_exception_ptr` only where a constructor
-                // runs.** Measured from clang: `catch (int)` and a trivially
-                // copyable class take the pointer `__cxa_begin_catch` returns
-                // and copy the bytes; only a class with a copy constructor
-                // gets the extra call, which exists so the catch is not
-                // entered until that constructor has returned.
+                // block copy**.
                 const Signature *cc = copyConstructorOf(caught->unqualified());
                 ExprPtr fromPtr;
                 if (cc != nullptr) {
@@ -1557,18 +1349,12 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                     copy->setType(caught);
                     steps.push_back(StmtPtr(new ExprStmt(std::move(copy))));
                 }
-                // **The catch is entered after the copy** where a
-                // constructor ran, which is the order the two calls exist to
-                // make possible. Where the bytes were the copy, the pointer
-                // came from `__cxa_begin_catch` itself and the call is already
-                // in the statement above.
+                // **The catch is entered after the copy** where a constructor
+                // ran, which is the order the two calls exist to make
+                // possible.
                 if (cc != nullptr)
                     steps.push_back(StmtPtr(new ExprStmt(std::move(began))));
-                // **An object of this scope from here on.** Every way out of
-                // the handler destroys it - a jump through emitDestructors,
-                // an exception through the end-catch region's pad, and falling
-                // off the end below - and each does it before the catch ends,
-                // which is the order [except.handle]/16 asks for.
+                // **An object of this scope from here on.**
                 if (destructorOf(caught->unqualified()) != nullptr)
                     alive_.push_back(Alive{ caughtName, slot,
                                             caught->unqualified() });
@@ -1586,10 +1372,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         handlerLoopDepth_.push_back(loopDepth_);
         handlerSwitchDepth_.push_back(switchDepth_);
         handlerFrom_.push_back(peek().pos);
-        // **Whether anything in this handler could throw**, counted the way
-        // the `noexcept` region counts it: a region nobody can reach is a row
-        // in the table, a pad in the text and a golden file that moved for
-        // nothing.
+        // **Whether anything in this handler could throw**, as noexcept counts.
         const int throwsBefore = mayThrow_;
         // **Named before the block is read**, because a region inside it hands
         // over to this pad and has to know where that is. The `$` keeps it out
@@ -1623,12 +1406,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
 
         // **An exception leaving the handler has to end the catch too**, and
         // it is the one way out no jump can be written for: the unwinder takes
-        // it. So the handler's block becomes a cleanup region of its own,
-        // whose pad calls `__cxa_end_catch` and then carries on - which is
-        // what clang emits, an invoke of `__cxa_throw` with a cleanup pad
-        // beside it. Without it a `throw` from inside a `catch` left the
-        // runtime's caught-exception chain set and the object undestroyed:
-        // the ledger read live=1 where clang read live=0.
+        // it.
         if (canThrow && !microsoft) {
             std::vector<StmtPtr> guarded;
             guarded.push_back(std::move(handlerBody));
@@ -1641,22 +1419,12 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                 runtimeCall("__cxa_end_catch", types_.get(Kind::Void),
                             std::vector<ExprPtr>()))));
             // **And the objects outside the `try`, where this pad is the last
-            // one in the frame.** A `try` is not covered by the enclosing
-            // block's cleanup region - it answers for itself, and its own
-            // chain destroys them where nothing matched - so a pad inside its
-            // handler has to do the same job or nothing does: measured as a
-            // leak of a local *outside* the `try` when its handler threw.
-            // Where this hands over, the pad it hands to owes them instead.
+            // one in the frame.**
             if (aliveOutside > bodyCleanupFrom_ && beyond.empty())
                 emitDestructors(padSteps, bodyCleanupFrom_, pos, -1,
                                 aliveOutside);
             if (!beyond.empty()) {
-                // **Handed on rather than resumed.** What is out there is
-                // either an enclosing `try`'s chain, which may be the one that
-                // catches this and is the only place the selector is tested
-                // for those types, or another handler's pad, which has its own
-                // catch to end first. `_Unwind_Resume` would leave the frame
-                // and try neither.
+                // **Handed on rather than resumed.**
                 padSteps.push_back(StmtPtr(new Goto(beyond)));
             } else {
                 std::vector<ExprPtr> resumeArgs;
@@ -1673,13 +1441,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
             StmtPtr padLabelled(new Label(endCatchLabel, StmtPtr(padBlock)));
             Try *region = new Try(std::move(guarded), std::move(padLabelled),
                                   padPtr, padSel, std::vector<std::string>());
-            // **Only where the row will carry types.** An enclosing `try`
-            // means the walker puts its handlers on this row's action chain,
-            // and phase 2 installs a pad for a row with actions only where one
-            // of them matched - so without the trailing filter-0 an exception
-            // nothing out there catches would leave without ending the catch,
-            // which is the bug this is fixing. With no enclosing types the
-            // row's action is 0, which already means cleanup.
+            // **Only where the row will carry types.**
             if (!enclosingChain.empty()) region->setAlsoCleanup();
             steps.push_back(StmtPtr(region));
         } else {
@@ -1687,10 +1449,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         }
 
         // Falling off the end of the block, which is the way out that always
-        // reached this call; every other way out makes it for itself now. The
-        // by-value parameter is destroyed here for the same reason and in the
-        // same order - a jump does both through emitDestructors, and the pad
-        // above does both too.
+        // reached this call; every other way out makes it for itself now.
         emitDestructors(steps, aliveBeforeCaught, cpos);
         ExprPtr ended = runtimeCall("__cxa_end_catch", types_.get(Kind::Void),
                                     std::vector<ExprPtr>());
@@ -1720,32 +1479,13 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
         return StmtPtr(t);
     }
 
-    // **Nothing matched, so this frame unwinds like any other.** The objects
-    // alive when the `try` was reached are destroyed here and the exception
-    // handed back - which is what lets a destructible local share a function
-    // with a `try`: the enclosing cleanup region is split around this
-    // statement instead of covering it, and its work is done here.
+    // **Nothing matched, so this frame unwinds like any other.**
     std::vector<ExprPtr> resumeArgs;
     ExprPtr again(Var::local(".ex.ptr", pointerSlot));
     again->setType(voidPtr);
     resumeArgs.push_back(std::move(again));
     std::vector<StmtPtr> resume;
-    // **A nested `try` hands over instead of resuming.** Its row's action chain
-    // names the enclosing handlers too, so phase 1 can pick one of those - and
-    // phase 2 then lands *here*, at this region's pad, because that is the pad
-    // its record names. `_Unwind_Resume` from here leaves for the caller and
-    // never tries the region outside this one in the same frame; measured as a
-    // loop, the resume finding this frame again. So the selector goes to the
-    // enclosing chain, which is the one place that tests it for those types.
-    //
-    // The objects alive outside are left to the enclosing pad as well: they are
-    // its to destroy, and doing it here would destroy them twice.
-    // **And the same three answers as everywhere else.** This `try` may sit
-    // inside a *handler*, whose catch has to be ended on the way out: its pad
-    // is the innermost thing here, one step in front of the enclosing chain
-    // `enclosingChain` names. Jumping straight past it was a leak the ledger
-    // found - a handler inside a handler, the inner one throwing, ending one
-    // catch of the two.
+    // **A nested `try` hands over instead of resuming.**
     int outPtr = 0, outSel = 0;
     const std::string beyondTry = unwindTarget(&outPtr, &outSel);
     const bool unwindsHere = aliveOutside > bodyCleanupFrom_ &&
@@ -1777,11 +1517,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
                                std::move(chain)));
     }
 
-    // **Every segment of the body carries this `try`'s catch types.** Without
-    // them its row is cleanup-only, phase 1 finds no handler at a PC inside the
-    // body and unwinds past the whole frame - which is a `terminate`, measured.
-    // The trailing filter-0 that `alsoCleanup` asks for is what makes phase 2
-    // install the pad when nothing matched, so the destructors still run.
+    // **Every segment of the body carries this `try`'s catch types.**
     for (std::size_t i = 0; i < segments.size(); i++) {
         segments[i]->setTypes(types);
         segments[i]->setTypeIndices(indices);
@@ -1802,8 +1538,7 @@ StmtPtr Parser::tryStatement(std::size_t pos) {
 }
 
 StmtPtr Parser::statementBody() {
-    // A static_assert declares nothing and builds nothing, so the statement it
-    // becomes is the empty one - the same shape the using-directive takes.
+    // A static_assert declares nothing, so the statement it becomes is empty.
     if (staticAssertion()) return StmtPtr(new Block({}));
 
     // **`using namespace N;` inside a block**, the same directive as the one at file
@@ -1823,10 +1558,9 @@ StmtPtr Parser::statementBody() {
         return StmtPtr(new Block({}));
     }
 
-    // **The using-*declaration* is refused inside a block**, where the one at
-    // namespace scope is not: a name declared here lasts to the end of the
-    // block and takes part in overload resolution against the locals beside it,
-    // and neither is what the alias at namespace scope does.
+    // **The using-*declaration* is refused inside a block**, where the one at namespace scope is
+    // not: a name declared here lasts to the end of the block and takes part in overload resolution
+    // against the locals beside it, and neither is what the alias at namespace scope does.
     refuseAliasDeclaration();
     if (peek().is("using"))
         src_.fail(peek().pos, "a using-declaration inside a block is not "
@@ -1846,8 +1580,7 @@ StmtPtr Parser::statementBody() {
         at_++;
         // **A rethrow hands back the exception the handler is holding**, and
         // the runtime is the one that knows which - so there is nothing to
-        // name and nothing to allocate. [except.throw]/8 makes it ill-formed
-        // outside a handler, where there would be no such exception.
+        // name and nothing to allocate.
         if (peek().is(";")) {
             at_++;
             if (target_.microsoftNames())
@@ -1866,30 +1599,10 @@ StmtPtr Parser::statementBody() {
         }
         mayThrow_++;
         ExprPtr value = decay(expr());
-        // **A temporary in the thrown expression is destroyed by the throw
-        // itself now**, after the exception object has been copy-initialised
-        // from it - [except.throw]/3. It was refused here while the exception
-        // object was a *block copy* and nothing destroyed the original: see
-        // throwStatement, which copy-constructs and then flushes.
+        // **A thrown expression's temporary is destroyed by the throw itself.**
         expect(";");
         // **[except.spec]/9: an exception that escapes a `noexcept` function
-        // calls std::terminate.** Where the escape is certain at compile time -
-        // a `throw` in such a function with no `try` in it to catch anything -
-        // that is a direct call, needing no landing pad, no unwind table and no
-        // funclet, so it is the same on all three targets.
-        //
-        // The operand is still evaluated, because its construction is
-        // observable; the exception object is not built, because no handler can
-        // ever see it, and [except.terminate] leaves unwinding before terminate
-        // up to the implementation - clang does not unwind either.
-        //
-        // **What this does not cover**, and docs/CONFORMANCE.md carries it:
-        // an exception arriving from a function this one *calls*. Catching that
-        // means a landing pad over the whole body, which is the implicit `try`
-        // the same document orders behind two other pieces of work. So this is
-        // the half that costs nothing rather than the whole rule; nothing that
-        // was accepted before is refused now, and nothing that terminated
-        // before propagates.
+        // calls std::terminate.**
         if (inNoexceptFunction_ && !inTryBody_ && !inHandlerBody_) {
             std::vector<StmtPtr> both;
             both.push_back(StmtPtr(new ExprStmt(std::move(value))));
@@ -1925,37 +1638,7 @@ StmtPtr Parser::statementBody() {
         }
         ExprPtr returned = returnType_->isReference() ? expr() : decay(expr());
         // **The temporary that *is* the returned value must not be destroyed
-        // here.** `return string(p, n);` builds a class temporary, and
-        // classTemporary puts it on the pending list to die at the end of the
-        // full expression - which is this statement. But the value travels out
-        // through the hidden pointer as *bytes*: destroy the temporary first and
-        // the caller is handed a shallow copy of an object whose resources have
-        // been released. `substr` returned the right length and an empty buffer,
-        // and `operator+` lost half its text, for exactly this reason.
-        //
-        // Releasing it hands ownership to the caller, which is what returning by
-        // value means. The caller then copy-constructs from those bytes and the
-        // hidden temporary is not destroyed there either - that leak is a
-        // separate open finding, and a leak is not a wrong answer.
-        // **A temporary released here is the returned object itself**, not a
-        // source to copy from - its bytes travel out through the hidden
-        // pointer and the caller owns them. Copying it as well built a second
-        // object and left the first undestroyed, which is where
-        // `return Owner(n);` leaked one per call.
-        // **The conversion happens before the full expression ends**, and it
-        // used to happen after. `userConversion` makes a temporary, so a
-        // `return "<type>";` from a function returning `std::string` pushed one
-        // onto a list `endFullExpression` had already emptied - and it stayed
-        // there, through the end of the function, into the *next* function
-        // parsed, which then emitted a guarded destructor for a slot in a frame
-        // that no longer existed. Semantic.cpp's `describe` ends with exactly
-        // that line and `countText` follows it; on x86_64-linux the stale guard
-        // held whatever the frame did and `free` was handed a pointer into the
-        // source text about a quarter of the time.
-        //
-        // Converting first also puts the temporary where the two lines below
-        // can see it: it *is* the returned object, so releasing it is what
-        // hands its bytes to the caller rather than destroying them here.
+        // here.**
         if (!returnType_->isReference())
             if (ExprPtr made = userConversion(returnType_, returned, pos))
                 returned = std::move(made);
@@ -1972,10 +1655,7 @@ StmtPtr Parser::statementBody() {
                                "this function, which is gone by the time the "
                                "caller could read it");
         } else {
-            // [stmt.return]/2 copy-initialises the returned object, and a
-            // converting constructor is part of that: `return "v";` from a
-            // function returning `std::string` is `string("v")`. It is applied
-            // above, before the full expression ends.
+            // [stmt.return]/2 copy-initialises the returned object, converting.
             checkAssignable(*value, returnType_, pos, "this function's return type");
             // Does the operand name a by-value parameter of this function? One that
             // arrived by address was lowered to a reference and reads back as `*slot`;
@@ -2116,8 +1796,7 @@ StmtPtr Parser::statementBody() {
         expect("(");
         // **A declaration here is a scope that wraps both arms**, so the whole
         // statement goes inside a block of its own rather than the condition
-        // being a bigger expression. Nothing changes for an ordinary
-        // condition, which is what the `declares` test is guarding.
+        // being a bigger expression.
         const bool declares = atDeclarationStart();
         std::vector<StmtPtr> setup;
         int scope = -1;
@@ -2134,9 +1813,7 @@ StmtPtr Parser::statementBody() {
                                "this condition");
         // **Where the condition's object became alive**, in the shape a
         // cleanup region wants: a statement index and how many were alive
-        // after it. Without this an exception passing through the arms would
-        // leave the object undestroyed - the normal path below is not the
-        // only way out of the statement.
+        // after it.
         std::vector<std::pair<std::size_t, std::size_t> > built;
         if (declares && alive_.size() != aliveAtEntry)
             built.push_back(std::make_pair(setup.size(), alive_.size()));
@@ -2232,13 +1909,9 @@ StmtPtr Parser::statementBody() {
         std::size_t pos = peek().pos;
         std::string name = expectIdent("a label to jump to");
         expect(";");
-        // **A `goto` out of a handler ends the handling** - [except.handle]/16,
-        // the same sentence `return`, `break` and `continue` answer above - and
-        // this one cannot: a forward label has not been read, so `resolveGotos`
-        // fills the cleanups afterwards and there is nowhere to put the
-        // `__cxa_end_catch` at the point the decision is made. A label already
-        // seen *inside* this handler is a jump that stays in it and needs
-        // none, which is the case that keeps working.
+        // **A `goto` out of a handler ends the handling** -
+        // [except.handle]/16, the same sentence `return`, `break` and
+        // `continue` answer above - and this one cannot.
         if (handlerDepth_ > 0) {
             bool insideHandler = false;
             for (std::size_t i = 0; i < labels_.size(); i++)
@@ -2315,13 +1988,7 @@ StmtPtr Parser::statementBody() {
 // list of them. The list is not a scope: what it holds is declared where the
 // specification is, and only the linkage of the names changes.
 
-// **One number per type, however many call-site rows name it.** The personality
-// hands the index back as the selector and the chain above compares against it,
-// so a type named by two rows has to answer with one number - and this has to
-// agree with `Walker::lsdaTable`, which deduplicates the same way. Appending
-// blindly was right while no two rows shared a type and wrong the moment one
-// did: the second row's handler would compare against a number the runtime
-// never produces, and the pad would resume into itself.
+// **One number per type, however many call-site rows name it.**
 int Parser::typeIndexFor(const std::string &symbol) {
     for (std::size_t i = 0; i < functionTypes_.size(); i++)
         if (functionTypes_[i] == symbol) return static_cast<int>(i) + 1;

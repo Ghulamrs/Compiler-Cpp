@@ -303,13 +303,6 @@ void X86_64Linux::genAddr(const Expr &e) {
         if (q->type()->isStructOrUnion()) { q->accept(*this); return; }
     }
     // **A constructed temporary is a Comma, and it has an address.**
-    // `return string(p, n);` builds the object into a slot and yields the slot -
-    // `Comma(build, slot)`, from completeCall - so the address of the whole is
-    // the address of the right side, once the left has run. Without this a class
-    // with a user copy constructor *and* a destructor could not return a
-    // temporary built by one of its own constructors, which is the shape of
-    // every `substr`; the two halves were needed together, which is why nothing
-    // simpler than a string class reached it.
     if (const Comma *c = dynamic_cast<const Comma *>(&e)) {
         c->left().accept(*this);
         genAddr(c->right());
@@ -1354,9 +1347,6 @@ void X86_64Linux::landingPad(int pointerSlot, int selectorSlot) {
 // The same table the arm64 backend writes, in this assembler's spelling; the
 // layout and every encoding byte are documented there. What differs is the
 // section, the label prefix, and a type_info reached through a stub, not @GOT.
-// The same table the arm64 backend writes, in this assembler's spelling. Both go
-// through Walker::lsdaTable now; what is left here is the part that is ELF's
-// alone - the indirection stubs and the personality comdat, which follow it.
 static const Walker::LsdaSpelling kElfLsda = {
     ".L", ".section .gcc_except_table,\"a\",@progbits", false, ".L", ".DW.stub"
 };
@@ -1478,10 +1468,9 @@ void X86_64Linux::emit(const Function &fn) {
     }
 
     const std::vector<Param> &ps = fn.params();
-    // **The same walk the caller made, made once.** placeArguments answers where
-    // each parameter is; what is left here is reading it out of there, and the
-    // base is this side's: an incoming stack argument starts above the return
-    // address, and above Microsoft's shadow space where there is one.
+    // **The same walk the caller made, made once.** placeArguments answers
+    // where each parameter is; what is left here is reading it out of there,
+    // and the base is this side's.
     std::vector<const Type *> ptypes;
     ptypes.reserve(ps.size());
     for (std::size_t i = 0; i < ps.size(); i++) ptypes.push_back(ps[i].type);
@@ -1581,16 +1570,6 @@ void X86_64Linux::emit(const Function &fn) {
         a_->defLabel(".Lfunc.end." + fn.symbol());
     // The tables are written below; tell the spelling whether there are any,
     // so its unwind info does not name a FuncInfo that never appears.
-    //
-    // **Both spellings, and the `emitsOwnRtti()` that used to be here was the
-    // whole of the `$cppxdata$` defect.** That question is about who writes
-    // the RTTI records, which has nothing to do with whether this function has
-    // exception tables - and excluding the MASM spelling from the answer left
-    // it deciding for itself, from whether the *Itanium* LSDA name was empty.
-    // A function with a landing pad and no Microsoft region - a constructor
-    // taking a class by value, whose parameter the callee destroys - then got
-    // unwind info naming `$cppxdata$<fn>` that nothing defined, and ml64
-    // stopped with `A2006: undefined symbol`.
     if (target_.microsoftNames()) a_->noteHasEh(!msTries().empty());
     a_->functionEnd(fn.symbol());
     emitExceptionTables(fn);
@@ -1611,7 +1590,6 @@ void X86_64Linux::emit(const Function &fn) {
 // **A funclet is a slice of the ordinary output, lifted.** Walking the handler
 // appends its code like any other, so remembering where that began and cutting
 // back to it gives the body exactly - and the code generator knows none of it.
-// The MASM path does this too; what differs below is only the spelling.
 std::string X86_64Linux::beginFunclet() {
     funcletMark_ = out_.size();
     funcletSymbol_ = "$" + std::string(funcletKind_).substr(1) +
@@ -1625,11 +1603,6 @@ void X86_64Linux::endCleanupFunclet() {
 }
 
 // **The resume label goes through labelText like every table entry does.**
-// A handler funclet hands back the address to carry on at, and on COFF a `.L`
-// name is a temporary the assembler discards - `lea .L.main.caught.0(%rip)`
-// is refused as undefined, which is the same rule the tables above obey and
-// the one the MASM twin obeys through masm_.labelName. Identity on ELF and
-// Mach-O, so neither Itanium target moves.
 void X86_64Linux::endFunclet(const std::string &resume) {
     closeFunclet("  lea " + a_->labelText(resume) + "(%rip), %rax\n");
 }
@@ -1640,17 +1613,7 @@ void X86_64Linux::storeUnwindHelp(int slot) {
     a_->ins("movq", immText("-2"), mem(-slot, "%rbp"));
 }
 
-// **The funclet's own frame, and the assembler writes its unwind data.** `rdx`
-// is the establisher frame the runtime passes, which on this target is exactly
-// the parent's rbp - the two became one thing when the frame pointer moved to
-// the bottom of the allocation - so the handler reaches the parent's locals
-// with no adjustment. A funclet returns where to carry on, in rax; a cleanup
-// has nothing to return to.
-//
-// `.text$x` is where a funclet lives, and `.seh_proc` beside it is what makes
-// the assembler emit its .pdata and .xdata. The MASM path writes both by hand
-// and has to pile the .pdata in a trailer, because a funclet's entry must sort
-// after every ordinary function's; here the assembler places them.
+// **The funclet's own frame, and the assembler writes its unwind data.**
 void X86_64Linux::closeFunclet(const std::string &tail) {
     std::string body = out_.substr(funcletMark_);
     out_.resize(funcletMark_);
@@ -1662,19 +1625,12 @@ void X86_64Linux::closeFunclet(const std::string &tail) {
     const std::string pr = "\"$LNprolog$" + funcletSymbol_ + "\"";
     const std::string u = "\"$unwind$" + funcletSymbol_ + "\"";
 
-    // **A funclet of a mergeable parent is mergeable with it.** The parent goes
-    // in a COMDAT because every unit that uses it emits one; its funclet is
-    // emitted just as often, and left in a plain section the copies collide.
-    // `associative` is what says "discard this with that one", so the funclet
-    // and its unwind data go wherever the parent's copy goes.
+    // **A funclet of a mergeable parent is mergeable with it.**
     const std::string assoc =
         fnMergeable_ ? ",associative," + a_->labelText(fnSymbol_) : std::string();
 
     std::string f;
-    // **Not `.globl`.** Nothing outside this object names a funclet - the FH3
-    // tables that point at it are emitted beside it - and exporting one makes
-    // every unit holding a copy collide, which is what the MASM path avoids by
-    // leaving it out of its PUBLIC list.
+    // **Not `.globl`.**
     f += "\n  .section .text$x,\"xr\"" + assoc + "\n";
     f += q + ":\n";
     f += b + ":\n";
@@ -1683,10 +1639,9 @@ void X86_64Linux::closeFunclet(const std::string &tail) {
     f += pu + ":\n";
     f += "  sub $32, %rsp\n";
     f += pr + ":\n";
-    // rdx is the establisher frame, which on this target is exactly the
-    // parent's rbp - the two became one thing when the frame pointer moved to
-    // the bottom of the allocation - so the handler reaches the parent's
-    // locals with no adjustment.
+    // rdx is the establisher frame, which on this target is exactly the parent's rbp - the two
+    // became one thing when the frame pointer moved to the bottom of the allocation - so the
+    // handler reaches the parent's locals with no adjustment.
     f += "  mov %rdx, %rbp\n";
     f += body;
     f += tail;
@@ -1723,11 +1678,7 @@ void X86_64Linux::closeFunclet(const std::string &tail) {
     funclets_ += f;
 }
 
-// **The FH3 tables for a frame that only cleans up.** Nothing is caught here -
-// the runtime runs some destructors and carries on - so there are no try blocks
-// and no handler map, and each region is a *state* whose action is a funclet
-// and whose toState is the region before it. Same table and same values the
-// MASM path writes; `.long X@IMGREL` is what `DD imagerel X` is called here.
+// **The FH3 tables for a frame that only cleans up.**
 void X86_64Linux::emitCoffCleanupTables(const Function &fn) {
     (void)fn;
     const std::string m = fnSymbol_;
@@ -1755,13 +1706,9 @@ void X86_64Linux::emitCoffCleanupTables(const Function &fn) {
 
     o += "\"$stateUnwindMap$" + m + "\":\n";
     for (std::size_t k = 0; k < states; k++) {
-        // toState: the region before this one, and -1 for the first, which is
-        // what says "nothing further in this frame".
+        // toState.
         o += "  .long " + (k == 0 ? std::string("-1") : std::to_string(k - 1)) + "\n";
         // **A state with no funclet runs nothing, and says so with a zero.**
-        // Writing the name unconditionally emitted `.long @IMGREL` with no
-        // symbol in front of it, which the assembler took as a reference to a
-        // symbol named `?` - undefined, and the link failed naming it.
         const std::string &act = msTries()[k].cleanupFunclet;
         if (act.empty()) o += "  .long 0\n";
         else             o += "  .long " + a_->labelText(act) + "@IMGREL\n";
@@ -1778,11 +1725,8 @@ void X86_64Linux::emitCoffCleanupTables(const Function &fn) {
     out_ += o;
 }
 
-// **The five objects the Microsoft ABI wants per class with a vftable**, in GNU
-// spelling. Same records and the same constants the MASM path writes; the only
-// differences are the directive names and that a `DD imagerel X` is a
-// `.long X@IMGREL`. They live in `.rdata$r` on both, which is where cl puts
-// them - see the note at the first section directive below.
+// **The five objects the Microsoft ABI wants per class with a vftable**, in
+// GNU spelling.
 void X86_64Linux::emitCoffClassRtti(const Program &program) {
     if (program.rtti.empty()) return;
     std::string &o = out_;
@@ -1813,13 +1757,7 @@ void X86_64Linux::emitCoffClassRtti(const Program &program) {
         const std::string hi = a_->labelText(n.hierarchy);
         const std::string lo = a_->labelText(n.locator);
 
-        // **`.rdata$r`, which is where cl puts these**, and not `.data$r`. The
-        // linker groups a section by the part before its `$`, so `.data$r` folded
-        // into `.data` - and these records are read-only while `.data` is writable,
-        // which is two attribute sets for one section: `LNK4078: multiple '.data'
-        // sections found with different attributes (40400040)` on every link.
-        // Measured with dumpbin on cl's own object: `.rdata$r`, flags 40401040,
-        // initialised data that is read and not written.
+        // **`.rdata$r`, which is where cl puts these**, and not `.data$r`.
         o += "  .section .rdata$r,\"dr\"\n";
         o += "  .p2align 3\n";
         o += d + ":\n";
@@ -1941,12 +1879,7 @@ void X86_64Linux::emitData(const Program &program) {
     }
 }
 
-// **The FH3 tables for a frame that catches.** A cleanup-only frame has no
-// try blocks and no handler map; this one has both, and without them the
-// runtime finds no handler in the frame at all - a `try`/`catch` compiled
-// this way linked, ran, caught nothing and printed nothing. Same tables and
-// the same constants MasmCodeGen writes, with `.long X@IMGREL` for its
-// `DD imagerel X`.
+// **The FH3 tables for a frame that catches.**
 void X86_64Linux::emitCoffTryTables(const Function &fn) {
     (void)fn;
     const std::string m = fnSymbol_;
@@ -2043,13 +1976,7 @@ void X86_64Linux::emitCoffTryTables(const Function &fn) {
 
 // The four objects a Microsoft `throw` hands the runtime, spelled for GNU-as:
 // the type descriptor, one catchable type, the array listing it, and the
-// ThrowInfo itself. Same records MasmCodeGen::emitThrowInfo writes, with
-// `.long X@IMGREL` where MASM writes `DD imagerel X`.
-//
-// **File-local here as well.** cl puts each in a COMDAT and a public copy
-// collides with cl's; the runtime matches a type descriptor by its name
-// string rather than by its address, which is what makes a private one work
-// and what rung 6.5a measured.
+// ThrowInfo itself.
 void X86_64Linux::emitCoffThrowInfo(const Program &program) {
     if (program.thrown.empty()) return;
     std::string &o = out_;

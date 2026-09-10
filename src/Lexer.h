@@ -13,9 +13,7 @@ struct Token {
     bool suffixU = false;
     bool suffixL = false;
     bool suffixLL = false;
-    // **[lex.icon] table 6 gives a hexadecimal or octal literal a different
-    // ladder of types from a decimal one**, so the base has to survive the
-    // lexer: `0x80000000` is `unsigned int` and `2147483648` is `long`.
+    // **[lex.icon] table 6: a hex or octal literal has its own ladder of types.**
     bool decimal = true;
     // **Whether this floating literal is exactly a `double`**, decided from the
     // digits and not from a host library. Every constant is carried as a double,
@@ -46,17 +44,13 @@ public:
 
     std::vector<Token> tokenize();
 
-    // The primary token an alternative spelling stands for, or null. Applied in
-    // the lexer, so `and` reaches the parser as `&&`; public because the
-    // preprocessor's `#if` needs the same eleven and one table serves both.
+    // The primary token an alternative spelling stands for, or null.
     static const char *alternativeToken(const std::string &word);
 
 private:
     const Source &src_;
 
-    // A `'` between digits is C++14's separator, and here it opens a
-    // character constant - so the number's own position is where it has to
-    // be named, not the unterminated literal three lines later.
+    // A `'` between digits is C++14's separator, and here it opens a character constant.
     void digitSeparator(const std::string &s, std::size_t at) const;
     // Is the decimal literal spanning [from, to) exactly a double? Answered from
     // the digits: M * 10^E is dyadic only where the negative powers of ten divide

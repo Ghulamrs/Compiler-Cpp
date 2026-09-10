@@ -73,11 +73,7 @@ void Parser::flushTemporaries(std::vector<StmtPtr> &into) {
         ExprPtr at(new Unary('&', std::move(what)));
         at->setType(types_.pointerTo(mine[k].type));
         StmtPtr call(new ExprStmt(destructorCall(std::move(at), *dtor, 0)));
-        // **Under its guard, and cleared with it.** One arm of a `?:` runs and
-        // the other's temporaries were never built, so a statement can end
-        // with one of them not existing - `b ? take(T(5)) : take(T(9))`
-        // destroyed both. The guard is false for the arm that did not run,
-        // having been cleared at the function's entry and never set.
+        // **Under its guard, and cleared with it.**
         if (mine[k].flag != 0) {
             ExprPtr live(Var::local("$guard", mine[k].flag));
             live->setType(types_.intType());
@@ -92,15 +88,7 @@ void Parser::flushTemporaries(std::vector<StmtPtr> &into) {
 }
 
 // **Take one temporary off the pending list**, because something else has
-// become responsible for it. The only caller is `return`, where the value
-// leaves the frame: the object the expression yields is the object the caller
-// receives, so destroying it at the end of this full expression would release
-// what the caller is about to be given. A constructed temporary is
-// `Comma(build, slot)`, so the slot is found by walking to the right.
-// **A temporary's guard flag**, an int in the frame: 0 while the object does
-// not exist and 1 once its constructor has returned. A cleanup pad reads it,
-// which is what lets one region cover a whole statement without destroying
-// something the statement had not yet built.
+// become responsible for it.
 int Parser::guardFlag() {
     const int slot = allocateFrameSlot(types_.intType());
     guardSlots_.push_back(slot);
@@ -128,12 +116,7 @@ bool Parser::releaseTemporary(const Expr &value) {
             if (u->op() == '*' || u->op() == '&') { at = &u->operand(); continue; }
         break;
     }
-    // **A call's result is a temporary too, and it is not a `Var`.** `return
-    // f();` hands the caller the bytes in the slot the callee built through,
-    // so destroying it at the end of this full expression releases what the
-    // caller is about to be given - for a class that owns anything, the caller
-    // receives freed memory. `std::string::substr(pos)`, which is one line
-    // returning `substr(pos, npos)`, came back empty for exactly this.
+    // **A call's result is a temporary too, and it is not a `Var`.**
     int slot = -1;
     if (const Var *v = dynamic_cast<const Var *>(at)) {
         if (!v->isLocal()) return false;
@@ -153,23 +136,7 @@ bool Parser::releaseTemporary(const Expr &value) {
 }
 
 // **[class.temporary]/5: a temporary bound to a reference lives as long as the
-// reference does**, not to the end of the full expression that made it. So the
-// object comes off the pending list - where it would be destroyed at the
-// semicolon, leaving the reference dangling - and goes on `alive_`, where the
-// end of the enclosing scope destroys it like any other local.
-//
-// Neither half was happening. The reference declaration flushed nothing at all,
-// so `const T &r = T();` built the temporary and destroyed it never: `+|` where
-// every other compiler prints `+|-`. A destructor with an observable effect did
-// not run, and whatever the object owned leaked.
-//
-// The slot is found the way releaseTemporary finds one, by the same walk -
-// `bindReference` hands back an address, so there is a `&` in front of what
-// classTemporary already wrapped as `*(ctor(&tmp), &tmp)`.
-//
-// Only a temporary is extended. Binding to an object that already exists,
-// `const T &r = t;`, finds no pending entry and returns false - which is right:
-// that object belongs to whoever declared it and is destroyed there.
+// reference does**, not to the end of the full expression that made it.
 bool Parser::extendTemporary(const Expr &addr, const std::string &name) {
     const Expr *at = &addr;
     for (;;) {
@@ -194,10 +161,7 @@ bool Parser::extendTemporary(const Expr &addr, const std::string &name) {
         if (pendingTemps_[i].slot == slot) {
             const Type *cls = pendingTemps_[i].type;
             pendingTemps_.erase(pendingTemps_.begin() + i);
-            // The guard flag goes with the entry. A guard exists so a cleanup
-            // pad reaching the middle of a full expression can ask whether the
-            // object was built yet; past the declaration it always was, so the
-            // scope's own destructor needs no question asked.
+            // The guard flag goes with the entry.
             if (destructorOf(cls) != nullptr)
                 alive_.push_back(Alive{ name, slot, cls });
             return true;
@@ -242,8 +206,7 @@ ExprPtr Parser::endFullExpression(ExprPtr e) {
         ExprPtr gone = destructorCall(std::move(at), *dtor, 0);
         // Clear the guard with the destruction, so that a pad later in the
         // same block does not destroy what this statement already has - and
-        // ask it first, for the same reason `flushTemporaries` does. Written
-        // as a conditional expression, which is the shape `delete p` uses.
+        // ask it first, for the same reason `flushTemporaries` does.
         if (mine[k].flag != 0) {
             ExprPtr clear(new Comma(std::move(gone), setGuard(mine[k].flag, 0)));
             clear->setType(types_.intType());
@@ -417,13 +380,7 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
                              bool variadic, std::size_t pos,
                              std::vector<ExprPtr> args, bool hasThis,
                              int vbInit) {
-    // **cl's hidden most-derived flag, added here and nowhere else.** A
-    // constructor of a Microsoft class with a virtual base takes an `int`
-    // last, and it is not in the mangled name, so no caller can see it in the
-    // signature it resolved. Every constructor call in this compiler comes
-    // through here, so this is the one place that has to know: 1 by default
-    // because most construction is of a complete object, and the three sites
-    // that build a *base subobject* pass 0.
+    // **cl's hidden most-derived flag, added here and nowhere else.**
     if (vbInit >= 0 && !msVbaseCtors_.empty() &&
         msVbaseCtors_.count(symbol) != 0) {
         std::vector<const Type *> withFlag(params);
@@ -439,13 +396,10 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
                        std::to_string(params.size()) + " argument(s), given " +
                        std::to_string(args.size()));
 
-    // **A call through a pointer promises nothing.** The specification is not part
-    // of the type in C++11, so `noexcept(p())` is false for every function pointer,
-    // which is what clang answers too.
+    // **A call through a pointer promises nothing.**
     if (callee != nullptr) mayThrow_++;
 
-    // Temporaries this call makes for its by-value class arguments, and which
-    // this call therefore has to destroy once it returns.
+    // Temporaries this call makes for its by-value class arguments, and which this call therefore has to destroy once it returns.
     std::vector<Temporary> destroy;
 
     for (std::size_t i = 0; i < args.size(); i++) {
@@ -455,12 +409,7 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
         }
         std::string what = "argument " + std::to_string(i + 1) + " of '" + name + "'";
         // **[over.ics.user]: a converting constructor may be called to make an
-        // argument.** `f("x")` where the parameter is `const std::string &`
-        // builds the string here, before the branches below - which know how to
-        // bind a reference and how to copy a class, and neither of which knows
-        // how to make one. Ranked as its own step in rankArgument, below every
-        // standard conversion, so a candidate needing this loses to one that
-        // does not.
+        // argument.**
         if (ExprPtr made = userConversion(params[i], args[i], pos))
             args[i] = std::move(made);
         if (params[i]->isReference()) {
@@ -502,12 +451,7 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
         for (std::size_t k = 0; k < destroy.size(); k++)
             pendingTemps_.push_back(destroy[k]);
 
-    // **And the object the call returns is a temporary like any other.** The
-    // slot above is where the callee builds its result, and nothing was
-    // destroying it: `make();` on its own, `make().v`, and an argument built
-    // from one all left the object alive for the rest of the function. It is
-    // the caller's on every ABI - what Microsoft moves to the callee is the
-    // by-value *parameter* above, not the return.
+    // **And the object the call returns is a temporary like any other.**
     if (slot != 0 && destructorOf(returns) != nullptr)
         pendingTemps_.push_back(Temporary{ slot, returns->unqualified(), 0 });
 
@@ -559,11 +503,9 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
                                const Type *forceOwner) {
     const Type *plain = cls->unqualified();
 
-    // **A member function is looked for up the base chain**, unlike a data member,
-    // which the layout copied down: a member lives at an offset and a function
-    // under a name. The first class with the name wins - [class.member.lookup].
-    // A qualified call says which class's version it means, so the walk up the
-    // bases does not happen and the answer is the class that was named.
+    // **A member function is looked for up the base chain**, unlike a data
+    // member, which the layout copied down: a member lives at an offset and a
+    // function under a name.
     const Type *owner = forceOwner != nullptr ? forceOwner->unqualified()
                                               : findMemberOwner(plain, name);
     if (owner == nullptr) owner = plain;
@@ -581,12 +523,7 @@ ExprPtr Parser::memberCallWith(ExprPtr object, const Type *cls,
         src_.fail(pos, "'" + name + "' is " + how + " in '" + plain->describe() +
                        "' - it can be called only from inside the class");
     }
-    // **A static member called through an object.** [class.static]/1 allows the
-    // spelling and the function still gets no `this`; [expr.ref] still evaluates
-    // the object expression, which is what the Comma is for - the same rule
-    // `p->count` follows for a static *data* member, applied to its twin. The
-    // const check below does not apply: with no `this` there is nothing a const
-    // object could be promised about.
+    // **A static member called through an object.**
     if (sig.isStaticMember) {
         ExprPtr call = completeCall(key, sig.symbol, nullptr, sig.returns,
                                     sig.params, sig.variadic, pos,
@@ -714,11 +651,7 @@ bool Parser::isFriendOf(const Type *cls) const {
 }
 
 // **A lambda has the access of the function it was written in** -
-// [expr.prim.lambda]/7. Inside one `currentClass_` is the closure, and both access
-// checks ask this rather than comparing it themselves, having drifted apart once.
-// Is `want` a base of `cls`, at any depth? The derivation's own access is not
-// asked: a private base still lets the derived class reach what the base made
-// protected - what private derivation limits is who may go on through it.
+// [expr.prim.lambda]/7.
 static bool derivesFrom(const Type *cls, const Type *want) {
     if (cls == nullptr) return false;
     const std::vector<Type::BaseSpec> &bs = cls->unqualified()->bases();
@@ -759,10 +692,7 @@ void Parser::checkAccessible(const Type *object, const Member &m,
     const Type *owner = m.declaredIn != nullptr ? m.declaredIn : object;
     if (insideAccessOf(owner, m.access)) return;
     if (isFriendOf(owner)) return;
-    // No fallback to the class it was reached *through*: being inside `D`
-    // grants nothing over a private member of `B`, which is the whole of
-    // [class.access.base]/1. The protected case is already answered by
-    // insideAccessOf, whose derivesFrom clause is exactly that rule.
+    // No fallback to the class it was reached *through*.
     const char *how = m.access == Access::Private ? "private" : "protected";
     // Named by the class that declared it: saying it is private in the derived
     // class sends the reader to a class whose source does not mention it.

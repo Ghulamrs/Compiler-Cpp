@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""The comment-line policy, with an oracle behind it.
+
+    tools/comment-lines            report every group that breaks the rule
+    tools/comment-lines --count    just the number, for a gate
+
+**The rule.** A comment group is a run of `//` lines with no blank line in it.
+No group may run longer than three lines. A group standing in front of a
+*single* line of code may run one line only: a one-liner gets a one-liner.
+
+**Why an oracle and not a sentence in CLAUDE.md.** That file carried the rule
+as prose from 2026-09-02, the tree grew to 400 breaches by 2026-09-08, and the
+sentence had to be rewritten to admit it. A claim with no oracle is not
+allowed to be believed - so this is the oracle, and `make check-comments` is
+where it is believed.
+"""
+import os
+import re
+import sys
+
+# A banner - `// ----- new and delete` - divides sections and is not prose, so
+# it neither joins the group beneath it nor counts against one.
+BANNER = re.compile(r'^\s*//\s*[-=*]{4,}')
+
+def groups(path):
+    """Every comment group in one file, with the code group beneath it."""
+    lines = open(path, encoding='utf-8').read().split('\n')
+    out = []
+    i = 0
+    while i < len(lines):
+        if not lines[i].strip().startswith('//') or BANNER.match(lines[i]):
+            i += 1
+            continue
+        start = i
+        while (i < len(lines) and lines[i].strip().startswith('//') and
+               not BANNER.match(lines[i])):
+            i += 1
+        comment = i - start
+        # The code beneath it, to the next blank line or comment.
+        code = 0
+        j = i
+        while j < len(lines):
+            t = lines[j].strip()
+            if t == '' or t.startswith('//'):
+                break
+            code += 1
+            j += 1
+        out.append((start + 1, comment, code))
+    return out
+
+def main():
+    root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src')
+    bad = 0
+    for base, _, names in sorted(os.walk(root)):
+        for name in sorted(names):
+            if not name.endswith(('.cpp', '.h')):
+                continue
+            path = os.path.join(base, name)
+            for line, comment, code in groups(path):
+                cap = 1 if code == 1 else 3
+                if comment <= cap:
+                    continue
+                bad += 1
+                if '--count' not in sys.argv:
+                    rel = os.path.relpath(path, os.path.dirname(root))
+                    print('%s:%d: %d comment lines over %d line%s of code, '
+                          'cap %d' % (rel, line, comment, code,
+                                      '' if code == 1 else 's', cap))
+    print('comment-lines: %d group(s) over the cap' % bad)
+    return 1 if bad else 0
+
+sys.exit(main())

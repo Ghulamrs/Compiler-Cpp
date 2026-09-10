@@ -287,8 +287,6 @@ void MasmSpelling::prologue(int frameSize, const std::string &lsda) {
     // **The LSDA name says a landing pad exists, which is not the same
     // question.** A Microsoft FuncInfo follows only where one is written, and
     // the code generator says so through `noteHasEh` before `functionEnd`.
-    // Deciding it here made a constructor with a by-value class parameter name
-    // a `$cppxdata$` nothing defined; ml64 answered `A2006`.
     (void)lsda;
     frameSize_ = frameSize;
     const std::string m = mangle(fnName_);
@@ -363,9 +361,7 @@ void MasmSpelling::functionEnd(const std::string &name) {
     o_ += "  DD imagerel $unwind$" + m + "\n";
     o_ += ".pdata ENDS\n";
 
-    // UNWIND_INFO: version 1 with no flags, the prologue's size, how many codes
-    // follow, and the frame register - rbp, at offset 0 from where rsp stood when
-    // it was set. The codes are last-first, the order an unwinder undoes them in.
+    // UNWIND_INFO.
     o_ += ".xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
     // Version 1, and the flags in the top five bits. 0x19 is UNW_FLAG_EHANDLER and
     // UNW_FLAG_UHANDLER, which is what cl writes for a function with a `try`.
@@ -435,13 +431,7 @@ void MasmSpelling::dataInt(int size, long long v) {
 }
 
 void MasmSpelling::dataSym(const std::string &sym, long long off) {
-    // **A symbol named by data is a use, and MASM needs it declared.** The two
-    // operand paths record one; this did not, so a vtable slot holding a
-    // function defined in another translation unit reached ml64 undeclared -
-    // `error A2006: undefined symbol`, on ten of Compiler++'s sixteen and on
-    // nothing in the suite, where every class is defined where it is used.
-    // The mirror of A-02: there a vtable slot was a use nothing emitted, here
-    // it is a use nothing declared.
+    // **A symbol named by data is a use, and MASM needs it declared.**
     referenced_.insert(sym);
     std::string t = mangle(sym);
     if (off > 0) t += "+" + std::to_string(off);
@@ -507,9 +497,7 @@ void MasmSpelling::preamble(std::ostream &sink) {
     // the tables live outside the function and measure into it.
     sink << "OPTION DOTNAME\n";
     sink << "OPTION NOSCOPED\n";
-    // **MASM exports every PROC unless told otherwise**, so a `static` function
-    // left out of the PUBLIC list below came out of the object External anyway.
-    // Invisible to mangled-names: the name was right, the storage class was not.
+    // **MASM exports every PROC unless told otherwise**, a `static` included.
     sink << "OPTION PROC:PRIVATE\n\n";
 
     for (const std::string &g : unreserved_)
@@ -540,10 +528,9 @@ int MasmCodeGen::establisherOffset(int slot) const {
     return masm_.frameSize_ - slot;
 }
 
-// **Through the assembler rather than as a raw string**, so the renderer's
-// `+ frameSize_` is the only place the frame moves: `[rbp-slot]` written here
-// comes out as `[rbp + frameSize - slot]` there, which is the same arithmetic
-// establisherOffset does for the tables.
+// **Through the assembler rather than as a raw string**, so the renderer's `+ frameSize_` is the
+// only place the frame moves: `[rbp-slot]` written here comes out as `[rbp + frameSize - slot]`
+// there, which is the same arithmetic establisherOffset does for the tables.
 void MasmCodeGen::storeUnwindHelp(int slot) {
     a_->ins("movq", imm(-2), mem(-slot, "%rbp"));
 }
@@ -683,9 +670,7 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
 
     const std::string m = masm_.mangledName();
 
-    // **Cleanups and handlers never share a function**, which the parser enforces
-    // on every target: a local with a destructor and a `try` in one function is
-    // refused, each being a range that would have to split the other.
+    // **Cleanups and handlers never share a function**, which the parser enforces on every target.
     if (msTries()[0].isCleanup) { emitCleanupTables(fn); return; }
 
     const std::size_t tries = msTries().size();
@@ -694,9 +679,7 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
     funclets_.clear();
     funcletIndex_ = 0;
 
-    // **Two states per try**: the body is one and its handlers the next, so try k
-    // owns states 2k and 2k+1. Numbered rather than nested because the parser
-    // refuses a `try` inside another, which is what tryLow and tryHigh are for.
+    // **Two states per try**.
     const std::size_t states = 2 * tries;
 
     std::size_t ipRows = 0;
@@ -775,21 +758,7 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
 }
 
 // **The five objects the Microsoft ABI wants before it will answer a
-// `dynamic_cast`**, measured from clang. Itanium hangs two off the back of a
-// vtable; this hangs five in front of one:
-//
-//   ??_R0  the type descriptor - the type_info vfptr, a spare word, and the
-//          decorated name, which is the string the runtime actually compares
-//   ??_R1  where one class sits inside another: how many bases it contains,
-//          then mdisp/pdisp/vdisp and the attributes
-//   ??_R2  the array of those, this class first and then up the chain
-//   ??_R3  the hierarchy over that array, carrying its length
-//   ??_R4  the complete-object locator, which names the first and the fourth
-//          and sits one word in front of the vftable
-//
-// **Not PUBLIC, for the reason the throw chain records**: cl puts each in a
-// COMDAT, MASM cannot say COMDAT, and a public copy collides with cl's. The
-// runtime matches on the descriptor's name string, so file-local is enough.
+// `dynamic_cast`**, measured from clang.
 void MasmCodeGen::emitClassRtti(const Program &program) {
     if (program.rtti.empty()) return;
     std::string &o = out_;
@@ -814,13 +783,7 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
         for (const Type *k = all[i]->base(); k != nullptr; k = k->base())
             contained++;
 
-        // **`.rdata$r`, which is where cl puts these**, and not `.data$r`. The
-        // linker groups a section by the part before its `$`, so `.data$r` folded
-        // into `.data` - and these records are read-only while `.data` is writable,
-        // which is two attribute sets for one section: `LNK4078: multiple '.data'
-        // sections found with different attributes (40400040)` on every link.
-        // Measured with dumpbin on cl's own object: `.rdata$r`, flags 40401040,
-        // initialised data that is read and not written.
+        // **`.rdata$r`, which is where cl puts these**, and not `.data$r`.
         o += ".rdata$r SEGMENT READONLY ALIGN(8) 'DATA'\n";
         o += n.descriptor + " DQ ??_7type_info@@6B@\n";
         o += "  DQ 0\n";
@@ -871,9 +834,7 @@ void MasmCodeGen::emitThrowInfo(const Program &program) {
         std::string why;
         if (!microsoftThrowNames(t, t->size(target_), &n, &why)) continue;
 
-        // **Not PUBLIC, and that is the interesting part.** cl puts each in a
-        // COMDAT and MASM cannot say COMDAT, so a public copy collides with cl's -
-        // measured, LNK2005. File-local works: the runtime matches by name string.
+        // **Not PUBLIC**: cl uses a COMDAT here and MASM cannot say COMDAT.
         o += ".rdata$r SEGMENT READONLY ALIGN(8) 'DATA'\n";
         // **cl's listing writes `FLAT:` here and ml64 rejects it.** That prefix is
         // 32-bit MASM's way of naming a flat-model address; the 64-bit assembler
@@ -913,23 +874,17 @@ void MasmCodeGen::run(const Program &program) {
             continue;
         mine.push_back(n.info);
     }
-    // **And every class descriptor this file defines**, for the same reason:
-    // the spelling writes an EXTERN for each name a call mentions, and these
-    // are mentioned by the `lea` in front of every __RTDynamicCast while being
-    // laid down a few lines above it. The chain is walked because a base's
-    // descriptor is defined here too even when nothing names it.
+    // **And every class descriptor this file defines**, for the same reason: the spelling writes an
+    // EXTERN for each name a call mentions, and these are mentioned by the `lea` in front of every
+    // __RTDynamicCast while being laid down a few lines above it.
     for (std::size_t i = 0; i < program.rtti.size(); i++)
         for (const Type *k = program.rtti[i]; k != nullptr; k = k->base()) {
             MicrosoftRtti n;
             std::string why;
             if (!microsoftClassRttiNames(k, &n, &why)) break;
-            // **All five, not the descriptor alone.** The descriptor is the one
-            // a `lea` mentions, so it was the only one that had to be here while
-            // only instructions recorded a reference. Data records one now, and
-            // a vtable's first word is the locator - so the locator, the
-            // hierarchy, the base array and the base descriptor are named by
-            // data laid down in this very file and would otherwise be declared
-            // EXTERN and defined, which ml64 calls a symbol redefinition.
+            // **All five, not the descriptor alone.** The descriptor is the
+            // one a `lea` mentions, so it was the only one that had to be here
+            // while only instructions recorded a reference.
             mine.push_back(n.descriptor);
             mine.push_back(n.baseDescriptor);
             mine.push_back(n.array);
@@ -937,17 +892,14 @@ void MasmCodeGen::run(const Program &program) {
             mine.push_back(n.locator);
         }
     masm_.predefine(mine);
-    // **Before the code, not after it.** The base run() flushes what it has built
-    // when it finishes, so anything appended afterwards goes to a buffer nobody
-    // reads. MASM makes two passes, so a `lea` of a ThrowInfo above resolves.
-    // `??_7type_info@@6B@` heads every type descriptor, thrown or cast alike,
-    // and ml64 wants it declared once however many ask for it.
+    // **Before the code, not after it.** The base run() flushes what it has
+    // built when it finishes, so anything appended afterwards goes to a buffer
+    // nobody reads.
     if (!program.thrown.empty() || !program.rtti.empty())
         out_ += "\nEXTRN ??_7type_info@@6B@:QWORD\n";
     // **A pure virtual's slot names a routine no object file here defines.**
     // GNU as takes an undeclared symbol and leaves it to the linker; ml64 will
-    // not, and answers `A2006: undefined symbol : _purecall`. Declared once
-    // however many slots hold it, and only when one does.
+    // not, and answers `A2006: undefined symbol : _purecall`.
     for (std::size_t g = 0; g < program.globals.size(); g++) {
         bool found = false;
         const std::vector<GlobalPiece> &pieces = program.globals[g].init;

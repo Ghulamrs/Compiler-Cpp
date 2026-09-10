@@ -14,15 +14,9 @@ public:
     const char *name() const override { return "x86_64-windows"; }
 };
 
-// **Which assembler this target is written for** arrives as `gnuAsm` at the
-// two calls below, from the Driver that read `-masm=` off argv. ml64 cannot
-// mark a section COMDAT, so a mergeable definition collides across translation
-// units where clang, writing the same COFF, can mark it.
-//
-// It was a file-scope `bool` here until 2026-09-08, with `setWindowsAsmSyntax`
-// to write it - one mutable object shared by every compiling thread, correct
-// only while nothing set it after the pool started. Passing it costs an
-// argument and removes the convention.
+// **Which assembler this target is written for** arrives as `gnuAsm` at the two calls below, from
+// the Driver that read `-masm=` off argv. ml64 cannot mark a section COMDAT, so a mergeable
+// definition collides across translation units where clang, writing the same COFF, can mark it.
 
 class X86_64WindowsBackend final : public Backend {
 public:

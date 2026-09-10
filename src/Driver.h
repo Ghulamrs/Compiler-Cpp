@@ -27,25 +27,7 @@ private:
     bool debug_ = false;
     bool objectOnly_ = false;
     unsigned threads_ = 0;
-    // **Which assembler the Windows target is written for.** It lived as a
-    // file-scope bool in the backend, which made it one object shared by every
-    // compiling thread; it is an option of this invocation, so it belongs
-    // here beside the others and is handed to the backend at the call.
-    // **The GNU spelling is x86_64-windows's default**, and the reason is
-    // COMDAT: `ml64` has no directive that reaches the bit, so a member
-    // function defined inside its class - `std::string`'s own, in this tree's
-    // <string> - is a strong symbol in every object that includes the header,
-    // and two of them do not link. `link.exe` answers LNK2005 for each. The
-    // GNU spelling puts every such definition in `.section .text,"xr",discard`
-    // and the linker folds them, which is what cl's own objects do.
-    //
-    // It is also the only spelling that carries a line table, which `-g`
-    // already required. What it costs is a clang on the Windows machine, to
-    // assemble what this writes; `-masm=masm` is still there for ml64, with
-    // the one-translation-unit limit that comes with it.
-    //
-    // The flag means nothing on the two Itanium targets, whose backends never
-    // read it.
+    // **Which assembler the Windows target is written for.**
     bool gnuAsm_ = true;
     std::string linkTo_;
     std::vector<std::string> temporaries_;

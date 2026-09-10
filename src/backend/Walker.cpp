@@ -190,13 +190,7 @@ void Walker::visit(const Comma &n) {
 
 void Walker::visit(const Break &n) { markLine(n); jump(jumps_.back().brk); }
 
-// **The shape is the same on both targets, so it lives here.** Labels before
-// and after the body bound the range the call-site table talks about, the pad
-// is where the runtime arrives, and the jump over it keeps the ordinary path out.
-// **A region is split around whatever is nested in it**, so no two rows ever
-// overlap. The enclosing one closes at the inner's first label and reopens at
-// its last - past the inner's body but before its landing pad, so a throw from
-// inside a `catch` still belongs to the `try` outside it.
+// **The shape is the same on both targets, so it lives here.**
 void Walker::openRegion(const std::string &begin,
                         const std::vector<std::string> &types,
                         const std::vector<int> &indices) {
@@ -256,11 +250,6 @@ void Walker::visit(const Try &n) {
     // **Every piece names the same pad and the same types.** They are one
     // region as far as the program is concerned; they are several rows only
     // because something nested inside had to be cut out of the range.
-    //
-    // **And the chain continues outwards.** A row covering this region's body
-    // carries this region's handlers and then every enclosing region's, in
-    // order - phase 1 walks one chain and must find an enclosing `catch` there
-    // or it concludes the frame has none and skips it entirely.
     std::vector<std::string> chain = n.types();
     std::vector<int> chainIx = n.typeIndices();
     for (std::size_t k = open_.size(); k-- > 0; ) {
@@ -358,25 +347,11 @@ std::string Walker::lsdaTable(const LsdaSpelling &sp, const std::string &symbol,
     o += "  .uleb128 " + cstEnd + "-" + cstBegin + "\n";
     o += cstBegin + ":\n";
 
-    // **Every call in the function is a row, the ones outside a try included**: a
-    // miss makes libc++abi call terminate. **And the action field is a byte offset
-    // plus one**, not an index - each record is two bytes, so twice the count.
-    // **The rows are written in the order the regions closed, not in address
-    // order**, and that is deliberate: a region nested inside another is
-    // registered first, and the personality routine's linear scan takes the
-    // first row whose range contains the address - so the innermost wins.
-    // Sorting them by address was tried and destroyed exactly that: unwinding
-    // through a nested scope then found the outer row and ran only its
-    // destructors. See CLAUDE.md.
+    // **Every call in the function is a row, the ones outside a try
+    // included**: a miss makes libc++abi call terminate.
     int action = 1;
     std::string at = fnBegin;
-    // **Sorted by address, which is safe now and was not before.** The gap row
-    // written in front of each real one is `[at, begin)`, and `at` walks to each
-    // row's end - so a row beginning before the one before it ended makes that
-    // length *negative*, assembled as a uleb128 of about 5.4e8. Nested regions
-    // used to do exactly that. They are split now, no two rows overlap, and the
-    // personality's first-match no longer depends on the order - so the order
-    // can be the one the arithmetic needs.
+    // **Sorted by address, which is safe now and was not before.**
     std::vector<CallSite> rows = callSites();
     for (std::size_t i = 1; i < rows.size(); i++)
         for (std::size_t j = i; j > 0 && rows[j - 1].at > rows[j].at; j--) {
@@ -391,13 +366,9 @@ std::string Walker::lsdaTable(const LsdaSpelling &sp, const std::string &symbol,
         o += "  .uleb128 " + c.begin + "-" + fnBegin + "\n";
         o += "  .uleb128 " + c.end + "-" + c.begin + "\n";
         o += "  .uleb128 " + c.pad + "-" + fnBegin + "\n";
-        // No handler at all is a *cleanup*: the pad runs destructors and hands
-        // the exception back, and action 0 is how the table says so.
+        // No handler at all is a *cleanup*.
         o += "  .uleb128 " + std::to_string(c.types.empty() ? 0 : action) + "\n";
-        // **A `try` inside a cleanup region carries one record more.** Its pad
-        // runs this frame's destructors when nothing matched, and phase 2
-        // installs a pad only where the chain offers something - so a filter-0
-        // record goes on the end and the next chain starts two bytes later.
+        // **A `try` inside a cleanup region carries one record more.**
         action += 2 * static_cast<int>(c.types.size() + (c.cleanup ? 1 : 0));
         at = c.end;
     }
@@ -407,15 +378,9 @@ std::string Walker::lsdaTable(const LsdaSpelling &sp, const std::string &symbol,
     o += "  .byte 0\n";
     o += cstEnd + ":\n";
 
-    // The action table: a type index and the offset to the next record, 0 saying
-    // there is no next, so the chain ends and the exception goes on unwinding.
-    // **The index is the parser's, not this table's.** It wrote
-    // `if (sel == n)` into the handler chain before this ran, so deriving n
-    // again here means two implementations of one numbering agreeing by
-    // convention - which they did until two rows named one type, and then the
-    // second handler compared against a number the runtime never returns and
-    // the pad resumed into itself. The table is now *placed*: entry n-1 holds
-    // the type the parser gave n.
+    // The action table: a type index and the offset to the next record, 0
+    // saying there is no next, so the chain ends and the exception goes on
+    // unwinding. **The index is the parser's, not this table's.**
     types.clear();
     for (std::size_t i = 0; i < rows.size(); i++) {
         const CallSite &c = rows[i];

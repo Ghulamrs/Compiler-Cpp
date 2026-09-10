@@ -1,10 +1,4 @@
-// The parser: what is evaluated where it is written. `static_assert` and an
-// exception specification are both read and answered at the point they stand,
-// and under them is the constant folder every such answer goes through - the
-// same one a case label, an array bound and a global's initialiser ask.
-//
-// Split out of ParserStmt.cpp, which is the file that reads statements; this is
-// the arithmetic those statements are checked against, and it names no Stmt.
+// The parser: what is evaluated where it is written.
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
@@ -15,8 +9,7 @@
 
 // **An alias declaration is C++11 and is not a using-declaration** - it names
 // a type where the other names an entity, and it is what a program writes in
-// place of a typedef. Refused here so that the three using-declaration
-// refusals do not answer for it, each in a different scope.
+// place of a typedef.
 void Parser::refuseAliasDeclaration() {
     if (!peek().is("using")) return;
     if (peekAt(1).kind != TokenKind::Ident || !peekAt(2).is("=")) return;
@@ -26,9 +19,6 @@ void Parser::refuseAliasDeclaration() {
 }
 
 // **`= default` and `= delete` are C++11 and sit exactly where `= 0` does.**
-// The first asks for the member the compiler would have written; the second
-// leaves a candidate that overload resolution must find and then refuse,
-// which is not the same as one that was never declared.
 void Parser::refuseDefaultedOrDeleted() {
     if (!peek().is("=")) return;
     const bool def = peekAt(1).is("default");
@@ -115,9 +105,7 @@ long long Parser::constantExpression(const char *what) {
 }
 
 bool Parser::fold(const Expr &e, long long *out, std::size_t pos) const {
-    // **A name, when it names a constant.** The object is real and has an address; what
-    // is answered here is what it is worth when read, which [expr.const] allows of a
-    // const integral. Locals first, a local shadowing the global as everywhere else.
+    // **A name, when it names a constant.**
     if (const Var *v = dynamic_cast<const Var *>(&e)) {
         // **Inside a constexpr call, a local name is a parameter.** The body being
         // folded belongs to another function, so its Vars name slots in a frame that

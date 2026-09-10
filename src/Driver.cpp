@@ -66,27 +66,18 @@ const std::size_t kThreadFrom = 4;
 #define CXX1_INCLUDE_DIR ""
 #endif
 // **The C++ headers are a second directory, not more files in the first.**
-// `include/` holds `<cstddef>` and `<vector>`; `lib/` holds the C headers those
-// wrap, and a program may reach either. They are separate so that the C library
-// stays what it was - a thing a program can use on its own, or replace with -I -
-// while the C++ headers on top of it are a layer that can be left out entirely.
+// `include/` holds `<cstddef>` and `<vector>`; `lib/` holds the C headers
+// those wrap, and a program may reach either.
 #ifndef CXX1_CXX_INCLUDE_DIR
 #define CXX1_CXX_INCLUDE_DIR ""
 #endif
 
-// **The line every run of this compiler prints**, and the one thing in the
-// output that is not about the program being compiled. It goes to *stderr*:
-// `-S -o -` writes assembly to stdout and a banner in front of it would be
-// part of the assembly. `cl` has printed one since 1993 and takes `/nologo`
-// to stop; this takes `-nologo`, which is what a build script wants and what
-// tools/verify-three passes.
+// **The line every run of this compiler prints**, and the one thing in the output that is not about the program being compiled.
 const char *Driver::bannerLine() { return CXX1_BANNER; }
 
-// **The directory the running program is in.** A released compiler is
-// unpacked somewhere nobody chose at build time, so the headers it ships with
-// cannot be found by a path compiled into it - they are found *beside it*.
-// Three platform calls and a fallback: `argv[0]` with its last component
-// removed, which is right whenever the program was run by a path.
+// **The directory the running program is in.** A released compiler is unpacked
+// somewhere nobody chose at build time, so the headers it ships with cannot be
+// found by a path compiled into it - they are found *beside it*.
 static std::string programDirectory(const std::string &argv0) {
     std::string full;
 #if defined(_WIN32)
@@ -117,21 +108,6 @@ static bool directoryHas(const std::string &dir, const char *name) {
 }
 
 // **Where the standard headers are, asked in the order a release wants.**
-// `include/` holds the C++ headers and `lib/` the C ones underneath them, and
-// a program compiled by this compiler may reach either - so both have to be
-// found wherever the compiler was unpacked, not only where it was built.
-//
-//   1. `CXX1_INCLUDE` / `CXX1_LIB` in the environment, which is the override
-//      a packager or a test harness reaches for and nothing else touches.
-//   2. **Beside the program**: `<dir>/include` and `<dir>/lib`, then
-//      `<dir>/../include` and `<dir>/../lib` for a `bin/` layout. This is the
-//      one that makes an unpacked release work, and it is also what the
-//      checkout answers with, `cxx1.exe` being built beside its own headers.
-//   3. The path compiled in at build time, last and still there: a binary
-//      moved out of a tree that has neither of the above keeps working.
-//
-// Each directory is offered only if a header this compiler ships is actually
-// in it, so a `lib/` belonging to something else is not silently adopted.
 void Driver::standardIncludeDirectories(const std::string &argv0) {
     const char *envCxx = std::getenv("CXX1_INCLUDE");
     const char *envC = std::getenv("CXX1_LIB");
@@ -275,10 +251,7 @@ static std::string developerShell() {
 #endif
 }
 
-// **Per-thread, because the assembler runs on a pool now.** One string written
-// by several threads is a race, and the message would name a command other
-// than the one that failed. Each thread keeps its own; the worker that fails
-// copies it out under a lock.
+// **Per-thread, because the assembler runs on a pool now.**
 static thread_local std::string lastToolCommand;
 
 // Runs one tool, inside a developer environment where the machine needs one.
@@ -291,16 +264,6 @@ static std::string forCmd(const std::string &command) {
 #endif
 
 // **posix_spawn rather than system(), because system() serialises on macOS.**
-// Apple's libc holds a global lock for the duration of the child, so sixteen
-// assembler runs on a pool of twelve threads took exactly as long as sixteen in
-// a loop - measured, 4260 ms for sixteen quarter-second sleeps on eight threads
-// where the floor is 500. glibc and the MSVC CRT do not, which is why this was
-// asked of all three machines and not the one to hand.
-//
-// The status is the one waitpid gives, so it compares against 0 exactly as
-// system()'s did. What is deliberately not copied is system()'s signal
-// handling: it ignores SIGINT in the parent while the child runs, and here a
-// Ctrl-C should stop the whole compile rather than one assembler.
 static int runShell(const std::string &command) {
 #ifdef _WIN32
     return std::system(forCmd(command).c_str());
@@ -370,17 +333,8 @@ const char *Driver::hostAssembler() {
 }
 
 // **clang, and it is asked for the Microsoft target explicitly.** Its default
-// target is whatever it was built for; this has to produce COFF for the
-// linker beside it, and the triple is what says so.
-//
-// **It is looked for rather than assumed**, and that is what the GNU spelling
-// being this target's default rests on: clang is *installed* on a Windows
-// machine with Visual Studio's "C++ Clang tools" component, or with the LLVM
-// installer, and is on PATH in neither case - `vcvars64.bat` puts the MSVC
-// tools there and not those. Measured on the box: `where clang` finds nothing
-// while both installations are present. So the two places they land are asked
-// first, and a bare `clang` last, which is what an unusual installation or a
-// PATH the user arranged answers with. `CXX1_AS` overrides the lot.
+// target is whatever it was built for; this has to produce COFF for the linker
+// beside it, and the triple is what says so.
 const char *Driver::hostGnuAssembler() {
     static std::string found;
     if (!found.empty()) return found.c_str();
@@ -489,9 +443,7 @@ bool Driver::assembleObjects() {
         if (hostIsWindows() && gnuAsm_) {
             // **The GNU spelling is assembled by clang, not by ml64.** ml64
             // has no COMDAT directive, so every mergeable definition - a
-            // vtable, an inline member, a template's - is exported by each
-            // translation unit that needs one and the linker refuses the
-            // duplicates. clang writes the same COFF and can mark them.
+            // vtable, an inline member, a template's.
             command = shellQuote(hostGnuAssembler());
             command += " -target x86_64-pc-windows-msvc -c ";
             command += shellQuote(temporaries_[i]);
@@ -546,12 +498,6 @@ bool Driver::link() {
 
         command = shellQuote(hostLinker());
         // **An 8 MB stack, which is what the other two targets already give.**
-        // Windows reserves 1 MB by default where ELF and Mach-O reserve 8; a
-        // program with deep recursion - a recursive-descent compiler among them -
-        // overflows on Windows alone and nowhere else. Compiler++'s own
-        // "nested too deeply" test refused gracefully on Linux and crashed here
-        // for exactly this reason. The number is Linux's default, so the linked
-        // program behaves the same on every target rather than differently on one.
         command += " /nologo /subsystem:console /stack:8388608 /out:"
                  + shellQuote(linkTo_);
         for (const std::string &o : objects) command += " " + shellQuote(o);
@@ -711,9 +657,7 @@ bool Driver::parseArguments(int argc, char **argv) {
         }
     }
 
-    // C++ first, then C: `<cstddef>` has to be found before it can include
-    // `<stddef.h>`, and a `-I` the user wrote comes before both because it is
-    // already in the list by the time this runs.
+    // C++ first, then C.
     standardIncludeDirectories(argv[0]);
 
     if (inputs.empty()) { usage(argv[0]); return false; }
@@ -731,13 +675,7 @@ bool Driver::parseArguments(int argc, char **argv) {
     }
 
     // **An object file is an input too**, and it is not compiled: it is handed
-    // to the linker with everything this run produces. Without it a project
-    // built one file at a time - which is what any Makefile does, and what
-    // `examples/Makefile` shows - could compile with cxx1 and then had to link
-    // with something else, because `cxx1 a.o b.o -o prog` read `a.o` as C++
-    // and answered "stray character in program". Recognised by suffix, which
-    // is what every driver does: `.o` on the Itanium targets, `.obj` on
-    // Windows, and an archive is passed through the same way.
+    // to the linker with everything this run produces.
     {
         std::vector<std::string> sources;
         for (std::size_t i = 0; i < inputs.size(); i++) {
@@ -908,10 +846,7 @@ unsigned Driver::threadCount(std::size_t items) const {
 unsigned Driver::threadCount() const { return threadCount(jobs_.size()); }
 
 // **The assembler is a job like any other, and it was the only serial phase
-// left.** `-j` threaded the compiling and not this, so sixteen sources
-// compiled in 0.08s on a twelve-core Mac and then took 1.94s to assemble one
-// file at a time - the whole of why `cxx1 -c` lost to a parallel clang while
-// winning every serial comparison. Same work-stealing shape `runJobs` uses.
+// left.**
 bool Driver::runCommands(const std::vector<std::string> &commands) {
     if (commands.empty()) return true;
     const unsigned n = threadCount(commands.size());
@@ -926,9 +861,7 @@ bool Driver::runCommands(const std::vector<std::string> &commands) {
     std::atomic<std::size_t> next{0};
     std::atomic<bool> ok{true};
 
-    // **The first failure by index, not by arrival.** Threads finish in no
-    // fixed order, so reporting whichever lost the race would make the message
-    // depend on the scheduler - and a rerun would blame a different file.
+    // **The first failure by index, not by arrival.**
     std::size_t failedAt = commands.size();
 
     auto work = [&] {
@@ -970,10 +903,9 @@ bool Driver::runJobs() {
                      jobs_.size(), n, n == 1 ? "" : "s");
 
     if (n <= 1) {
-        // **The same line for one thread**, because saying so is the point:
-        // below `kThreadFrom` files this compiler does the work in the thread
-        // it was started on, and a report that showed threads it did not use
-        // would be worse than none. `-j n` overrides the threshold.
+        // **The same line for one thread**, because saying so is the point: below `kThreadFrom`
+        // files this compiler does the work in the thread it was started on, and a report that
+        // showed threads it did not use would be worse than none. `-j n` overrides the threshold.
         for (const Job &job : jobs_) {
             if (!quiet_ && jobs_.size() > 1)
                 std::fprintf(stderr, "  [thread 1] %s\n", job.input.c_str());
@@ -987,9 +919,7 @@ bool Driver::runJobs() {
 
     // **Which thread took which file, said as it happens.** A pool that hands
     // out the next index has no fixed assignment - the numbers are the threads
-    // and not the files - so this is the only place the work can be seen. One
-    // `fprintf` is one write, and the numbering is what makes the interleaving
-    // readable rather than confusing.
+    // and not the files - so this is the only place the work can be seen.
     std::vector<std::thread> pool;
     pool.reserve(n);
     for (unsigned t = 0; t < n; t++) {

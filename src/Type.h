@@ -5,9 +5,7 @@
 
 enum class Kind {
     Void,
-    // **`decltype(nullptr)`**, here rather than beside Pointer for two reasons: it
-    // is a fundamental type, so TypeTable builds exactly one, and it must stay
-    // outside the integer range isInteger() checks - its point is not being 0.
+    // **`decltype(nullptr)`**, which is its own type and not a pointer.
     NullPtr,
     // bool sits inside the integer range and at the bottom of it, which is
     // what lets isInteger() stay a range check. Its position in this enum is
@@ -21,29 +19,17 @@ enum class Kind {
     Float, Double, LongDouble,
     Struct, Union,
     Pointer, Array, Function,
-    // After Function, and it matters: TypeTable builds one Type per value
-    // from Void to Function, and a reference is never one of those - it is
-    // always a reference *to* something and so always derived.
+    // After Function, and it matters.
     LValueRef,
-    // **An rvalue reference, and it is the same machine as an lvalue one**: a slot
-    // holding an address, read by dereferencing it, and `isReference()` answers
-    // for either. What differs is what may bind - a value with nowhere to live.
+    // **An rvalue reference, and it is the same machine as an lvalue one**.
     RValueRef,
-    // **The expansion of a parameter pack**, `Ts...`, standing in a pattern where
-    // the pack's members stand in the substituted signature. Itanium writes
-    // `DpT0_` however many there are, which is what makes one pattern serve all.
+    // **The expansion of a parameter pack**, `Ts...`, standing in a pattern where the pack's members stand in the substituted signature.
     PackExpansion,
-    // **`auto`, standing where a type will be.** [dcl.spec.auto] deduces it as if
-    // by template argument deduction from a call, so it is the same kind of
-    // stand-in `TemplateParam` is and is replaced the same way.
+    // **`auto`, standing where a type will be.**
     Deduced,
-    // **A pointer to a data member**, `int S::*`, holding an *offset* and not an
-    // address - so no backend had to be told it exists. `pointee()` is the
-    // member's type and `enclosing()` the class; its size is 8 Itanium, 4 cl.
+    // **A pointer to a data member**, `int S::*`, holding an *offset* and not an address.
     MemberPointer,
-    // **A template parameter, and it is not a type anything is made of.** It lets a
-    // template's signature be written as the pattern it was declared as, which is
-    // what the Itanium mangler reads back as `T_`. Only the manglers see one.
+    // **A template parameter, and it is not a type anything is made of.**
     TemplateParam,
     // **A member type of something that is not known yet** - `T::type`, or
     // `Value<T>::type`. Like TemplateParam it exists only in a pattern, because
@@ -63,9 +49,7 @@ struct TemplateArg {
     bool isType = true;
     long long value = 0;
     // **A non-type argument that is a reference to a template parameter**, the
-    // `N` in the pattern `V<N>`. It stands for parameter `paramIndex` rather
-    // than a value - what deduction matches against a concrete `V<3>` to work
-    // out N=3, and what Itanium spells `XT_E`.
+    // `N` in the pattern `V<N>`.
     bool isParam = false;
     int paramIndex = 0;
     // **A pack argument is a list, not a type.** Itanium spells one `J...E`
@@ -83,9 +67,7 @@ void x87Parts(long double v, unsigned long long *significand, unsigned int *sign
 
 int objectAlign(const Type *t, const Target &target);
 
-// Who may name a member. `protected` is not `private` even with no derived
-// class to tell them apart yet - recording which one was written is what lets
-// inheritance mean something later without revisiting every declaration.
+// Who may name a member.
 enum class Access { Public, Protected, Private };
 
 struct Member {
@@ -96,19 +78,10 @@ struct Member {
     int bitOffset = 0;
     Access access = Access::Public;
     // **[dcl.stc]/9: a `mutable` member is writable through a const object.**
-    // It is a property of the member and not of its type, which is why it sits
-    // here rather than in the qualifiers.
     bool isMutable = false;
-    // Set for a member living in a virtual base: its offset is right for the
-    // class that laid the base down and wrong for any other, so reaching it
-    // goes through the vtable rather than through a constant.
+    // Set for a member living in a virtual base.
     const Type *inVirtualBase = nullptr;
-    // **Which class declared it**, null for one the class wrote itself. A
-    // base's data members are copied down into the derived class's list -
-    // that flattening *is* the layout - and they carry their access with them
-    // but carried no record of whose they were, so an access check asked
-    // whether it was inside the *derived* class and a private member of a
-    // base was readable from it. [class.access.base]/1.
+    // **Which class declared it**, null for one the class wrote itself.
     const Type *declaredIn = nullptr;
 
     bool isBitField() const { return width != 0; }
@@ -190,11 +163,7 @@ public:
 
     std::string describe() const;
 
-    // **Every question about what a class *is* is asked of the unqualified type**,
-    // and this is the only place that says so. A `const X` interned while X was
-    // still open carries empty fields of its own for ever, so a reader that took
-    // its own `members_` saw a class with no members - measured, and the shape of
-    // the findMember bug. Reading `cls().x_` is now the only spelling there is.
+    // **Every question about what a class *is* is asked of the unqualified type**, and this is the only place that says so.
     const Type &cls() const { return unqual_ != nullptr ? *unqual_ : *this; }
 
     const std::string &tag() const { return cls().tag_; }
@@ -205,11 +174,6 @@ public:
     bool declaredClass() const { return cls().isClass_; }
     void setDeclaredClass(bool c) { isClass_ = c; classKeySet_ = true; }
     // **A declaration records the keyword too, where no definition has.**
-    // Microsoft spells V for a class and U for a struct, so a translation unit
-    // that sees only `class D;` must still say V - it wrote U, and two units of
-    // one correct program then asked the linker for two different symbols.
-    // A definition still wins, which is what lets `class X;` and `struct X { }`
-    // be the one type the standard says they are.
     void noteClassKey(bool c) { if (!classKeySet_) { isClass_ = c; } }
 
     // **A class written inside another one.** `tag()` is the qualified name, every
@@ -235,8 +199,6 @@ public:
     // A class made by instantiating a class template. The name and arguments
     // are kept because the tag - "Box<int,3>" - is the parser's key and not
     // anything a linker has ever seen.
-    // The enumeration's qualified name, empty for every other type. Read by
-    // the manglers and by `describe`, and by nothing that decides behaviour.
     const std::string &enumTag() const { return tag_; }
     bool isEnumeration() const { return kind_ == Kind::Int && !tag_.empty(); }
     bool isSpecialization() const { return !cls().templateName_.empty(); }
@@ -246,11 +208,9 @@ public:
         templateName_ = std::move(name);
         templateArgs_ = std::move(args);
     }
-    // **The namespace the template was declared in**, kept beside the bare
-    // name rather than folded into it: `templateName_` is also the key
-    // `templates_` is looked up by, and that map is keyed unqualified on
-    // purpose so `std::vector` finds `vector`. Only the manglers read this -
-    // `std::vector<int>` is `St6vectorIiE` and not `3vectorIiE`.
+    // **The namespace the template was declared in**, kept beside the bare name rather than folded
+    // into it: `templateName_` is also the key `templates_` is looked up by, and that map is keyed
+    // unqualified on purpose so `std::vector` finds `vector`.
     const std::string &templateNamespace() const {
         return cls().templateNamespace_;
     }
@@ -274,10 +234,7 @@ public:
     bool polymorphic() const { return cls().polymorphic_; }
     void setPolymorphic(bool p) { polymorphic_ = p; }
 
-    // **A class with a pure virtual its own table has not filled in.** No
-    // object of one may exist - the slot holds the runtime's trap, so a call
-    // through it would find nothing - which is why this is refused where an
-    // object would be made rather than where the call would happen.
+    // **A class with a pure virtual its own table has not filled in.**
     bool abstract() const { return cls().abstract_; }
     void setAbstract(bool a) { abstract_ = a; }
 
@@ -300,16 +257,10 @@ public:
         const Type *type;
         int offset;
         Access access;
-        // **One subobject however many paths reach it**, laid down after every
-        // non-virtual byte of the *most derived* class - so its offset belongs
-        // to that class and not to whoever wrote `virtual`.
+        // **One subobject however many paths reach it**, laid down by the
         bool isVirtual = false;
         // **Written in this class's base-clause, rather than reached through
-        // one.** A virtual base is laid down by the most-derived class
-        // whoever named it, so `Dia : D1, D2` carries V in this list though
-        // it never wrote the word - and the Itanium type_info lists a class's
-        // *direct* bases only, which is the one place the difference shows:
-        // clang gives Dia's `__vmi` two bases and cxx1 gave it three.
+        // one.**
         bool direct = true;
     };
     const std::vector<BaseSpec> &bases() const {
@@ -325,29 +276,14 @@ public:
             if (b[i].isVirtual || b[i].type->hasVirtualBase()) return true;
         return false;
     }
-    // **A vptr is not the same question as `polymorphic`.** [class.virtual]/1
-    // makes a class polymorphic when it declares or inherits a virtual
-    // *function*, which is what `dynamic_cast` is allowed on. A class with a
-    // virtual base carries a vptr too, because the vtable is where the offset
-    // to that base is kept - measured: clang gives `D1 : virtual public V` one
-    // though nothing in sight is virtual.
+    // **A vptr is not the same question as `polymorphic`.**
     bool hasVptr() const { return polymorphic() || hasVirtualBase(); }
     // The size without the virtual bases - clang's `nvsize`. A base contributes
     // only this much, or the diamond holds three copies of V.
     int nvDataSize() const { return nvDataSize_ ? nvDataSize_ : dataSize(); }
     void setNvDataSize(int n) { nvDataSize_ = n; }
 
-    // **Where this class's own vbptr sits, on the Microsoft ABI.** That ABI
-    // reaches a virtual base through a table of its own rather than through
-    // the vftable, so a class with virtual bases carries a second pointer -
-    // measured: `Q : virtual V { virtual void f(); int q; }` puts the vfptr at
-    // 0 and the vbptr at 8. -1 means the class has none, either because it has
-    // no virtual base or because it inherited the pointer from a base, which
-    // is the common case: `R : D1` uses D1's, and writes its *own* table into
-    // it, the offsets from R being different ones.
-    //
-    // Nothing on the Itanium targets sets this: there the vftable carries a
-    // `vbase_offset` and one pointer answers both questions.
+    // **Where this class's own vbptr sits, on the Microsoft ABI.**
     int vbptrOffset() const { return cls().vbptrOffset_; }
     void setVbptrOffset(int n) { vbptrOffset_ = n; }
     // The class whose vbptr this one uses - itself when it introduced the
@@ -355,11 +291,7 @@ public:
     const Type *vbptrOwner() const { return cls().vbptrOwner_; }
     void setVbptrOwner(const Type *t) { vbptrOwner_ = t; }
 
-    // **A class can hold more than one of them.** `Dia : D1, D2` where each
-    // of D1 and D2 has a virtual base keeps a vbptr inside each subobject,
-    // and cl gives it one table per pointer, named for the base whose
-    // subobject holds it: `??_8Dia@@7BD1@@@`. The two above are the *first*
-    // of these - the one this class reaches its own virtual bases through.
+    // **A class can hold more than one of them.**
     struct VbPtr {
         int offset;            // where it sits in this class
         const Type *owner;     // the class that introduced it: entry 0 is
@@ -375,25 +307,11 @@ public:
 
     // **The Itanium ABI's primary base**: the first non-virtual base written
     // that carries a vptr, laid at offset 0 whatever its place in the
-    // base-clause, so that this class's vptr *is* that base's. `X : A, D1`
-    // with A plain and D1 holding a virtual base puts D1 at 0 and A after it
-    // - measured with clang, and the only order that lets a `D1 *` into an X
-    // find a vptr where D1 keeps one. Null where no non-virtual base has a
-    // vptr, and always null on the Microsoft targets, where the bases stay in
-    // the order written: a vbptr need not sit at 0 the way a vptr must.
-    //
-    // `bases()` is *not* reordered by this. It stays in the order written,
-    // which is the order the bases are built and the reverse of the order
-    // they are destroyed, and only the offsets say where each one landed.
+    // base-clause, so that this class's vptr *is* that base's.
     const Type *primaryBase() const { return cls().primaryBase_; }
     void setPrimaryBase(const Type *t) { primaryBase_ = t; }
 
     // **A pointer the class introduces at offset 0 pushes every base down.**
-    // `Z : A { int z; virtual int f(); }` has no primary base to take a vptr
-    // from, so it puts one in front of A - clang and cl both lay A at 8 - and
-    // the bases were recorded before the body said there were virtual
-    // functions at all. Called once, from the layout, while only the
-    // non-virtual bases are in the list.
     void shiftBaseOffsets(int by) {
         for (std::size_t i = 0; i < bases_.size(); i++) bases_[i].offset += by;
     }
@@ -431,8 +349,7 @@ public:
         return cls().statics_;
     }
     void addStaticMember(StaticMember s) { statics_.push_back(std::move(s)); }
-    // Searched up through the bases, the way a member function is: a static
-    // member lives under a name, and a derived class names its base's.
+    // Searched up through the bases, the way a member function is.
     const StaticMember *findStaticMember(const std::string &name) const;
 
     void complete(std::vector<Member> members, int size, int align);
@@ -527,9 +444,7 @@ public:
     const Type *arrayOf(const Type *t, long long length);
     const Type *functionType(const Type *returns,
                              std::vector<const Type *> params, bool variadic);
-    // The Nth parameter of the template being mangled. Interned like any
-    // other derived type, so two mentions of T in one signature are one
-    // pointer and the substitution table sees them as the repeat they are.
+    // The Nth parameter of the template being mangled.
     const Type *templateParam(int index);
     // `auto`, before deduction has replaced it.
     const Type *deducedType();
@@ -538,13 +453,7 @@ public:
     const Type *packExpansion(const Type *of);
 
     Type *structType(Kind kind, const std::string &tag);
-    // **An enumeration, which is an `int` that remembers its name.** The
-    // standard makes it a distinct type; here it is `Kind::Int` in every
-    // respect that matters to code generation - size, alignment, the
-    // conversions, the arithmetic - and carries its tag so the *manglers* can
-    // spell it. `void f(Colour)` is `_Z1f6Colour`, not `_Z1fi`, and without
-    // that no cxx1 object can link against one from another compiler.
-    // docs/CONFORMANCE.md records what is still missing: the type checking.
+    // **An enumeration, which is an `int` that remembers its name.**
     Type *enumType(const std::string &tag);
     Type *anonymousStruct(Kind kind);
 
@@ -570,9 +479,7 @@ public:
 
     virtual Kind wcharType() const = 0;
 
-    // Which ABI spells a C++ name, which is a property of the platform in
-    // the same way that the width of a long is. Itanium everywhere but
-    // Windows.
+    // Which ABI spells a C++ name, which is a property of the platform in the same way that the width of a long is.
     virtual bool microsoftNames() const = 0;
 
     virtual const char *name() const = 0;

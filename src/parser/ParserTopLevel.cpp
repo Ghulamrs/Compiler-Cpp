@@ -1,12 +1,4 @@
 // The parser: the top level, and what a translation unit holds.
-//
-// `topLevel` is the one function that reads a file's every kind of declaration
-// - a namespace, a linkage specification, a typedef, a class, a global, a
-// function declared or defined - and `parse` is the loop over it that finishes
-// with the implicit functions and the templates the file asked to instantiate.
-//
-// Split out of ParserStmt.cpp: a statement is read inside a function body, and
-// everything here is read outside one.
 #include "Parser.h"
 #include "ParserInternal.h"
 #include "../Mangle.h"
@@ -54,14 +46,6 @@ void Parser::topLevel(Program &program) {
         const std::size_t pos = peek().pos;
         at_++;
         // **An unnamed namespace, opened under the name the ABI gives it.**
-        // `_GLOBAL__N_1` is what the Itanium ABI calls this namespace, so a
-        // mangled name here is clang's exactly; and the `L` that marks a
-        // written `static` is *not* added, because the namespace name already
-        // says the linkage - which is why only emission asks internalLinkage().
-        // [namespace.unnamed] makes one per translation unit, reopened by every
-        // `namespace {` in the file, and its names visible unqualified from
-        // there on - which is a namespace, a directive, and internal linkage on
-        // what it holds. All three are already here.
         if (peek().is("{")) {
             at_++;
             const std::string tag = "_GLOBAL__N_1";
@@ -117,9 +101,7 @@ void Parser::topLevel(Program &program) {
         const std::size_t pos = peek().pos;
         at_++;
         // **`using N::f;` names one thing, and what it leaves behind is an
-        // alias.** The name it declares is `f` under whatever namespace encloses
-        // this, and it stands for the name written - `using ::size_t;` inside
-        // `namespace std` being the case the library's first header needs.
+        // alias.**
         if (!peek().is("namespace")) {
             const bool fromGlobal = consume("::");
             std::string target = expectIdent("a name after 'using'");
@@ -191,10 +173,7 @@ void Parser::topLevel(Program &program) {
                                       had->describe() + "' and is now '" +
                                       td.type->describe() + "'");
             // **A typedef at namespace scope is keyed by its qualified name**,
-            // the way a class declared there already was through its tag. Left
-            // unqualified it could be found from inside the namespace, by the
-            // walk in findTypedef, and never as `std::streamsize` written out -
-            // which is how a program outside the namespace names it.
+            // the way a class declared there already was through its tag.
             const std::string key = namespacePrefix() + td.name;
             typedefIndex_[key] = typedefs_.size();
             typedefs_.push_back(TypedefName{ key, td.type });
@@ -223,8 +202,7 @@ void Parser::topLevel(Program &program) {
 
     // **`inline` is a function specifier here.** It marks the definition
     // mergeable across translation units - a weak/COMDAT symbol - which is the
-    // same treatment a template specialization already gets. On a variable it is
-    // a C++17 inline variable, refused by name.
+    // same treatment a template specialization already gets.
     const bool inlineFunction =
         quals.isInline &&
         (peek().is("(") || d.paramsAt != 0 || d.type->isFunction());
@@ -242,10 +220,6 @@ void Parser::topLevel(Program &program) {
     // **`S g(1);` at file scope is a construction, not a prototype**: a
     // parameter list begins with a type name or is empty, the local path's own
     // question, and `S g();` is the function C++ says it is.
-    // **And `int g(5);` is direct-initialisation of a scalar** - [dcl.init]/16,
-    // the same shape and the same test one statement inside a function takes.
-    // It is kept apart from the class question below because that one has a
-    // constructor to look for and this one has nothing but the parentheses.
     bool scalarInitAhead = false;
     if (peek().is("(") && d.paramsAt == 0 && d.qualifier.empty() &&
         !d.type->isStructOrUnion() && !d.type->isArray() &&
@@ -276,9 +250,7 @@ void Parser::topLevel(Program &program) {
     if (!d.qualifier.empty() && (!peek().is("(") || constructionAhead) &&
         d.paramsAt == 0 && !d.type->isFunction()) {
         // **`static` belongs to the declaration inside the class, not to this
-        // definition** - [class.static.data]/2. At namespace scope the keyword
-        // would give the object internal linkage, which the member it defines
-        // cannot have, so writing it here says two different things at once.
+        // definition** - [class.static.data]/2.
         if (sc == StorageStatic)
             src_.fail(scPos, "'static' can only be written on the declaration "
                              "inside '" + d.qualifier + "' - the definition of "
@@ -491,9 +463,7 @@ void Parser::topLevel(Program &program) {
             }
 
             // **Redeclaration is asked about under the key the definition will
-            // use.** Asked under the written name, a `cc::shared` found the
-            // global `shared` and reported it declared twice - the lookup and
-            // the registration below disagreeing about what the name is.
+            // use.**
             const std::string gname =
                 (namespaceStack_.empty() || cLinkage_ > 0)
                     ? d.name : namespacePrefix() + d.name;
@@ -666,14 +636,9 @@ void Parser::topLevel(Program &program) {
                                              : pd.type;
                 int off;
                 {
-                    // **A definition may leave a parameter unnamed** - C++ does
-                    // not require one where C did, and `operator++(int)` is
-                    // written that way by everybody: the parameter exists only
-                    // to tell the postfix form from the prefix one. It still
-                    // occupies a slot and a place in the calling convention, so
-                    // it is declared under a name no program can write rather
-                    // than skipped - the same device the lambda return typedef
-                    // and a pack's members use.
+                    // **A definition may leave a parameter unnamed** - C++ does not require one
+                    // where C did, and `operator++(int)` is written that way by everybody: the
+                    // parameter exists only to tell the postfix form from the prefix one.
                     if (pd.name.empty()) {
                         if (pd.type->isVoid())
                             src_.fail(pd.pos,
@@ -753,18 +718,12 @@ void Parser::topLevel(Program &program) {
     // Point::get() are two functions.
     bool constThis = false;
     if (memberOf != nullptr && consume("const")) constThis = true;
-    // The same C++11 rule the class body applies: a `constexpr` member function is
-    // implicitly const. This is the path a member defined inside its class comes back
-    // through, so leaving it out makes the definition disagree with its declaration.
+    // The same C++11 rule the class body applies.
     if (memberOf != nullptr && constexprFunction) constThis = true;
 
-    // The exception specification comes after the constness, which is the
-    // order C++ writes them in: `int get() const noexcept`.
+    // The exception specification comes after the constness, which is the order C++ writes them in.
     pendingNoexcept_ = exceptionSpecification();
-    // **Captured here because declareFunction consumes it.** The declaration
-    // records the specification on the Signature and clears the field, and that
-    // happens before the body below is parsed - so the body would otherwise
-    // never know it is inside a `noexcept` function. [except.spec]/9 needs it.
+    // **Captured here because declareFunction consumes it.**
     const bool declaredNoexcept = pendingNoexcept_;
 
     if (consume(";")) {
@@ -780,10 +739,6 @@ void Parser::topLevel(Program &program) {
     if (memberOf != nullptr) {
         std::string key = d.qualifier + "::" + d.name;   // "Point::~Point" too
         // **A member function template specialization declares itself here.**
-        // Its declaration was never registered as a plain member - the class
-        // body held the template and skipped it - so, on first sight, the
-        // signature is built now, keyed and mangled by the member name plus its
-        // own template arguments (head<3>), and then defined by the code below.
         if (memberTemplateInst_ && d.name == memberTemplateOf_) {
             key = d.qualifier + "::" + memberTemplateName_;
             if (overloadsOf(key) == nullptr) {
@@ -801,10 +756,7 @@ void Parser::topLevel(Program &program) {
                 if (!ok)
                     src_.fail(d.pos, "'" + key + "' cannot be given a name the "
                                      "linker can hold: " + why);
-                // **Under two keys, as a free specialization is.** The one
-                // with the arguments is what a repeat finds; the plain member
-                // name is what overload resolution ranks, which is how an
-                // operator written as a member template is reached at all.
+                // **Under two keys, as a free specialization is.**
                 functionIndex_[d.qualifier + "::" + d.name]
                     .push_back(functions_.size());
                 functionIndex_[key].push_back(functions_.size());
@@ -813,14 +765,7 @@ void Parser::topLevel(Program &program) {
                     d.pos, false, d.qualifier, constThis,
                     memberTemplateAccess_, false });
                 functions_.back().fromTemplate = true;
-                // **The defaults its parameter list just read.** Every other
-                // declaration site records them and this one did not, so a
-                // member function template with a default argument -
-                // `template <int M> CVector<M> resized(double pad = 0.0)` -
-                // could not be called without one: applyDefaults found no
-                // entry under its symbol and the call was reported as taking
-                // too few arguments. The scope goes with it, for
-                // [dcl.fct.default]/5.
+                // **The defaults its parameter list just read.**
                 if (!pendingDefaults_.empty()) {
                     defaultArgs_[sym] = pendingDefaults_;
                     defaultArgNamespace_[sym] = namespaceStack_;
@@ -843,17 +788,11 @@ void Parser::topLevel(Program &program) {
                              d.type->describe() + "'");
         if (member->defined)
             src_.fail(d.pos, "'" + key + "' is defined twice");
-        // **This used to write `member->pos` into the *first* overload's entry**, which
-        // corrupts another overload's recorded position when the member being defined
-        // is not that one. Nothing reads a user overload's `pos`, so it never showed.
+        // **This used to write `member->pos` into the *first* overload's entry.**
         const_cast<Signature *>(member)->defined = true;
 
-        // **A static member's body gets no `this` slot**, which is the whole of
-        // what makes it static once the name is settled: the parameters it was
-        // written with are the parameters it has, and the first one stays in the
-        // first register rather than being pushed along by an object nobody
-        // passed. Everything else about the body - access, the class's own
-        // names in scope - is a member's.
+        // **A static member's body gets no `this` slot**, which is the whole
+        // of what makes it static once the name is settled.
         inStaticMember_ = member->isStaticMember;
         msVbInitSlot_ = -1;
         if (!member->isStaticMember) {
@@ -866,11 +805,7 @@ void Parser::topLevel(Program &program) {
             thisOffset_ = declare("this", thisType, d.pos);
             inParams_ = false;
             paramSlots.insert(paramSlots.begin(), Param{ thisType, thisOffset_ });
-            // **cl's hidden most-derived flag, last of all.** Measured on
-            // `L::L(int, int)`: `this` in rcx, the two arguments in rdx and
-            // r8d, the flag in r9d - so it is appended after the declared
-            // parameters and not inserted beside `this`. It is not part of the
-            // mangled name; `msVbaseCtors_` is what remembers who takes one.
+            // **cl's hidden most-derived flag, last of all.**
             msVbInitSlot_ = -1;
             if (target_.microsoftNames() && memberOf->hasVirtualBase() &&
                 d.name == localOf(d.qualifier)) {
@@ -900,12 +835,9 @@ void Parser::topLevel(Program &program) {
     }
     currentFunctionName_ = d.name;
     localTypes_.clear();
-    // Closures are numbered within the function that writes them, which is
-    // what clang does - `$_0` upward in each, not once across the file.
+    // Closures are numbered within the function that writes them, which is what clang does.
     lambdaCount_ = 0;
-    // The mem-initializer list, [class.base.init], parsed here because `this` and the
-    // parameters are in scope and the body has not begun. **Emission follows
-    // declaration order, not list order** - /11, whatever the list says.
+    // The mem-initializer list, [class.base.init], parsed here because `this` and the parameters are in scope and the body has not begun.
     std::vector<StmtPtr> memberInits;
     // Which members this constructor's own list covers. Kept out here because
     // the initialisers the class wrote are applied to the rest, below, and the
@@ -927,11 +859,9 @@ void Parser::topLevel(Program &program) {
         for (;;) {
             std::size_t epos = peek().pos;
             std::string entry = expectIdent("a member or base to initialise");
-            // **A base may be named with its namespace** - `: cc::Lowering(...)`
-            // is how a class writes it when the base is not in scope
-            // unqualified. Read as one name here; `findTypedef` below resolves
-            // it and the *types* are compared, so either spelling arrives at
-            // the same base.
+            // **A base may be named with its namespace** - `:
+            // cc::Lowering(...)` is how a class writes it when the base is not
+            // in scope unqualified.
             while (peek().is("::") && peekAt(1).kind == TokenKind::Ident) {
                 at_++;
                 entry += "::" + expectIdent("a name after '::'");
@@ -942,22 +872,17 @@ void Parser::topLevel(Program &program) {
             parseArguments(args);
 
             // **The name written is not always the base's tag.** A class in a
-            // namespace has a qualified tag - `n::Base` - and the list names it
-            // the way the source can see it, `Base`. So the written name is
-            // resolved as a type and the *types* are compared; the string
-            // comparison stays for the case where there is no type to find.
-            // What goes in the map is the tag either way, because that is what
-            // the walk over the bases looks it up by.
+            // namespace has a qualified tag - `n::Base` - and the list names
+            // it the way the source can see it, `Base`.
             bool isBase = false;
             bool wasVirtualBase = false;
             std::string baseKey = entry;
             const Type *namedBase = findTypedef(entry);
             const std::vector<Type::BaseSpec> &bs = memberOf->bases();
             for (std::size_t i = 0; i < bs.size(); i++)
-                // **And the injected class name**: inside a derived class the
-                // base is `Base`, whatever namespace it was declared in, so
-                // `: Base(v)` for a `cc::Base` is the ordinary spelling and was
-                // refused as neither a member nor a base.
+                // **And the injected class name**: inside a derived class the base is `Base`,
+                // whatever namespace it was declared in, so `: Base(v)` for a `cc::Base` is the
+                // ordinary spelling and was refused as neither a member nor a base.
                 if (bs[i].type->tag() == entry ||
                     bs[i].type->localName() == entry ||
                     (namedBase != nullptr &&
@@ -971,14 +896,8 @@ void Parser::topLevel(Program &program) {
             if (isBase) {
                 if (baseArgs.count(baseKey))
                     src_.fail(epos, "'" + entry + "' is initialised twice");
-                // **A virtual base is built in C1, not here**, so its arguments
-                // are emitted into a body with a frame of its own. That frame is
-                // laid out to match this one slot for slot, which is what lets
-                // these already-parsed expressions be used there - but only as
-                // long as they need nothing beyond the parameters. An argument
-                // that wanted a frame slot of its own allocated it in *this*
-                // frame, and reading it from C1 would be reading past C1's.
-                // Refused by name rather than emitted wrong.
+                // **A virtual base is built in C1, not here**, so its
+                // arguments are emitted into a body with a frame of its own.
                 if (wasVirtualBase && frameSize_ != frameBeforeArgs)
                     src_.fail(epos, "'" + entry + "(...)' initialises a virtual "
                                     "base with an argument that needs a "
@@ -1076,9 +995,7 @@ void Parser::topLevel(Program &program) {
             }
             std::size_t epos = where[m->name];
 
-            // **An empty pair belongs to value-initialisation, and only to it.** `: m()`
-            // is [dcl.init]/8 where `: m(a)` is construction, and for `: k()` on an int
-            // there is no constructor to reach. So the walk asks who owns the list.
+            // **An empty pair belongs to value-initialisation, and only to it.**
             const bool valueInitialised = valueInit.count(m->name) != 0;
 
             if (!m->type->isReference() && !valueInitialised) {
@@ -1154,13 +1071,9 @@ void Parser::topLevel(Program &program) {
     functionName_ = d.name;
     staticSymbols_.clear();
 
-    // A member function is the second argument: on the Microsoft ABI the hidden pointer
-    // serves every class a *non-static* member returns, whatever its size. A static
-    // member has no `this` and follows the free-function size rule, so member-ness for
-    // the return convention is `hasThis`, not `memberOf != nullptr` - the same
-    // distinction the call side draws. They must agree: an 8-byte return would go
-    // through the hidden pointer at the definition and a register at the call, and the
-    // callee would write its result where the caller passed the first argument.
+    // A member function is the second argument: on the Microsoft ABI the
+    // hidden pointer serves every class a *non-static* member returns,
+    // whatever its size.
     const bool returnsAsMember = memberOf != nullptr && !inStaticMember_;
     int sretSlot = 0;
     if (d.type->isStructOrUnion() && returnsIndirectly(d.type, returnsAsMember)) {
@@ -1177,8 +1090,7 @@ void Parser::topLevel(Program &program) {
     }
     variadicBody_ = variadic;
 
-    // Anything already alive belongs to an enclosing function - a class can
-    // be defined inside one, and its member functions are defined from there.
+    // Anything already alive belongs to an enclosing function.
     const std::size_t paramsFrom = alive_.size() - aliveParams;
 
     // **A function try block wraps the whole body, mem-initialisers
@@ -1193,9 +1105,7 @@ void Parser::topLevel(Program &program) {
 
     atFunctionBody_ = true;
     // [except.spec]/9 needs this inside the body, and the declarator read it a
-    // few hundred lines up. An out-of-line member repeats the specification its
-    // class declared, and ParserClass checks the two agree, so this is set for
-    // a member definition too.
+    // few hundred lines up.
     inNoexceptFunction_ = declaredNoexcept;
     bodyCleanupFrom_ = paramsFrom;
     // A class can be defined inside a function and its members defined from
@@ -1203,10 +1113,7 @@ void Parser::topLevel(Program &program) {
     const std::size_t guardsFrom = guardSlots_.size();
     StmtPtr body = block();
 
-    // **Every guard this function made is cleared at its entry.** A guard says
-    // whether its temporary exists, and the destructors ask it - so one that
-    // was never written holds whatever the frame did, and an arm of a `?:`
-    // that never ran would have its temporaries destroyed from garbage.
+    // **Every guard this function made is cleared at its entry.**
     if (guardSlots_.size() > guardsFrom) {
         std::vector<StmtPtr> withClears;
         for (std::size_t i = guardsFrom; i < guardSlots_.size(); i++)
@@ -1217,46 +1124,7 @@ void Parser::topLevel(Program &program) {
         guardSlots_.resize(guardsFrom);
     }
     // **[except.spec]/9 over the whole body**, for an exception this function
-    // did not throw itself. The throw statement already answers for one written
-    // here - it calls `abort` where the escape is certain - and this answers for
-    // one arriving from a callee, which needs a landing pad rather than a
-    // branch.
-    //
-    // **Built after the body is parsed, and that is what makes it free.** An
-    // implicit `try` written *around* the parse would set `functionHasTry_` and
-    // `inTryBody_` before the body was read, and the destructible-local
-    // refusals test exactly those - so every `noexcept` function holding an
-    // object with a destructor would have started being refused. That is the
-    // cost docs/CONFORMANCE.md said this had to be paid with, and building the
-    // region out of the finished body avoids it: no flag is set while anything
-    // is being read, and nothing that compiled before is refused now.
-    //
-    // **Only where something could arrive.** `mayThrow_` counts the throws and
-    // the calls to functions that have not promised otherwise; at zero there is
-    // nothing to catch and the function is left exactly as it was, which is
-    // most of them.
-    //
-    // **And only where this function owns no unwind region already**, which is
-    // what `functionHasPads_` says: `wrapCleanups` sets it for a destructible
-    // local and `tryStatement` for a `try`. A region built around one of those
-    // *after* the fact does not work, and the failure is not subtle - the inner
-    // cleanup row resumes, the resume finds this frame again, and the
-    // destructor runs for ever:
-    //
-    //     before +9 -9 -9 -9 -9 -9 -9 ...
-    //
-    // Handing over instead of resuming is what `tryChainLabel_` and the
-    // `tryBodySegments_` list are for, and a segment learns its chain when it
-    // is built - so covering those bodies means setting the chain up before the
-    // body is parsed, which sets `inTryBody_`, which is what
-    // `for (S s; ...)` is refused under on every target. That is the cost
-    // docs/CONFORMANCE.md declined to pay, and it still declines: a `noexcept`
-    // function holding a destructible object keeps the behaviour it had.
-    //
-    // Itanium only. A Microsoft handler is a funclet and a state in the FH3
-    // tables rather than a row in a call-site list, and `msTryStatement` is
-    // untouched - so x86_64-windows keeps the half it had. Same lag rung 6.5
-    // records for Windows exceptions generally.
+    // did not throw itself.
     if (inNoexceptFunction_ && mayThrow_ > 0 && !functionHasPads_ &&
         !target_.microsoftNames()) {
         const Type *voidPtr = types_.pointerTo(types_.get(Kind::Void));
@@ -1272,9 +1140,8 @@ void Parser::topLevel(Program &program) {
         indices.push_back(typeIndexFor(std::string()));
 
         // `__cxa_begin_catch` first, as clang's `__clang_call_terminate` does:
-        // the exception is being handled, and the runtime is told so before the
-        // process ends. Then `abort`, which is what std::terminate does here -
-        // there is no `set_terminate` in this library to make it anything else.
+        // the exception is being handled, and the runtime is told so before
+        // the process ends.
         std::vector<ExprPtr> beginArgs;
         ExprPtr held(Var::local(".ex.ptr", pointerSlot));
         held->setType(voidPtr);
@@ -1322,15 +1189,6 @@ void Parser::topLevel(Program &program) {
     }
 
     // **And in front of all of it, on Microsoft, the most-derived guard.**
-    // Written after the vptr block below so that it ends up outermost: the
-    // vbtable pointers and the virtual bases are stored first, and cl's
-    // listing shows the vftable store after the guard's label.
-    //
-    // **A polymorphic object's vptr is set by its constructor**, before the body and
-    // after the base's - and by its destructor, for the same reason running the other
-    // way: [class.cdtor]/4 makes a virtual call reach that level's own overrider.
-    // A vptr is written whatever put it there - a virtual function or a
-    // virtual base, the latter needing it to find that base at all.
     if (memberOf != nullptr && memberOf->hasVptr() &&
         (d.name == localOf(d.qualifier) ||
          d.name == "~" + localOf(d.qualifier))) {
@@ -1339,12 +1197,8 @@ void Parser::topLevel(Program &program) {
         body = StmtPtr(new Block(std::move(withVptr)));
     }
 
-    // **[class.dtor]/8: a written destructor destroys the class's members too**,
-    // after its body and before its bases. The destructor the *compiler* writes
-    // walked them from the start and this one never did, so `struct D { P x;
-    // ~D() { } };` ran ~D and destroyed nothing it held - a class with a written
-    // destructor and a std::string member leaked the string, silently, because
-    // a leak does not change what a program prints.
+    // **[class.dtor]/8: a written destructor destroys the class's members
+    // too**, after its body and before its bases.
     if (memberOf != nullptr && d.name == "~" + localOf(d.qualifier)) {
         std::vector<StmtPtr> withMembers;
         withMembers.push_back(std::move(body));
@@ -1369,17 +1223,7 @@ void Parser::topLevel(Program &program) {
         const std::size_t which = memberOf->bases().size() - 1 - bn;
         const Type *base = memberOf->bases()[which].type;
         const int baseAt = memberOf->bases()[which].offset;
-        // **A virtual base is not built here.** This body is C2, the base
-        // subobject form, and [class.base.init]/7 gives every virtual base to
-        // the most-derived class instead - so C1 builds them and then calls
-        // this. See Parser::synthesizeCompleteCtor. The Microsoft ABI arranges
-        // virtual bases differently and is refused before it reaches here.
-        //
-        // **And on Microsoft too, since 2026-09-10.** There the split is one
-        // function and a flag rather than two functions, so the virtual bases
-        // move into the `if (mostDerived)` this body opens with - see
-        // `guardedVirtualBaseInit`. Building them here as well is what made
-        // `R : D1 : virtual V` construct V twice.
+        // **A virtual base is not built here.**
         if (memberOf->bases()[which].isVirtual) continue;
         const std::string key = building ? constructorKey(base->tag())
                                          : destructorKey(base->tag());
@@ -1401,18 +1245,9 @@ void Parser::topLevel(Program &program) {
                 chosen = resolveOverload(key, chosenArgs, d.pos);
                 found = true;
             } else if (building) {
-                // No entry names this base, so its default constructor runs
-                // - the one overload resolution with no arguments would
-                // pick, which `S(int a = 1)` is as much as `S()` is.
+                // No entry names this base, so its default constructor runs.
                 if (const Signature *dc = defaultConstructorOf(base)) {
-                    // **Marked used, because a copy is what is kept.** The
-                    // branch above goes through `resolveOverload`, which marks
-                    // the entry in the table; here the signature is taken by
-                    // value and the table's own copy stayed unused - so a
-                    // base's *implicit* default constructor, called by every
-                    // derived constructor, was never defined. It links until
-                    // something derives from a class with a vptr and no
-                    // constructor of its own, and then does not.
+                    // **Marked used, because a copy is what is kept.**
                     markUsed(dc);
                     chosen = *dc;
                     found = true;
@@ -1429,9 +1264,7 @@ void Parser::topLevel(Program &program) {
                 src_.fail(d.pos, "'" + base->tag() + "' has no constructor "
                                  "taking nothing - name one in the initialiser "
                                  "list, ': " + base->tag() + "(...)'");
-            // **The defaults the entry left out are read here, as every other call
-            // reads them.** This call is built by hand, one argument per parameter of
-            // `chosen`, and it used to read one past the end of the vector and die.
+            // **The defaults the entry left out are read here, as every other call reads them.**
             if (building) applyDefaults(chosen, chosenArgs, d.pos);
 
             std::string symbol = chosen.symbol;
@@ -1456,10 +1289,7 @@ void Parser::topLevel(Program &program) {
                 me->setType(basePtr);      // the first base is the object
             } else if (memberOf->bases()[which].isVirtual) {
                 // **A virtual base is reached by a constant here**, where
-                // everywhere else it is reached through the vtable. This class
-                // is the one laying the base down, so it knows where it put it
-                // - and the vtable cannot be read yet anyway: the vptr this
-                // walk would follow is stored *after* the base is built.
+                // everywhere else it is reached through the vtable.
                 const Type *chars = types_.pointerTo(types_.get(Kind::Char));
                 me->setType(types_.pointerTo(memberOf));
                 ExprPtr asChars(new Cast(chars, std::move(me)));
@@ -1501,8 +1331,7 @@ void Parser::topLevel(Program &program) {
 
     // **The most-derived guard goes outside the base calls**, because a
     // virtual base is built before every non-virtual one: cl's `R::R` stores
-    // the vbtable pointer and calls `V::V` and only then `D1::D1`. Wrapping
-    // this earlier put it between them and printed `+D1 +V +R`.
+    // the vbtable pointer and calls `V::V` and only then `D1::D1`.
     if (msVbInitSlot_ >= 0 && memberOf != nullptr &&
         d.name == localOf(d.qualifier)) {
         std::vector<StmtPtr> guarded =
@@ -1542,11 +1371,6 @@ void Parser::topLevel(Program &program) {
     currentFunctionName_.clear();
     localTypes_.clear();
     // **`static` on a member says which member, not which linkage.**
-    // [class.static]/1 against [basic.link]/3: on a free function the keyword
-    // means internal linkage, and on a member it means there is no `this` - and
-    // the member still has external linkage, so another translation unit can
-    // call it. Read the wrong way round, a member defined inside its class came
-    // out with no `.globl` and cl's object had nine symbols cxx1's did not.
     const bool internal = memberOf != nullptr ? inUnnamedNamespace_
                                               : internalLinkage(sc);
     program.functions.push_back(Function(d.name, emittedReturn, std::move(paramSlots),
@@ -1558,16 +1382,6 @@ void Parser::topLevel(Program &program) {
     // The definition side of the same question: a member's first parameter is
     // its `this`, and on the Microsoft ABI that is what the hidden return
     // pointer has to come *after*.
-    //
-    // **A static member has no `this`, and asking only about the qualifier said
-    // it had one.** So a `static std::string f(...)` was compiled expecting the
-    // hidden pointer in the second slot while every caller put it in the first,
-    // and the callee wrote its result over whatever the first argument pointed
-    // at. Invisible on Itanium, where the pointer is first either way; on
-    // x86_64-windows it corrupted the caller's object - one line of Compiler++,
-    // `parameterText`, is such a function, and it overwrote a `Function`'s
-    // return type with a string's length. `inStaticMember_` is set a few lines
-    // above, where the `this` is bound or not.
     program.functions.back().setHasThis(!d.qualifier.empty() && !inStaticMember_);
     program.functions.back().setHasLandingPads(functionHasPads_);
     // Everything replayed from inside a class body - and every member of a
@@ -1581,12 +1395,6 @@ void Parser::topLevel(Program &program) {
     // A constructor is emitted under both of Itanium's names: C1 for a
     // complete object, C2 for a base subobject, the second as a label in front
     // of the first. The Microsoft ABI has one name and wants no alias.
-    //
-    // **Unless the class has a virtual base, and then one body cannot carry
-    // both names**: C2 must not build what C1 builds. The walk above skipped
-    // the virtual bases, so this body is C2 - and C1 is synthesised after the
-    // blocks are attached, because pushing a function now would move
-    // `functions.back()` out from under the lines that follow.
     const bool splitForVirtualBase = memberOf != nullptr &&
                                      !target_.microsoftNames() &&
                                      memberOf->hasVirtualBase();
@@ -1606,11 +1414,7 @@ void Parser::topLevel(Program &program) {
             }
         }
     }
-    // **The Microsoft split is the destructor's alone.** `??1` stops at this
-    // class's own part - the walk above skips the virtual bases now - and
-    // `??_D` is the wrapper that calls it and then destroys them. cl:
-    // `??_DDia@@QEAAXXZ` calls `??1Dia@@QEAA@XZ` and then `??1V`, and every
-    // *complete* object's destruction goes to the wrapper.
+    // **The Microsoft split is the destructor's alone.**
     if (memberOf != nullptr && d.name == "~" + localOf(d.qualifier) &&
         target_.microsoftNames() && memberOf->hasVirtualBase()) {
         splitD1 = vbaseDestructorSymbol(d.qualifier);
@@ -1653,19 +1457,6 @@ Program Parser::parse() {
     while (peek().kind != TokenKind::End)
         topLevel(program);
     // **Each of these two can give the other more to do, so they alternate.**
-    // A template's member body is replayed only once something uses it, and an
-    // implicit constructor is synthesised only once something needs one - and a
-    // synthesised constructor is a *use*. `inner<K> held_;` inside `outer<K>`
-    // is the shape: `outer<int>`'s implicit constructor calls
-    // `inner<int>::inner()`, and it was synthesised after the replay had
-    // finished, so that constructor was declared under a name nothing emitted.
-    // Run once each, the program linked only when the inner template happened
-    // to be named at top level too.
-    //
-    // The loop ends when neither adds a function. The bound is a guard against
-    // a cycle rather than a limit on depth: each pass emits at least one
-    // function or stops, so a program needing more passes than this has
-    // something else wrong with it.
     for (int pass = 0; pass < 64; pass++) {
         const std::size_t had = program.functions.size();
         instantiatePending();

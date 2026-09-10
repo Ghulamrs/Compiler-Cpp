@@ -25,19 +25,12 @@ bool microsoftTemplateFunctionName(const std::string &name, const Type *fn,
                                    const std::vector<TemplateArg> &args,
                                    std::string *out, std::string *problem);
 
-// The Itanium name of a type's `std::type_info`: `_ZTI` and then the type as a
-// signature spells it. For a fundamental type the object lives in the standard
-// library, so naming it is all there is; anything else is refused by name.
+// The Itanium name of a type's `std::type_info`: `_ZTI` and then the type as a signature spells it.
 bool itaniumTypeInfoName(const Type *t, std::string *out, std::string *problem);
 
-// **What the Microsoft ABI wants before it will let you throw**: not one pointer
-// but a chain of four objects each naming the next - _TI1H, _CTA1H,
+// **What the Microsoft ABI wants before it will let you throw**: not one
+// pointer but a chain of four objects each naming the next - _TI1H, _CTA1H,
 // _CT??_R0H@84, ??_R0H@8 - measured from cl. Fundamental types only.
-// The five names the Microsoft ABI wants for a class's run-time description -
-// the type descriptor, the base-class descriptor, the array of those, the class
-// hierarchy over it, and the complete-object locator that sits one word in
-// front of the vftable. `decorated` is the string inside the type descriptor,
-// which is what the runtime actually compares.
 struct MicrosoftRtti {
     std::string descriptor;      // ??_R0?AUBase@@@8
     std::string decorated;       // .?AUBase@@
@@ -78,9 +71,7 @@ bool microsoftMemberName(const std::string &cls, const Type *clsType,
                          std::string *out, std::string *problem);
 
 // A member *function template* specialization: the member name with its own
-// template arguments, inside the class. Itanium inserts `I args E` after the
-// member name and encodes the return type; Microsoft writes `??$name@args@`
-// then the class scope. Measured: _ZNK1S3getILi7EEEiv, ??$get@$06@S@@QEBAHXZ.
+// template arguments, inside the class.
 bool itaniumMemberTemplateName(const std::string &cls, const Type *clsType,
                                const std::string &name, const Type *fn,
                                const std::vector<TemplateArg> &args,
@@ -164,9 +155,7 @@ bool microsoftDataName(const std::string &name, const Type *t,
 
 std::string itaniumDataName(const std::string &name, bool internal);
 
-// A class's vtable, by tag. The tag may carry namespaces - "N::B" - which both
-// ABIs write as a scope list rather than part of the name, so the parser's two
-// call sites cannot concatenate. Measured: `_ZTVN1N1BE` and `??_7B@N@@6B@`.
+// A class's vtable, by tag.
 std::string vtableSymbol(const std::string &tag, bool microsoft);
 
 // A class's Itanium type_info, the string it points at, and the text of that
@@ -176,22 +165,12 @@ std::string itaniumClassNameString(const std::string &tag);
 std::string itaniumClassTypeInfoSymbol(const std::string &tag);
 std::string itaniumClassTypeNameSymbol(const std::string &tag);
 
-// **The same four, for a class whose name is a template-id.** `P<int>` cannot
-// be spelled by counting its letters - the ABI encodes the arguments, `1PIiE`
-// and `?$P@H@`, and `6P<int>` is what an assembler answers `unexpected token`
-// to. A specialization is asked of the mangler, which already spells one
-// wherever a type is written; every other class takes the path above and gets
-// the same answer it always did. Pass the class itself where there is one.
+// **The same four, for a class whose name is a template-id.**
 std::string vtableSymbol(const Type *cls, bool microsoft);
 
-// **A class's vbtable, which only the Microsoft ABI has.** It holds the offset
-// of each virtual base from the vbptr, and its name is `??_8` where a vftable
-// is `??_7`: `??_8D1@@7B@`. Measured from cl's own listing. Itanium keeps the
-// same numbers in the vftable and needs no such symbol, so this is asked for
-// on that target alone.
+// **A class's vbtable, which only the Microsoft ABI has.**
 std::string vbtableSymbol(const std::string &tag);
-// The same, for a class holding more than one: named after the direct base
-// whose subobject the pointer sits in.
+// The same, for a class holding more than one.
 std::string vbtableSymbol(const std::string &tag, const std::string &base);
 // The vbase destructor: Itanium's D1 under a Microsoft name. `??1` destroys
 // the class's own part; this one calls it and then the virtual bases.

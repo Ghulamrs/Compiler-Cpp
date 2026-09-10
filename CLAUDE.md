@@ -9808,31 +9808,52 @@ read 228 / 235. That is what would let `-masm=gnu` become the default, and it is
 a decision rather than a tidy-up: flipping it moves all 235 golden files and
 re-bases `names-vs-cl`, both of which run the default syntax.
 
-## Comments in src/ are at most three lines
+## What is left, at the close of 2026-09-11
 
-**This section used to open "No comment group in `src/` runs longer than three
-lines", and that has not been true for a while.** Counted 2026-09-08: `src/`
-holds **400** groups over three lines, 48 of them in `parser/Parser.h` alone.
-The sweep below happened and the rule was real; the tree has grown past it, and
-a reader who took the sentence at its word would have reformatted a hundred
-comments to match a standard nothing enforces. It is the tree's own rule 5 -
-*a claim with no oracle is not allowed to be believed* - failing on this file.
+**This activity is closed at the user's instruction**, with no further defect
+to be resolved in it, so what remains is written down rather than carried:
+`docs/HANDOVER-2026-09-11.md`. It holds the seven programs in `tests/open`, the
+three groups the 19 `.notarget`, 74 `.nocl` and 132 `.nonames` markers add up
+to - Windows exceptions, the Microsoft RTTI for a base away from offset 0, and
+the Itanium VTT - and two lessons worth more than any of them: a golden that
+does not move proves nothing about coverage, and a subagent's numbers are
+re-measured outside its own tree or not believed.
 
-**What the rule is worth keeping as** is a preference rather than an invariant:
-prefer three lines beside the code, and put the story here. It was applied
-across the tree on 2026-09-02: 640 groups, 4,575 of the 5,642 comment lines
-there, rewritten to keep the finding and the measurement and drop the reasoning
-around them.
+## Comments in src/ are at most three lines, and now there is an oracle
 
-**What was dropped is not lost, and this file is where it went.** The long
-form - why an ABI answer is what it is, what a bug looked like before it was
-mended, which oracle was asked - belongs here, in `docs/CONFORMANCE.md`, or in
-a case's own header comment, where a reader looks for it deliberately. What
-stays beside the code is the sentence a reader needs *at that line*.
+**The rule, as instructed on 2026-09-11 and enforced from that day:** no
+comment group in `src/` runs longer than three lines, and a group standing in
+front of a *single* line of code runs one line only - a one-liner gets a
+one-liner. `tools/comment-lines` is the oracle, `make comments` names every
+breach, and `make test` counts them.
 
-So when a new fault is mended: write the three lines beside the fix, and put
-the story in the section of this file that owns the subject. A comment that
-wants a fourth line is a sign the story belongs here instead.
+**Why the oracle matters more than the rule.** This section used to carry the
+rule as prose. It was applied by hand on 2026-09-02, the tree grew to 400
+breaches by 2026-09-08, and the sentence had to be rewritten to admit that a
+reader who believed it would have been misled. That is the tree's own rule 5 -
+a claim with no oracle is not allowed to be believed - failing on this file.
+The rule is the same as it was; what is new is that it cannot rot silently.
+
+**The sweep, 2026-09-11: 770 groups, about 3,000 comment lines out of `src/`.**
+It kept whole sentences front to back, because the house style puts the finding
+in the first one, and never cut inside a sentence - a first pass that did turned
+"spill its register arguments into" into "spill its register", which is a
+different and false claim. Two things it had to be taught: a banner
+(`// ----- new and delete`) is not prose and must not be reflowed into the
+paragraph beneath it, and a sentence that will not fit its cap is better as one
+long line than as a mangled short one. Thirty-eight of those were then
+rewritten by hand; forty comment lines still run past 100 columns, which the
+policy permits - it counts lines - and which is the honest residue.
+
+**Where the dropped text went.** Into this file for the rounds that mattered,
+into `docs/` for the rest, and into git history for everything: the tree is
+committed, so `git log -p` is the long form. What stays beside the code is the
+sentence a reader needs *at that line*.
+
+So when a new fault is mended: write the one line, or the three, beside the
+fix, and put the story in the section of this file that owns the subject. A
+comment that wants a fourth line is a sign the story belongs here instead -
+and `make comments` will say so either way.
 
 ## Build
 

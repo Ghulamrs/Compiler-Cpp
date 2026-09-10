@@ -134,9 +134,7 @@ const Type *TypeTable::withConst(const Type *t) {
     if (t->isArray())
         return arrayOf(withConst(t->pointee()), t->length());
 
-    // A function type cannot be const-qualified; only a member function can,
-    // and that is written on the function rather than on its type. Silently
-    // returning it unqualified keeps the caller from having to know.
+    // A function type cannot be const-qualified.
     if (t->isFunction()) return t;
 
     for (Type *d : derived_)

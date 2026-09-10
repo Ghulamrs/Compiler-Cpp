@@ -32,12 +32,7 @@ public:
     virtual const Target &target() const = 0;
     virtual const Abi &abi() const = 0;
 
-    // **`gnuAsm` is passed, not looked up.** It used to be a file-scope
-    // `bool` in X86_64Windows.cpp, set from argv and read from here - one
-    // mutable object shared by every compiling thread, safe only by the
-    // convention that nothing wrote it after the pool started. The Driver owns
-    // the option now and hands it over, so the backends stay what they were:
-    // const singletons with no state of their own.
+    // **`gnuAsm` is passed, not looked up.**
     virtual std::unique_ptr<CodeGen> codegen(std::ostream &sink,
                                              bool gnuAsm) const = 0;
     virtual bool emits() const = 0;

@@ -164,11 +164,7 @@ void GnuSpelling::dataBytes(const std::string &bytes) {
 // `printf` and `__CxxFrameHandler3` are written plainly, as clang writes them.
 std::string CoffSpelling::sym(const std::string &name) const {
     std::string n = name;
-    // **A `.L` label is a temporary, and a table cannot name one.** The
-    // assembler discards them, so `.long .L...try.0@IMGREL` is refused as an
-    // undefined label - the same rule that made the Itanium LSDA need
-    // `GCC_except_table0` rather than an `L` name. Rewritten to a real symbol
-    // exactly as the MASM spelling rewrites it, dots to underscores.
+    // **A `.L` label is a temporary, and a table cannot name one.**
     if (n.compare(0, 2, ".L") == 0) {
         std::string out = "$";
         for (char c : n) out += (c == '.') ? '_' : c;
@@ -215,19 +211,8 @@ void CoffSpelling::weakDefinition(const std::string &name) {
 }
 
 // Measured from clang for x86_64-pc-windows-msvc: the same pointer, in the
-// section the CRT walks before main.
-// **`.CRT$XCU` carries no COMDAT clause**, and the `unique,0` that used to be
-// here is why this is a comment. It was copied from what clang on *this* Mac
-// emits for the Microsoft target - and `unique` is an **ELF** section flag.
-// COFF has no such thing: the clang that assembles on the Windows box, 19.1.5,
-// answers `unrecognized COMDAT type 'unique'` and the four cases with a global
-// constructor stopped there. Newer LLVM accepts the spelling it prints; the
-// portable one, which both take, is the section with its attributes and
-// nothing else - and it is what MSVC itself emits. Several entries then share
-// one section per object, which is exactly what the linker concatenating
-// `$`-suffixed sections is for.
-//
-// Measured 2026-09-10 by assembling both spellings with the box's own clang.
+// section the CRT walks before main. **`.CRT$XCU` carries no COMDAT clause**,
+// and the `unique,0` that used to be here is why this is a comment.
 void CoffSpelling::initialiserEntry(const std::string &fn, bool) {
     o_ += "  .section .CRT$XCU,\"dr\"\n  .p2align 3, 0x0\n  .quad ";
     o_ += sym(fn);
@@ -262,12 +247,6 @@ void CoffSpelling::objectSize(const std::string &name, int size) {
 // **Hand-written, because `.seh_handlerdata` cannot live in a COMDAT.** The
 // `.seh_*` directives are the tidy way and the assembler builds .pdata and
 // .xdata from them - measured, and it works for every function in plain .text.
-// It refuses inside a COMDAT section: "expected relocatable expression", for
-// `.text,"xr",discard,"sym"` and for a uniquely-named variant alike. Every
-// inline definition is exactly such a section, and an inline member with a
-// destructor carries EH, so the shortcut fails for the functions COMDAT exists
-// for. Written out, the unwind data goes in `associative` sections instead,
-// which does assemble - so this is MASM's arithmetic in GNU spelling.
 void CoffSpelling::prologue(int frameSize, const std::string &lsda) {
     hasEh_ = !lsda.empty();
     frameSize_ = frameSize;
@@ -357,13 +336,7 @@ void CoffSpelling::functionEnd(const std::string &name) {
     mergeable_ = false;
 }
 
-// **The whole frame moved, so every offset into it moves with it.** This target
-// takes rbp *after* the allocation - exactly frameSize lower than the Itanium
-// one every operand is written against - so `d(%rbp)` becomes
-// `(d + frameSize)(%rbp)`, the positive ones included. The MASM spelling makes
-// the same adjustment at the same one place, and for the same reason: an FH3
-// displacement has to be an unsigned offset up from the establisher, which is
-// what the frame pointer is once it sits at the bottom of the allocation.
+// **The whole frame moved, so every offset into it moves with it.**
 void CoffSpelling::op(const Op &x) {
     if (x.kind != Op::Mem || std::string(x.text.p, x.text.n) != "%rbp") {
         GnuSpelling::op(x);

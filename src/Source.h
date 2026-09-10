@@ -7,9 +7,6 @@
 struct SubstitutionFailure {
     std::string why;
     // **A feature this compiler has not built is not a substitution failure.**
-    // [temp.deduct]/8 is about types and expressions that are ill-formed, not
-    // about a refusal - so a candidate must not be dropped for one, and the
-    // site that catches this re-raises when it is set.
     bool unsupported = false;
     std::size_t pos = 0;
 };

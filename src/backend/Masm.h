@@ -21,19 +21,14 @@ public:
     void functionBegin(const std::string &name, bool exported,
                        bool mergeable = false) override;
     void prologue(int frameSize, const std::string &lsda) override;
-    // **Whether a FuncInfo follows is the code generator's answer, not this
-    // one's.** It used to be inferred from the Itanium LSDA name the prologue
-    // is handed, which says a landing pad exists and not that a Microsoft
-    // table will be written for it - see X86_64Linux's call site.
+    // **Whether a FuncInfo follows is the code generator's answer, not this one's.**
     void noteHasEh(bool yes) override { hasEh_ = yes; }
     // The unwind codes the prologue described, written out by functionEnd -
     // which is where the labels they measure against exist.
     std::string unwindData_;
     int unwindCodes_ = 0;
     std::string fnName_;
-    // The frame this function allocated. The Microsoft exception tables measure
-    // every offset from the stack pointer after the prologue and cxx1 addresses
-    // locals from rbp before it, so this number bridges the two.
+    // The frame this function allocated.
     int frameSize_ = 0;
     // Whether this function has a handler: it decides the flags in the unwind
     // header and whether __CxxFrameHandler3 and a FuncInfo follow the codes.
@@ -99,18 +94,14 @@ private:
     void endFunclet(const std::string &resume) override;
     void endCleanupFunclet() override;
     void closeFunclet(const std::string &tail);
-    // **A Windows local is `frameSize - slot` above the establisher frame**, and
-    // that is the whole translation between how cxx1 addresses a local and how
-    // every FH3 table has to describe one. Written here so it is written once.
+    // **A Windows local is `frameSize**`.
     int establisherOffset(int slot) const;
 
     void storeUnwindHelp(int slot) override;
     void emitExceptionTables(const Function &fn) override;
     void emitCleanupTables(const Function &fn);
 
-    // A funclet is written by walking the handler into the ordinary output and
-    // lifting the text back out: what the body appended, in order, *is* the
-    // funclet, so moving it costs no second code path.
+    // A funclet is the text the body appended, lifted back out in order.
     std::string funclets_;
     // The funclets' .pdata goes to MasmSpelling::trailer_, after every function:
     // .pdata has to be sorted by the address it describes and every funclet
@@ -121,11 +112,9 @@ private:
     const char *funcletKind_ = "$catch$";
     bool writesDwarf() const override { return false; }
     bool emitsOwnRtti() const override { return true; }
-    // The four objects the Microsoft ABI wants per thrown type. Emitted here
-    // because no other target has anything like them.
+    // The four objects the Microsoft ABI wants per thrown type.
     void emitThrowInfo(const Program &program);
-    // The five objects the Microsoft ABI wants per class with a vftable, for
-    // the same reason and in the same place.
+    // The five objects the Microsoft ABI wants per class with a vftable, for the same reason and in the same place.
     void emitClassRtti(const Program &program);
 
     MasmSpelling masm_;
