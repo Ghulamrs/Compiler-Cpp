@@ -7128,6 +7128,57 @@ callee owe one. `by-value-parameter-unwind.cpp` has it now, in a constructor
 and in a plain function, and both spellings compile, assemble, link and run it
 on the box.
 
+## The Microsoft virtual-base layout, measured
+
+**2026-09-10, and this is measurement rather than implementation** - the
+feature is not written, and what stopped it before was that nobody had asked
+cl. Now somebody has, so the next attempt starts from facts.
+
+**A virtual base goes at the end of the most-derived object, and every
+subobject that introduces one carries its own `vbptr`.** Measured with cl,
+sizes and offsets read off real objects rather than from a null pointer - a
+virtual base's member cannot be reached through `((T *)0x1000)->m` at all,
+because the compiler must load the vbptr to find it, which is itself the
+lesson:
+
+| | | |
+| --- | --- | --- |
+| `struct V { int a; };` | 4 | |
+| `struct D1 : virtual V { int b; };` | **24** | vbptr 0, `b` 8, **V at 16** |
+| `struct Dia : D1, D2 { int d; };` | **48** | D1 at 0, D2 at 16 with its *own* vbptr, `d` 32, **the one V at 40** |
+| `struct P : virtual W { int e; };` | **32** | vbptr 0, `e` 8, W (polymorphic, 16) at 16 |
+| `struct Plain : V { int b; };` | 8 | a non-virtual base is unchanged |
+
+**The table is four-byte entries and the first one is the vbptr's own offset.**
+`??_8D1@@7B@ DD 00H, DD 010H` - zero, then 16, which is V measured from the
+vbptr. One table per (class, vbptr) pair, named for the subobject it serves:
+`??_8Dia@@7BD1@@@` and `??_8Dia@@7BD2@@@`.
+
+**The constructor stores them.** `lea rcx, OFFSET FLAT:??_8D1@@7B@` then
+`mov QWORD PTR [rax], rcx`, and Dia's constructor does it twice - at `[rax]`
+for its D1 and at `[rax+16]` for its D2.
+
+### What implementing it would take, and why the shape matters
+
+`hasVptr()` is `polymorphic() || hasVirtualBase()`, which is **Itanium's**
+rule: there the vtable carries the `vbase_offset`, so one pointer answers both
+questions. On this ABI they are two pointers - a vfptr for virtual functions
+and a vbptr for virtual bases - and conflating them is why a class with no
+virtual function at all is turned away with *"has virtual functions in a base
+that is not the first"*. Five things follow, and none of them is small:
+
+1. a `vbptr` distinct from the vfptr, in the layout and in `Type`;
+2. virtual bases placed **after** everything else, once per most-derived object;
+3. a vbtable emitted per subobject that introduces one, in both Windows
+   spellings;
+4. every constructor storing them, at each subobject's own offset;
+5. member access and casts reading the table rather than a fixed offset.
+
+**Half of that is worse than none of it**: a layout that is right for `sizeof`
+and wrong for one offset miscompiles silently, where today the compiler refuses
+by name. So it is one round or none, and this section is where that round
+starts.
+
 ## A frame that skipped the guard page, and two wrong answers before it
 
 **Fixed 2026-09-06.** `matrix_main.cpp` of the C++ Vector Exercise died on
