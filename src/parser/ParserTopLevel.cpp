@@ -855,6 +855,7 @@ void Parser::topLevel(Program &program) {
         // passed. Everything else about the body - access, the class's own
         // names in scope - is a member's.
         inStaticMember_ = member->isStaticMember;
+        msVbInitSlot_ = -1;
         if (!member->isStaticMember) {
             // `this` takes the first slot, and its type carries the constness the member
             // was declared with - so a const member function cannot write through it, by
@@ -865,9 +866,23 @@ void Parser::topLevel(Program &program) {
             thisOffset_ = declare("this", thisType, d.pos);
             inParams_ = false;
             paramSlots.insert(paramSlots.begin(), Param{ thisType, thisOffset_ });
+            // **cl's hidden most-derived flag, last of all.** Measured on
+            // `L::L(int, int)`: `this` in rcx, the two arguments in rdx and
+            // r8d, the flag in r9d - so it is appended after the declared
+            // parameters and not inserted beside `this`. It is not part of the
+            // mangled name; `msVbaseCtors_` is what remembers who takes one.
+            msVbInitSlot_ = -1;
+            if (target_.microsoftNames() && memberOf->hasVirtualBase() &&
+                d.name == localOf(d.qualifier)) {
+                inParams_ = true;
+                msVbInitSlot_ = declare(".initVBases", types_.intType(), d.pos);
+                inParams_ = false;
+                paramSlots.push_back(Param{ types_.intType(), msVbInitSlot_ });
+            }
         }
     } else {
         inStaticMember_ = false;
+        msVbInitSlot_ = -1;
         declareFunction(d.name, d.type, params, variadic, true, d.pos,
                         sc == StorageStatic);
         // Which function's body is about to be read, so that an access check inside it
@@ -1306,6 +1321,11 @@ void Parser::topLevel(Program &program) {
         body = StmtPtr(new Block(std::move(withInits)));
     }
 
+    // **And in front of all of it, on Microsoft, the most-derived guard.**
+    // Written after the vptr block below so that it ends up outermost: the
+    // vbtable pointers and the virtual bases are stored first, and cl's
+    // listing shows the vftable store after the guard's label.
+    //
     // **A polymorphic object's vptr is set by its constructor**, before the body and
     // after the base's - and by its destructor, for the same reason running the other
     // way: [class.cdtor]/4 makes a virtual call reach that level's own overrider.
@@ -1354,8 +1374,13 @@ void Parser::topLevel(Program &program) {
         // the most-derived class instead - so C1 builds them and then calls
         // this. See Parser::synthesizeCompleteCtor. The Microsoft ABI arranges
         // virtual bases differently and is refused before it reaches here.
-        if (memberOf->bases()[which].isVirtual && !target_.microsoftNames())
-            continue;
+        //
+        // **And on Microsoft too, since 2026-09-10.** There the split is one
+        // function and a flag rather than two functions, so the virtual bases
+        // move into the `if (mostDerived)` this body opens with - see
+        // `guardedVirtualBaseInit`. Building them here as well is what made
+        // `R : D1 : virtual V` construct V twice.
+        if (memberOf->bases()[which].isVirtual) continue;
         const std::string key = building ? constructorKey(base->tag())
                                          : destructorKey(base->tag());
 
@@ -1460,7 +1485,7 @@ void Parser::topLevel(Program &program) {
             }
             ExprPtr call = completeCall(base->tag(), symbol, nullptr,
                                         types_.get(Kind::Void), params2, false,
-                                        d.pos, std::move(args));
+                                        d.pos, std::move(args), false, 0);
 
             std::vector<StmtPtr> wrapped;
             if (building) {
@@ -1471,6 +1496,21 @@ void Parser::topLevel(Program &program) {
                 wrapped.push_back(StmtPtr(new ExprStmt(std::move(call))));
             }
             body = StmtPtr(new Block(std::move(wrapped)));
+        }
+    }
+
+    // **The most-derived guard goes outside the base calls**, because a
+    // virtual base is built before every non-virtual one: cl's `R::R` stores
+    // the vbtable pointer and calls `V::V` and only then `D1::D1`. Wrapping
+    // this earlier put it between them and printed `+D1 +V +R`.
+    if (msVbInitSlot_ >= 0 && memberOf != nullptr &&
+        d.name == localOf(d.qualifier)) {
+        std::vector<StmtPtr> guarded =
+            guardedVirtualBaseInit(memberOf, d.qualifier, thisOffset_,
+                                   msVbInitSlot_, d.pos, -1, false, &baseArgs);
+        if (!guarded.empty()) {
+            guarded.push_back(std::move(body));
+            body = StmtPtr(new Block(std::move(guarded)));
         }
     }
 
@@ -1565,6 +1605,16 @@ void Parser::topLevel(Program &program) {
                 program.functions.back().setAlias(c2);
             }
         }
+    }
+    // **The Microsoft split is the destructor's alone.** `??1` stops at this
+    // class's own part - the walk above skips the virtual bases now - and
+    // `??_D` is the wrapper that calls it and then destroys them. cl:
+    // `??_DDia@@QEAAXXZ` calls `??1Dia@@QEAA@XZ` and then `??1V`, and every
+    // *complete* object's destruction goes to the wrapper.
+    if (memberOf != nullptr && d.name == "~" + localOf(d.qualifier) &&
+        target_.microsoftNames() && memberOf->hasVirtualBase()) {
+        splitD1 = vbaseDestructorSymbol(d.qualifier);
+        splitD2 = program.functions.back().symbol();
     }
     if (memberOf != nullptr && d.name == "~" + localOf(d.qualifier) &&
         !target_.microsoftNames()) {

@@ -156,14 +156,20 @@ each refusal names itself:
   funclet there;
 * a `try` inside another; a class-typed `throw`; a rethrow from inside a
   handler;
-* a virtual base inherited along **more than one path** - a true diamond.
-  The ordinary shapes landed in this version and match cl byte for byte,
-  vbptr, vbtable and all; cl gives a diamond one table per path, named for the
-  base each serves, and this compiler emits one, so it refuses the shape
-  rather than miscompile it silently;
 * an override from a base that is not the first, where cl biases `this`
   instead of emitting a thunk;
 * a `volatile` object with external linkage, whose name cl decorates.
+
+**Virtual bases are no longer among them.** The Microsoft layout - the vbptr,
+one vbtable per pointer, the store in every constructor and both walks that
+read one - landed on 2026-09-10 and matches `cl` byte for byte, diamonds
+included; so did cl's hidden most-derived flag, which is how that ABI builds a
+virtual base once rather than once per class that names it. What remains is
+three defects the work uncovered, all of them **Itanium-side or shared** and
+all registered in `tests/open`: the dynamic base does not become the primary
+one, a second base's own virtual base is read through the wrong pointer, and
+`delete` through a pointer to a polymorphic virtual base misses the
+most-derived destructor.
 
 **That Windows defect is closed as of 1.2**: a function other than `main` that
 owned an unwind region used to emit a `.pdata` entry pointing at a `$cppxdata`

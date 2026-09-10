@@ -142,6 +142,21 @@ private:
     // keyed "Derived::Base". Filled while the table is laid out, read by the
     // constructor that has to store it.
     std::map<std::string, int> secondaryVptr_;
+
+    // **cl's hidden most-derived flag, and who wants it.** A constructor of a
+    // Microsoft class with a virtual base takes an extra `int` last, telling
+    // it whether it is building the complete object: 1 says store the vbtable
+    // pointers and construct the virtual bases, 0 says the caller has done
+    // both. It is Itanium's C1/C2 split expressed as one function, and it is
+    // not part of the mangled name - so the symbols that want one are
+    // remembered here instead. Measured, `vbmd.cpp` and `vbflag.cpp`.
+    std::set<std::string> msVbaseCtors_;
+    // The tags of those classes, for the destructor side: a complete object of
+    // one is destroyed through `??_D` and not through `??1`.
+    std::set<std::string> msVbaseClasses_;
+    // Where the flag sits in the constructor being emitted, -1 for a function
+    // that has none.
+    int msVbInitSlot_ = -1;
     // A member function body written inside the class, held until the class closes.
     // `start` is the token the whole declaration begins at, so the replay re-reads the
     // return type and parameters too rather than trying to reconstruct them.
@@ -741,6 +756,12 @@ private:
     // And the vbtable pointer beside them, Microsoft only.
     void storeVbptr(const std::string &cls, const Type *memberOf, int thisSlot,
                     std::vector<StmtPtr> &into);
+    // The `if (mostDerived)` a Microsoft constructor opens with: the vbtable
+    // pointers and the virtual bases, built only by the complete object.
+    std::vector<StmtPtr> guardedVirtualBaseInit(
+        const Type *type, const std::string &cls, int thisSlot, int flagSlot,
+        std::size_t pos, int srcSlot, bool moving,
+        std::map<std::string, std::vector<ExprPtr> > *vbaseArgs);
     // A thunk: the entry a secondary table holds for a function this class
     // overrides. It moves `this` back to the complete object and calls the
     // real one. Named for the offset it undoes - _ZThn16_N1C1gEv.
@@ -1757,7 +1778,7 @@ private:
                          ExprPtr callee, const Type *returns,
                          const std::vector<const Type *> &params, bool variadic,
                          std::size_t pos, std::vector<ExprPtr> args,
-                        bool hasThis = false);
+                        bool hasThis = false, int vbInit = 1);
 
     void parameterTypes(std::vector<const Type *> &params, bool &variadic);
     // **The Microsoft ABI mangles a parameter from before [dcl.fct]/5 deletes

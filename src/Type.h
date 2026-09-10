@@ -347,6 +347,24 @@ public:
     const Type *vbptrOwner() const { return cls().vbptrOwner_; }
     void setVbptrOwner(const Type *t) { vbptrOwner_ = t; }
 
+    // **A class can hold more than one of them.** `Dia : D1, D2` where each
+    // of D1 and D2 has a virtual base keeps a vbptr inside each subobject,
+    // and cl gives it one table per pointer, named for the base whose
+    // subobject holds it: `??_8Dia@@7BD1@@@`. The two above are the *first*
+    // of these - the one this class reaches its own virtual bases through.
+    struct VbPtr {
+        int offset;            // where it sits in this class
+        const Type *owner;     // the class that introduced it: entry 0 is
+                               // minus that class's own vbptr offset
+        const Type *base;      // the direct base holding it, null where this
+                               // class introduced the pointer itself
+    };
+    const std::vector<VbPtr> &vbptrs() const { return cls().vbptrs_; }
+    void addVbptr(int offset, const Type *owner, const Type *base) {
+        if (vbptrs_.empty()) { vbptrOffset_ = offset; vbptrOwner_ = owner; }
+        vbptrs_.push_back(VbPtr{ offset, owner, base });
+    }
+
     // The first base - the only one for most classes, and the only one that
     // needs no adjustment. Kept because most callers ask exactly that.
     const Type *base() const {
@@ -451,6 +469,7 @@ private:
     int nvDataSize_ = 0;
     int vbptrOffset_ = -1;
     const Type *vbptrOwner_ = nullptr;
+    std::vector<VbPtr> vbptrs_;
     std::vector<Member> members_;
     std::vector<StaticMember> statics_;
     int size_ = 0;

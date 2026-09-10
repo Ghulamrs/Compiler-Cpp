@@ -1226,6 +1226,34 @@ std::string vbtableSymbol(const std::string &tag) {
     return out + "@7B@";
 }
 
+// **The one a class with more than one vbptr gets**, named for the base whose
+// subobject holds that pointer: `??_8Dia@@7BD1@@@`. cl names it after the
+// *direct* base and not after the class that introduced the pointer -
+// `??_8Deep@@7BR2@@@` where R2 got its vbptr from D1 - and a class with a
+// single table keeps the plain spelling above. Measured, `vbdeep.cpp`.
+std::string vbtableSymbol(const std::string &tag, const std::string &base) {
+    const std::vector<std::string> parts = scopeComponents(tag);
+    std::string out = "??_8";
+    for (std::size_t i = parts.size(); i-- > 0; ) { out += parts[i]; out += '@'; }
+    out += "@7B";
+    const std::vector<std::string> bp = scopeComponents(base);
+    for (std::size_t i = bp.size(); i-- > 0; ) { out += bp[i]; out += '@'; }
+    return out + "@@";
+}
+
+// **The vbase destructor, which only the Microsoft ABI has.** `??1Cls` there
+// destroys the class's own part and stops - the virtual bases belong to
+// whoever laid them down - and `??_DCls@@QEAAXXZ` is the one that destroys
+// them, called wherever a *complete* object of the class is destroyed. It is
+// Itanium's D1 under another name, and `??1` is D2. Measured, `vbmd.cpp`:
+// `??_DDia@@QEAAXXZ` calls `??1Dia@@QEAA@XZ` and then `??1V`.
+std::string vbaseDestructorSymbol(const std::string &tag) {
+    const std::vector<std::string> parts = scopeComponents(tag);
+    std::string out = "??_D";
+    for (std::size_t i = parts.size(); i-- > 0; ) { out += parts[i]; out += '@'; }
+    return out + "@QEAAXXZ";
+}
+
 std::string itaniumClassNameString(const std::string &tag) {
     const std::vector<std::string> parts = scopeComponents(tag);
     std::string out;

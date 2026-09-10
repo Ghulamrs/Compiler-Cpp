@@ -997,47 +997,34 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
             if (firstNv == nullptr) firstNv = written[bi].type;
             if (written[bi].type->vbptrOffset() >= 0) carriers++;
         }
-        // **Two bases each carrying a vbptr is the diamond, and it is refused.**
-        // cl gives such a class *two* vbtables, named for the base each one
-        // serves - `??_8Dia@@7BD1@@@` and `??_8Dia@@7BD2@@@`, where a class
-        // with one table gets the plain `??_8X@@7B@` - and the constructor
-        // stores each into its own subobject. Emitting one table under the
-        // plain name would leave a `D2 *` reading D2's own table, which says
-        // where V is in a D2 and not where it is here: a silent miscompile.
-        // Measured on the box, `vbfull.cpp`, 2026-09-10.
-        if (carriers > 1)
-            src_.fail(pos, "'" + tag + "' inherits a virtual base along more "
-                           "than one path, and x86_64-windows gives such a "
-                           "class one vbtable per path, which this compiler "
-                           "does not emit yet. Both Itanium targets compile "
-                           "this");
         const bool inheritsVfptr = firstNv != nullptr && firstNv->polymorphic();
         int added = 0;
         if (anyVirtual && !inheritsVfptr) added += 8;
         if (writesVirtualBase && carriers == 0) {
-            type->setVbptrOffset(added);
-            type->setVbptrOwner(type);
+            type->addVbptr(added, type, nullptr);
             added += 8;
         } else if (writesVirtualBase) {
-            // Inherited: the pointer stays where the base put it - **inside
-            // that base**, so its offset here is the base's own plus where the
-            // base sits. `X : A, D1` keeps it at 8 and not at 0, which is what
-            // cl's layout for X says and what makes its table read 0, 24.
-            // The owner is carried down as well: entry 0 of the table is the
+            // **Inherited, and there can be more than one.** The pointer stays
+            // where the base put it - *inside* that base - so its offset here
+            // is the base's own plus where the base sits; `X : A, D1` keeps it
+            // at 8 and not at 0, which is what cl's layout for X says and what
+            // makes its table read 0, 24. `added` covers a vfptr this class
+            // may have put in front of every base.
+            //
+            // The owner is carried down as well: entry 0 of a table is the
             // step back to the top of the class that *introduced* the pointer,
-            // which is 0 for X (D1 puts it at its own offset 0) and -8 for a
-            // class that put its vfptr in front of it.
-            // `bases()` already holds where each non-virtual base sits -
-            // it was laid down above - and `added` covers the vfptr this
-            // class may have put in front of all of them.
+            // 0 for X (D1 puts it at its own offset 0) and -8 for a class that
+            // put its vfptr in front of it. And the direct base is kept
+            // because it is what cl *names* the table after -
+            // `??_8Deep@@7BR2@@@` and not `...@7BD1@@@`, though D1 introduced
+            // the pointer that R2 hands down. Measured, `vbdeep.cpp`.
             const std::vector<Type::BaseSpec> &laid = type->bases();
             for (std::size_t bi = 0; bi < laid.size(); bi++) {
                 if (laid[bi].isVirtual) continue;
                 if (laid[bi].type->vbptrOffset() < 0) continue;
-                type->setVbptrOffset(laid[bi].offset + added +
-                                     laid[bi].type->vbptrOffset());
-                type->setVbptrOwner(laid[bi].type->vbptrOwner());
-                break;
+                type->addVbptr(laid[bi].offset + added +
+                                   laid[bi].type->vbptrOffset(),
+                               laid[bi].type->vbptrOwner(), laid[bi].type);
             }
         }
         if (added != 0) {
@@ -1181,6 +1168,16 @@ const Type *Parser::structOrUnionSpecifier(Kind kind, bool isClass) {
     }
 
     declareImplicitSpecials(tag, type, pos);
+    // **Who takes cl's hidden flag**, recorded once the class is laid out and
+    // its implicit members declared: every constructor of a Microsoft class
+    // with a virtual base, by symbol, because the flag is not in the name.
+    if (target_.microsoftNames() && type->hasVirtualBase()) {
+        msVbaseClasses_.insert(tag);
+        if (const std::vector<std::size_t> *set =
+                overloadsOf(constructorKey(tag)))
+            for (std::size_t i = 0; i < set->size(); i++)
+                msVbaseCtors_.insert(functions_[(*set)[i]].symbol);
+    }
     // **Whether copying this is a call decides how it is passed**, and it is settled
     // here because both halves are: a copy constructor exists by now if the class
     // wrote one, or if a base or member made the copy non-trivial.

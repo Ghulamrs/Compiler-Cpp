@@ -9541,6 +9541,66 @@ and segfaults reading the virtual base. x86_64-windows is right here for a
 reason that is not luck: a vbptr need not sit at offset 0 the way a vptr must,
 and cl lays A first too. tests/open/itanium-primary-base.cpp.
 
+## The diamond, and cl's hidden most-derived flag
+
+The layout round above left one refusal - a virtual base inherited along more
+than one path - and lifting it turned out to be two things, of which only the
+first was the diamond.
+
+**The tables.** A class holding more than one vbptr gets one vbtable per
+pointer, named for the *direct base* whose subobject holds it:
+`??_8Dia@@7BD1@@@` (0, 40) and `??_8Dia@@7BD2@@@` (0, 24), where a class with a
+single table keeps the plain `??_8X@@7B@`. cl names it after the direct base
+and not after the class that introduced the pointer - `??_8Deep@@7BR2@@@`,
+though R2 got its vbptr from D1. A secondary table lists *its own base's*
+virtual bases in that base's order, because the code reading it was compiled
+against that base and counts entries from there; the primary lists the whole
+class's, so a virtual base another subobject brought in is appended to it.
+Measured on `Two : E1, E2` where E1 names V and E2 names W:
+`??_8Two@@7BE1@@@` is 0, 40, 44 and `??_8Two@@7BE2@@@` is 0, 28.
+
+**And then the thing the diamond exposed rather than caused.** A virtual base
+was being *constructed once per class that names it* on this target -
+`+V +D1 +V +R` where clang gives `+V +D1 +R` - and that was true of the single
+vbptr shapes too, which had shipped that way. What was missing is not a table
+but the mechanism [class.base.init]/7 needs, and cl's is not Itanium's:
+
+  - **a hidden `int` parameter, last**, on every constructor of a class with a
+    virtual base, telling it whether it is building the complete object. It is
+    not part of the mangled name, so `msVbaseCtors_` remembers by symbol which
+    ones take one. Measured on `L::L(int, int)`: `this` in rcx, the arguments
+    in rdx and r8d, the flag in r9d.
+  - **an `if` at the top of the constructor** holding the vbtable pointer
+    stores and the virtual base construction, and nothing else. The vftable
+    store sits *after* the guard's label - cl's listing settles that.
+  - **`??_DCls@@QEAAXXZ`, the vbase destructor**: `??1` destroys the class's own
+    part and stops, and `??_D` calls it and then the virtual bases. That is
+    Itanium's D1 and D2 under two Microsoft names, and every *complete*
+    object's destruction goes to the wrapper - `??_G`, the deleting one,
+    included.
+
+So the Microsoft ABI has the same C1/C2 split this compiler already had; it
+spells the constructor half as one function and a flag, and the destructor half
+as two functions. The parser now skips virtual bases in the body on **both**
+ABIs and hands them to the guard here or to C1 there, and the base subobject
+calls pass 0 where a complete object passes 1. All of it goes through
+`completeCall`, which is the one place a constructor call is built.
+
+**Order matters and cost a cycle**: the guard has to wrap the base calls, not
+sit among them. Written inside, it printed `+D1 +V +R` - the virtual base after
+the non-virtual one, where cl's `R::R` stores the vbtable pointer, calls
+`V::V`, and only then `D1::D1`.
+
+`virtual-base-diamond` and `virtual-base-initialiser` run on all three targets
+now; they had been skipped on this one since the feature began.
+
+**Three defects the round found and did not cause**, all registered in
+tests/open: `X : A, D1` needs the dynamic base at offset 0 on Itanium
+(itanium-primary-base); a second base with a virtual base of its own reads the
+wrong one there (virtual-base-second-base); and `delete p` through a pointer to
+a *polymorphic virtual base* never reaches the most-derived destructor on
+either ABI (virtual-dtor-through-virtual-base). The register is eight.
+
 ## `<type_traits>`, and four gaps of one family
 
 The header is the C++11 core - `is_integral`, `is_floating_point`, `is_same`,

@@ -415,7 +415,25 @@ ExprPtr Parser::completeCall(const std::string &name, const std::string &symbol,
                              ExprPtr callee, const Type *returns,
                              const std::vector<const Type *> &params,
                              bool variadic, std::size_t pos,
-                             std::vector<ExprPtr> args, bool hasThis) {
+                             std::vector<ExprPtr> args, bool hasThis,
+                             int vbInit) {
+    // **cl's hidden most-derived flag, added here and nowhere else.** A
+    // constructor of a Microsoft class with a virtual base takes an `int`
+    // last, and it is not in the mangled name, so no caller can see it in the
+    // signature it resolved. Every constructor call in this compiler comes
+    // through here, so this is the one place that has to know: 1 by default
+    // because most construction is of a complete object, and the three sites
+    // that build a *base subobject* pass 0.
+    if (vbInit >= 0 && !msVbaseCtors_.empty() &&
+        msVbaseCtors_.count(symbol) != 0) {
+        std::vector<const Type *> withFlag(params);
+        withFlag.push_back(types_.intType());
+        ExprPtr flag(new Num(static_cast<long long>(vbInit)));
+        flag->setType(types_.intType());
+        args.push_back(std::move(flag));
+        return completeCall(name, symbol, std::move(callee), returns, withFlag,
+                            variadic, pos, std::move(args), hasThis, -1);
+    }
     if (variadic ? args.size() < params.size() : args.size() != params.size())
         src_.fail(pos, "'" + name + "' takes " + (variadic ? "at least " : "") +
                        std::to_string(params.size()) + " argument(s), given " +

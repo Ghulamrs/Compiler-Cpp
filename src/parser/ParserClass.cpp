@@ -167,40 +167,58 @@ void Parser::registerDestructor(const std::string &cls, std::size_t pos,
 // table in it, because V sits at 24 in an R and at 16 in a D1.
 void Parser::storeVbptr(const std::string &cls, const Type *memberOf,
                         int thisSlot, std::vector<StmtPtr> &into) {
-    const int vbp = memberOf->vbptrOffset();
-    if (vbp < 0) return;
-
+    const std::vector<Type::VbPtr> &ptrs = memberOf->vbptrs();
     const Type *charPtr = types_.pointerTo(types_.get(Kind::Char));
     const Type *entry = types_.intType();
 
-    // The table's address, the same way the vftable's is taken: a global with
-    // an array type, decayed, so what is stored is where it is and not what
-    // its first word happens to hold.
-    int entries = 1;
-    const std::vector<Type::BaseSpec> &bs = memberOf->bases();
-    for (std::size_t i = 0; i < bs.size(); i++) if (bs[i].isVirtual) entries++;
-    ExprPtr table(Var::global(vbtableSymbol(cls)));
-    table->setType(types_.arrayOf(entry, entries));
-    ExprPtr value(new Cast(charPtr, decay(std::move(table))));
-    value->setType(charPtr);
+    // **One store per pointer.** A class with two subobjects that each hold a
+    // vbptr overwrites both: `Dia`'s constructor writes `??_8Dia@@7BD1@@@` at
+    // 0 over the one D1's constructor left there, and `??_8Dia@@7BD2@@@` at
+    // 16 over D2's. Leaving the second alone is what would make a `D2 *` read
+    // where V sits in a D2 rather than where it sits here.
+    for (std::size_t p = 0; p < ptrs.size(); p++) {
+        const int vbp = ptrs[p].offset;
+        const std::string symbol =
+            ptrs.size() == 1 || ptrs[p].base == nullptr
+                ? vbtableSymbol(cls)
+                : vbtableSymbol(cls, ptrs[p].base->tag());
 
-    ExprPtr self(Var::local("this", thisSlot));
-    self->setType(charPtr);
-    ExprPtr where = std::move(self);
-    if (vbp != 0) {
-        ExprPtr at(new Num(static_cast<long long>(vbp)));
-        at->setType(types_.get(Kind::LongLong));
-        ExprPtr sum(new Binary(BinOp::Add, std::move(where), std::move(at)));
-        sum->setType(charPtr);
-        where = std::move(sum);
+        // The table's address, the same way the vftable's is taken: a global
+        // with an array type, decayed, so what is stored is where it is and
+        // not what its first word happens to hold.
+        // The first pointer's table names every virtual base this class has;
+        // a later one names only its own base's, which is the count that
+        // matters here only because the array type has to say how long it is.
+        int entries = 1;
+        const std::vector<Type::BaseSpec> &bs =
+            p == 0 || ptrs[p].base == nullptr ? memberOf->bases()
+                                              : ptrs[p].base->bases();
+        for (std::size_t i = 0; i < bs.size(); i++)
+            if (bs[i].isVirtual) entries++;
+        ExprPtr table(Var::global(symbol));
+        table->setType(types_.arrayOf(entry, entries));
+        ExprPtr value(new Cast(charPtr, decay(std::move(table))));
+        value->setType(charPtr);
+
+        ExprPtr self(Var::local("this", thisSlot));
+        self->setType(charPtr);
+        ExprPtr where = std::move(self);
+        if (vbp != 0) {
+            ExprPtr at(new Num(static_cast<long long>(vbp)));
+            at->setType(types_.get(Kind::LongLong));
+            ExprPtr sum(new Binary(BinOp::Add, std::move(where),
+                                   std::move(at)));
+            sum->setType(charPtr);
+            where = std::move(sum);
+        }
+        ExprPtr slot(new Cast(types_.pointerTo(charPtr), std::move(where)));
+        slot->setType(types_.pointerTo(charPtr));
+        ExprPtr there(new Unary('*', std::move(slot)));
+        there->setType(charPtr);
+        ExprPtr store(new Assign(std::move(there), std::move(value)));
+        store->setType(charPtr);
+        into.push_back(StmtPtr(new ExprStmt(std::move(store))));
     }
-    ExprPtr slot(new Cast(types_.pointerTo(charPtr), std::move(where)));
-    slot->setType(types_.pointerTo(charPtr));
-    ExprPtr there(new Unary('*', std::move(slot)));
-    there->setType(charPtr);
-    ExprPtr store(new Assign(std::move(there), std::move(value)));
-    store->setType(charPtr);
-    into.push_back(StmtPtr(new ExprStmt(std::move(store))));
 }
 
 // **Setting the vptr, for whoever is building the object**, pulled out of the
@@ -215,10 +233,14 @@ std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
     // has no vftable to store - offset 0 holds its vbptr instead. Writing a
     // vftable address there put the wrong thing in the vbptr and every read
     // of a virtual base's member went through it.
-    if (ms && !memberOf->polymorphic()) {
-        storeVbptr(cls, memberOf, thisSlot, withVptr);
-        return withVptr;
-    }
+    //
+    // **The vbptr is not stored here**, though it once was: cl writes it only
+    // when the most-derived flag says this is the complete object, and it is
+    // never written by a destructor at all. `guardedVirtualBaseInit` is where
+    // it goes, inside the `if`. Measured, `vbflag.cpp`: the vbtable store sits
+    // between the `cmp $initVBases$, 0` and its `je`, and the vftable store
+    // after the label.
+    if (ms && !memberOf->polymorphic()) return withVptr;
     // **The class itself where it is the one named**, so a specialization's
     // table is spelled by the mangler rather than by counting the letters of
     // `P<int>`. Every caller passes the class whose tag this is; the guard is
@@ -303,8 +325,6 @@ std::vector<StmtPtr> Parser::storeVptrs(const std::string &cls,
         withVptr.push_back(StmtPtr(new ExprStmt(std::move(store2))));
     }
 
-    // A polymorphic class with a virtual base has both pointers, in that order.
-    if (ms) storeVbptr(cls, memberOf, thisSlot, withVptr);
     return withVptr;
 }
 
@@ -384,6 +404,39 @@ void Parser::synthesizeDeleting(const std::string &cls, const Type *type,
     // units that include one class collided on its implicit destructor.
     current_->functions.back().setInline(true);
     frameSize_ = savedFrame;
+}
+
+// **What cl's most-derived flag guards**: the vbtable pointers this class
+// stores and the virtual bases it builds. One `if` at the top of the
+// constructor, and the base subobject constructors it calls are handed a 0 so
+// they skip their own copy of it - which is the whole of "a virtual base is
+// built once", spelled the Microsoft way rather than as Itanium's C1 and C2.
+//
+// Measured, `vbmd.cpp`. Without it `R : D1 : virtual V` built V twice and
+// destroyed it twice, silently, on a program both other targets got right -
+// and it had shipped that way.
+std::vector<StmtPtr> Parser::guardedVirtualBaseInit(
+        const Type *type, const std::string &cls, int thisSlot, int flagSlot,
+        std::size_t pos, int srcSlot, bool moving,
+        std::map<std::string, std::vector<ExprPtr> > *vbaseArgs) {
+    std::vector<StmtPtr> out;
+    if (!target_.microsoftNames() || !type->hasVirtualBase() || flagSlot < 0)
+        return out;
+
+    std::vector<StmtPtr> inside;
+    storeVbptr(cls, type, thisSlot, inside);
+    std::vector<StmtPtr> built = virtualBaseCalls(type, thisSlot, true, pos,
+                                                  srcSlot, moving, vbaseArgs);
+    for (std::size_t i = 0; i < built.size(); i++)
+        inside.push_back(std::move(built[i]));
+    if (inside.empty()) return out;
+
+    ExprPtr flag(Var::local(".initVBases", flagSlot));
+    flag->setType(types_.intType());
+    out.push_back(StmtPtr(new If(std::move(flag),
+                                 StmtPtr(new Block(std::move(inside))),
+                                 StmtPtr())));
+    return out;
 }
 
 // The virtual bases of `type`, built or destroyed through `this`. **Reached by
@@ -475,13 +528,21 @@ std::vector<StmtPtr> Parser::virtualBaseCalls(const Type *type, int thisSlot,
                 if (ctor == nullptr) continue;
                 markUsed(ctor);
             }
-            const Type *fnType = types_.functionType(types_.get(Kind::Void),
-                                                     ctor->params, false);
-            std::string sub, why;
-            if (!itaniumConstructorName(base->tag(), base, fnType, false, &sub,
-                                        &why))
-                continue;
-            symbol = sub;
+            // **The base-subobject name, where the ABI has one.** Itanium
+            // spells C2 differently from C1; Microsoft has one name and says
+            // "subobject" with the flag instead, which `completeCall` adds.
+            if (!target_.microsoftNames()) {
+                const Type *fnType =
+                    types_.functionType(types_.get(Kind::Void), ctor->params,
+                                        false);
+                std::string sub, why;
+                if (!itaniumConstructorName(base->tag(), base, fnType, false,
+                                            &sub, &why))
+                    continue;
+                symbol = sub;
+            } else {
+                symbol = ctor->symbol;
+            }
             if (srcSlot >= 0 && !ctor->params.empty()) {
                 srcParam = ctor->params[0];
                 ExprPtr that(Var::local("that", srcSlot));
@@ -504,7 +565,13 @@ std::vector<StmtPtr> Parser::virtualBaseCalls(const Type *type, int thisSlot,
             const Signature *dtor = destructorOf(base);
             if (dtor == nullptr) continue;
             markUsed(dtor);
-            itaniumDestructorName(base->tag(), base, false, &symbol);
+            // D2 on Itanium; on Microsoft `??1`, which is D2 there - the
+            // virtual base's *own* virtual bases, if it has any, belong to
+            // this class and not to it.
+            if (!target_.microsoftNames())
+                itaniumDestructorName(base->tag(), base, false, &symbol);
+            else
+                symbol = dtor->symbol;
         }
 
         std::vector<ExprPtr> args;
@@ -526,9 +593,12 @@ std::vector<StmtPtr> Parser::virtualBaseCalls(const Type *type, int thisSlot,
             args.push_back(convert(std::move(one), want));
             ps.push_back(want);
         }
+        // **A virtual base is a subobject and not the complete object**, so
+        // the flag it is handed is 0: anything *it* has virtually is this
+        // class's to build as well.
         out.push_back(StmtPtr(new ExprStmt(
             completeCall(base->tag(), symbol, nullptr, types_.get(Kind::Void),
-                         ps, false, pos, std::move(args)))));
+                         ps, false, pos, std::move(args), false, 0))));
     }
     return out;
 }
@@ -679,7 +749,17 @@ ExprPtr Parser::destructorCall(ExprPtr address, const Signature &dtor,
     args.push_back(std::move(address));
     std::vector<const Type *> params;
     params.push_back(args[0]->type());
-    return completeCall("~" + dtor.owner, dtor.symbol, nullptr,
+    // **A complete object of a Microsoft class with a virtual base is
+    // destroyed through `??_D`**, which destroys the class's own part and then
+    // the virtual bases - Itanium's D1. `??1` is D2 and stops at its own part,
+    // which is what a base subobject's destruction wants; those calls are
+    // built by hand elsewhere and do not come through here.
+    std::string symbol = dtor.symbol;
+    if (target_.microsoftNames() && msVbaseClasses_.count(dtor.owner) != 0) {
+        symbol = vbaseDestructorSymbol(dtor.owner);
+        markSymbolUsed(symbol);
+    }
+    return completeCall("~" + dtor.owner, symbol, nullptr,
                         types_.get(Kind::Void), params, false, pos,
                         std::move(args));
 }
@@ -1438,41 +1518,78 @@ void Parser::emitVbtable(const Type *cls, const std::string &tag,
                          std::size_t pos) {
     if (!target_.microsoftNames()) return;
     const Type *plain = cls->unqualified();
-    const int vbp = plain->vbptrOffset();
-    if (vbp < 0) return;
+    const std::vector<Type::VbPtr> &ptrs = plain->vbptrs();
     (void)pos;
 
-    const std::string symbol = vbtableSymbol(tag);
-    for (std::size_t i = 0; i < current_->globals.size(); i++)
-        if (current_->globals[i].symbol == symbol) return;    // one per class
+    // **One table per vbptr, and the name says which.** A class holding a
+    // single pointer gets the plain `??_8Cls@@7B@`; one holding two gets a
+    // table named for the base whose subobject each sits in - measured,
+    // `??_8Dia@@7BD1@@@ 0, 40` and `??_8Dia@@7BD2@@@ 0, 24`.
+    for (std::size_t p = 0; p < ptrs.size(); p++) {
+        const int vbp = ptrs[p].offset;
+        const std::string symbol =
+            ptrs.size() == 1 || ptrs[p].base == nullptr
+                ? vbtableSymbol(tag)
+                : vbtableSymbol(tag, ptrs[p].base->tag());
+        bool already = false;
+        for (std::size_t i = 0; i < current_->globals.size(); i++)
+            if (current_->globals[i].symbol == symbol) already = true;
+        if (already) continue;                              // one per class
 
-    // **Entry 0 steps back to the top of the class that introduced the
-    // pointer**, not to the top of this one. cl: `??_8Q@@7B@ DD 0fffffff8H`
-    // where Q put its vfptr in front of the vbptr, but `??_8X@@7B@ DD 00H`
-    // for `X : A, D1` whose vbptr sits at 8 - because D1 introduced it at its
-    // own offset 0. Measured on the box, `vbx.cpp`, 2026-09-10.
-    const Type *owner = plain->vbptrOwner() != nullptr ? plain->vbptrOwner()
-                                                       : plain;
-    std::vector<GlobalPiece> pieces;
-    int at = 0;
-    pieces.push_back(GlobalPiece{ at, 4,
-                                  -static_cast<long long>(owner->vbptrOffset()),
-                                  std::string() });
-    at += 4;
-    const std::vector<Type::BaseSpec> &bs = plain->bases();
-    for (std::size_t i = 0; i < bs.size(); i++) {
-        if (!bs[i].isVirtual) continue;
+        // **Entry 0 steps back to the top of the class that introduced the
+        // pointer**, not to the top of this one. cl: `??_8Q@@7B@ DD
+        // 0fffffff8H` where Q put its vfptr in front of the vbptr, but
+        // `??_8X@@7B@ DD 00H` for `X : A, D1` whose vbptr sits at 8 - because
+        // D1 introduced it at its own offset 0. Measured, `vbx.cpp`.
+        const Type *owner = ptrs[p].owner != nullptr ? ptrs[p].owner : plain;
+        std::vector<GlobalPiece> pieces;
+        int at = 0;
         pieces.push_back(GlobalPiece{ at, 4,
-            static_cast<long long>(bs[i].offset - vbp), std::string() });
+                                      -static_cast<long long>(
+                                          owner->vbptrOffset()),
+                                      std::string() });
         at += 4;
-    }
 
-    const Type *entry = types_.intType();
-    const Type *table = types_.arrayOf(entry,
-                                       static_cast<long long>(pieces.size()));
-    current_->globals.push_back(Global{ symbol, symbol, table,
-                                        std::move(pieces), true, false, true,
-                                        std::string(), true });
+        // **Which bases the table names, and in whose order.** A secondary
+        // table holds *its own base's* virtual bases, in that base's order,
+        // because the code that reads it was compiled against that base and
+        // counts entries from there. The primary holds the whole class's, so
+        // a virtual base another subobject brought in is appended to it -
+        // measured on `Two : E1, E2` where E1 names V and E2 names W:
+        // `??_8Two@@7BE1@@@` is 0, 40, 44 and `??_8Two@@7BE2@@@` is 0, 28.
+        const std::vector<Type::BaseSpec> &bs = plain->bases();
+        std::vector<const Type *> want;
+        if (p != 0 && ptrs[p].base != nullptr) {
+            const std::vector<Type::BaseSpec> &theirs =
+                ptrs[p].base->bases();
+            for (std::size_t i = 0; i < theirs.size(); i++)
+                if (theirs[i].isVirtual) want.push_back(theirs[i].type);
+        } else {
+            for (std::size_t i = 0; i < bs.size(); i++)
+                if (bs[i].isVirtual) want.push_back(bs[i].type);
+        }
+
+        for (std::size_t i = 0; i < want.size(); i++) {
+            // Where that base sits **in this object**, which is the whole
+            // point of the class writing a table of its own.
+            int where = -1;
+            for (std::size_t j = 0; j < bs.size(); j++)
+                if (bs[j].isVirtual && bs[j].type == want[i])
+                    where = bs[j].offset;
+            if (where < 0) continue;
+            pieces.push_back(GlobalPiece{ at, 4,
+                static_cast<long long>(where - vbp), std::string() });
+            at += 4;
+        }
+
+        const Type *entry = types_.intType();
+        const Type *table = types_.arrayOf(entry,
+                                           static_cast<long long>(
+                                               pieces.size()));
+        current_->globals.push_back(Global{ symbol, symbol, table,
+                                            std::move(pieces), true, false,
+                                            true, std::string(), true });
+    }
 }
 
 void Parser::emitVtable(const Type *cls, const std::string &tag,
@@ -2160,7 +2277,7 @@ void Parser::synthesizeDestructor(std::size_t which) {
         const Type *base = bs[n].type;
         // D1 destroys the virtual bases, after this body has run - the mirror
         // of C1 building them before it. See synthesizeCompleteDtor.
-        if (bs[n].isVirtual && !target_.microsoftNames()) continue;
+        if (bs[n].isVirtual) continue;
         const Signature *dtor = destructorOf(base);
         if (dtor == nullptr) continue;
         if (dtor->access != Access::Public)
@@ -2211,6 +2328,13 @@ void Parser::synthesizeDestructor(std::size_t which) {
                                            false, 0, pos, std::vector<::Local>()));
     current_->functions.back().setSymbol(symbol);
     current_->functions.back().setInline(true);
+    // The Microsoft wrapper: `??1` above stops at this class's own part, and
+    // `??_D` destroys it and then the virtual bases.
+    if (target_.microsoftNames() && type->hasVirtualBase()) {
+        frameSize_ = savedFrame;
+        synthesizeCompleteDtor(type, vbaseDestructorSymbol(cls), symbol, true,
+                               pos);
+    }
     if (!target_.microsoftNames()) {
         std::string d2;
         itaniumDestructorName(cls, type, false, &d2);
@@ -2369,8 +2493,22 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
     std::vector<Param> params;
     const int thisSlot = allocateFrameSlot(self);
     params.push_back(Param{ self, thisSlot });
+    // cl's hidden most-derived flag, last, for the same reason a written
+    // constructor takes one.
+    int flagSlot = -1;
+    if (target_.microsoftNames() && type->hasVirtualBase()) {
+        flagSlot = allocateFrameSlot(types_.intType());
+        params.push_back(Param{ types_.intType(), flagSlot });
+    }
 
     std::vector<StmtPtr> body;
+    {
+        std::vector<StmtPtr> guarded =
+            guardedVirtualBaseInit(type, cls, thisSlot, flagSlot, pos, -1,
+                                   false, nullptr);
+        for (std::size_t i = 0; i < guarded.size(); i++)
+            body.push_back(std::move(guarded[i]));
+    }
 
     const std::vector<Type::BaseSpec> &bs = type->bases();
     for (std::size_t i = 0; i < bs.size(); i++) {
@@ -2385,7 +2523,7 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
         // stack held and dereferenced it: a segfault for `struct D : virtual
         // public V { };` with no constructor written. See
         // synthesizeCompleteCtor, which reaches them by the constant offset.
-        if (bs[i].isVirtual && !target_.microsoftNames()) continue;
+        if (bs[i].isVirtual) continue;
         if (overloadsOf(constructorKey(base->tag())) == nullptr) continue;
         const Signature *ctor = defaultConstructorOf(base);
         if (ctor == nullptr)
@@ -2423,9 +2561,11 @@ void Parser::synthesizeDefaultCtor(std::size_t which) {
             args.push_back(std::move(defaults[k]));
             ps.push_back(chosen.params[k]);
         }
+        // A base subobject, so cl's flag is 0: its virtual bases are this
+        // class's to build, and it built them above.
         body.push_back(StmtPtr(new ExprStmt(
             completeCall(base->tag(), sym, nullptr, types_.get(Kind::Void), ps,
-                         false, pos, std::move(args)))));
+                         false, pos, std::move(args), false, 0))));
     }
 
     // The vptr is written for either reason it exists.
@@ -2554,8 +2694,24 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
     const int thatSlot = allocateFrameSlot(srcPtr);
     params.push_back(Param{ self, thisSlot });
     params.push_back(Param{ srcPtr, thatSlot });
+    // cl's most-derived flag, for a *constructor* of such a class: assignment
+    // takes none, having no virtual bases to build.
+    int flagSlot = -1;
+    if (!assigning && target_.microsoftNames() && type->hasVirtualBase()) {
+        flagSlot = allocateFrameSlot(types_.intType());
+        params.push_back(Param{ types_.intType(), flagSlot });
+    }
 
     std::vector<StmtPtr> body;
+    {
+        // **Copied out of the source's own virtual base**, which is what the
+        // Itanium C1 does with the argument forwarded to it.
+        std::vector<StmtPtr> guarded =
+            guardedVirtualBaseInit(type, cls, thisSlot, flagSlot, pos,
+                                   thatSlot, moving, nullptr);
+        for (std::size_t i = 0; i < guarded.size(); i++)
+            body.push_back(std::move(guarded[i]));
+    }
 
     // What a base's own copy constructor has already dealt with. Its members
     // are in this class's member list too - they were copied down - and
@@ -2572,7 +2728,7 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
         // its existing walk - [class.copy.assign]/12 leaves assigning a
         // virtual base more than once unspecified, so there is nothing here
         // to correct.
-        if (bs[i].isVirtual && !assigning && !target_.microsoftNames()) continue;
+        if (bs[i].isVirtual && !assigning) continue;
         // **A member or base without a move constructor is copied, not refused.**
         // [class.copy]/15: the implicit move moves each subobject, and moving
         // something that has only a copy is what its copy constructor does.
@@ -2616,7 +2772,8 @@ void Parser::synthesizeCopy(std::size_t which, bool assigning) {
         ps.push_back(cc->params[0]);
         body.push_back(StmtPtr(new ExprStmt(
             completeCall(base->tag(), sym, nullptr, cc->returns, ps,
-                         false, pos, std::move(args)))));
+                         false, pos, std::move(args), false,
+                         assigning ? 1 : 0))));
         taken.push_back(std::make_pair(bs[i].offset,
                                        bs[i].offset + base->dataSize()));
     }

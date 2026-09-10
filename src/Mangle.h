@@ -190,6 +190,12 @@ std::string vtableSymbol(const Type *cls, bool microsoft);
 // same numbers in the vftable and needs no such symbol, so this is asked for
 // on that target alone.
 std::string vbtableSymbol(const std::string &tag);
+// The same, for a class holding more than one: named after the direct base
+// whose subobject the pointer sits in.
+std::string vbtableSymbol(const std::string &tag, const std::string &base);
+// The vbase destructor: Itanium's D1 under a Microsoft name. `??1` destroys
+// the class's own part; this one calls it and then the virtual bases.
+std::string vbaseDestructorSymbol(const std::string &tag);
 std::string itaniumClassNameString(const Type *cls);
 std::string itaniumClassTypeInfoSymbol(const Type *cls);
 std::string itaniumClassTypeNameSymbol(const Type *cls);
