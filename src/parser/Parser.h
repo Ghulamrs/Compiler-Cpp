@@ -699,6 +699,10 @@ private:
     ExprPtr thisMember(int thisSlot, const Type *cls, const Member &m);
     // Reaching a member that lives in a virtual base. Null back means an
     // ordinary member and the caller builds the constant-offset access.
+    // x86_64-windows cannot reach a virtual base's member yet, and saying so
+    // has to happen before the object is moved into virtualBaseMember.
+    void refuseVirtualBaseMember(const Member &m, const std::string &name,
+                                 std::size_t pos);
     ExprPtr virtualBaseMember(ExprPtr object, const Type *staticType,
                               const Member &m);
 

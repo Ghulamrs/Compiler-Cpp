@@ -1830,7 +1830,16 @@ ExprPtr Parser::postfix() {
             // A member of a virtual base is not at a constant offset. The
             // test comes first because the call consumes the object: asking
             // unconditionally moved `n` away from every ordinary access too.
+            //
+            // **And the target is asked before the object is moved.**
+            // `virtualBaseMember` answers nothing on x86_64-windows - a
+            // virtual base is a vbtable there and none of it is emitted yet -
+            // but by then `n` had been moved into it, so the access below was
+            // built on a moved-from pointer and the compiler died in a
+            // `dynamic_cast` three passes later. Refused by name now, which is
+            // what every other Microsoft virtual-base shape already does.
             if (m->inVirtualBase != nullptr) {
+                refuseVirtualBaseMember(*m, name, pos);
                 if (ExprPtr viaVb = virtualBaseMember(std::move(n), obj, *m)) {
                     n = std::move(viaVb);
                     continue;
@@ -1905,7 +1914,16 @@ ExprPtr Parser::postfix() {
             // A member of a virtual base is not at a constant offset. The
             // test comes first because the call consumes the object: asking
             // unconditionally moved `n` away from every ordinary access too.
+            //
+            // **And the target is asked before the object is moved.**
+            // `virtualBaseMember` answers nothing on x86_64-windows - a
+            // virtual base is a vbtable there and none of it is emitted yet -
+            // but by then `n` had been moved into it, so the access below was
+            // built on a moved-from pointer and the compiler died in a
+            // `dynamic_cast` three passes later. Refused by name now, which is
+            // what every other Microsoft virtual-base shape already does.
             if (m->inVirtualBase != nullptr) {
+                refuseVirtualBaseMember(*m, name, pos);
                 if (ExprPtr viaVb = virtualBaseMember(std::move(n), obj, *m)) {
                     n = std::move(viaVb);
                     continue;

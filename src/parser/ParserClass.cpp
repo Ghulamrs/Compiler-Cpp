@@ -1024,6 +1024,29 @@ void Parser::requireConstInitialised(const Type *t, const std::string &name,
 // sit in reverse declaration order ahead of offset-to-top and the typeinfo - so
 // the slot is known here even though its contents are not. The member's place
 // inside the base is added after, and that much is constant.
+// **Reading a member of a virtual base, on the ABI that cannot do it yet.**
+// The Itanium targets reach one through the vtable's `vbase_offset`;
+// x86_64-windows keeps the offset in a vbtable, and nothing emits one. The
+// measurement is in CLAUDE.md, "The Microsoft virtual-base layout, measured";
+// what is missing is the implementation.
+//
+// **This used to be a crash rather than a refusal**, and the shape of the bug
+// is worth keeping: `virtualBaseMember` answered nothing for this target, but
+// the caller had already moved the object into the call, so the ordinary
+// access below was built on a moved-from pointer. A null `Expr *` then reached
+// a `dynamic_cast` and the compiler died with no message at all, on a program
+// both other targets compile.
+void Parser::refuseVirtualBaseMember(const Member &m, const std::string &name,
+                                     std::size_t pos) {
+    if (m.inVirtualBase == nullptr || !target_.microsoftNames()) return;
+    src_.fail(pos, "'" + name + "' is a member of '" +
+                   m.inVirtualBase->describe() + "', which is a virtual base, "
+                   "and reaching one is not supported yet for x86_64-windows: "
+                   "that ABI keeps the offset in a vbtable, which this "
+                   "compiler measures but does not emit. Both Itanium targets "
+                   "compile this");
+}
+
 ExprPtr Parser::virtualBaseMember(ExprPtr object, const Type *staticType,
                                   const Member &m) {
     if (m.inVirtualBase == nullptr || target_.microsoftNames()) return ExprPtr();

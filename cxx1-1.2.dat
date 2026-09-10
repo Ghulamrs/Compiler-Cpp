@@ -1,7 +1,7 @@
 c2026 G. R. Akhtar - ISO C++ 11,  Compiler
 Release seal, version 1.2, sealed 10-09-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 110 files, seal 3E85F534
+CRC32  size  file - 110 files, seal 5CAA608D
 ------------------------------------------------------------------
 04C65507      8465  Makefile
 30A7FD32      2830  examples/Makefile
@@ -98,10 +98,10 @@ C48E8201     84392  src/backend/X86_64Linux.cpp
 51289591      1566  src/backend/X86_64Windows.h
 3F12405D       111  src/main.cpp
 BC202484     37062  src/parser/Parser.cpp
-4642761C    123988  src/parser/Parser.h
-4D49E8D9    168095  src/parser/ParserClass.cpp
+E81D5EEC    124264  src/parser/Parser.h
+8109701B    169479  src/parser/ParserClass.cpp
 96A32C25     13074  src/parser/ParserConst.cpp
-AAD27A61    105386  src/parser/ParserExpr.cpp
+BAAD2FC9    106586  src/parser/ParserExpr.cpp
 AAA41FCB     35505  src/parser/ParserExprCall.cpp
 B1FDC696     29646  src/parser/ParserExprLambda.cpp
 6D4263EF     71243  src/parser/ParserExprNew.cpp
