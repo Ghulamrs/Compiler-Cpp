@@ -7073,6 +7073,32 @@ nothing of MinGW or a GNU runtime is anywhere near it.
 **The version went to 1.2 rather than re-sealing 1.1.** A seal names a set of
 sources; 1.1 named one and this is not it.
 
+## `LNK4078`, and a section name that folded into the wrong one
+
+**Fixed 2026-09-10.** Every Windows link printed
+
+```
+warning LNK4078: multiple '.data' sections found with different attributes (40400040)
+```
+
+and it was one character of section name. The Microsoft RTTI records - the type
+descriptor, the class hierarchy, the base array and the locator - went into
+**`.data$r`**. The linker groups a section by the part *before* its `$`, so
+that folded into `.data`, which is writable; the records are read-only, and
+40400040 is initialised-data-read-and-align-8 with no write bit. Two attribute
+sets for one section is exactly what LNK4078 says.
+
+**cl puts them in `.rdata$r`**, which folds into `.rdata` where read-only is
+what everything else is. Measured with `dumpbin /headers` on cl's own object
+rather than reasoned about: `.rdata$r`, flags `40401040`. Both spellings write
+that now - the GNU one's `.section .rdata$r,"dr"` and MASM's
+`.rdata$r SEGMENT READONLY` - and the warning is gone from both, with the
+programs still running.
+
+**30 of 778 emitted files moved**, all x86_64-windows, all of them a class with
+a vftable. Nothing else in the object changed: the records, their contents and
+their symbol names are what they were, and `names-vs-cl` still agrees on 172.
+
 ## A frame that skipped the guard page, and two wrong answers before it
 
 **Fixed 2026-09-06.** `matrix_main.cpp` of the C++ Vector Exercise died on

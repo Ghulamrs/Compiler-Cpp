@@ -1772,7 +1772,8 @@ void X86_64Linux::emitCoffCleanupTables(const Function &fn) {
 // **The five objects the Microsoft ABI wants per class with a vftable**, in GNU
 // spelling. Same records and the same constants the MASM path writes; the only
 // differences are the directive names and that a `DD imagerel X` is a
-// `.long X@IMGREL`. They live in `.data$r` on both.
+// `.long X@IMGREL`. They live in `.rdata$r` on both, which is where cl puts
+// them - see the note at the first section directive below.
 void X86_64Linux::emitCoffClassRtti(const Program &program) {
     if (program.rtti.empty()) return;
     std::string &o = out_;
@@ -1803,7 +1804,14 @@ void X86_64Linux::emitCoffClassRtti(const Program &program) {
         const std::string hi = a_->labelText(n.hierarchy);
         const std::string lo = a_->labelText(n.locator);
 
-        o += "  .section .data$r,\"dr\"\n";
+        // **`.rdata$r`, which is where cl puts these**, and not `.data$r`. The
+        // linker groups a section by the part before its `$`, so `.data$r` folded
+        // into `.data` - and these records are read-only while `.data` is writable,
+        // which is two attribute sets for one section: `LNK4078: multiple '.data'
+        // sections found with different attributes (40400040)` on every link.
+        // Measured with dumpbin on cl's own object: `.rdata$r`, flags 40401040,
+        // initialised data that is read and not written.
+        o += "  .section .rdata$r,\"dr\"\n";
         o += "  .p2align 3\n";
         o += d + ":\n";
         o += "  .quad \"??_7type_info@@6B@\"\n";
@@ -2048,7 +2056,7 @@ void X86_64Linux::emitCoffThrowInfo(const Program &program) {
         const std::string ar = a_->labelText(n.array);
         const std::string ti = a_->labelText(n.info);
 
-        o += "  .section .data$r,\"dr\"\n";
+        o += "  .section .rdata$r,\"dr\"\n";
         o += "  .p2align 3\n";
         o += d + ":\n";
         o += "  .quad \"??_7type_info@@6B@\"\n";

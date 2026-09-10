@@ -812,7 +812,14 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
         for (const Type *k = all[i]->base(); k != nullptr; k = k->base())
             contained++;
 
-        o += ".data$r SEGMENT READONLY ALIGN(8) 'DATA'\n";
+        // **`.rdata$r`, which is where cl puts these**, and not `.data$r`. The
+        // linker groups a section by the part before its `$`, so `.data$r` folded
+        // into `.data` - and these records are read-only while `.data` is writable,
+        // which is two attribute sets for one section: `LNK4078: multiple '.data'
+        // sections found with different attributes (40400040)` on every link.
+        // Measured with dumpbin on cl's own object: `.rdata$r`, flags 40401040,
+        // initialised data that is read and not written.
+        o += ".rdata$r SEGMENT READONLY ALIGN(8) 'DATA'\n";
         o += n.descriptor + " DQ ??_7type_info@@6B@\n";
         o += "  DQ 0\n";
         o += "  DB '" + n.decorated + "', 00H\n";
@@ -849,7 +856,7 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
         o += "  DD imagerel " + n.descriptor + "\n";
         o += "  DD imagerel " + n.hierarchy + "\n";
         o += "  DD imagerel " + n.locator + "\n";
-        o += ".data$r ENDS\n";
+        o += ".rdata$r ENDS\n";
     }
 }
 
@@ -865,14 +872,14 @@ void MasmCodeGen::emitThrowInfo(const Program &program) {
         // **Not PUBLIC, and that is the interesting part.** cl puts each in a
         // COMDAT and MASM cannot say COMDAT, so a public copy collides with cl's -
         // measured, LNK2005. File-local works: the runtime matches by name string.
-        o += ".data$r SEGMENT READONLY ALIGN(8) 'DATA'\n";
+        o += ".rdata$r SEGMENT READONLY ALIGN(8) 'DATA'\n";
         // **cl's listing writes `FLAT:` here and ml64 rejects it.** That prefix is
         // 32-bit MASM's way of naming a flat-model address; the 64-bit assembler
         // has no such keyword, so the listing records what cl means.
         o += n.descriptor + " DQ ??_7type_info@@6B@\n";
         o += "  DQ 0\n";
         o += "  DB '" + n.decorated + "', 00H\n";
-        o += ".data$r ENDS\n";
+        o += ".rdata$r ENDS\n";
 
         o += ".xdata$x SEGMENT READONLY ALIGN(8) 'DATA'\n";
         o += n.catchable + " DD 01H\n";

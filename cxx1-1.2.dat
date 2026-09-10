@@ -1,7 +1,7 @@
 c2026 G. R. Akhtar - ISO C++ 11,  Compiler
 Release seal, version 1.2, sealed 10-09-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 110 files, seal 724FCD9C
+CRC32  size  file - 110 files, seal 27C4189D
 ------------------------------------------------------------------
 04C65507      8465  Makefile
 30A7FD32      2830  examples/Makefile
@@ -86,13 +86,13 @@ F0CDF365      5277  src/backend/Arm64Darwin.h
 B737DBF1      1626  src/backend/Backend.h
 E0AFFCF2     15315  src/backend/Dwarf.cpp
 8F7CD499      1047  src/backend/Dwarf.h
-E1B564C6     40507  src/backend/Masm.cpp
+4C50DAE3     41060  src/backend/Masm.cpp
 5C50B7A2      5307  src/backend/Masm.h
 6848D3EC     15043  src/backend/Spelling.cpp
 B83E57C7     11068  src/backend/Spelling.h
 A8CFB1E1     16615  src/backend/Walker.cpp
 1BFDE2F0      9785  src/backend/Walker.h
-B13C1C18     83105  src/backend/X86_64Linux.cpp
+77AE06F9     83741  src/backend/X86_64Linux.cpp
 44FAFE78     12944  src/backend/X86_64Linux.h
 0D430EDE      2618  src/backend/X86_64Windows.cpp
 51289591      1566  src/backend/X86_64Windows.h
