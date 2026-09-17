@@ -14,12 +14,29 @@ const Type *TypeTable::get(Kind k) const {
     return &types_[static_cast<std::size_t>(k)];
 }
 
+// clang's calculateInheritanceModel, measured against cl: virtual bases anywhere
+// make it virtual; more than one base at any level of the single-base chain, or
+// a class that adds the first vfptr over a base without one, make it multiple.
+int Type::microsoftInheritanceModel() const {
+    const Type *c = unqualified();
+    if (!c->isComplete()) return 3;
+    if (c->hasVirtualBase()) return 2;
+    while (!c->bases().empty()) {
+        if (c->bases().size() > 1) return 1;
+        const Type *b = c->bases()[0].type->unqualified();
+        if (c->polymorphic() && !b->polymorphic()) return 1;
+        c = b;
+    }
+    return 0;
+}
+
 int Type::size(const Target &t) const {
     if (unqual_ != nullptr) return unqual_->size(t);
-    // **A data member pointer is an offset, and the two ABIs keep it in
-    // different widths** - Itanium a ptrdiff_t and Microsoft an int, for a
-    // class with single inheritance. Measured with clang for both targets.
-    if (kind_ == Kind::MemberPointer) return t.microsoftNames() ? 4 : 8;
+    // **A data member pointer is an offset**: Itanium's a ptrdiff_t, Microsoft's
+    // an int, joined by a vbtable index under virtual inheritance - 4, 4, 8.
+    if (kind_ == Kind::MemberPointer)
+        return !t.microsoftNames() ? t.sizeOf(Kind::Pointer)
+             : enclosing_ != nullptr && enclosing_->microsoftInheritanceModel() == 2 ? 8 : 4;
     if (isReference()) return pointee_->size(t);
     // **In `long long`, because the multiply itself was the bug.** Two int
     // operands overflowed for `static int a[600000000]` and the backend was
@@ -178,7 +195,13 @@ const Type *TypeTable::memberPointerTo(const Type *cls, const Type *member) {
 // backend already knows how to copy, pass and return one. Its members are what
 // the ABI keeps: a code address, and on Itanium a `this` adjustment beside it.
 const Type *TypeTable::memberFunctionPointerTo(const Type *cls, const Type *fn,
-                                               bool microsoft) {
+                                               const Target &t) {
+    // Itanium's pair is two pointer-widths, the adjustment a ptrdiff_t. Microsoft's
+    // is by cl's model: a code pointer; an int `this` adjustment after it under
+    // multiple inheritance; a vbtable index after that under virtual - 8, 16, 16.
+    const bool microsoft = t.microsoftNames();
+    const int word = t.sizeOf(Kind::Pointer);
+    const int model = microsoft ? cls->microsoftInheritanceModel() : 0;
     for (Type *d : derived_)
         if (!d->isConst() && d->isMemberFunctionPointer() &&
             d->pointee() == fn && d->enclosing() == cls)
@@ -186,13 +209,17 @@ const Type *TypeTable::memberFunctionPointerTo(const Type *cls, const Type *fn,
     Type *made = new Type(Kind::Struct, fn, -1);
     made->setEnclosing(cls);
     made->setMemberFunctionPointer();
-    const Type *word = pointerTo(get(Kind::Void));
+    const Type *code = pointerTo(get(Kind::Void));
     std::vector<Member> ms;
-    ms.push_back(Member{ "$fn", word, 0, 0, 0, Access::Public });
+    ms.push_back(Member{ "$fn", code, 0, 0, 0, Access::Public });
     if (!microsoft)
-        ms.push_back(Member{ "$adj", get(Kind::LongLong), 8, 0, 0,
-                             Access::Public });
-    made->complete(ms, microsoft ? 8 : 16, 8);
+        ms.push_back(Member{ "$adj", get(word == 8 ? Kind::LongLong : Kind::Int),
+                             word, 0, 0, Access::Public });
+    else if (model >= 1)
+        ms.push_back(Member{ "$adj", get(Kind::Int), word, 0, 0, Access::Public });
+    if (microsoft && model == 2)
+        ms.push_back(Member{ "$vbi", get(Kind::Int), word + 4, 0, 0, Access::Public });
+    made->complete(ms, !microsoft ? 2 * word : model == 0 ? word : 2 * word, word);
     derived_.push_back(made);
     return derived_.back();
 }

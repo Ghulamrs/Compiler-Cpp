@@ -52,8 +52,7 @@ ExprPtr Parser::castExpr() {
 ExprPtr Parser::boundMemberPointer(const Type *cls, const Signature &f,
                                    std::size_t pos) {
     const Type *fn = types_.functionType(f.returns, f.params, f.variadic);
-    const Type *mp = types_.memberFunctionPointerTo(cls, fn,
-                                                    target_.microsoftNames());
+    const Type *mp = types_.memberFunctionPointerTo(cls, fn, target_);
     const int slot = allocateFrameSlot(mp);
     const Type *word = types_.pointerTo(types_.get(Kind::Void));
 
@@ -75,10 +74,15 @@ ExprPtr Parser::boundMemberPointer(const Type *cls, const Signature &f,
     store->setType(word);
 
     ExprPtr chain = std::move(store);
-    if (const Member *adj = mp->findMember("$adj")) {
+    // The adjustment, and Microsoft's vbtable index: zero, for a member of
+    // the class itself, which is every `&S::f` this reads.
+    static const char *const zeroed[] = { "$adj", "$vbi" };
+    for (std::size_t zi = 0; zi < 2; zi++) {
+        const Member *adj = mp->findMember(zeroed[zi]);
+        if (adj == nullptr) continue;
         ExprPtr self(Var::local("$mfp", slot));
         self->setType(mp);
-        ExprPtr zeroAt(new MemberAccess(std::move(self), "$adj", adj->offset,
+        ExprPtr zeroAt(new MemberAccess(std::move(self), zeroed[zi], adj->offset,
                                         0, 0));
         zeroAt->setType(adj->type);
         ExprPtr zero(new Num(0LL));
@@ -109,13 +113,43 @@ ExprPtr Parser::applyMemberPointer(ExprPtr addr, ExprPtr mp, std::size_t pos,
     // leave the object's address for the call to pick up.
     if (mpt->isMemberFunctionPointer()) {
         const Member *slot = mpt->findMember("$fn");
-        ExprPtr held(new MemberAccess(std::move(mp), "$fn", slot->offset, 0, 0));
         const Type *fnPtr = types_.pointerTo(mpt->pointee());
-        held->setType(fnPtr);
         boundThis_ = std::move(addr);
         boundFn_ = mpt->pointee();
         boundAt_ = pos;
-        return held;
+        if (mpt->findMember("$adj") == nullptr) {
+            // One code pointer, a vcall thunk standing in for a virtual one.
+            ExprPtr held(new MemberAccess(std::move(mp), "$fn", slot->offset, 0, 0));
+            held->setType(fnPtr);
+            return held;
+        }
+        // **A pair with a `this` adjustment - Itanium's always, cl's multiple and
+        // virtual forms - moves the object by it before the call**: [conv.mem] puts
+        // a base's offset there, and a cl caller may hand one that is not zero.
+        {
+            const Type *thisType = boundThis_->type();
+            const Type *chars = types_.pointerTo(types_.get(Kind::Char));
+            const Member *adjSlot = mpt->findMember("$adj");
+            const int pairSlot = allocateFrameSlot(mpt);
+            const std::string pairName = ".mp" + std::to_string(refTemps_++);
+            auto pair = [&]() { ExprPtr e(Var::local(pairName, pairSlot)); e->setType(mpt); return e; };
+            ExprPtr keepPair(new Assign(pair(), std::move(mp)));
+            keepPair->setType(mpt);
+            ExprPtr adjRead(new MemberAccess(pair(), "$adj", adjSlot->offset, 0, 0));
+            adjRead->setType(adjSlot->type);
+            ExprPtr asChars(new Cast(chars, std::move(boundThis_)));
+            asChars->setType(chars);
+            ExprPtr moved(new Binary(BinOp::Add, std::move(asChars), std::move(adjRead)));
+            moved->setType(chars);
+            ExprPtr self(new Cast(thisType, std::move(moved)));
+            self->setType(thisType);
+            ExprPtr code(new MemberAccess(pair(), "$fn", slot->offset, 0, 0));
+            code->setType(fnPtr);
+            ExprPtr callee(new Comma(std::move(keepPair), std::move(code)));
+            callee->setType(fnPtr);
+            boundThis_ = std::move(self);
+            return callee;
+        }
     }
     if (!mpt->isMemberPointer())
         src_.fail(pos, "the right of '.*' has to be a pointer to a member, and "
