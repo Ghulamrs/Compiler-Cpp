@@ -1106,16 +1106,16 @@ ExprPtr Parser::primary(Program *program) {
             callee != nullptr && (callee->isFunctionPointer() ||
                                   callee->unqualified()->isStructOrUnion());
 
-        // **An unqualified static member, inside a member function.** It needs no
-        // object, which is what lets it be answered here rather than through `this`.
-        // A local or a global of the same name is nearer and was found above.
-        if (l == nullptr && g == nullptr && currentClass_ != nullptr &&
-            !peekAt(1).is("(")) {
-            if (const Type::StaticMember *s =
-                    currentClass_->findStaticMember(name)) {
+        // **An unqualified static member, inside a member function or a lambda
+        // written in one.** It needs no object; a nearer local or global won above.
+        const Type *staticScopes[2] = { currentClass_, lambdaScope() };
+        for (const Type *staticScope : staticScopes) {
+            if (l != nullptr || g != nullptr || staticScope == nullptr ||
+                peekAt(1).is("("))
+                break;
+            if (const Type::StaticMember *s = staticScope->findStaticMember(name)) {
                 at_++;
-                return staticMemberRef(currentClass_, *s, currentClass_->tag(),
-                                       pos);
+                return staticMemberRef(staticScope, *s, staticScope->tag(), pos);
             }
         }
 
@@ -1133,11 +1133,11 @@ ExprPtr Parser::primary(Program *program) {
         if (peekAt(1).is("(") && !callsThroughObject && currentClass_ != nullptr &&
             l == nullptr && g == nullptr) {
             std::string key;
-            for (const Type *c = currentClass_; c != nullptr; c = c->base())
-                if (hasStaticMemberNamed(c->tag() + "::" + name)) {
-                    key = c->tag() + "::" + name;
-                    break;
-                }
+            const Type *roots[2] = { currentClass_, lambdaScope() };
+            for (const Type *root : roots)
+                for (const Type *c = root; c != nullptr && key.empty(); c = c->base())
+                    if (hasStaticMemberNamed(c->tag() + "::" + name))
+                        key = c->tag() + "::" + name;
             if (!key.empty()) {
                 at_ += 2;
                 std::vector<ExprPtr> args;
