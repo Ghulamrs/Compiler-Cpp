@@ -496,6 +496,8 @@ public:
 
     // Which ABI spells a C++ name, which is a property of the platform in the same way that the width of a long is.
     virtual bool microsoftNames() const = 0;
+    // Whether a word may sit at any address: every target here loads one; a C6000 would not.
+    virtual bool loadsUnaligned() const { return true; }
 
     virtual const char *name() const = 0;
 };
