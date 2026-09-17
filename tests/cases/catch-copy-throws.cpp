@@ -2,8 +2,8 @@
 // throwing, std::terminate is called - the handler is not entered and the new
 // exception does not propagate. That is a terminate scope over the copy, the
 // one an unwinding pad already gets: on the Itanium targets a catch-all row
-// whose pad calls std::terminate, as clang's __clang_call_terminate does, and
-// on the C6000 cl6x's catch-and-terminate scope. Registered in tests/open on
+// whose pad calls std::terminate, as clang's __clang_call_terminate does.
+// Registered in tests/open on
 // 2026-09-09 with `throw E(1)` - a copy clang elides and cxx1 makes, so the
 // copy that threw was the throw's own and the outer handler was the right
 // answer for that program. `g` is a static, so its copy is nobody's to elide,

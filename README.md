@@ -125,10 +125,29 @@ new is refused with it, though plain `new` and `delete` work - and
 `<typeinfo>` waits on `typeid`, which is refused by name. `dynamic_cast` does
 work, and has since each vtable got a `type_info` beside it.
 
-## Known shortcomings in 1.2
+## What 1.3 changes
+
+Seven fixes and one region, every one cherry-picked from Compiler-Cppi - the
+clone that carries this compiler's fourth target - and verified here on the
+Mac, the Linux box and the Windows box: a mem-initialiser may name a
+template-id base (`: P<int>(x)`); a lambda's body sees the statics,
+enumerators, typedefs and nested classes of the class it was written in; a
+lambda's return type is deduced from every `return` in its body, through a
+`try` or an `if`; a floating constant expression folds (`constexpr double`, a
+`static_assert` over one, an array bound cast from one); a static local is
+named by its function's mangled symbol, so two functions of one name, an
+overload, a destructor and a lambda may each have one; and two terminate
+scopes on the Itanium targets - a destructor that throws while an exception
+unwinds, and a by-value `catch` whose copy throws, both call `std::terminate`
+as the standard says. `tests/open` holds the two Itanium virtual-inheritance
+defects below and nothing else; Compiler-Cppi has closed those too, with the
+vtable group, `_ZTv` thunks, VTT and construction vtables, and that work is
+not in 1.3.
+
+## Known shortcomings in 1.3
 
 Everything here is measured and written down elsewhere in full; this is the
-short list a user of **1.1** should have in front of them. `docs/EXCLUSIONS.md`
+short list a user of **1.3** should have in front of them. `docs/EXCLUSIONS.md`
 is the complete one, each entry citing the source line that refuses it.
 
 **The language is a subset, and these are the parts most likely to be missed.**

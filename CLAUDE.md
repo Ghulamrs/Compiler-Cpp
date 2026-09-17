@@ -9855,6 +9855,37 @@ fix, and put the story in the section of this file that owns the subject. A
 comment that wants a fourth line is a sign the story belongs here instead -
 and `make comments` will say so either way.
 
+## Version 1.3, 2026-09-17: what came from Compiler-Cppi and how
+
+**1.2 was sealed on 2026-09-10 and this tree then stood still while its clone
+did not.** Compiler-Cppi (`../VM6747/Compiler-Cppi`, github Ghulamrs/
+Compiler-Cppi) forked from `6d7386a`, this tree's 1.2 head, to add the
+TMS320C6747 target, and along the way mended defects true on every target.
+1.3 is nine of its commits cherry-picked here (`-x`, so each names its
+origin): the terminate scope over an unwinding pad (two commits, the C6000
+half of each dropped since that backend is not here), the five register
+cases that follow, the write-up, and the static local named by its mangled
+symbol. Three conflicts, each a thing this tree lacks and the pick left out:
+the class-body static lookup (`classStack_`), the pointer-catch branch, and
+the register's own count. **Not brought across**: virtual inheritance proper
+(`149f624`, 1,491 lines - the vtable group, `_ZTv` thunks, VTT, construction
+vtables), A4-A9 (enum bases, `alignas`, pointer throw/catch, pointer to
+virtual member, replaceable `operator new`, `typeid`, arrays of a class with
+a destructor), `wchar_t` as a Kind, and the C6000 itself. So `tests/open`
+holds virtual-base-second-base and virtual-dtor-through-virtual-base here
+and nothing else, and the sections below, written in that tree, speak of
+"the C6000", "the emulator" and "cl6x" where they measured its fourth
+target; read those words as its, not this tree's. `docs/EXCLUSIONS.md`'s
+citations were already stale at 1.2 (`tools/exclusions --check`: 130 sites,
+119 uncited) and are left so - regenerating it is its own change.
+
+The seal moved from `cxx1-1.2.dat` to `cxx1-1.3.dat` (110 files, 67B129B6) by
+`tools/seal write`, the version being read from `src/Version.h`. Measured on
+the tree as sealed: Mac 467 cases, 815 emissions, 279 names, 30 overloads;
+194 of 797 goldens changed, all of them the terminate region over a pad or a
+static local's new symbol; Linux 467 and 815 under g++; Windows 445 cases
+under cl and 179 names agreeing, 0 differing.
+
 ## The register's last five, 2026-09-17
 
 **`tests/open` held five programs at the close of the virtual-inheritance

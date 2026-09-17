@@ -2,9 +2,9 @@
 #define CXX1_VERSION_H
 
 // **The release, in one place.**
-#define CXX1_VERSION      "1.2"
-#define CXX1_SEAL_DATE    "10-09-2026"
-#define CXX1_SEAL_FILE    "cxx1-1.2.dat"
+#define CXX1_VERSION      "1.3"
+#define CXX1_SEAL_DATE    "17-09-2026"
+#define CXX1_SEAL_FILE    "cxx1-1.3.dat"
 
 // The line every run prints before it starts. First line, and exactly this.
 #define CXX1_BANNER "c2026 G. R. Akhtar - ISO C++ 11,  Compiler"

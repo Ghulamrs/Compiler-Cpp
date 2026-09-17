@@ -194,10 +194,10 @@ two header directories of section 2.
 6.  THIS RELEASE, AND ITS SEAL
 ------------------------------
 
-This is **version 1.2**, sealed **10-09-2026**.
+This is **version 1.3**, sealed **17-09-2026**.
 
     cxx1.exe -version            says both, and names the seal file
-    cxx1-1.2.dat                 the seal: a CRC32 and a size per file
+    cxx1-1.3.dat                 the seal: a CRC32 and a size per file
     tools/seal check             verifies every line of it
 
 The seal covers what the compiler *is*: every file under `src/`, `include/`,
@@ -212,7 +212,7 @@ and neither is documentation, which changes without the compiler changing.
 so a build script can gate on it; a seal nobody can check is decoration.
 
 Known shortcomings of this version are listed in `README.md` under "Known
-shortcomings in 1.1", and the complete list of what the language does not
+shortcomings in 1.3", and the complete list of what the language does not
 accept is `docs/EXCLUSIONS.md`.
 
 
