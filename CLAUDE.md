@@ -9855,6 +9855,32 @@ fix, and put the story in the section of this file that owns the subject. A
 comment that wants a fourth line is a sign the story belongs here instead -
 and `make comments` will say so either way.
 
+## Version 1.4, 2026-09-18: the cl review's nine wrong answers, from Compiler-Cppi
+
+**Six commits cherry-picked (`-x`) from Compiler-Cppi, the review of
+2026-09-17 against cl.exe closed row by row there and brought here whole**:
+A1/A3 (a constructor's RAX, cl's overload slots, and `tests/winlink/` with
+`tools/windows/winlink-check.cmd` run by verify-three), A2 (a prototype's
+by-value parameter), A4 (empty bases on both ABIs, and a polymorphic base
+that is not the first refused by name for Microsoft), A5 (`#pragma pack`),
+A6 (member pointers by cl's inheritance model, [conv.mem], null as -1),
+A8/A9/A24 (the two stream fixes with their neighbours, unary `+`, and the
+override's return type). The seam section below is theirs and says what
+each measured. Conflicts, each a thing this tree lacks and the pick left
+out: `alignas` on a class (`classAlign`), the C6000's files and its
+`.notarget`, and the member-pointer call path - Compiler-Cppi decides at
+the call between a vtable index and an address, which this tree has no
+pointer to a virtual member to need, so here a pair with a `$adj` moves
+`this` by it on both ABIs and takes `$fn` as the address, which is what
+[conv.mem]'s base offset and cl's multiple-inheritance form require;
+`member-pointer-models.cpp` takes `&Poly::k` non-virtual for the same
+reason. **Still not brought across**: virtual inheritance proper, the
+earlier A4-A9 of that tree, `wchar_t` as a Kind, `&D::f` for an inherited
+`f`, and the C6000; and the review's own open tail (A7, A10-A23, A25-A27)
+is open in both trees. Measured at the seal: Mac 475 / 836 / 286 / 30; Linux
+475 / 836 under g++; Windows 459 under cl - the 453 cases and both directions
+of the three pairs - and 183 names agreeing.
+
 ## Version 1.3, 2026-09-17: what came from Compiler-Cppi and how
 
 **1.2 was sealed on 2026-09-10 and this tree then stood still while its clone

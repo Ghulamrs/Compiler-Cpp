@@ -7,6 +7,7 @@
 int Single::f() { return x; }
 int Multi::g() { return y + x; }
 int Virt::h() { return z * 10 + v; }
+int Poly::v() { return 0; }
 int Poly::k() { return q + p; }
 int callMulti(Multi &m, int (Multi::*p)()) { return (m.*p)(); }
 int readMulti(Multi &m, int Multi::*p) { return m.*p; }

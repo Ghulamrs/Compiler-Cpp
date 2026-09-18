@@ -1,7 +1,7 @@
 c2026 G. R. Akhtar - ISO C++ 11,  Compiler
-Release seal, version 1.3, sealed 17-09-2026
+Release seal, version 1.4, sealed 18-09-2026
 Written by tools/seal; check it with `tools/seal check`.
-CRC32  size  file - 110 files, seal 67B129B6
+CRC32  size  file - 110 files, seal 7A87ED5F
 ------------------------------------------------------------------
 21B96632      8764  Makefile
 30A7FD32      2830  examples/Makefile
@@ -32,11 +32,11 @@ F7084316      1678  include/initializer_list
 61D67355      1232  include/iomanip
 8E040977      2122  include/ios
 67EF89BF      1410  include/iostream
-41393869      7015  include/istream
+0E917587      8978  include/istream
 193559F8      4877  include/limits
 AF3574DA      4189  include/map
 00091A75       805  include/numeric
-DCFD3CBF     12991  include/ostream
+33300AEA     13277  include/ostream
 C49ECBC5      2228  include/set
 648E0442      2095  include/sstream
 2A759E7F      3706  include/stdexcept
@@ -73,13 +73,13 @@ B37B385A     37443  src/Driver.cpp
 955F53F2      9426  src/Mangle.h
 3A84EC94      2875  src/Operator.cpp
 5E9A1F82      1033  src/Operator.h
-FF0A393A     46434  src/Preprocessor.cpp
-297297EE      3405  src/Preprocessor.h
-80468C5E      3866  src/Source.cpp
-819654EE      1624  src/Source.h
-94085D34     18162  src/Type.cpp
-4C3422A6     20748  src/Type.h
-0F4E77A4       344  src/Version.h
+B606368C     50056  src/Preprocessor.cpp
+235DA1A0      3801  src/Preprocessor.h
+81483DDC      4191  src/Source.cpp
+951C68D5      1990  src/Source.h
+EFA2F9CB     19562  src/Type.cpp
+4B232EC4     22132  src/Type.h
+58AA28C6       344  src/Version.h
 184B228E     43178  src/backend/Arm64Darwin.cpp
 523EB0E9      5383  src/backend/Arm64Darwin.h
 53E2D519      3791  src/backend/Backend.cpp
@@ -92,24 +92,24 @@ C7027BA6     13116  src/backend/Spelling.cpp
 38B85725      8969  src/backend/Spelling.h
 9EF6D0B6     15666  src/backend/Walker.cpp
 900148B8      8327  src/backend/Walker.h
-9FDBC7DE     79437  src/backend/X86_64Linux.cpp
+99EDB618     79938  src/backend/X86_64Linux.cpp
 CDE1AB05      9949  src/backend/X86_64Linux.h
 0D430EDE      2618  src/backend/X86_64Windows.cpp
 B3C6A840      1289  src/backend/X86_64Windows.h
 3F12405D       111  src/main.cpp
 881DE38C     33983  src/parser/Parser.cpp
-09DCF1BA    100676  src/parser/Parser.h
-90F70EAC    169553  src/parser/ParserClass.cpp
+E62D30B1    101418  src/parser/Parser.h
+A62E23C7    172352  src/parser/ParserClass.cpp
 F0E46311     14669  src/parser/ParserConst.cpp
-E4FC7A33     94804  src/parser/ParserExpr.cpp
+C8A7D68F     95364  src/parser/ParserExpr.cpp
 F4666E29     31356  src/parser/ParserExprCall.cpp
 C3CC16F4     27493  src/parser/ParserExprLambda.cpp
 421151C9     60938  src/parser/ParserExprNew.cpp
 200B4C68     59137  src/parser/ParserInit.cpp
 6A6BD752      1295  src/parser/ParserInternal.h
-E89CD235     32383  src/parser/ParserOperator.cpp
-C5240993     43879  src/parser/ParserOverload.cpp
+C40A66C5     34308  src/parser/ParserOperator.cpp
+500CE48B     51552  src/parser/ParserOverload.cpp
 65D96A84     94890  src/parser/ParserStmt.cpp
 489F317D     96249  src/parser/ParserTemplate.cpp
-B53F0D49     75955  src/parser/ParserTopLevel.cpp
-6D2797D8    100825  src/parser/ParserType.cpp
+6250FB6D     76169  src/parser/ParserTopLevel.cpp
+8FB8AA3B    106825  src/parser/ParserType.cpp

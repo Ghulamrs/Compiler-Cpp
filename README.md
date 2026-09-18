@@ -125,7 +125,29 @@ new is refused with it, though plain `new` and `delete` work - and
 `<typeinfo>` waits on `typeid`, which is refused by name. `dynamic_cast` does
 work, and has since each vtable got a `type_info` beside it.
 
-## What 1.3 changes
+## What 1.4 changes
+
+The cl review of 2026-09-17 (`VM6747/CXX1I-REVIEW-2026-09-17.md`, made against
+`cl.exe` where every earlier review had been made against clang) found nine
+wrong answers, every one at the boundary with cl-compiled code or in layout
+and so invisible to a program compiled entirely by cxx1. All nine are fixed
+in Compiler-Cppi and cherry-picked here, six commits, verified on the Mac,
+the Linux box and the Windows box - where a new pair suite, `tests/winlink/`,
+links each half of a program compiled by cxx1 against the other compiled by
+cl, both ways. On x86_64-windows: a constructor returns `this` in RAX, which
+cl's callers use; a class's own overloads of one virtual name take cl's
+vftable slots; a prototype's by-value parameter no longer leaks into the next
+definition's destructor list; two adjacent empty bases get cl's byte between
+them; `#pragma pack` is honoured; a pointer to a member is sized by cl's
+inheritance model (4/4/8 and 8/16/16). On every target: an empty base goes
+where Itanium puts it too (at 0 unless a same-type empty subobject is there);
+`int B::*` converts to `int D::*` ([conv.mem]); a null data member pointer is
+-1, not 0; `<ostream>` prints `signed char` and `unsigned char` as
+characters; `<istream>` stops a number at its last digit and stores 0 on
+failure; unary `+` promotes; and an override must keep the return type, or
+return a covariant pointer or reference (cl's C2555 otherwise).
+
+## What 1.3 changed
 
 Seven fixes and one region, every one cherry-picked from Compiler-Cppi - the
 clone that carries this compiler's fourth target - and verified here on the
@@ -144,10 +166,10 @@ defects below and nothing else; Compiler-Cppi has closed those too, with the
 vtable group, `_ZTv` thunks, VTT and construction vtables, and that work is
 not in 1.3.
 
-## Known shortcomings in 1.3
+## Known shortcomings in 1.4
 
 Everything here is measured and written down elsewhere in full; this is the
-short list a user of **1.3** should have in front of them. `docs/EXCLUSIONS.md`
+short list a user of **1.4** should have in front of them. `docs/EXCLUSIONS.md`
 is the complete one, each entry citing the source line that refuses it.
 
 **The language is a subset, and these are the parts most likely to be missed.**
@@ -166,6 +188,10 @@ hides. Four shapes met while writing `<type_traits>` are still refused:
 `template <class T, T v>`, a typedef naming a template-id used as a base, a
 partial specialization on `X<T []>`, and an out-of-line constructor of a class
 template.
+
+**Pointers to members** stop short of two things: a pointer to a *virtual*
+member function is refused by name (Compiler-Cppi has it), and `&D::f` for an
+`f` that D inherited is not found - write `&B::f`, which converts.
 
 **x86_64-windows lags the two Itanium targets on exceptions and layout**, and
 each refusal names itself:
