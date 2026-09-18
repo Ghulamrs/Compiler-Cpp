@@ -145,7 +145,11 @@ where Itanium puts it too (at 0 unless a same-type empty subobject is there);
 -1, not 0; `<ostream>` prints `signed char` and `unsigned char` as
 characters; `<istream>` stops a number at its last digit and stores 0 on
 failure; unary `+` promotes; and an override must keep the return type, or
-return a covariant pointer or reference (cl's C2555 otherwise).
+return a covariant pointer or reference (cl's C2555 otherwise). Re-sealed the
+same day with two small fixes: the driver finds its include directory by
+`cstddef` rather than by a C header, so an installation whose C headers sit
+in a `lib/` beside it - RIDE's, cc1's - is found; and an unreachable `return`
+after a diagnostic is gone (cl's C4702).
 
 ## What 1.3 changed
 
