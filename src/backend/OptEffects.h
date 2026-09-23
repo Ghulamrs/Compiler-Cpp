@@ -22,6 +22,14 @@ Convention conventionOf(const Abi &abi);
 
 Effects effectsOf(const Instr &i, const Convention &c);
 
+// **What an instruction does with each operand it names**: read it, write it,
+// write part of it and keep the rest, or only form an address from it.
+enum : unsigned { kRead = 1, kWrite = 2, kKeep = 4, kAddress = 8 };
+struct Roles {
+    unsigned a = 0, b = 0;
+};
+Roles rolesOf(const Instr &i);
+
 // Whether an instruction reads registers only through its operands.
 bool explicitOnly(const Instr &i);
 
