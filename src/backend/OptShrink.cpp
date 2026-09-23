@@ -15,6 +15,7 @@ bool is(const std::string &m, std::initializer_list<const char *> names) {
 // four bytes zeroes the upper half, so where nobody reads that half, or the
 // value is a small non-negative constant, the REX prefix goes.
 bool shorter(Instr &i, RegSet wide, bool flagsLive) {
+    if (gpr(i.b) && frameReg(i.b.reg.id)) return false;
     if (is(i.m, {"movzbq", "movzwq"}) && reg64(i.b)) {
         i.m[i.m.size() - 1] = 'l';
         i.b.reg.width = 4;

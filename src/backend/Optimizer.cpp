@@ -108,14 +108,17 @@ void Optimizer::improve(bool whole) {
     const Level level = levelFor(level_);
     opt::Flow flow;
     rounds(flow, level.rounds);
+    // What the frame gains goes below what it had: the saves, then the shadow
+    // space at the floor, where a callee finds it.
     if (whole && promotable_ && prologueAt_ >= 0) {
         const std::vector<SavedReg> saves =
             opt::promoteLocals(stream_, convention_, locals_, frameSize_, level.registers, level.minWeight);
-        if (!saves.empty()) {
-            const int size = frameSize_ + ((8 * static_cast<int>(saves.size()) + 15) & ~15);
+        int size = frameSize_ + ((8 * static_cast<int>(saves.size()) + 15) & ~15);
+        if (!saves.empty()) rounds(flow, level.rounds);
+        if (opt::reserveShadow(stream_, flow, convention_)) size += (convention_.shadow + 15) & ~15;
+        if (size != frameSize_) {
             const std::string lsda = lsda_;
             stream_[prologueAt_].event = [=](Spelling &s) { s.calleeSaves(saves); s.prologue(size, lsda); };
-            rounds(flow, level.rounds);
         }
     }
     // A shorter spelling last: narrowed arithmetic leaves extensions to delete.

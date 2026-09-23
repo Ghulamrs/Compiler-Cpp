@@ -1,6 +1,7 @@
 #include "OptPasses.h"
 
 #include <algorithm>
+#include <climits>
 #include <map>
 
 namespace opt {
@@ -134,6 +135,81 @@ std::vector<SavedReg> promoteLocals(Stream &s, const Convention &c, const std::v
     }
     s.swap(out);
     return saves;
+}
+
+namespace {
+
+// How far an instruction moves rsp down; 0 for one that does not.
+long stackDelta(const Instr &i) {
+    if (i.m == "push" || i.m == "pushq") return 8;
+    if (i.m == "pop" || i.m == "popq") return -8;
+    if ((i.m == "sub" || i.m == "add") && i.b.isReg(RSP) && i.a.kind == Operand::Immediate && i.a.numeric)
+        return i.m == "sub" ? i.a.value : -i.a.value;
+    return 0;
+}
+
+bool namesRsp(const Instr &i) {
+    for (const Operand *o : {&i.a, &i.b})
+        if ((o->kind == Operand::Register || o->kind == Operand::Memory) && o->reg.id == RSP) return true;
+    return false;
+}
+
+constexpr long kUnknown = LONG_MIN;
+
+}
+
+bool reserveShadow(Stream &s, Flow &f, const Convention &c) {
+    if (c.shadow == 0) return false;
+    f.build(s, c);
+    // **How far below the frame's floor rsp is on entry to each block**, the
+    // same along every edge or this gives up.
+    std::vector<long> in(f.blocks.size(), kUnknown);
+    in[0] = 0;
+    for (bool again = true; again;) {
+        again = false;
+        for (std::size_t b = 0; b < f.blocks.size(); ++b) {
+            if (in[b] == kUnknown) continue;
+            long depth = in[b];
+            for (int k = f.blocks[b].begin; k < f.blocks[b].end && depth != kUnknown; ++k) {
+                if (s[k].kind != Entry::Ins || s[k].dead) continue;
+                const Instr &i = s[k].ins;
+                const long d = stackDelta(i);
+                if (d != 0) depth += d;
+                else if (i.b.isReg(RSP) && (i.m == "lea" || i.m == "mov")) depth = kUnknown;  // the epilogue
+                else if ((f.effects[k].writes & bit(RSP)) && i.m != "call") return false;
+            }
+            if (depth == kUnknown) continue;
+            for (int n : f.blocks[b].next) {
+                if (in[n] == kUnknown) { in[n] = depth; again = true; }
+                else if (in[n] != depth) return false;
+            }
+        }
+    }
+    bool reserved = false;
+    for (std::size_t b = 0; b < f.blocks.size(); ++b) {
+        long depth = in[b];
+        for (int k = f.blocks[b].begin; k < f.blocks[b].end && depth != kUnknown; ++k) {
+            if (s[k].kind != Entry::Ins || s[k].dead) continue;
+            const Instr &i = s[k].ins;
+            if (depth == 0 && i.m == "sub" && stackDelta(i) == c.shadow) {
+                // Nothing may name rsp between the allocation and its release but the call.
+                bool called = false;
+                for (int j = k + 1; j < f.blocks[b].end; ++j) {
+                    if (s[j].kind != Entry::Ins || s[j].dead) continue;
+                    const Instr &x = s[j].ins;
+                    if (x.m == "call" && !called) { called = true; continue; }
+                    if (called && x.m == "add" && stackDelta(x) == -c.shadow) {
+                        s[k].dead = s[j].dead = reserved = true;
+                        break;
+                    }
+                    if (namesRsp(x) || stackDelta(x) != 0 || f.effects[j].control || f.effects[j].opaque) break;
+                }
+                if (s[k].dead) continue;
+            }
+            depth += stackDelta(i);
+        }
+    }
+    return reserved;
 }
 
 }

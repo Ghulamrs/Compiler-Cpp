@@ -75,7 +75,7 @@ bool workInPlace(Stream &s, Flow &f, const Convention &conv, int k, int begin, R
     const Instr &c = s[k].ins;
     if (!(c.m == "mov" || c.m == "movl" || c.m == "movq") || !gpr(c.a) || !gpr(c.b)) return false;
     const int t = c.a.reg.id, x = c.b.reg.id, w = c.b.reg.width;
-    if (t == x || c.a.reg.width != w || w < 4 || (live & bit(t)) || (w == 4 && (wide & bit(x)))) return false;
+    if (t == x || frameReg(t) || frameReg(x) || c.a.reg.width != w || w < 4 || (live & bit(t)) || (w == 4 && (wide & bit(x)))) return false;
     for (int p = k - 1, n = 0; p >= begin && n < 32; --p, ++n) {
         if (s[p].kind != Entry::Ins || s[p].dead) continue;
         const Instr &i = s[p].ins;
@@ -112,6 +112,7 @@ bool coalesceCopies(Stream &s, Flow &f, const Convention &conv) {
             if (copy.kind != Entry::Ins || copy.dead) continue;
             const Instr &c = copy.ins;
             const bool isCopy = (c.m == "mov" || c.m == "movq") && gpr(c.a) && gpr(c.b) &&
+                                !frameReg(c.a.reg.id) && !frameReg(c.b.reg.id) &&
                                 c.a.reg.width == 8 && c.b.reg.width == 8 && c.a.reg.id != c.b.reg.id;
             int p = k - 1;
             while (p >= blk.begin && (s[p].kind == Entry::Event || s[p].dead)) --p;

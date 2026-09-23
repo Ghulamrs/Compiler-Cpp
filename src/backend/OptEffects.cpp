@@ -110,6 +110,7 @@ Convention conventionOf(const Abi &abi) {
     if (abi.variadicSseCountInAl) c.arguments |= bit(RAX);
     for (int i = 0; i < abi.preservedCount; ++i) c.preserved |= bit(parseReg(abi.preservedRegs[i]).id);
     c.clobbered = kAllRegs & ~c.preserved;
+    c.shadow = abi.shadowBytes;
     c.returned = bit(RAX) | bit(RDX) | bit(kXmm0) | bit(kXmm0 + 1);
     return c;
 }

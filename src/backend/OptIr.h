@@ -20,6 +20,8 @@ constexpr int kRegs = 32;
 
 using RegSet = unsigned;
 constexpr RegSet bit(int r) { return 1u << static_cast<unsigned>(r); }
+// **rsp and rbp are the frame**: no pass narrows, renames or retargets them.
+constexpr bool frameReg(int r) { return r == RSP || r == RBP; }
 constexpr RegSet kAllRegs = ~0u;
 
 // A register's number and the width named, in bytes; -1 for one this does not

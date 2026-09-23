@@ -81,6 +81,15 @@ public:
     Forward(Stream &s, Flow &f, const Convention &c) : s_(s), f_(f), c_(c) {}
 
     bool run() {
+        // **A caller-saved register this function never names** can carry a
+        // pushed value to its pop, where nothing else holds it.
+        RegSet named = 0;
+        for (const Entry &e : s_)
+            if (e.kind == Entry::Ins)
+                for (const Operand *o : {&e.ins.a, &e.ins.b})
+                    if (o->kind != Operand::Immediate && o->kind != Operand::Label && o->reg.id >= 0) named |= bit(o->reg.id);
+        for (int r = 0; r < kGprs; ++r)
+            if ((c_.clobbered & bit(r)) && !frameReg(r) && !(named & bit(r))) scratch_.push_back(r);
         for (const Block &b : f_.blocks) {
             enterBlock();
             for (int k = b.begin; k < b.end; ++k)
@@ -109,6 +118,7 @@ private:
     unsigned version_[kGprs] = {};
     int nextId_ = 1;
     bool changed_ = false;
+    std::vector<int> scratch_;
 
     Value fresh() { Value v; v.id = nextId_++; return v; }
 
@@ -236,12 +246,26 @@ private:
             stack_.pop_back();
             regs_[dst] = v;
             return Pop::Gone;
+        } else if (const int sc = scratchBetween(at, k)) {
+            replace(at, Instr{"mov", s_[at].ins.a, Operand::ofReg(sc, 8), 2});
+            version_[sc]++;
+            regs_[sc] = v;
+            from = Operand::ofReg(sc, 8);
         } else return Pop::Kept;
         kill(at);
         stack_.pop_back();
         if (from.isReg(dst)) return Pop::Gone;
         i = Instr{m, from, i.a, 2};
         return Pop::Copy;
+    }
+
+    // A scratch register nothing between two entries touches; 0 (rax, never scratch) if none.
+    int scratchBetween(int from, int to) const {
+        const Operand &pushed = s_[from].ins.a;
+        if (pushed.kind == Operand::Register && !gpr(pushed)) return 0;
+        for (int r : scratch_)
+            if (r != RAX && untouched(r, from, to)) return r;
+        return 0;
     }
 
     // Whether no instruction between two entries reads or writes register r.

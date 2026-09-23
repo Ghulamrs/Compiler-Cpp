@@ -16,6 +16,7 @@ struct Convention {
     RegSet clobbered = 0;
     RegSet returned = 0;
     RegSet preserved = 0;
+    int shadow = 0;          // bytes a caller leaves above the return address
 };
 Convention conventionOf(const Abi &abi);
 

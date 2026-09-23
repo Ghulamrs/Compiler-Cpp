@@ -33,6 +33,9 @@ struct Local {
 std::vector<SavedReg> promoteLocals(Stream &s, const Convention &c, const std::vector<Local> &locals,
                                     int frameSize, int maxRegs, long minWeight);
 
+// **Shadow space reserved once in the frame**, not per call; true if it grows.
+bool reserveShadow(Stream &s, Flow &f, const Convention &c);
+
 // **What each register holds, followed forward through a block** - see OptValues.cpp.
 bool forwardValues(Stream &s, Flow &f, const Convention &c);
 
