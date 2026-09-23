@@ -22,6 +22,9 @@ bool shrink(Stream &s, Flow &f, const Convention &c);
 // **A load read once** becomes that instruction's memory operand.
 bool foldLoads(Stream &s, Flow &f, const Convention &c);
 
+// **A constant added to a register only used as an address** moves into the displacements.
+bool foldOffsets(Stream &s, Flow &f, const Convention &c);
+
 // A local the walker placed in the frame, rbp-relative.
 struct Local {
     long long disp;

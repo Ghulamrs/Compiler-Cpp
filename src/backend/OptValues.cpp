@@ -58,7 +58,7 @@ int suffixWidth(const std::string &m) {
 // The instructions whose source may be an immediate in place of a register.
 bool takesImmediate(const std::string &m) {
     return is(m, {"mov", "movq", "movl", "movw", "movb", "add", "sub", "cmp", "and", "or",
-                  "xor", "addl", "subl", "cmpl"});
+                  "xor", "addl", "subl", "cmpl", "imul"});
 }
 
 // A constant cut to the width it is read at, as that width's instruction reads it.
@@ -247,10 +247,13 @@ private:
             regs_[dst] = v;
             return Pop::Gone;
         } else if (const int sc = scratchBetween(at, k)) {
+            // The push becomes the copy in, the pop the copy out.
             replace(at, Instr{"mov", s_[at].ins.a, Operand::ofReg(sc, 8), 2});
+            stack_.pop_back();
             version_[sc]++;
             regs_[sc] = v;
-            from = Operand::ofReg(sc, 8);
+            i = Instr{"mov", Operand::ofReg(sc, 8), i.a, 2};
+            return Pop::Copy;
         } else return Pop::Kept;
         kill(at);
         stack_.pop_back();

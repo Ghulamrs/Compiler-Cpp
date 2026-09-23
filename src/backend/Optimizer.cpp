@@ -98,6 +98,7 @@ void Optimizer::rounds(opt::Flow &flow, int limit) {
         changed = opt::removeDead(stream_, flow) || changed;
         changed = opt::coalesceCopies(stream_, flow, convention_) || changed;
         changed = opt::foldLoads(stream_, flow, convention_) || changed;
+        changed = opt::foldOffsets(stream_, flow, convention_) || changed;
         if (!changed) break;
     }
 }
