@@ -81,13 +81,22 @@ public:
     Forward(Stream &s, Flow &f, const Convention &c) : s_(s), f_(f), c_(c) {}
 
     bool run() {
-        // **A caller-saved register this function never names** can carry a
-        // pushed value to its pop, where nothing else holds it.
+        // **A caller-saved register this function neither names nor uses
+        // unnamed** (idiv's rdx, a string move's rsi) can carry a pushed value
+        // to its pop. A call's unnamed reads are arguments, set by name.
         RegSet named = 0;
-        for (const Entry &e : s_)
-            if (e.kind == Entry::Ins)
-                for (const Operand *o : {&e.ins.a, &e.ins.b})
-                    if (o->kind != Operand::Immediate && o->kind != Operand::Label && o->reg.id >= 0) named |= bit(o->reg.id);
+        for (std::size_t k = 0; k < s_.size(); ++k) {
+            const Entry &e = s_[k];
+            if (e.kind != Entry::Ins) continue;
+            RegSet here = 0;
+            for (const Operand *o : {&e.ins.a, &e.ins.b})
+                if (o->kind != Operand::Immediate && o->kind != Operand::Label && o->reg.id >= 0 &&
+                    o->reg.id < kPhysical)
+                    here |= bit(o->reg.id);
+            const Effects &fx = f_.effects[k];
+            named |= here;
+            if (!fx.control) named |= (fx.reads | fx.writes | fx.partial) & ~here;
+        }
         for (int r = 0; r < kGprs; ++r)
             if ((c_.clobbered & bit(r)) && !frameReg(r) && !(named & bit(r))) scratch_.push_back(r);
         for (const Block &b : f_.blocks) {
@@ -172,6 +181,7 @@ private:
     // a register always, into memory only where the mnemonic names the width.
     bool immediateSource(Instr &i) const {
         if (!takesImmediate(i.m) || i.operands != 2 || !gpr(i.a)) return false;
+        if (gpr(i.b) && i.a.reg.id == i.b.reg.id) return false;     // xor %eax,%eax and the like
         const Value &v = regs_[i.a.reg.id];
         if (v.kind != Value::Const) return false;
         const long long x = atWidth(v.k, i.a.reg.width);

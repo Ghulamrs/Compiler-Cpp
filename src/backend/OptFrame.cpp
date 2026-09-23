@@ -255,7 +255,7 @@ bool removeDeadStores(Stream &s) {
             if (!frameSlot(*o)) continue;
             if (i.m == "lea") { if (!i.b.isReg(RSP)) escapesFrom = std::min(escapesFrom, o->disp); continue; }
             if (o == &i.b && isStore(i)) continue;
-            reads.push_back(Access{o->disp, 16});
+            reads.push_back(Access{o->disp, accessWidth(i, *o)});
         }
     }
     bool changed = false;

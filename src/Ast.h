@@ -694,4 +694,8 @@ struct Program {
     std::string initFunction;
     // Whether it names __dso_handle, which ELF wants declared hidden.
     bool usesDsoHandle = false;
+    // **Whether the file wrote `volatile` anywhere.** The type system drops it,
+    // so the optimizer cannot tell a volatile read from a plain one: such a
+    // file is compiled without -O (see Driver::compile).
+    bool usesVolatile = false;
 };

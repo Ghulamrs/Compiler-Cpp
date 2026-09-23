@@ -78,6 +78,7 @@ struct FlowOf {
         Block cur;
         for (int k = 0; k < static_cast<int>(s.size()); ++k) {
             const Entry &e = s[k];
+            if (e.kind == Entry::Label && e.dead) continue;       // dropped: it joins
             if (e.kind == Entry::Label && k > cur.begin) {
                 cur.end = k;
                 blocks.push_back(cur);
@@ -189,7 +190,7 @@ bool removeUnreachableIn(std::vector<Entry> &s) {
     bool changed = false, gone = false;
     for (std::size_t k = 0; k < s.size(); ++k) {
         Entry &en = s[k];
-        if (en.kind == Entry::Label) gone = false;
+        if (en.kind == Entry::Label && !en.dead) gone = false;
         if (en.kind != Entry::Ins || en.dead) continue;
         if (gone) { en.dead = changed = true; continue; }
         const Control c = controlOf(en.ins);
@@ -197,7 +198,7 @@ bool removeUnreachableIn(std::vector<Entry> &s) {
         gone = true;
         if (c.target.empty()) continue;
         for (std::size_t j = k + 1; j < s.size(); ++j) {
-            if (s[j].kind == Entry::Label && s[j].label == c.target) { en.dead = changed = true; break; }
+            if (s[j].kind == Entry::Label && !s[j].dead && s[j].label == c.target) { en.dead = changed = true; break; }
             if (s[j].kind == Entry::Ins && !s[j].dead) break;
         }
     }

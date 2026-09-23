@@ -38,6 +38,8 @@ bool workInPlace(Stream &s, Flow &f, const Convention &conv, int k, int begin, R
         const Effects &e = f.effects[p];
         const bool copyIn = gpr(i.a) && i.a.reg.id == x && gpr(i.b) && i.b.reg.id == t && i.b.reg.width >= 4 &&
                             (i.m == "mov" || i.m == "movl" || i.m == "movq" || i.m == "movslq");
+        // A plain four-byte copy-in zeroed the upper half the renamed value keeps.
+        if (copyIn && i.m != "movslq" && i.b.reg.width < w) return false;
         if (copyIn) {
             for (int q = p; q < k; ++q) {
                 if (s[q].kind != Entry::Ins || s[q].dead) continue;

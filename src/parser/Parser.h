@@ -1201,6 +1201,7 @@ private:
     // once the qualifier is under a `*`, a `&`, or on `this`. These two say so
     // by name rather than letting a wrong linkage name out.
     void refuseVolatilePointer();
+    bool sawVolatile();
     void refuseVolatileWithLinkage(bool written, bool internal, std::size_t pos);
     void refuseVolatileUnderADeclarator(StorageClass storage);
     const Type *specifiers(StorageClass *storage, Qualifiers *quals = nullptr);

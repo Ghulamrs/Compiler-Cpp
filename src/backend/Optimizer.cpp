@@ -157,7 +157,9 @@ void Optimizer::improve(bool whole) {
         const mir::Webs webs = mir::buildWebs(stream_, flow, convention_);
         mir::assign(stream_, webs.home);
         saves = opt::promoteLocals(stream_, convention_, locals_, size, level.registers, level.minWeight);
-        if (opt::removeDeadStores(stream_) || !saves.empty()) rounds(flow, level.rounds);
+        if (!saves.empty()) rounds(flow, level.rounds);
+        // Each round can forward a reload away and leave its store unread.
+        for (int again = 0; again < 3 && opt::removeDeadStores(stream_); ++again) rounds(flow, level.rounds);
         opt::dropUnusedSaves(stream_, saves);
         size += (8 * static_cast<int>(saves.size()) + 15) & ~15;
         if (opt::reserveShadow(stream_, flow, convention_)) size += (convention_.shadow + 15) & ~15;

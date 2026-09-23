@@ -79,6 +79,7 @@ bool writesFlags(const std::string &m) {
 
 bool explicitOnly(const Instr &i) {
     const std::string &m = i.m;
+    if (m == "imul" && i.operands != 2) return false;           // rdx:rax, unnamed
     return starts(m, "mov") || starts(m, "set") ||
            oneOf(m, {"lea", "add", "sub", "and", "or", "xor", "cmp", "test", "addl", "subl", "cmpl", "imul"});
 }

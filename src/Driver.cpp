@@ -780,11 +780,24 @@ bool Driver::compile(const Job &job) {
     Program program = parser.parse();
     auto t3 = Clock::now();
 
+    // **A file that writes `volatile` is compiled without -O**, and says so: the
+    // type system drops the qualifier, so an optimizer would take a volatile
+    // read for a plain one and keep it in a register or delete it.
+    const int level = program.usesVolatile ? 0 : optimize_;
+    if (optimize_ > 0 && !gnuAsm_ && std::strcmp(backend_->name(), "x86_64-windows") == 0 &&
+        &job == &jobs_.front())
+        std::fprintf(stderr, "%s: -O%d has no effect with -masm=masm, whose spelling the "
+                     "optimizer does not stand in front of\n", program_.c_str(), optimize_);
+    if (optimize_ > 0 && program.usesVolatile)
+        std::fprintf(stderr, "%s: %s uses 'volatile', which this compiler cannot keep apart "
+                     "from plain memory; compiled without -O%d\n", program_.c_str(),
+                     job.input.c_str(), optimize_);
+
     bool ok = true;
     if (job.output.empty()) {
         std::unique_ptr<CodeGen> gen = backend_->codegen(std::cout, gnuAsm_);
         if (debug_) gen->setLineSource(&src, workingDirectory());
-        gen->setOptimize(optimize_);
+        gen->setOptimize(level);
         gen->run(program);
     } else {
         std::ofstream file(job.output);
@@ -795,7 +808,7 @@ bool Driver::compile(const Job &job) {
         }
         std::unique_ptr<CodeGen> gen = backend_->codegen(file, gnuAsm_);
         if (debug_) gen->setLineSource(&src, workingDirectory());
-        gen->setOptimize(optimize_);
+        gen->setOptimize(level);
         gen->run(program);
     }
     auto t4 = Clock::now();

@@ -87,3 +87,33 @@ cl /O2, cxx1's 264 cases) and neither level's size nor speed got worse.
 3. **SSA and the -O1 scalar passes.**
 4. **The -O2 passes:** PRE, loop-invariant motion, alignment.
 5. **arm64:** its reader and description, the same passes.
+
+## What stage 2 needs first
+
+Fable 5.1 reviewed branch `opt` on 2026-09-23, from `02c665b`. It found one
+miscompile, now fixed: a file that writes `volatile` is compiled without -O,
+because the type system drops the qualifier. It also found four things the
+register allocator cannot be built without:
+
+1. **Throwing calls need an edge to their landing pad.** Today a landing pad is a
+   block with no predecessors, which is safe only because no pass runs in a
+   function that has one. Most real C++ functions have one. Each call inside a try
+   range gets its pad as a second successor, and callee-saved webs are pinned
+   across it.
+2. **Pin an occurrence, not a web.** One `cqo`, `idiv`, `ret` or argument use of
+   rax pins the whole web it belongs to. On one case 5,142 of 6,412 webs were
+   pinned. The pinned occurrence is to be split off with a copy before webs are
+   joined, and that pseudo count is the measure of it.
+3. **One opcode table.** About a dozen mnemonic lists (`isMove`, `isRmw`,
+   `takesImmediate`, `renamable`, `suffixWidth` and more) become one table with
+   flags, so every constraint the allocator honours lives in one place.
+4. **The inliner needs a cost.** Every small callee is inlined at every site, so
+   -O2 is 39% larger than -O1. Each site's slots should be locals that promotion
+   can take, calls should say which argument registers they really read, and
+   inlining should run on a budget. At -O1, the table above says to inline only
+   where the body is smaller than the call.
+
+The funclet question is open too. `settle()` hands a Windows function to the
+passes in pieces, and a whole-function allocator cannot see across the cut.
+Either allocate before the cut, keeping locals a funclet touches in memory, or
+keep today's rule (no allocation in such frames) and say so here.

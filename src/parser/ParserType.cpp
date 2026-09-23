@@ -1313,9 +1313,15 @@ const Type *Parser::specifiers(StorageClass *storage, Qualifiers *quals) {
     return quals->isConst ? types_.withConst(t) : t;
 }
 
+// Marks the file as one the optimizer must leave alone; always true.
+bool Parser::sawVolatile() {
+    if (current_ != nullptr) current_->usesVolatile = true;
+    return true;
+}
+
 // **`volatile` is read and dropped, and this is the line where that stops
 // being honest.** There is no volatile in this type system; on an object that
-// costs nothing, because nothing here is optimised and every read is a read.
+// costs nothing only while the file is not optimised - see Program::usesVolatile.
 void Parser::refuseVolatilePointer() {
     src_.fail(peek().pos,
               "a 'volatile' pointer - 'T *volatile' - is not supported yet: cl "
@@ -1418,7 +1424,7 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
             quals->isConstexpr = true;
             continue;
         }
-        if (consume("volatile")) { quals->isVolatile = true; continue; }
+        if (consume("volatile")) { quals->isVolatile = sawVolatile(); continue; }
         // **`inline` is a hint about linkage, not about the type.** It makes a
         // function's definition mergeable across translation units; nothing
         // else downstream needs it.
@@ -1551,7 +1557,7 @@ const Type *Parser::unqualifiedSpecifiers(StorageClass *storage, Qualifiers *qua
             quals->isConstexpr = true;
             continue;
         }
-        if (consume("volatile"))      { quals->isVolatile = true; continue; }
+        if (consume("volatile"))      { quals->isVolatile = sawVolatile(); continue; }
         if (consume("float"))         isFloat++;
         else if (consume("double"))   isDouble++;
         else if (consume("void"))     isVoid++;
