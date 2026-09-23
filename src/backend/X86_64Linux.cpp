@@ -1676,7 +1676,7 @@ void X86_64Linux::walkInPlace(const Function &fn) {
     returnLabel_ = label("inline", nextLabel());
     optimizer_->jumpOnly(returnLabel_);
     inPlace_ = true;
-    optimizer_->inlineBegin(current_->frameSize(), fn.frameSize(), scalarsOf(fn));
+    optimizer_->inlineBegin(current_->frameSize(), fn.frameSize());
     receiveParameters(fn);
     walkBody(fn);
     optimizer_->inlineEnd();

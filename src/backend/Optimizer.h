@@ -25,7 +25,7 @@ public:
     // The function's scalar locals, and whether it may keep any in registers.
     void frame(std::vector<opt::Local> locals, bool promotable);
     // Around a callee walked in place of its call, at -O2.
-    void inlineBegin(int base, int calleeFrame, const std::vector<opt::Local> &calleeLocals);
+    void inlineBegin(int base, int calleeFrame);
     void inlineEnd();
     // A label the walker names only in jumps, which may go once nothing jumps to it.
     void jumpOnly(const std::string &label);

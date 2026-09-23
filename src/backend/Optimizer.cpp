@@ -86,14 +86,13 @@ void Optimizer::functionBegin(const std::string &name, bool exported, bool merge
     inlineTop_ = 0;
 }
 
-// **A callee walked in place keeps its own frame, below the caller's locals**:
-// every slot it names moves down by `base`, and the frame must reach the
-// bottom of the largest callee held.
-void Optimizer::inlineBegin(int base, int calleeFrame, const std::vector<opt::Local> &calleeLocals) {
+// **A callee walked in place keeps its frame below the caller's locals**, moved
+// down by `base`. Every site shares that region, so no slot in it is one
+// variable's, and none is offered for a register.
+void Optimizer::inlineBegin(int base, int calleeFrame) {
     inlining_ = true;
     inlineBase_ = base;
     inlineTop_ = std::max(inlineTop_, base + ((calleeFrame + 15) & ~15));
-    for (const opt::Local &l : calleeLocals) locals_.push_back(opt::Local{l.disp - base, l.size});
 }
 
 void Optimizer::inlineEnd() { inlining_ = false; }
