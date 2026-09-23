@@ -50,7 +50,7 @@ void Optimizer::instruction(const std::string &m, int operands, const Op *a, con
         for (opt::Operand *o : {&e.ins.a, &e.ins.b})
             if (o->isMem() && o->reg.id == opt::RBP) {
                 assert(o->disp < 0 && "an inlined callee reads only its own frame");
-                o->disp -= frameSize_;
+                o->disp -= inlineBase_;
                 o->hasDisp = true;
             }
     hold(std::move(e));
@@ -83,16 +83,17 @@ void Optimizer::functionBegin(const std::string &name, bool exported, bool merge
     cut_ = promotable_ = false;
     prologueAt_ = -1;
     inlining_ = false;
-    inlineRegion_ = 0;
+    inlineTop_ = 0;
 }
 
-// **A callee walked in place keeps its own frame, below the caller's**: every
-// slot it names moves down by the caller's frame, and the region grows to the
-// largest callee held.
-void Optimizer::inlineBegin(int calleeFrame, const std::vector<opt::Local> &calleeLocals) {
+// **A callee walked in place keeps its own frame, below the caller's locals**:
+// every slot it names moves down by `base`, and the frame must reach the
+// bottom of the largest callee held.
+void Optimizer::inlineBegin(int base, int calleeFrame, const std::vector<opt::Local> &calleeLocals) {
     inlining_ = true;
-    inlineRegion_ = std::max(inlineRegion_, (calleeFrame + 15) & ~15);
-    for (const opt::Local &l : calleeLocals) locals_.push_back(opt::Local{l.disp - frameSize_, l.size});
+    inlineBase_ = base;
+    inlineTop_ = std::max(inlineTop_, base + ((calleeFrame + 15) & ~15));
+    for (const opt::Local &l : calleeLocals) locals_.push_back(opt::Local{l.disp - base, l.size});
 }
 
 void Optimizer::inlineEnd() { inlining_ = false; }
@@ -148,7 +149,7 @@ void Optimizer::improve(bool whole) {
     // What the frame gains goes below what it had: the saves, then the shadow
     // space at the floor, where a callee finds it.
     // First the region inlined callees live in, then the saves, then the shadow.
-    int size = frameSize_ + inlineRegion_;
+    int size = std::max(frameSize_, inlineTop_);
     std::vector<SavedReg> saves;
     if (whole && promotable_ && prologueAt_ >= 0) {
         saves = opt::promoteLocals(stream_, convention_, locals_, size, level.registers, level.minWeight);
@@ -158,7 +159,7 @@ void Optimizer::improve(bool whole) {
         if (opt::reserveShadow(stream_, flow, convention_)) size += (convention_.shadow + 15) & ~15;
     }
     if (size != frameSize_) {
-        assert(prologueAt_ >= 0);
+        assert(prologueAt_ >= 0 && "a frame can grow only while its prologue is held");
         const std::string lsda = lsda_;
         stream_[prologueAt_].event = [=](Spelling &s) { s.calleeSaves(saves); s.prologue(size, lsda); };
     }
@@ -193,6 +194,7 @@ void Optimizer::flush(bool whole) {
         }
     }
     stream_.clear();
+    prologueAt_ = -1;       // written out: from here on the frame is what it is
 }
 
 // Everything else is an event: held where it stood, with its arguments copied.

@@ -1465,13 +1465,16 @@ void X86_64Linux::emit(const Function &fn) {
     clearCallSites();
     clearMsTries();
 
-    frameSize_ = fn.frameSize();
+    // **A frame cut into funclets cannot grow once its first funclet is out**,
+    // so it reserves room for any callee it may walk in place from the start.
+    current_ = &fn;
+    inlineReserve_ = fn.hasLandingPads() && usesFunclets() && inlining() ? largestSmallFrame_ : 0;
+    frameSize_ = fn.frameSize() + inlineReserve_;
     fnSymbol_ = fn.symbol();
     fnMergeable_ = fn.isInline();
     markLine(fn.pos());
-    current_ = &fn;
     if (optimizer_) optimizer_->frame(scalarsOf(fn), !fn.hasLandingPads());
-    a_->prologue(fn.frameSize(),
+    a_->prologue(frameSize_,
                  fn.hasLandingPads() ? ".Lexception." + fn.symbol()
                                      : std::string());
 
@@ -1650,14 +1653,17 @@ int statementsIn(const Stmt &s) {
 // -O2**, where the caller has no landing pad for it to fall between and the
 // callee takes nothing on the stack.
 const Function *X86_64Linux::inlineTarget(const Call &n, int stackSlots) const {
-    if (!optimizer_ || optimizer_->level() < 2 || lineSource() || inPlace_ || current_ == nullptr ||
-        current_->hasLandingPads() || n.callee() != nullptr || stackSlots != 0)
-        return nullptr;
+    if (!inlining() || inPlace_ || current_ == nullptr || n.callee() != nullptr || stackSlots != 0) return nullptr;
     const auto it = bodies_.find(n.symbol());
-    if (it == bodies_.end()) return nullptr;
-    const Function &fn = *it->second;
-    if (&fn == current_ || fn.hasLandingPads() || fn.isVariadic() || fn.regSaveSlot() != 0) return nullptr;
-    return statementsIn(fn.body()) <= 4 ? &fn : nullptr;
+    if (it == bodies_.end() || it->second == current_ || !small(*it->second)) return nullptr;
+    const bool reserved = current_->hasLandingPads() && usesFunclets();
+    return !reserved || ((it->second->frameSize() + 15) & ~15) <= inlineReserve_ ? it->second : nullptr;
+}
+
+bool X86_64Linux::inlining() const { return optimizer_ && optimizer_->level() >= 2 && !lineSource(); }
+
+bool X86_64Linux::small(const Function &fn) const {
+    return !fn.hasLandingPads() && !fn.isVariadic() && fn.regSaveSlot() == 0 && statementsIn(fn.body()) <= 8;
 }
 
 // The callee's walk borrows the caller's state for its own, and gives it
@@ -1670,7 +1676,7 @@ void X86_64Linux::walkInPlace(const Function &fn) {
     returnLabel_ = label("inline", nextLabel());
     optimizer_->jumpOnly(returnLabel_);
     inPlace_ = true;
-    optimizer_->inlineBegin(fn.frameSize(), scalarsOf(fn));
+    optimizer_->inlineBegin(current_->frameSize(), fn.frameSize(), scalarsOf(fn));
     receiveParameters(fn);
     walkBody(fn);
     optimizer_->inlineEnd();
@@ -2163,7 +2169,10 @@ void X86_64Linux::run(const Program &program) {
 
     emitData(program);
     finishChunk();
-    for (const Function &fn : program.functions) bodies_[fn.symbol()] = &fn;
+    for (const Function &fn : program.functions) {
+        bodies_[fn.symbol()] = &fn;
+        if (small(fn)) largestSmallFrame_ = std::max(largestSmallFrame_, (fn.frameSize() + 15) & ~15);
+    }
     for (const Function &fn : program.functions) emit(fn);
     if (!program.initFunction.empty()) {
         a_->initialiserEntry(program.initFunction, program.usesDsoHandle);

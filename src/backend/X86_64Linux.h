@@ -184,6 +184,10 @@ private:
     std::map<std::string, const Function *> bodies_;
     const Function *current_ = nullptr;
     bool inPlace_ = false;
+    bool inlining() const;
+    bool small(const Function &fn) const;
+    int largestSmallFrame_ = 0;
+    int inlineReserve_ = 0;
     void finishChunk();
     std::string label(const char *kind, int id) const override;
     std::string userLabel(const std::string &name) const override;
