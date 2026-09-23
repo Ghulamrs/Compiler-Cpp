@@ -2,6 +2,9 @@
 
 #include "OptPasses.h"
 
+#include <algorithm>
+#include <cassert>
+#include <set>
 #include <utility>
 
 using opt::Entry;
@@ -43,6 +46,13 @@ void Optimizer::instruction(const std::string &m, int operands, const Op *a, con
     e.ins.operands = operands;
     if (a) e.ins.a = opt::Operand::from(*a);
     if (b) e.ins.b = opt::Operand::from(*b);
+    if (inlining_)
+        for (opt::Operand *o : {&e.ins.a, &e.ins.b})
+            if (o->isMem() && o->reg.id == opt::RBP) {
+                assert(o->disp < 0 && "an inlined callee reads only its own frame");
+                o->disp -= frameSize_;
+                o->hasDisp = true;
+            }
     hold(std::move(e));
 }
 
@@ -72,6 +82,31 @@ void Optimizer::functionBegin(const std::string &name, bool exported, bool merge
     inFunction_ = true;
     cut_ = promotable_ = false;
     prologueAt_ = -1;
+    inlining_ = false;
+    inlineRegion_ = 0;
+}
+
+// **A callee walked in place keeps its own frame, below the caller's**: every
+// slot it names moves down by the caller's frame, and the region grows to the
+// largest callee held.
+void Optimizer::inlineBegin(int calleeFrame, const std::vector<opt::Local> &calleeLocals) {
+    inlining_ = true;
+    inlineRegion_ = std::max(inlineRegion_, (calleeFrame + 15) & ~15);
+    for (const opt::Local &l : calleeLocals) locals_.push_back(opt::Local{l.disp - frameSize_, l.size});
+}
+
+void Optimizer::inlineEnd() { inlining_ = false; }
+
+void Optimizer::jumpOnly(const std::string &label) { jumpOnly_.insert(label); }
+
+// **A label only jumps name, that no jump names any more**, joins its block to
+// the one before, so what is known flows through it.
+void Optimizer::dropUnnamedLabels() {
+    std::set<std::string> named;
+    for (const Entry &e : stream_)
+        if (e.kind == Entry::Ins && !e.dead && e.ins.a.kind == opt::Operand::Label) named.insert(e.ins.a.text);
+    for (Entry &e : stream_)
+        if (e.kind == Entry::Label && jumpOnly_.count(e.label) && !named.count(e.label)) e.dead = true;
 }
 
 void Optimizer::functionEnd(const std::string &name) {
@@ -92,6 +127,7 @@ void Optimizer::returnsPair(bool pair) {
 
 void Optimizer::rounds(opt::Flow &flow, int limit) {
     for (int round = 0; round < limit; ++round) {
+        dropUnnamedLabels();
         flow.build(stream_, convention_);
         bool changed = opt::forwardValues(stream_, flow, convention_);
         changed = opt::removeUnreachable(stream_) || changed;
@@ -111,16 +147,20 @@ void Optimizer::improve(bool whole) {
     rounds(flow, level.rounds);
     // What the frame gains goes below what it had: the saves, then the shadow
     // space at the floor, where a callee finds it.
+    // First the region inlined callees live in, then the saves, then the shadow.
+    int size = frameSize_ + inlineRegion_;
+    std::vector<SavedReg> saves;
     if (whole && promotable_ && prologueAt_ >= 0) {
-        const std::vector<SavedReg> saves =
-            opt::promoteLocals(stream_, convention_, locals_, frameSize_, level.registers, level.minWeight);
-        int size = frameSize_ + ((8 * static_cast<int>(saves.size()) + 15) & ~15);
-        if (!saves.empty()) rounds(flow, level.rounds);
+        saves = opt::promoteLocals(stream_, convention_, locals_, size, level.registers, level.minWeight);
+        if (opt::removeDeadStores(stream_) || !saves.empty()) rounds(flow, level.rounds);
+        opt::dropUnusedSaves(stream_, saves);
+        size += (8 * static_cast<int>(saves.size()) + 15) & ~15;
         if (opt::reserveShadow(stream_, flow, convention_)) size += (convention_.shadow + 15) & ~15;
-        if (size != frameSize_) {
-            const std::string lsda = lsda_;
-            stream_[prologueAt_].event = [=](Spelling &s) { s.calleeSaves(saves); s.prologue(size, lsda); };
-        }
+    }
+    if (size != frameSize_) {
+        assert(prologueAt_ >= 0);
+        const std::string lsda = lsda_;
+        stream_[prologueAt_].event = [=](Spelling &s) { s.calleeSaves(saves); s.prologue(size, lsda); };
     }
     // A shorter spelling last: narrowed arithmetic leaves extensions to delete.
     for (int again = 0; again < 3; ++again) {

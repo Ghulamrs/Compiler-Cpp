@@ -1121,20 +1121,28 @@ void X86_64Linux::visit(const Call &n) {
         a_->ins("lea", mem((-n.resultSlot()), "%rbp"),
                 reg(abi_.intRegs[msThisFirst ? 1 : 0]));
 
-    a_->ins("mov", imm(((n.isVariadic() && abi_.variadicSseCountInAl) ? sses : 0)), reg("%rax"));
+    if (const Function *body = inlineTarget(n, stackSlots)) {
+        walkInPlace(*body);
+        if (padSlots > 0) {
+            a_->ins("add", imm(padSlots * 8), reg("%rsp"));
+            depth_ -= padSlots;
+        }
+    } else {
+        a_->ins("mov", imm(((n.isVariadic() && abi_.variadicSseCountInAl) ? sses : 0)), reg("%rax"));
 
-    if (shadowSlots > 0) {
-        a_->ins("sub", imm(abi_.shadowBytes), reg("%rsp"));
-        depth_ += shadowSlots;
-    }
+        if (shadowSlots > 0) {
+            a_->ins("sub", imm(abi_.shadowBytes), reg("%rsp"));
+            depth_ += shadowSlots;
+        }
 
-    if (n.callee() != nullptr) a_->ins("call", ind("%r11"));
-    else                       a_->ins("call", lbl(n.symbol()));
+        if (n.callee() != nullptr) a_->ins("call", ind("%r11"));
+        else                       a_->ins("call", lbl(n.symbol()));
 
-    int unwind = stackSlots + padSlots + shadowSlots;
-    if (unwind > 0) {
-        a_->ins("add", imm(unwind * 8), reg("%rsp"));
-        depth_ -= unwind;
+        int unwind = stackSlots + padSlots + shadowSlots;
+        if (unwind > 0) {
+            a_->ins("add", imm(unwind * 8), reg("%rsp"));
+            depth_ -= unwind;
+        }
     }
 
     if (sret) {
@@ -1461,17 +1469,49 @@ void X86_64Linux::emit(const Function &fn) {
     fnSymbol_ = fn.symbol();
     fnMergeable_ = fn.isInline();
     markLine(fn.pos());
-    if (optimizer_) {
-        std::vector<opt::Local> scalars;
-        for (const Local &l : fn.locals())
-            if (l.staticName.empty() && (l.type->isInteger() || l.type->isPointer()))
-                scalars.push_back(opt::Local{-static_cast<long long>(l.offset), l.type->size(target_)});
-        optimizer_->frame(std::move(scalars), !fn.hasLandingPads());
-    }
+    current_ = &fn;
+    if (optimizer_) optimizer_->frame(scalarsOf(fn), !fn.hasLandingPads());
     a_->prologue(fn.frameSize(),
                  fn.hasLandingPads() ? ".Lexception." + fn.symbol()
                                      : std::string());
 
+    receiveParameters(fn);
+
+    walkBody(fn);
+    // **rsp is restored *from rbp*, never by adding to itself.** Resuming after a
+    // catch it holds whatever the runtime left, and adding the frame size landed
+    // on the unwind-help slot, so `ret` took -2. The renderer adds the size.
+    if (localsAboveFrameBase()) {
+        a_->ins("lea", mem(0, "%rbp"), reg("%rsp"));
+    } else {
+        a_->ins("mov", reg("%rbp"), reg("%rsp"));
+    }
+    a_->ins("pop", reg("%rbp"));
+    a_->ins("ret");
+    // Before .cfi_endproc, because the last call-site range measures to it.
+    if (!lineSource() && !callSites().empty() && !usesFunclets())
+        a_->defLabel(".Lfunc.end." + fn.symbol());
+    // The tables are written below; tell the spelling whether there are any,
+    // so its unwind info does not name a FuncInfo that never appears.
+    if (target_.microsoftNames()) a_->noteHasEh(!msTries().empty());
+    a_->functionEnd(fn.symbol());
+    emitExceptionTables(fn);
+    if (lineSource()) {
+        a_->defLabel(".Lfunc.end." + fn.symbol());
+
+        dwarfFns_.back().blocks = blocks();
+    }
+
+    if (depth_ != 0) {
+        std::fprintf(stderr, "codegen: stack depth %d at the end of %s\n",
+                     depth_, fn.name().c_str());
+        std::exit(1);
+    }
+    finishChunk();
+}
+
+// **Parameters into their slots**, for a function emitted whole or walked in place.
+void X86_64Linux::receiveParameters(const Function &fn) {
     // The definition side of the same rule: for a member function on the
     // Microsoft ABI the hidden return pointer arrives in the *second* integer
     // register, `this` having taken the first.
@@ -1576,7 +1616,78 @@ void X86_64Linux::emit(const Function &fn) {
     varFp_ = 48 + plan.ssesUsed * 16;
     varOverflow_ = abi_.positional ? 16 + plan.intsUsed * 8
                                    : stackBase + plan.stackWords * 8;
+}
 
+std::vector<opt::Local> X86_64Linux::scalarsOf(const Function &fn) const {
+    std::vector<opt::Local> scalars;
+    for (const Local &l : fn.locals())
+        if (l.staticName.empty() && (l.type->isInteger() || l.type->isPointer()))
+            scalars.push_back(opt::Local{-static_cast<long long>(l.offset), l.type->size(target_)});
+    return scalars;
+}
+
+namespace {
+
+// **Small enough to walk in place**: straight-line statements and ifs, no
+// loops and no cleanups; anything else counts as too many.
+int statementsIn(const Stmt &s) {
+    constexpr int kTooMany = 1000;
+    if (const Block *b = dynamic_cast<const Block *>(&s)) {
+        if (b->unwindCleanup()) return kTooMany;
+        int n = 0;
+        for (const StmtPtr &x : b->body()) n += statementsIn(*x);
+        return n;
+    }
+    if (dynamic_cast<const ExprStmt *>(&s) || dynamic_cast<const Return *>(&s)) return 1;
+    if (const If *i = dynamic_cast<const If *>(&s))
+        return 1 + statementsIn(i->thenArm()) + (i->elseArm() ? statementsIn(*i->elseArm()) : 0);
+    return kTooMany;
+}
+
+}
+
+// **A direct call to a small function of this unit, walked in its place at
+// -O2**, where the caller has no landing pad for it to fall between and the
+// callee takes nothing on the stack.
+const Function *X86_64Linux::inlineTarget(const Call &n, int stackSlots) const {
+    if (!optimizer_ || optimizer_->level() < 2 || lineSource() || inPlace_ || current_ == nullptr ||
+        current_->hasLandingPads() || n.callee() != nullptr || stackSlots != 0)
+        return nullptr;
+    const auto it = bodies_.find(n.symbol());
+    if (it == bodies_.end()) return nullptr;
+    const Function &fn = *it->second;
+    if (&fn == current_ || fn.hasLandingPads() || fn.isVariadic() || fn.regSaveSlot() != 0) return nullptr;
+    return statementsIn(fn.body()) <= 4 ? &fn : nullptr;
+}
+
+// The callee's walk borrows the caller's state for its own, and gives it
+// back; its frame the optimizer moves below the caller's.
+void X86_64Linux::walkInPlace(const Function &fn) {
+    const int depth = depth_, sret = sretSlot_, regSave = regSave_;
+    const int gp = varGp_, fp = varFp_, overflow = varOverflow_;
+    const std::string ret = returnLabel_;
+    depth_ = 0;
+    returnLabel_ = label("inline", nextLabel());
+    optimizer_->jumpOnly(returnLabel_);
+    inPlace_ = true;
+    optimizer_->inlineBegin(fn.frameSize(), scalarsOf(fn));
+    receiveParameters(fn);
+    walkBody(fn);
+    optimizer_->inlineEnd();
+    inPlace_ = false;
+    depth_ = depth;
+    sretSlot_ = sret;
+    regSave_ = regSave;
+    varGp_ = gp;
+    varFp_ = fp;
+    varOverflow_ = overflow;
+    returnLabel_ = ret;
+}
+
+// The body, the value a function that falls off its end returns, and the
+// return label every `return` jumps to.
+void X86_64Linux::walkBody(const Function &fn) {
+    const std::vector<Param> &ps = fn.params();
     fn.body().accept(*this);
 
     if (sretSlot_ != 0)                     a_->ins("mov", local(sretSlot_), reg("%rax"));
@@ -1592,36 +1703,6 @@ void X86_64Linux::emit(const Function &fn) {
          fn.symbol().compare(0, 4, "??_G") == 0 ||
          fn.symbol().compare(0, 4, "??_E") == 0))
         a_->ins("mov", local(ps[0].offset), reg("%rax"));
-    // **rsp is restored *from rbp*, never by adding to itself.** Resuming after a
-    // catch it holds whatever the runtime left, and adding the frame size landed
-    // on the unwind-help slot, so `ret` took -2. The renderer adds the size.
-    if (localsAboveFrameBase()) {
-        a_->ins("lea", mem(0, "%rbp"), reg("%rsp"));
-    } else {
-        a_->ins("mov", reg("%rbp"), reg("%rsp"));
-    }
-    a_->ins("pop", reg("%rbp"));
-    a_->ins("ret");
-    // Before .cfi_endproc, because the last call-site range measures to it.
-    if (!lineSource() && !callSites().empty() && !usesFunclets())
-        a_->defLabel(".Lfunc.end." + fn.symbol());
-    // The tables are written below; tell the spelling whether there are any,
-    // so its unwind info does not name a FuncInfo that never appears.
-    if (target_.microsoftNames()) a_->noteHasEh(!msTries().empty());
-    a_->functionEnd(fn.symbol());
-    emitExceptionTables(fn);
-    if (lineSource()) {
-        a_->defLabel(".Lfunc.end." + fn.symbol());
-
-        dwarfFns_.back().blocks = blocks();
-    }
-
-    if (depth_ != 0) {
-        std::fprintf(stderr, "codegen: stack depth %d at the end of %s\n",
-                     depth_, fn.name().c_str());
-        std::exit(1);
-    }
-    finishChunk();
 }
 
 // **A funclet is a slice of the ordinary output, lifted.** Walking the handler
@@ -2082,6 +2163,7 @@ void X86_64Linux::run(const Program &program) {
 
     emitData(program);
     finishChunk();
+    for (const Function &fn : program.functions) bodies_[fn.symbol()] = &fn;
     for (const Function &fn : program.functions) emit(fn);
     if (!program.initFunction.empty()) {
         a_->initialiserEntry(program.initFunction, program.usesDsoHandle);

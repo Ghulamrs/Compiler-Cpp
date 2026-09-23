@@ -212,4 +212,63 @@ bool reserveShadow(Stream &s, Flow &f, const Convention &c) {
     return reserved;
 }
 
+void dropUnusedSaves(Stream &s, std::vector<SavedReg> &saves) {
+    RegSet named = 0;
+    for (const Entry &e : s)
+        if (e.kind == Entry::Ins && !e.dead && !(e.ins.m == "mov" && e.ins.a.isMem() && e.ins.a.reg.id == RBP))
+            for (const Operand *o : {&e.ins.a, &e.ins.b})
+                if ((o->kind == Operand::Register || o->kind == Operand::Memory) && o->reg.id >= 0) named |= bit(o->reg.id);
+    std::vector<SavedReg> kept;
+    for (const SavedReg &sv : saves) {
+        const int r = parseReg(sv.reg).id;
+        if (named & bit(r)) { kept.push_back(sv); continue; }
+        for (Entry &e : s)
+            if (e.kind == Entry::Ins && !e.dead && e.ins.b.isReg(r) && e.ins.a.isMem() && e.ins.a.disp == sv.disp)
+                e.dead = true;
+    }
+    // The slots close up, the kept saves renumbered from the top.
+    for (std::size_t j = 0; j < kept.size(); ++j) {
+        const long long want = saves[0].disp - 8 * static_cast<long long>(j);
+        for (Entry &e : s)
+            if (e.kind == Entry::Ins && !e.dead && e.ins.a.isMem() && e.ins.a.reg.id == RBP && e.ins.a.disp == kept[j].disp &&
+                e.ins.b.isReg(parseReg(kept[j].reg).id))
+                e.ins.a.disp = want;
+        kept[j].disp = want;
+    }
+    saves.swap(kept);
+}
+
+bool removeDeadStores(Stream &s) {
+    // An object runs upward from its address, so an address taken at L may
+    // reach anything above it in the frame.
+    long long escapesFrom = 0;
+    struct Access { long long disp; int width; };
+    std::vector<Access> reads;
+    auto isStore = [](const Instr &i) {
+        return frameSlot(i.b) && i.b.disp < 0 && i.operands == 2 &&
+               is(i.m, {"mov", "movq", "movl", "movw", "movb"}) && (gpr(i.a) || i.a.kind == Operand::Immediate);
+    };
+    for (const Entry &e : s) {
+        if (e.kind != Entry::Ins || e.dead) continue;
+        const Instr &i = e.ins;
+        for (const Operand *o : {&i.a, &i.b}) {
+            if (!frameSlot(*o)) continue;
+            if (i.m == "lea") { if (!i.b.isReg(RSP)) escapesFrom = std::min(escapesFrom, o->disp); continue; }
+            if (o == &i.b && isStore(i)) continue;
+            reads.push_back(Access{o->disp, 16});
+        }
+    }
+    bool changed = false;
+    for (Entry &e : s) {
+        if (e.kind != Entry::Ins || e.dead || !isStore(e.ins)) continue;
+        const long long d = e.ins.b.disp;
+        const int w = accessWidth(e.ins, e.ins.b);
+        if (escapesFrom < 0 && d + w > escapesFrom) continue;
+        bool read = false;
+        for (const Access &r : reads) read = read || (r.disp < d + w && d < r.disp + r.width);
+        if (!read) { e.dead = true; changed = true; }
+    }
+    return changed;
+}
+
 }

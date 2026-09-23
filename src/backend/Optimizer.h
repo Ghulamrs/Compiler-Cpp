@@ -8,6 +8,7 @@
 #include "Spelling.h"
 
 #include <cstddef>
+#include <set>
 
 struct Abi;
 
@@ -23,6 +24,12 @@ public:
     void returnsPair(bool pair);
     // The function's scalar locals, and whether it may keep any in registers.
     void frame(std::vector<opt::Local> locals, bool promotable);
+    // Around a callee walked in place of its call, at -O2.
+    void inlineBegin(int calleeFrame, const std::vector<opt::Local> &calleeLocals);
+    void inlineEnd();
+    // A label the walker names only in jumps, which may go once nothing jumps to it.
+    void jumpOnly(const std::string &label);
+    int level() const { return level_; }
 
     void ins(const std::string &m) override;
     void ins(const std::string &m, const Op &a) override;
@@ -67,6 +74,9 @@ private:
     bool promotable_ = false;
     bool cut_ = false;                // settled mid-function: the stream is not all of it
     int prologueAt_ = -1;
+    bool inlining_ = false;
+    std::set<std::string> jumpOnly_;
+    int inlineRegion_ = 0;
     int frameSize_ = 0;
     std::string lsda_;
 
@@ -76,6 +86,7 @@ private:
     // passed on at once outside one.
     void event(std::function<void(Spelling &)> call);
     void improve(bool whole);
+    void dropUnnamedLabels();
     void rounds(opt::Flow &flow, int limit);
     void flush(bool whole);
 };

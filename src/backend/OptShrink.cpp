@@ -11,14 +11,14 @@ bool is(const std::string &m, std::initializer_list<const char *> names) {
     return false;
 }
 
-// **The same result in fewer bytes**, given what is read after it: a write of
-// four bytes zeroes the upper half, so where nobody reads that half, or the
-// value is a small non-negative constant, the REX prefix goes.
 // An array index scaled by an element of one byte.
 bool scaleByOne(const Instr &i) {
     return i.m == "imul" && i.operands == 2 && i.a.kind == Operand::Immediate && i.a.numeric && i.a.value == 1 && gpr(i.b);
 }
 
+// **The same result in fewer bytes**, given what is read after it: a write of
+// four bytes zeroes the upper half, so where nobody reads that half, or the
+// value is a small non-negative constant, the REX prefix goes.
 bool shorter(Instr &i, RegSet wide, bool flagsLive) {
     if (gpr(i.b) && frameReg(i.b.reg.id)) return false;
     // A power of two is a shift, which is quicker and no longer.
