@@ -15,6 +15,7 @@ struct Block {
     std::vector<int> next;
     bool leaves = false;                 // falls or jumps somewhere not seen here
     RegSet liveIn = 0, liveOut = 0;
+    RegSet wideIn = 0, wideOut = 0;      // live, and read above the low four bytes
     bool flagsIn = false, flagsOut = false;
 };
 

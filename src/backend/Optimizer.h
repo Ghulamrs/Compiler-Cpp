@@ -4,7 +4,7 @@
 // function as it always has; this holds it, improves it and hands it on.
 // Outside a function every call passes straight through.
 
-#include "OptEffects.h"
+#include "OptPasses.h"
 #include "Spelling.h"
 
 #include <cstddef>
@@ -21,6 +21,8 @@ public:
     std::size_t held() const { return held_; }
     // Whether the function being held returns in two registers, rax:rdx or xmm0:xmm1.
     void returnsPair(bool pair);
+    // The function's scalar locals, and whether it may keep any in registers.
+    void frame(std::vector<opt::Local> locals, bool promotable);
 
     void ins(const std::string &m) override;
     void ins(const std::string &m, const Op &a) override;
@@ -61,11 +63,19 @@ private:
     bool inFunction_ = false;
     opt::Stream stream_;
     std::size_t held_ = 0;
+    std::vector<opt::Local> locals_;
+    bool promotable_ = false;
+    bool cut_ = false;                // settled mid-function: the stream is not all of it
+    int prologueAt_ = -1;
+    int frameSize_ = 0;
+    std::string lsda_;
 
     void hold(opt::Entry e);
     void instruction(const std::string &m, int operands, const Op *a, const Op *b);
     // A call that is not an instruction: held in its place inside a function,
     // passed on at once outside one.
     void event(std::function<void(Spelling &)> call);
-    void improve();
+    void improve(bool whole);
+    void rounds(opt::Flow &flow, int limit);
+    void flush(bool whole);
 };

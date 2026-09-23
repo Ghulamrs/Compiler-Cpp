@@ -65,24 +65,31 @@ void Flow::build(const Stream &s, const Convention &c) {
 }
 
 void Flow::solve(const Stream &s) {
-    for (Block &b : blocks) { b.liveIn = 0; b.flagsIn = false; }
+    for (Block &b : blocks) { b.liveIn = b.wideIn = 0; b.flagsIn = false; }
     for (bool changed = true; changed;) {
         changed = false;
         for (int b = static_cast<int>(blocks.size()) - 1; b >= 0; --b) {
             Block &blk = blocks[b];
-            RegSet live = blk.leaves ? kAllRegs : 0;
+            RegSet live = blk.leaves ? kAllRegs : 0, wide = live;
             bool flags = blk.leaves;
-            for (int n : blk.next) { live |= blocks[n].liveIn; flags = flags || blocks[n].flagsIn; }
+            for (int n : blk.next) {
+                live |= blocks[n].liveIn;
+                wide |= blocks[n].wideIn;
+                flags = flags || blocks[n].flagsIn;
+            }
             blk.liveOut = live;
+            blk.wideOut = wide;
             blk.flagsOut = flags;
             for (int k = blk.end - 1; k >= blk.begin; --k) {
                 if (s[k].kind != Entry::Ins || s[k].dead) continue;
                 const Effects &e = effects[k];
                 live = (live & ~e.writes) | e.reads;
+                wide = (wide & ~e.writes) | e.wide;
                 flags = e.flagsRead || (flags && !e.flagsWritten);
             }
-            if (live != blk.liveIn || flags != blk.flagsIn) {
+            if (live != blk.liveIn || wide != blk.wideIn || flags != blk.flagsIn) {
                 blk.liveIn = live;
+                blk.wideIn = wide;
                 blk.flagsIn = flags;
                 changed = true;
             }

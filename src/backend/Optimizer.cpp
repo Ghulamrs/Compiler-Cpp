@@ -12,16 +12,13 @@ namespace {
 // pass leaves work for the others, so rounds run until one finds nothing, or
 // the level's limit.
 struct Level {
-    bool forward;
     int rounds;
+    int registers;        // callee-saved registers locals may be kept in
+    long minWeight;       // the accesses, loop-weighted, that earn one
 };
 
 Level levelFor(int n) {
-    switch (n) {
-    case 0: return Level{false, 0};
-    case 1: return Level{true, 8};
-    default: return Level{true, 16};
-    }
+    return n <= 1 ? Level{8, 2, 6} : Level{16, 5, 2};
 }
 
 }
@@ -70,15 +67,22 @@ void Optimizer::defLabel(const std::string &l) {
 }
 
 void Optimizer::functionBegin(const std::string &name, bool exported, bool mergeable) {
-    settle();
+    flush(false);
     under_.functionBegin(name, exported, mergeable);
     inFunction_ = true;
+    cut_ = promotable_ = false;
+    prologueAt_ = -1;
 }
 
 void Optimizer::functionEnd(const std::string &name) {
-    settle();
+    flush(!cut_);
     inFunction_ = false;
     under_.functionEnd(name);
+}
+
+void Optimizer::frame(std::vector<opt::Local> locals, bool promotable) {
+    locals_ = std::move(locals);
+    promotable_ = promotable;
 }
 
 void Optimizer::returnsPair(bool pair) {
@@ -86,25 +90,50 @@ void Optimizer::returnsPair(bool pair) {
     if (pair) convention_.returned |= opt::bit(opt::RDX) | opt::bit(opt::kXmm0 + 1);
 }
 
-void Optimizer::improve() {
-    const Level level = levelFor(level_);
-    opt::Flow flow;
-    for (int round = 0; round < level.rounds; ++round) {
+void Optimizer::rounds(opt::Flow &flow, int limit) {
+    for (int round = 0; round < limit; ++round) {
         flow.build(stream_, convention_);
-        bool changed = level.forward && opt::forwardValues(stream_, flow, convention_);
+        bool changed = opt::forwardValues(stream_, flow, convention_);
         changed = opt::removeUnreachable(stream_) || changed;
         changed = opt::removeDead(stream_, flow) || changed;
-        changed = (level.forward && opt::coalesceCopies(stream_, flow)) || changed;
-        changed = (level.forward && opt::foldLoads(stream_, flow, convention_)) || changed;
+        changed = opt::coalesceCopies(stream_, flow, convention_) || changed;
+        changed = opt::foldLoads(stream_, flow, convention_) || changed;
         if (!changed) break;
     }
-    // Last, once: a shorter spelling hides the widths the other passes match on.
-    opt::shrink(stream_, flow, convention_);
+}
+
+// **Locals go to registers once the frame is as small as it gets**, so an
+// address folded away no longer counts as escaping; then everything again.
+void Optimizer::improve(bool whole) {
+    const Level level = levelFor(level_);
+    opt::Flow flow;
+    rounds(flow, level.rounds);
+    if (whole && promotable_ && prologueAt_ >= 0) {
+        const std::vector<SavedReg> saves =
+            opt::promoteLocals(stream_, convention_, locals_, frameSize_, level.registers, level.minWeight);
+        if (!saves.empty()) {
+            const int size = frameSize_ + ((8 * static_cast<int>(saves.size()) + 15) & ~15);
+            const std::string lsda = lsda_;
+            stream_[prologueAt_].event = [=](Spelling &s) { s.calleeSaves(saves); s.prologue(size, lsda); };
+            rounds(flow, level.rounds);
+        }
+    }
+    // A shorter spelling last: narrowed arithmetic leaves extensions to delete.
+    for (int again = 0; again < 3; ++again) {
+        flow.build(stream_, convention_);
+        if (!opt::shrink(stream_, flow, convention_)) break;
+        rounds(flow, level.rounds);
+    }
 }
 
 void Optimizer::settle() {
+    if (inFunction_) cut_ = true;
+    flush(false);
+}
+
+void Optimizer::flush(bool whole) {
     if (stream_.empty()) return;
-    improve();
+    improve(whole);
     for (const Entry &e : stream_) {
         if (e.dead) continue;
         switch (e.kind) {
@@ -124,6 +153,9 @@ void Optimizer::settle() {
 
 // Everything else is an event: held where it stood, with its arguments copied.
 void Optimizer::prologue(int frameSize, const std::string &lsda) {
+    prologueAt_ = static_cast<int>(stream_.size());
+    frameSize_ = frameSize;
+    lsda_ = lsda;
     event([=](Spelling &s) { s.prologue(frameSize, lsda); });
 }
 void Optimizer::fileEntry(int n, const std::string &name) {

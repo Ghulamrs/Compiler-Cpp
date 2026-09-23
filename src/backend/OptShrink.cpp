@@ -20,6 +20,11 @@ bool shorter(Instr &i, RegSet wide, bool flagsLive) {
         i.b.reg.width = 4;
         return true;
     }
+    if (gpr(i.b) && i.b.reg.width == 4 && is(i.m, {"mov", "movl"}) && i.a.kind == Operand::Immediate &&
+        i.a.numeric && i.a.value == 0 && !flagsLive) {
+        i = Instr{"xor", i.b, i.b, 2};
+        return true;
+    }
     if (!reg64(i.b)) return false;
     const bool upperRead = (wide & bit(i.b.reg.id)) != 0;
     if (is(i.m, {"mov", "movq"}) && i.a.kind == Operand::Immediate && i.a.numeric) {
@@ -29,6 +34,13 @@ bool shorter(Instr &i, RegSet wide, bool flagsLive) {
         return false;
     }
     if (upperRead) return false;
+    // Arithmetic whose low half depends on the low halves alone.
+    const bool arith = is(i.m, {"add", "sub", "and", "or", "xor", "imul"}) && i.operands == 2 && !flagsLive;
+    if (arith && ((i.a.kind == Operand::Immediate && i.a.numeric && i.a.value == static_cast<int>(i.a.value)) || reg64(i.a))) {
+        if (reg64(i.a)) i.a.reg.width = 4;
+        i.b.reg.width = 4;
+        return true;
+    }
     if (i.m == "movslq" && i.a.isMem()) { i.m = "movl"; i.b.reg.width = 4; return true; }
     if (i.m == "movslq" && gpr(i.a) && i.a.reg.id != i.b.reg.id) { i.m = "mov"; i.b.reg.width = 4; return true; }
     if (is(i.m, {"mov", "movq"}) && i.a.isMem()) { i.m = "movl"; i.b.reg.width = 4; return true; }
@@ -49,7 +61,7 @@ bool shrink(Stream &s, Flow &f, const Convention &c) {
     f.solve(s);
     bool changed = false;
     for (const Block &blk : f.blocks) {
-        RegSet wide = blk.liveOut;
+        RegSet wide = blk.wideOut;
         bool flags = blk.flagsOut;
         for (int k = blk.end - 1; k >= blk.begin; --k) {
             Entry &en = s[k];

@@ -102,7 +102,11 @@ private:
     int flagsFrom_ = -1;
     int condReg_ = -1;                  // the register whose low byte a setcc just wrote
     Value cond_;
-    int copyOf_[kGprs];                 // the register each was last copied from
+    // **The copy each register last received**, good while neither end has
+    // been written since - which the versions, bumped on every write, tell.
+    struct Copy { int from = -1; int width = 0; unsigned fromVersion = 0, toVersion = 0; };
+    Copy copies_[kGprs];
+    unsigned version_[kGprs] = {};
     int nextId_ = 1;
     bool changed_ = false;
 
@@ -110,7 +114,7 @@ private:
 
     void enterBlock() {
         for (Value &v : regs_) v = fresh();
-        for (int &q : copyOf_) q = -1;
+        for (Copy &c : copies_) c = Copy();
         stack_.clear();
         slots_.clear();
         flagsFrom_ = condReg_ = -1;
@@ -257,15 +261,17 @@ private:
         const bool sourceOnly = i.operands == 2 || is(i.m, {"push", "pushq"});
         const bool shift = is(i.m, {"shl", "shr", "sar", "sal", "rol", "ror", "shll", "shrl", "sarl"});
         if (sourceOnly && !shift && gpr(i.a)) edited = original(i.a.reg) || edited;
+        if (is(i.m, {"cmp", "cmpl", "cmpq", "test", "testl", "testq"}) && gpr(i.b)) edited = original(i.b.reg) || edited;
         for (Operand *o : {&i.a, &i.b})
             if (o->kind == Operand::Memory && o->reg.id >= 0 && o->reg.id < kGprs && o->reg.id != RBP && o->reg.id != RSP)
                 edited = original(o->reg) || edited;
         return edited;
     }
     bool original(Reg &r) const {
-        const int q = copyOf_[r.id];
-        if (q < 0 || q == r.id || !regs_[q].same(regs_[r.id])) return false;
-        r.id = q;
+        const Copy &c = copies_[r.id];
+        if (c.from < 0 || version_[c.from] != c.fromVersion || version_[r.id] != c.toVersion || r.width > c.width)
+            return false;
+        r.id = c.from;
         return true;
     }
 
@@ -295,6 +301,7 @@ private:
         const std::string &m = i.m;
         const bool extendsCond = is(m, {"movzbq", "movzbl"}) && i.a.isReg(condReg_) && i.b.isReg(condReg_);
         if (condReg_ >= 0 && !extendsCond && ((e.writes | e.partial) & bit(condReg_))) condReg_ = -1;
+        for (int r = 0; r < kGprs; ++r) if ((e.writes | e.partial) & bit(r)) version_[r]++;
         if (e.flagsWritten) flagsFrom_ = k;
 
         if (e.opaque || e.control) {
@@ -328,7 +335,12 @@ private:
         }
         const int d = i.b.reg.id;
         const Value out = result(i, extendsCond);
-        copyOf_[d] = is(m, {"mov", "movq"}) && gpr(i.a) && i.a.reg.width == 8 && i.b.reg.width == 8 ? i.a.reg.id : -1;
+        const int w = i.b.reg.width;
+        // A sign extension copies the low four bytes.
+        const bool whole = is(m, {"mov", "movq", "movl"}) && i.a.reg.width == w && w >= 4;
+        const bool low = m == "movslq" && i.a.reg.width == 4;
+        copies_[d] = gpr(i.a) && i.a.reg.id != d && (whole || low)
+                         ? Copy{i.a.reg.id, low ? 4 : w, version_[i.a.reg.id], version_[d]} : Copy();
         forget((e.writes | e.partial) & ~bit(d));
         regs_[d] = (i.b.reg.width >= 4 || out.kind == Value::Condition) ? out : fresh();
     }

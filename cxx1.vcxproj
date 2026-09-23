@@ -83,6 +83,7 @@
     <ClCompile Include="src\backend\OptEffects.cpp" />
     <ClCompile Include="src\backend\OptFlow.cpp" />
     <ClCompile Include="src\backend\OptIr.cpp" />
+    <ClCompile Include="src\backend\OptRegisters.cpp" />
     <ClCompile Include="src\backend\OptShrink.cpp" />
     <ClCompile Include="src\backend\OptValues.cpp" />
     <ClCompile Include="src\backend\Optimizer.cpp" />

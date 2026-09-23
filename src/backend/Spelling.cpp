@@ -1,5 +1,7 @@
 #include "Spelling.h"
 
+#include "OptIr.h"
+
 #include <ostream>
 #include <string>
 
@@ -68,10 +70,16 @@ void GnuSpelling::prologue(int frameSize, const std::string &lsda) {
     ins("mov", reg("%rsp"), reg("%rbp"));
     o_ += "  .cfi_def_cfa_register %rbp\n";
     if (frameSize > 0) ins("sub", imm(frameSize), reg("%rsp"));
+    // The canonical frame address is rbp + 16.
+    for (const SavedReg &s : saves_) {
+        ins("mov", reg(s.reg), mem(s.disp, "%rbp"));
+        o_ += "  .cfi_offset " + s.reg + ", " + std::to_string(s.disp - 16) + "\n";
+    }
 }
 
 void GnuSpelling::functionEnd(const std::string &) {
     o_ += "  .cfi_endproc\n";
+    saves_.clear();
 }
 
 void GnuSpelling::globl(const std::string &name) {
@@ -267,14 +275,28 @@ void CoffSpelling::prologue(int frameSize, const std::string &lsda) {
     }
     o_ += "\"$LNalloc$" + fnName_ + "\":\n";
     o_ += "  mov %rsp, %rbp\n";
+    o_ += "\"$LNfp$" + fnName_ + "\":\n";
+    for (std::size_t i = 0; i < saves_.size(); ++i) {
+        ins("mov", reg(saves_[i].reg), mem(saves_[i].disp, "%rbp"));
+        o_ += "\"$LNsave" + std::to_string(i) + "$" + fnName_ + "\":\n";
+    }
     o_ += "\"$LNprolog$" + fnName_ + "\":\n";
 
     // Last instruction first, which is the order an unwinder undoes them in.
     unwindCodes_ = 0;
     unwindData_.clear();
-    const std::string p = "\"$LNprolog$" + fnName_ + "\"";
+    const std::string p = "\"$LNfp$" + fnName_ + "\"";
     const std::string al = "\"$LNalloc$" + fnName_ + "\"";
     const std::string pu = "\"$LNpush$" + fnName_ + "\"";
+    // UWOP_SAVE_NONVOL is 4 with the register in the high nibble, and the
+    // slot's offset up from rsp - which rbp equals - in eights.
+    for (std::size_t i = saves_.size(); i-- > 0;) {
+        const int id = opt::parseReg(saves_[i].reg).id;
+        unwindData_ += "  .byte \"$LNsave" + std::to_string(i) + "$" + fnName_ + "\"-" + b + "\n";
+        unwindData_ += "  .byte " + std::to_string((id << 4) | 4) + "\n  .short " +
+                       std::to_string((frameSize + saves_[i].disp) / 8) + "\n";
+        unwindCodes_ += 2;
+    }
     // UWOP_SET_FPREG is 3; the frame offset is in the header and is zero
     // because rbp is set to rsp exactly.
     unwindData_ += "  .byte " + p + "-" + b + "\n  .byte 3\n";
@@ -333,6 +355,7 @@ void CoffSpelling::functionEnd(const std::string &name) {
     unwindData_.clear();
     unwindCodes_ = 0;
     hasEh_ = false;
+    saves_.clear();
     mergeable_ = false;
 }
 

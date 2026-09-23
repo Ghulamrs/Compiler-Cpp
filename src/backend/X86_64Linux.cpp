@@ -1461,6 +1461,13 @@ void X86_64Linux::emit(const Function &fn) {
     fnSymbol_ = fn.symbol();
     fnMergeable_ = fn.isInline();
     markLine(fn.pos());
+    if (optimizer_) {
+        std::vector<opt::Local> scalars;
+        for (const Local &l : fn.locals())
+            if (l.staticName.empty() && (l.type->isInteger() || l.type->isPointer()))
+                scalars.push_back(opt::Local{-static_cast<long long>(l.offset), l.type->size(target_)});
+        optimizer_->frame(std::move(scalars), !fn.hasLandingPads());
+    }
     a_->prologue(fn.frameSize(),
                  fn.hasLandingPads() ? ".Lexception." + fn.symbol()
                                      : std::string());

@@ -28,7 +28,7 @@ bool removeDead(Stream &s, Flow &f) {
     f.solve(s);
     bool changed = false;
     for (const Block &blk : f.blocks) {
-        RegSet live = blk.liveOut, wide = blk.liveOut;
+        RegSet live = blk.liveOut, wide = blk.wideOut;
         bool flags = blk.flagsOut;
         for (int k = blk.end - 1; k >= blk.begin; --k) {
             Entry &en = s[k];
@@ -67,11 +67,46 @@ bool removeUnreachable(Stream &s) {
     return changed;
 }
 
-bool coalesceCopies(Stream &s, Flow &f) {
+namespace {
+
+// **A value taken out of X, worked on in t and put back** is worked on in X:
+// `mov %X,%t ... mov %t,%X` with X untouched between and t dead after.
+bool workInPlace(Stream &s, Flow &f, const Convention &conv, int k, int begin, RegSet live, RegSet wide) {
+    const Instr &c = s[k].ins;
+    if (!(c.m == "mov" || c.m == "movl" || c.m == "movq") || !gpr(c.a) || !gpr(c.b)) return false;
+    const int t = c.a.reg.id, x = c.b.reg.id, w = c.b.reg.width;
+    if (t == x || c.a.reg.width != w || w < 4 || (live & bit(t)) || (w == 4 && (wide & bit(x)))) return false;
+    for (int p = k - 1, n = 0; p >= begin && n < 32; --p, ++n) {
+        if (s[p].kind != Entry::Ins || s[p].dead) continue;
+        const Instr &i = s[p].ins;
+        const Effects &e = f.effects[p];
+        const bool copyIn = gpr(i.a) && i.a.reg.id == x && gpr(i.b) && i.b.reg.id == t && i.b.reg.width >= 4 &&
+                            (i.m == "mov" || i.m == "movl" || i.m == "movq" || i.m == "movslq");
+        if (copyIn) {
+            for (int q = p; q < k; ++q) {
+                if (s[q].kind != Entry::Ins || s[q].dead) continue;
+                for (Operand *o : {&s[q].ins.a, &s[q].ins.b})
+                    if ((o->kind == Operand::Register || o->kind == Operand::Memory) && o->reg.id == t) o->reg.id = x;
+                f.effects[q] = effectsOf(s[q].ins, conv);
+            }
+            s[k].dead = true;
+            if (s[p].ins.m != "movslq" && s[p].ins.a.reg.width == s[p].ins.b.reg.width) s[p].dead = true;
+            return true;
+        }
+        const RegSet touched = e.reads | e.writes | e.partial;
+        if ((touched & bit(x)) || e.control || e.opaque || e.stack) return false;
+        if ((touched & bit(t)) && !explicitOnly(i)) return false;
+    }
+    return false;
+}
+
+}
+
+bool coalesceCopies(Stream &s, Flow &f, const Convention &conv) {
     f.solve(s);
     bool changed = false;
     for (const Block &blk : f.blocks) {
-        RegSet live = blk.liveOut;
+        RegSet live = blk.liveOut, wide = blk.wideOut;
         for (int k = blk.end - 1; k >= blk.begin; --k) {
             Entry &copy = s[k];
             if (copy.kind != Entry::Ins || copy.dead) continue;
@@ -94,8 +129,10 @@ bool coalesceCopies(Stream &s, Flow &f) {
                     continue;
                 }
             }
+            if (workInPlace(s, f, conv, k, blk.begin, live, wide)) { changed = true; break; }
             const Effects &e = f.effects[k];
             live = (live & ~e.writes) | e.reads;
+            wide = (wide & ~e.writes) | e.wide;
         }
     }
     return changed;

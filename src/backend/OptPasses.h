@@ -14,13 +14,24 @@ bool removeDead(Stream &s, Flow &f);
 bool removeUnreachable(Stream &s);
 
 // **A copy out of a dying register** folds into the instruction that wrote it.
-bool coalesceCopies(Stream &s, Flow &f);
+bool coalesceCopies(Stream &s, Flow &f, const Convention &c);
 
 // The shortest encoding of what is read after it: no REX where no upper half is read.
 bool shrink(Stream &s, Flow &f, const Convention &c);
 
 // **A load read once** becomes that instruction's memory operand.
 bool foldLoads(Stream &s, Flow &f, const Convention &c);
+
+// A local the walker placed in the frame, rbp-relative.
+struct Local {
+    long long disp;
+    int size;
+};
+
+// **Scalar locals whose address never escapes, kept in callee-saved
+// registers** - the busiest first, by loop depth. Returns what the prologue saves.
+std::vector<SavedReg> promoteLocals(Stream &s, const Convention &c, const std::vector<Local> &locals,
+                                    int frameSize, int maxRegs, long minWeight);
 
 // **What each register holds, followed forward through a block** - see OptValues.cpp.
 bool forwardValues(Stream &s, Flow &f, const Convention &c);

@@ -90,9 +90,12 @@ bool gpr(const Operand &o) { return o.kind == Operand::Register && o.reg.id >= 0
 // implicit, or an address, is read whole.
 RegSet wideOf(const Instr &i, const Effects &e) {
     if (!explicitOnly(i)) return e.reads;
+    // A move's destination, and setcc's, is written, not read.
+    const bool writesOnly = starts(i.m, "mov") || starts(i.m, "set") || i.m == "lea";
     RegSet narrow = 0, wide = 0;
     for (const Operand *o : {&i.a, &i.b}) {
-        if (gpr(*o)) (o->reg.width <= 4 ? narrow : wide) |= bit(o->reg.id);
+        const bool destination = o == (i.operands == 1 ? &i.a : &i.b) && writesOnly;
+        if (gpr(*o) && !destination) (o->reg.width <= 4 ? narrow : wide) |= bit(o->reg.id);
         else if (o->kind == Operand::Memory && o->reg.id >= 0) wide |= bit(o->reg.id);
     }
     return e.reads & ~(narrow & ~wide);

@@ -89,6 +89,13 @@ inline void appendNum(std::string &s, long long v) {
 }
 inline void appendNum(std::string &s, int v) { appendNum(s, static_cast<long long>(v)); }
 
+// **A callee-saved register the optimizer keeps a local in**, and the frame
+// slot the prologue saves it to - rbp-relative, as the walker addresses a local.
+struct SavedReg {
+    std::string reg;
+    long long disp;
+};
+
 class Spelling {
 public:
     virtual ~Spelling() = default;
@@ -106,6 +113,8 @@ public:
 // and the first instruction, and this is the only place that sees both.
     virtual void prologue(int frameSize, const std::string &lsda) = 0;
     virtual void functionEnd(const std::string &name) = 0;
+    // Said before the prologue, which saves them where the unwinder looks.
+    virtual void calleeSaves(const std::vector<SavedReg> &saves) { assert(saves.empty()); (void)saves; }
 
     virtual void fileEntry(int, const std::string &) {}
     virtual void location(int, int, int) {}
@@ -161,6 +170,7 @@ public:
                        bool mergeable = false) override;
     void prologue(int frameSize, const std::string &lsda) override;
     void functionEnd(const std::string &name) override;
+    void calleeSaves(const std::vector<SavedReg> &saves) override { saves_ = saves; }
     void globl(const std::string &name) override;
     void weakDefinition(const std::string &name) override;
     void textSection() override;
@@ -183,6 +193,7 @@ protected:
 
 protected:
     std::string &o_;
+    std::vector<SavedReg> saves_;
 };
 
 // **The same GNU syntax, assembled into a COFF object.**
