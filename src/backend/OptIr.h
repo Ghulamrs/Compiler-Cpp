@@ -4,6 +4,7 @@
 // each operand parsed once into registers, displacements and immediates, and
 // kept in one ordered stream with the labels and the events between them.
 
+#include "OptCore.h"
 #include "Spelling.h"
 
 #include <functional>
@@ -18,11 +19,9 @@ constexpr int kGprs = 16;
 constexpr int kXmm0 = 16;
 constexpr int kRegs = 32;
 
-using RegSet = unsigned;
-constexpr RegSet bit(int r) { return 1u << static_cast<unsigned>(r); }
+
 // **rsp and rbp are the frame**: no pass narrows, renames or retargets them.
 constexpr bool frameReg(int r) { return r == RSP || r == RBP; }
-constexpr RegSet kAllRegs = ~0u;
 
 // A register's number and the width named, in bytes; -1 for one this does not
 // model (the x87 stack). The name for a number and width, for writing back.
@@ -58,18 +57,9 @@ struct Instr {
     int operands = 0;
 };
 
-// **Everything between functionBegin and functionEnd, in the order it came.**
-// An event is a spelling call that is not an instruction, replayed where it
-// stood - which is what keeps an alignment or a location beside its code.
-struct Entry {
-    enum Kind { Ins, Label, Event };
-    Kind kind = Ins;
-    Instr ins;
-    std::string label;
-    std::function<void(Spelling &)> event;
-    bool dead = false;
-};
-
+// Everything between functionBegin and functionEnd; an event is a spelling
+// call that is not an instruction, replayed where it stood.
+using Entry = EntryOf<Instr, std::function<void(Spelling &)>>;
 using Stream = std::vector<Entry>;
 
 }

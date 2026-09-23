@@ -1,30 +1,18 @@
 #pragma once
 
-// **The function as blocks, and what is live across each.** A block starts at
-// a label and ends after a jump or a return; liveness is solved over the
-// edges to a fixpoint, so a value is dead only if no path reads it.
+// **x86's instructions in the shared flow graph**: how each moves control, and
+// the flow built from the effects table under a calling convention.
 
 #include "OptEffects.h"
 
-#include <vector>
-
 namespace opt {
 
-struct Block {
-    int begin = 0, end = 0;              // entries [begin, end)
-    std::vector<int> next;
-    bool leaves = false;                 // falls or jumps somewhere not seen here
-    RegSet liveIn = 0, liveOut = 0;
-    RegSet wideIn = 0, wideOut = 0;      // live, and read above the low four bytes
-    bool flagsIn = false, flagsOut = false;
-};
+Control controlOf(const Instr &i);
 
-struct Flow {
-    std::vector<Block> blocks;
-    std::vector<Effects> effects;        // one per entry; empty for labels and events
-
-    void build(const Stream &s, const Convention &c);
-    void solve(const Stream &s);
+struct Flow : FlowOf<Entry> {
+    void build(const Stream &s, const Convention &c) {
+        FlowOf<Entry>::build(s, [&c](const Instr &i) { return effectsOf(i, c); });
+    }
 };
 
 }

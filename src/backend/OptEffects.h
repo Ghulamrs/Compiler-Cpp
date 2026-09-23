@@ -20,19 +20,6 @@ struct Convention {
 };
 Convention conventionOf(const Abi &abi);
 
-struct Effects {
-    RegSet reads = 0;        // every register whose value is used
-    RegSet writes = 0;       // registers given a wholly new value
-    RegSet partial = 0;      // written in part, so also read
-    RegSet wide = 0;         // read above their low four bytes
-    bool flagsRead = false;
-    bool flagsWritten = false;
-    bool memoryRead = false;
-    bool memoryWritten = false;
-    bool control = false;    // a jump, a call or a return
-    bool stack = false;      // moves rsp: push, pop, add or sub to it
-    bool opaque = false;
-};
 Effects effectsOf(const Instr &i, const Convention &c);
 
 // Whether an instruction reads registers only through its operands.
