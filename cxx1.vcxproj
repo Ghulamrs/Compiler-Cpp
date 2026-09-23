@@ -79,6 +79,7 @@
     <ClCompile Include="src\backend\Backend.cpp" />
     <ClCompile Include="src\backend\Dwarf.cpp" />
     <ClCompile Include="src\backend\Masm.cpp" />
+    <ClCompile Include="src\backend\MirWebs.cpp" />
     <ClCompile Include="src\backend\OptDead.cpp" />
     <ClCompile Include="src\backend\OptEffects.cpp" />
     <ClCompile Include="src\backend\OptFlow.cpp" />

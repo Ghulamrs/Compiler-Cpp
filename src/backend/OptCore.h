@@ -14,6 +14,8 @@ namespace opt {
 using RegSet = unsigned long long;
 constexpr RegSet bit(int r) { return 1ull << static_cast<unsigned>(r); }
 constexpr RegSet kAllRegs = ~0ull;
+// Register numbers from here up are pseudos, which a RegSet does not hold.
+constexpr int kPhysical = 64;
 
 struct Effects {
     RegSet reads = 0;        // every register whose value is used

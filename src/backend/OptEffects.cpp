@@ -28,7 +28,7 @@ RegSet readsOf(const Operand &o) {
     switch (o.kind) {
     case Operand::Register:
     case Operand::Indirect:
-    case Operand::Memory: return o.reg.id >= 0 ? bit(o.reg.id) : 0;
+    case Operand::Memory: return o.reg.id >= 0 && o.reg.id < kPhysical ? bit(o.reg.id) : 0;
     default: return 0;
     }
 }
@@ -40,6 +40,7 @@ void write(Effects &e, const Operand &o) {
     if (inMemory(o)) { e.memoryWritten = true; e.reads |= readsOf(o); return; }
     if (o.kind != Operand::Register) return;
     if (o.reg.id < 0) { e.opaque = true; return; }
+    if (o.reg.id >= kPhysical) return;                  // a pseudo: the IR's to track
     if (o.reg.id < kGprs && o.reg.width < 4) e.partial |= bit(o.reg.id);
     else e.writes |= bit(o.reg.id);
 }
@@ -208,7 +209,8 @@ void apply(Effects &e, const Operand &o, unsigned role) {
     if (role & kAddress) { e.reads |= readsOf(o); return; }
     if (role & kRead) read(e, o);
     if (!(role & kWrite)) return;
-    if ((role & kKeep) && o.kind == Operand::Register && o.reg.id >= 0) e.partial |= bit(o.reg.id);
+    if ((role & kKeep) && o.kind == Operand::Register && o.reg.id >= 0 && o.reg.id < kPhysical)
+        e.partial |= bit(o.reg.id);
     else write(e, o);
 }
 

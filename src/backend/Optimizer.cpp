@@ -1,5 +1,6 @@
 #include "Optimizer.h"
 
+#include "Mir.h"
 #include "OptPasses.h"
 
 #include <algorithm>
@@ -151,6 +152,10 @@ void Optimizer::improve(bool whole) {
     int size = std::max(frameSize_, inlineTop_);
     std::vector<SavedReg> saves;
     if (whole && promotable_ && prologueAt_ >= 0) {
+        // Stage 1 of docs/OPTIMIZER-IR.md: every web a pseudo, and each given
+        // back the register it was found in - which must change nothing.
+        const mir::Webs webs = mir::buildWebs(stream_, flow, convention_);
+        mir::assign(stream_, webs.home);
         saves = opt::promoteLocals(stream_, convention_, locals_, size, level.registers, level.minWeight);
         if (opt::removeDeadStores(stream_) || !saves.empty()) rounds(flow, level.rounds);
         opt::dropUnusedSaves(stream_, saves);
