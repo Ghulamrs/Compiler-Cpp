@@ -244,14 +244,13 @@ private:
             // Nowhere to copy from now: the push itself becomes the copy.
             replace(at, Instr{"mov", s_[at].ins.a, i.a, 2});
             stack_.pop_back();
-            regs_[dst] = v;
+            writtenBehind(dst, v);
             return Pop::Gone;
         } else if (const int sc = scratchBetween(at, k)) {
             // The push becomes the copy in, the pop the copy out.
             replace(at, Instr{"mov", s_[at].ins.a, Operand::ofReg(sc, 8), 2});
             stack_.pop_back();
-            version_[sc]++;
-            regs_[sc] = v;
+            writtenBehind(sc, v);
             i = Instr{"mov", Operand::ofReg(sc, 8), i.a, 2};
             return Pop::Copy;
         } else return Pop::Kept;
@@ -269,6 +268,14 @@ private:
         for (int r : scratch_)
             if (r != RAX && untouched(r, from, to)) return r;
         return 0;
+    }
+
+    // **A register written by an edit behind the walk** - a push made a copy -
+    // is written as far as everything known is concerned: its copies go stale.
+    void writtenBehind(int r, const Value &v) {
+        regs_[r] = v;
+        version_[r]++;
+        if (condReg_ == r) condReg_ = -1;
     }
 
     // Whether no instruction between two entries reads or writes register r.
