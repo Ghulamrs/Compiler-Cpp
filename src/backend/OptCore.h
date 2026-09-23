@@ -1,9 +1,8 @@
 #pragma once
 
-// **What the optimizer of every instruction set shares**: a stream of entries,
-// what each instruction reads and writes, the blocks and what is live across
-// them, and the passes that need nothing more. An instruction set brings its
-// instructions, its effects table and `controlOf`, found by argument lookup.
+// **What the optimizer of every instruction set shares.** An instruction set
+// brings its instructions, its effects table and `controlOf`, found by
+// argument lookup; the flow, liveness and dead code are the same for all.
 
 #include <map>
 #include <string>
