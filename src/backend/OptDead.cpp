@@ -14,26 +14,6 @@ bool removable(const Effects &e) {
 
 bool gpr(const Operand &o) { return o.kind == Operand::Register && o.reg.id >= 0 && o.reg.id < kGprs; }
 
-// Instructions that read registers only through their operands.
-bool explicitOnly(const Instr &i) {
-    const std::string &m = i.m;
-    return m.compare(0, 3, "mov") == 0 || m == "lea" || m == "add" || m == "sub" || m == "and" ||
-           m == "or" || m == "xor" || m == "cmp" || m == "test" || m == "addl" || m == "subl" ||
-           m == "cmpl" || m == "imul" || m.compare(0, 3, "set") == 0;
-}
-
-// **The registers whose upper half this instruction reads.** A register named
-// at four bytes or fewer is read only there; anything implicit is read whole.
-RegSet wideReads(const Instr &i, const Effects &e) {
-    if (!explicitOnly(i)) return e.reads;
-    RegSet narrow = 0, wide = 0;
-    for (const Operand *o : {&i.a, &i.b}) {
-        if (gpr(*o)) (o->reg.width <= 4 ? narrow : wide) |= bit(o->reg.id);
-        else if (o->kind == Operand::Memory && o->reg.id >= 0) wide |= bit(o->reg.id);
-    }
-    return e.reads & ~(narrow & ~wide);
-}
-
 // `movslq %eax, %rax` and `mov %eax, %eax`: the low half stays as it was.
 bool extendsInPlace(const Instr &i) {
     if (!gpr(i.a) || !gpr(i.b) || i.a.reg.id != i.b.reg.id || i.a.reg.width != 4) return false;
@@ -62,7 +42,7 @@ bool removeDead(Stream &s, Flow &f) {
                 continue;
             }
             live = (live & ~e.writes) | e.reads;
-            wide = (wide & ~e.writes) | wideReads(en.ins, e);
+            wide = (wide & ~e.writes) | e.wide;
             flags = e.flagsRead || (flags && !e.flagsWritten);
         }
     }

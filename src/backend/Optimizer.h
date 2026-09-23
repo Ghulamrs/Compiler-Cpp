@@ -19,6 +19,8 @@ public:
     void settle();
     // Grows with every entry held, never shrinks: Walker's measure of held code.
     std::size_t held() const { return held_; }
+    // Whether the function being held returns in two registers, rax:rdx or xmm0:xmm1.
+    void returnsPair(bool pair);
 
     void ins(const std::string &m) override;
     void ins(const std::string &m, const Op &a) override;

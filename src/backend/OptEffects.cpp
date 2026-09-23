@@ -76,6 +76,30 @@ bool writesFlags(const std::string &m) {
 
 }
 
+bool explicitOnly(const Instr &i) {
+    const std::string &m = i.m;
+    return starts(m, "mov") || starts(m, "set") ||
+           oneOf(m, {"lea", "add", "sub", "and", "or", "xor", "cmp", "test", "addl", "subl", "cmpl", "imul"});
+}
+
+namespace {
+
+bool gpr(const Operand &o) { return o.kind == Operand::Register && o.reg.id >= 0 && o.reg.id < kGprs; }
+
+// **A register named at four bytes or fewer is read only there**; anything
+// implicit, or an address, is read whole.
+RegSet wideOf(const Instr &i, const Effects &e) {
+    if (!explicitOnly(i)) return e.reads;
+    RegSet narrow = 0, wide = 0;
+    for (const Operand *o : {&i.a, &i.b}) {
+        if (gpr(*o)) (o->reg.width <= 4 ? narrow : wide) |= bit(o->reg.id);
+        else if (o->kind == Operand::Memory && o->reg.id >= 0) wide |= bit(o->reg.id);
+    }
+    return e.reads & ~(narrow & ~wide);
+}
+
+}
+
 Convention conventionOf(const Abi &abi) {
     Convention c;
     for (int i = 0; i < abi.intCount; ++i) c.arguments |= bit(parseReg(abi.intRegs[i]).id);
@@ -184,6 +208,7 @@ Effects effectsOf(const Instr &i, const Convention &conv) {
         e.flagsRead = e.flagsWritten = e.memoryRead = e.memoryWritten = true;
     }
     e.reads |= e.partial;
+    e.wide = wideOf(i, e);
     return e;
 }
 

@@ -81,6 +81,11 @@ void Optimizer::functionEnd(const std::string &name) {
     under_.functionEnd(name);
 }
 
+void Optimizer::returnsPair(bool pair) {
+    convention_.returned = opt::bit(opt::RAX) | opt::bit(opt::kXmm0);
+    if (pair) convention_.returned |= opt::bit(opt::RDX) | opt::bit(opt::kXmm0 + 1);
+}
+
 void Optimizer::improve() {
     const Level level = levelFor(level_);
     opt::Flow flow;
@@ -90,8 +95,11 @@ void Optimizer::improve() {
         changed = opt::removeUnreachable(stream_) || changed;
         changed = opt::removeDead(stream_, flow) || changed;
         changed = (level.forward && opt::coalesceCopies(stream_, flow)) || changed;
+        changed = (level.forward && opt::foldLoads(stream_, flow, convention_)) || changed;
         if (!changed) break;
     }
+    // Last, once: a shorter spelling hides the widths the other passes match on.
+    opt::shrink(stream_, flow, convention_);
 }
 
 void Optimizer::settle() {

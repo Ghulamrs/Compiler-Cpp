@@ -161,7 +161,8 @@ private:
         const Value &v = regs_[i.a.reg.id];
         if (v.kind != Value::Const) return false;
         const long long x = atWidth(v.k, i.a.reg.width);
-        if (!fitsImm32(x) || (i.b.kind != Operand::Register && suffixWidth(i.m) == 0)) return false;
+        const bool into = gpr(i.b) || ((i.b.isMem() || i.b.kind == Operand::RipSymbol) && suffixWidth(i.m) != 0);
+        if (!fitsImm32(x) || !into) return false;
         i.a = Operand::ofImm(x);
         return true;
     }

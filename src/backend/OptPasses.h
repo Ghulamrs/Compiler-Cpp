@@ -16,6 +16,12 @@ bool removeUnreachable(Stream &s);
 // **A copy out of a dying register** folds into the instruction that wrote it.
 bool coalesceCopies(Stream &s, Flow &f);
 
+// The shortest encoding of what is read after it: no REX where no upper half is read.
+bool shrink(Stream &s, Flow &f, const Convention &c);
+
+// **A load read once** becomes that instruction's memory operand.
+bool foldLoads(Stream &s, Flow &f, const Convention &c);
+
 // **What each register holds, followed forward through a block** - see OptValues.cpp.
 bool forwardValues(Stream &s, Flow &f, const Convention &c);
 
