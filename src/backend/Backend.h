@@ -18,6 +18,8 @@ public:
     virtual void run(const Program &program) = 0;
 
     virtual void setLineSource(const Source *, const std::string &) {}
+    // -O1 and -O2; a code generator with no optimizer takes 0 for either.
+    virtual void setOptimize(int level) { (void)level; }
 };
 
 enum class Segment { Code, Const, ConstRelocated, Data, Bss };

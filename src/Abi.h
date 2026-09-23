@@ -27,6 +27,10 @@ struct Abi {
     // and 32-bit spellings.
     const char *scratch = nullptr;
     const char *scratch32 = nullptr;
+    // The registers a callee must give back as it found them; a call may
+    // change every other one, which is what the optimizer needs to know.
+    const char *const *preservedRegs = nullptr;
+    int preservedCount = 0;
 
     // **AAPCS64 returns one to four floats or doubles in the float registers.**
     bool homogeneousFloatAggregates = false;

@@ -79,6 +79,12 @@
     <ClCompile Include="src\backend\Backend.cpp" />
     <ClCompile Include="src\backend\Dwarf.cpp" />
     <ClCompile Include="src\backend\Masm.cpp" />
+    <ClCompile Include="src\backend\OptDead.cpp" />
+    <ClCompile Include="src\backend\OptEffects.cpp" />
+    <ClCompile Include="src\backend\OptFlow.cpp" />
+    <ClCompile Include="src\backend\OptIr.cpp" />
+    <ClCompile Include="src\backend\OptValues.cpp" />
+    <ClCompile Include="src\backend\Optimizer.cpp" />
     <ClCompile Include="src\backend\Spelling.cpp" />
     <ClCompile Include="src\backend\Walker.cpp" />
     <ClCompile Include="src\backend\X86_64Linux.cpp" />

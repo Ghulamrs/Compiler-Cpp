@@ -140,7 +140,7 @@ void Driver::standardIncludeDirectories(const std::string &argv0) {
 void Driver::usage(char *file) {
     std::fprintf(stderr,
         "usage: %s <file.cpp> [more.cpp ...] [-S|-c] [-o out] [-D n[=v]] [-U n]\n"
-        "               [-I dir] [-j n] [-arch a] [-masm=m] [-g] [-time]\n"
+        "               [-I dir] [-j n] [-arch a] [-masm=m] [-O0|-O1|-O2] [-g] [-time]\n"
         "       with neither -S nor -c the inputs are compiled, assembled and\n"
         "         linked into a program, named by -o, or a.out - a.exe on a\n"
         "         Windows host; several inputs\n"
@@ -163,6 +163,9 @@ void Driver::usage(char *file) {
         "         than one file needs, and the only one that carries a line\n"
         "         table; 'masm' is ml64's, which needs no clang and links one\n"
         "         translation unit at a time\n"
+        "       -O1 and -O2 improve the code of each function: frame slots and\n"
+        "         constants forwarded, pushes paired with their pops, dead\n"
+        "         instructions removed. GNU and COFF spellings; -O0 is the default\n"
         "       -g writes a line table, so a debugger can stop on a line of C++\n"
         "         and step through it; x86_64-linux and arm64-darwin only\n"
         "       -nologo leaves out the line this compiler prints before it\n"
@@ -650,6 +653,9 @@ bool Driver::parseArguments(int argc, char **argv) {
             std::exit(0);
         } else if (std::strcmp(argv[i], "-nologo") == 0) {
             quiet_ = true;
+        } else if (std::strcmp(argv[i], "-O0") == 0 || std::strcmp(argv[i], "-O1") == 0 ||
+                   std::strcmp(argv[i], "-O2") == 0) {
+            optimize_ = argv[i][2] - '0';
         } else if (std::strcmp(argv[i], "-g") == 0) {
             debug_ = true;
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
@@ -778,6 +784,7 @@ bool Driver::compile(const Job &job) {
     if (job.output.empty()) {
         std::unique_ptr<CodeGen> gen = backend_->codegen(std::cout, gnuAsm_);
         if (debug_) gen->setLineSource(&src, workingDirectory());
+        gen->setOptimize(optimize_);
         gen->run(program);
     } else {
         std::ofstream file(job.output);
@@ -788,6 +795,7 @@ bool Driver::compile(const Job &job) {
         }
         std::unique_ptr<CodeGen> gen = backend_->codegen(file, gnuAsm_);
         if (debug_) gen->setLineSource(&src, workingDirectory());
+        gen->setOptimize(optimize_);
         gen->run(program);
     }
     auto t4 = Clock::now();

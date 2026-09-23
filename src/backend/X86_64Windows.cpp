@@ -29,6 +29,10 @@ int WindowsX86_64Target::alignOf(Kind k) const { return sizeOf(k); }
 
 static const char *const kArgRegs[] = { "%rcx", "%rdx", "%r8", "%r9" };
 static const char *const kSseRegs[] = { "%xmm0", "%xmm1", "%xmm2", "%xmm3" };
+// Microsoft's callee-saved set is wider than System V's: rsi, rdi and xmm6-15 too.
+static const char *const kPreserved[] = {
+    "%rbx", "%rbp", "%rsp", "%rsi", "%rdi", "%r12", "%r13", "%r14", "%r15",
+    "%xmm6", "%xmm7", "%xmm8", "%xmm9", "%xmm10", "%xmm11", "%xmm12", "%xmm13", "%xmm14", "%xmm15" };
 
 // Microsoft x64. The two that are only true here are `positional` - the third
 // argument is the third register whichever class it is - and the 32 bytes of
@@ -42,6 +46,7 @@ static Abi microsoft() {
     a.structReturnLimit = 8;
     a.aggregatesByReference = true;
     a.scratch = "%r10";                 a.scratch32 = "%r10d";
+    a.preservedRegs = kPreserved;       a.preservedCount = 19;
     return a;
 }
 

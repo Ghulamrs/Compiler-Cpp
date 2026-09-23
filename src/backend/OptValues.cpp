@@ -1,0 +1,403 @@
+#include "OptPasses.h"
+
+#include <map>
+
+namespace opt {
+
+namespace {
+
+// **What a register holds, as far as this block can tell.** An unknown value
+// has a number, so two registers holding the same unknown are known equal; a
+// frame address is rbp plus an offset; a condition is a setcc's 0 or 1.
+struct Value {
+    enum Kind { Unknown, Const, FrameAddr, Condition };
+    Kind kind = Unknown;
+    long long k = 0;          // the constant, or the frame offset
+    int id = 0;               // an unknown's number; 0 is equal to nothing
+    bool sext32 = false;      // equal to the sign extension of its low half
+    std::string cc;           // Condition: what was tested, and the entry
+    int flagsFrom = -1;       // whose flags it was tested on
+
+    static Value constant(long long v) {
+        Value x;
+        x.kind = Const;
+        x.k = v;
+        x.sext32 = v == static_cast<int>(v);
+        return x;
+    }
+    static Value frame(long long off) { Value x; x.kind = FrameAddr; x.k = off; return x; }
+
+    bool same(const Value &o) const {
+        if (kind != o.kind) return false;
+        switch (kind) {
+        case Const: case FrameAddr: return k == o.k;
+        case Condition: return cc == o.cc && flagsFrom == o.flagsFrom;
+        case Unknown: return id != 0 && id == o.id;
+        }
+        return false;
+    }
+};
+
+bool fitsImm32(long long v) { return v == static_cast<int>(v); }
+long long sext32(long long v) { return static_cast<int>(static_cast<unsigned>(v)); }
+bool gpr(const Operand &o) { return o.kind == Operand::Register && o.reg.id >= 0 && o.reg.id < kGprs; }
+bool is(const std::string &m, std::initializer_list<const char *> names) {
+    for (const char *n : names) if (m == n) return true;
+    return false;
+}
+
+// The width an instruction's own suffix names, or 0 where only a register can.
+int suffixWidth(const std::string &m) {
+    if (is(m, {"movq", "addq", "subq", "cmpq"})) return 8;
+    if (is(m, {"movl", "addl", "subl", "cmpl"})) return 4;
+    if (m == "movw") return 2;
+    if (is(m, {"movb", "orb", "cmpb"})) return 1;
+    return 0;
+}
+
+// The instructions whose source may be an immediate in place of a register.
+bool takesImmediate(const std::string &m) {
+    return is(m, {"mov", "movq", "movl", "movw", "movb", "add", "sub", "cmp", "and", "or",
+                  "xor", "addl", "subl", "cmpl"});
+}
+
+// A constant cut to the width it is read at, as that width's instruction reads it.
+long long atWidth(long long v, int width) {
+    switch (width) {
+    case 4: return sext32(v);
+    case 2: return static_cast<short>(static_cast<unsigned short>(v));
+    case 1: return static_cast<signed char>(static_cast<unsigned char>(v));
+    }
+    return v;
+}
+
+struct Slot { int width; Value v; };
+
+// **One walk forward through each block**, rewriting each instruction from
+// what is known before it and then learning from it. Nothing is known at a
+// label, so no fact crosses an edge.
+class Forward {
+public:
+    Forward(Stream &s, Flow &f, const Convention &c) : s_(s), f_(f), c_(c) {}
+
+    bool run() {
+        for (const Block &b : f_.blocks) {
+            enterBlock();
+            for (int k = b.begin; k < b.end; ++k)
+                if (s_[k].kind == Entry::Ins && !s_[k].dead) step(k);
+        }
+        return changed_;
+    }
+
+private:
+    struct Pushed { Value v; int at; };
+    enum class Pop { Kept, Copy, Gone };
+
+    Stream &s_;
+    Flow &f_;
+    const Convention &c_;
+    Value regs_[kGprs];
+    std::vector<Pushed> stack_;
+    std::map<long long, Slot> slots_;   // rbp offset -> what the frame holds there
+    int flagsFrom_ = -1;
+    int condReg_ = -1;                  // the register whose low byte a setcc just wrote
+    Value cond_;
+    int copyOf_[kGprs];                 // the register each was last copied from
+    int nextId_ = 1;
+    bool changed_ = false;
+
+    Value fresh() { Value v; v.id = nextId_++; return v; }
+
+    void enterBlock() {
+        for (Value &v : regs_) v = fresh();
+        for (int &q : copyOf_) q = -1;
+        stack_.clear();
+        slots_.clear();
+        flagsFrom_ = condReg_ = -1;
+    }
+
+    // In this order: an address folded first may be a slot the reload finds.
+    void step(int k) {
+        Instr i = s_[k].ins;
+        bool edited = foldAddress(i.a);
+        edited = foldAddress(i.b) || edited;
+        edited = immediateSource(i) || edited;
+        edited = reloadFromRegister(i) || edited;
+        edited = readOriginal(i) || edited;
+        const Pop pop = pairPop(i, k);
+        if (pop == Pop::Gone || isNoop(i) || foldCondition(i, k)) { kill(k); return; }
+        if (edited || pop == Pop::Copy) replace(k, i);
+        learn(s_[k].ins, k);
+    }
+
+    void replace(int k, const Instr &i) {
+        s_[k].ins = i;
+        f_.effects[k] = effectsOf(i, c_);
+        changed_ = true;
+    }
+    void kill(int k) { s_[k].dead = true; changed_ = true; }
+
+    // Which register other than `avoid` holds v now; -1 if none.
+    int holding(const Value &v, int avoid) const {
+        for (int r = 0; r < kGprs; ++r)
+            if (r != avoid && r != RSP && r != RBP && regs_[r].same(v)) return r;
+        return -1;
+    }
+
+    // **An address a register holds folds into the operand that uses it.**
+    bool foldAddress(Operand &o) const {
+        if (o.kind != Operand::Memory || o.reg.id < 0 || o.reg.id == RBP || o.reg.id == RSP) return false;
+        const Value &v = regs_[o.reg.id];
+        if (v.kind != Value::FrameAddr || !fitsImm32(v.k + o.disp)) return false;
+        o = Operand::ofMem(RBP, v.k + o.disp);
+        o.hasDisp = true;
+        return true;
+    }
+
+    // **A known constant becomes an immediate** where the form allows one: into
+    // a register always, into memory only where the mnemonic names the width.
+    bool immediateSource(Instr &i) const {
+        if (!takesImmediate(i.m) || i.operands != 2 || !gpr(i.a)) return false;
+        const Value &v = regs_[i.a.reg.id];
+        if (v.kind != Value::Const) return false;
+        const long long x = atWidth(v.k, i.a.reg.width);
+        if (!fitsImm32(x) || (i.b.kind != Operand::Register && suffixWidth(i.m) == 0)) return false;
+        i.a = Operand::ofImm(x);
+        return true;
+    }
+
+    // **A reload of a frame slot whose value a register still holds** is a
+    // copy of that register, or of the constant.
+    bool reloadFromRegister(Instr &i) const {
+        if (!i.a.isMem() || i.a.reg.id != RBP || !gpr(i.b) || i.b.reg.width != 8) return false;
+        const auto it = slots_.find(i.a.disp);
+        if (it == slots_.end()) return false;
+        const Slot &slot = it->second;
+        const bool whole = is(i.m, {"mov", "movq"}) && slot.width == 8;
+        const bool extended = i.m == "movslq" && slot.width == 4 &&
+                              (slot.v.sext32 || slot.v.kind == Value::Const);
+        if (!whole && !extended) return false;
+        if (slot.v.kind == Value::Const) {
+            const long long x = extended ? sext32(slot.v.k) : slot.v.k;
+            if (!fitsImm32(x)) return false;
+            i = Instr{"mov", Operand::ofImm(x), i.b, 2};
+            return true;
+        }
+        const int r = regs_[i.b.reg.id].same(slot.v) ? i.b.reg.id : holding(slot.v, -1);
+        if (r < 0) return false;
+        i = Instr{"mov", Operand::ofReg(r, 8), i.b, 2};
+        return true;
+    }
+
+    // A copy of what the destination already holds.
+    bool isNoop(const Instr &i) const {
+        if (!gpr(i.b) || !gpr(i.a)) return false;
+        const Value &src = regs_[i.a.reg.id], &dst = regs_[i.b.reg.id];
+        if (is(i.m, {"mov", "movq"}) && i.a.reg.width == 8 && i.b.reg.width == 8)
+            return i.a.reg.id == i.b.reg.id || dst.same(src);
+        return i.m == "movslq" && i.a.reg.id == i.b.reg.id && src.sext32;
+    }
+
+    // **Nothing between a push and its pop may see the stack**: no call, no
+    // rsp operand, no push or pop still standing. Then the pair can go.
+    bool quiet(int from, int to) const {
+        for (int k = from + 1; k < to; ++k) {
+            if (s_[k].kind != Entry::Ins || s_[k].dead) continue;
+            const Effects &e = f_.effects[k];
+            const Instr &i = s_[k].ins;
+            if (e.stack || e.opaque || e.control || ((e.reads | e.writes) & bit(RSP))) return false;
+            if ((i.a.isMem() && i.a.reg.id == RSP) || (i.b.isMem() && i.b.reg.id == RSP)) return false;
+        }
+        return true;
+    }
+
+    // **A pop whose push is in this block** is a copy from wherever the pushed
+    // value still is, and the push goes; the pop too, if it copies nothing.
+    Pop pairPop(Instr &i, int k) {
+        if (!is(i.m, {"pop", "popq"}) || !gpr(i.a) || i.a.reg.width != 8) return Pop::Kept;
+        if (stack_.empty() || !quiet(stack_.back().at, k)) return Pop::Kept;
+        const Value v = stack_.back().v;
+        const int dst = i.a.reg.id;
+        const int at = stack_.back().at;
+        std::string m = "mov";
+        Operand from;
+        if (regs_[dst].same(v)) from = i.a;
+        else if (v.kind == Value::Const && fitsImm32(v.k)) from = Operand::ofImm(v.k);
+        else if (holding(v, dst) >= 0) from = Operand::ofReg(holding(v, dst), 8);
+        else if (v.kind == Value::FrameAddr) { m = "lea"; from = Operand::ofMem(RBP, v.k); from.hasDisp = true; }
+        else if (untouched(dst, at, k) && gpr(s_[at].ins.a)) {
+            // Nowhere to copy from now: the push itself becomes the copy.
+            replace(at, Instr{"mov", s_[at].ins.a, i.a, 2});
+            stack_.pop_back();
+            regs_[dst] = v;
+            return Pop::Gone;
+        } else return Pop::Kept;
+        kill(at);
+        stack_.pop_back();
+        if (from.isReg(dst)) return Pop::Gone;
+        i = Instr{m, from, i.a, 2};
+        return Pop::Copy;
+    }
+
+    // Whether no instruction between two entries reads or writes register r.
+    bool untouched(int r, int from, int to) const {
+        for (int k = from + 1; k < to; ++k)
+            if (s_[k].kind == Entry::Ins && !s_[k].dead &&
+                ((f_.effects[k].reads | f_.effects[k].writes | f_.effects[k].partial) & bit(r)))
+                return false;
+        return true;
+    }
+
+    // **A register read where the value it copied still is** reads that
+    // register instead, so the copy can die. Never a shift count, which only
+    // %cl can be.
+    bool readOriginal(Instr &i) const {
+        bool edited = false;
+        const bool sourceOnly = i.operands == 2 || is(i.m, {"push", "pushq"});
+        const bool shift = is(i.m, {"shl", "shr", "sar", "sal", "rol", "ror", "shll", "shrl", "sarl"});
+        if (sourceOnly && !shift && gpr(i.a)) edited = original(i.a.reg) || edited;
+        for (Operand *o : {&i.a, &i.b})
+            if (o->kind == Operand::Memory && o->reg.id >= 0 && o->reg.id < kGprs && o->reg.id != RBP && o->reg.id != RSP)
+                edited = original(o->reg) || edited;
+        return edited;
+    }
+    bool original(Reg &r) const {
+        const int q = copyOf_[r.id];
+        if (q < 0 || q == r.id || !regs_[q].same(regs_[r.id])) return false;
+        r.id = q;
+        return true;
+    }
+
+    // **setcc, a zero extension, and a compare of it against zero** ask again
+    // what the flags already say: the jump that follows tests them directly.
+    bool foldCondition(const Instr &i, int k) {
+        if (!is(i.m, {"cmp", "cmpq", "test", "testq"}) || !gpr(i.b)) return false;
+        const bool againstZero = i.m[0] == 'c' ? i.a.kind == Operand::Immediate && i.a.numeric && i.a.value == 0
+                                               : i.a.isReg(i.b.reg.id);
+        const Value &v = regs_[i.b.reg.id];
+        if (!againstZero || v.kind != Value::Condition || v.flagsFrom != flagsFrom_ || flagsFrom_ < 0) return false;
+        int j = k + 1;
+        while (j < static_cast<int>(s_.size()) && s_[j].kind != Entry::Label &&
+               (s_[j].kind != Entry::Ins || s_[j].dead)) ++j;
+        if (j == static_cast<int>(s_.size()) || s_[j].kind != Entry::Ins) return false;
+        const std::string cc = conditionOf(s_[j].ins.m);
+        if (s_[j].ins.m[0] != 'j' || !is(cc, {"e", "ne", "z", "nz"})) return false;
+        Instr jump = s_[j].ins;
+        jump.m = "j" + (cc == "e" || cc == "z" ? inverse(v.cc) : v.cc);
+        replace(j, jump);
+        return true;
+    }
+
+    // **The instruction's effect on what is known**, once it is rewritten.
+    void learn(const Instr &i, int k) {
+        const Effects &e = f_.effects[k];
+        const std::string &m = i.m;
+        const bool extendsCond = is(m, {"movzbq", "movzbl"}) && i.a.isReg(condReg_) && i.b.isReg(condReg_);
+        if (condReg_ >= 0 && !extendsCond && ((e.writes | e.partial) & bit(condReg_))) condReg_ = -1;
+        if (e.flagsWritten) flagsFrom_ = k;
+
+        if (e.opaque || e.control) {
+            forget(e.writes | e.partial);
+            if (e.memoryWritten) slots_.clear();
+            if (e.opaque) stack_.clear();
+            return;
+        }
+        if (is(m, {"push", "pushq"})) {
+            Value v = fresh();
+            if (gpr(i.a) && i.a.reg.width == 8) v = regs_[i.a.reg.id];
+            else if (i.a.kind == Operand::Immediate && i.a.numeric) v = Value::constant(i.a.value);
+            stack_.push_back(Pushed{v, k});
+            return;
+        }
+        if (is(m, {"pop", "popq"})) {
+            Value v = fresh();
+            if (!stack_.empty()) { v = stack_.back().v; stack_.pop_back(); }
+            if (gpr(i.a)) regs_[i.a.reg.id] = i.a.reg.width == 8 ? v : fresh();
+            else if (e.memoryWritten) slots_.clear();
+            return;
+        }
+        if (e.stack || (e.writes & bit(RSP))) stack_.clear();
+        if (e.memoryWritten) store(i);
+
+        if (!gpr(i.b)) {
+            forget(e.writes | e.partial);
+            const std::string cc = conditionOf(m);
+            if (!cc.empty() && m[0] == 's' && gpr(i.a)) setCondition(i.a.reg.id, cc);
+            return;
+        }
+        const int d = i.b.reg.id;
+        const Value out = result(i, extendsCond);
+        copyOf_[d] = is(m, {"mov", "movq"}) && gpr(i.a) && i.a.reg.width == 8 && i.b.reg.width == 8 ? i.a.reg.id : -1;
+        forget((e.writes | e.partial) & ~bit(d));
+        regs_[d] = (i.b.reg.width >= 4 || out.kind == Value::Condition) ? out : fresh();
+    }
+
+    void forget(RegSet regs) {
+        for (int r = 0; r < kGprs; ++r) if (regs & bit(r)) regs_[r] = fresh();
+    }
+
+    void setCondition(int r, const std::string &cc) {
+        condReg_ = r;
+        cond_ = Value();
+        cond_.kind = Value::Condition;
+        cond_.cc = cc;
+        cond_.flagsFrom = flagsFrom_;
+        cond_.sext32 = true;
+    }
+
+    // A store into the frame is remembered; any other forgets the frame.
+    void store(const Instr &i) {
+        if (!i.b.isMem() || i.b.reg.id != RBP) { slots_.clear(); return; }
+        const int w = suffixWidth(i.m) ? suffixWidth(i.m) : i.a.kind == Operand::Register ? i.a.reg.width : 16;
+        for (auto it = slots_.begin(); it != slots_.end();) {
+            const bool overlaps = it->first < i.b.disp + w && i.b.disp < it->first + it->second.width;
+            it = overlaps ? slots_.erase(it) : std::next(it);
+        }
+        if (!is(i.m, {"mov", "movq", "movl"}) || (w != 8 && w != 4)) return;
+        Value v = fresh();
+        if (i.a.kind == Operand::Immediate && i.a.numeric) v = Value::constant(atWidth(i.a.value, w));
+        else if (gpr(i.a)) v = regs_[i.a.reg.id];
+        slots_[i.b.disp] = Slot{w, v};
+    }
+
+    // What an instruction writing register b leaves in it.
+    Value result(const Instr &i, bool extendsCond) {
+        const std::string &m = i.m;
+        const int w = i.b.reg.width;
+        const Value src = gpr(i.a) ? regs_[i.a.reg.id] : Value();
+        const bool constSrc = i.a.kind == Operand::Immediate && i.a.numeric;
+        if (is(m, {"mov", "movq", "movabs"}) && w == 8) {
+            if (constSrc) return Value::constant(i.a.value);
+            if (gpr(i.a) && i.a.reg.width == 8) return src;
+        } else if (is(m, {"mov", "movl"}) && w == 4) {
+            if (constSrc) return Value::constant(i.a.value & 0xffffffffLL);
+            if (src.kind == Value::Const) return Value::constant(src.k & 0xffffffffLL);
+        } else if (m == "movslq") {
+            if (gpr(i.a) && src.kind == Value::Const) return Value::constant(sext32(src.k));
+            if (gpr(i.a) && src.sext32) return src;
+            Value v = fresh();
+            v.sext32 = true;
+            return v;
+        } else if (extendsCond) {
+            return cond_;
+        } else if (is(m, {"movzbq", "movzbl"}) && src.kind == Value::Const) {
+            return Value::constant(src.k & 0xff);
+        } else if (m == "lea" && i.a.isMem() && i.a.reg.id == RBP) {
+            return Value::frame(i.a.disp);
+        } else if (is(m, {"add", "sub"}) && constSrc && w == 8) {
+            const Value &cur = regs_[i.b.reg.id];
+            const long long delta = m == "add" ? i.a.value : -i.a.value;
+            if (cur.kind == Value::Const) return Value::constant(cur.k + delta);
+            if (cur.kind == Value::FrameAddr) return Value::frame(cur.k + delta);
+        }
+        return fresh();
+    }
+};
+
+}
+
+bool forwardValues(Stream &s, Flow &f, const Convention &c) {
+    return Forward(s, f, c).run();
+}
+
+}

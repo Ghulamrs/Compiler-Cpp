@@ -25,6 +25,7 @@ private:
     bool timing_ = false;
     bool assemblyOnly_ = false;
     bool debug_ = false;
+    int optimize_ = 0;
     bool objectOnly_ = false;
     unsigned threads_ = 0;
     // **Which assembler the Windows target is written for.**

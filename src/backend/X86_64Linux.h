@@ -2,10 +2,12 @@
 
 #include "Backend.h"
 #include "Dwarf.h"
+#include "Optimizer.h"
 #include "Spelling.h"
 #include "Walker.h"
 
 #include <iosfwd>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -44,6 +46,7 @@ public:
 
     using Walker::visit;
     void run(const Program &program) override;
+    void setOptimize(int level) override;
 
     void visit(const Num &) override;
     void visit(const Var &) override;
@@ -102,8 +105,12 @@ protected:
     std::string funcletPdata_;
 
     std::string out_;
-    std::size_t emittedSize() override { return out_.size(); }
+    std::size_t emittedSize() override { return out_.size() + (optimizer_ ? optimizer_->held() : 0); }
     Spelling *a_ = &gnu_;
+    // In front of a_ at -O1 and above; the walker settles it before it lifts
+    // text out of out_, which held code has not reached yet.
+    std::unique_ptr<Optimizer> optimizer_;
+    void settle() { if (optimizer_) optimizer_->settle(); }
 
     void landingPad(int pointerSlot, int selectorSlot) override;
 

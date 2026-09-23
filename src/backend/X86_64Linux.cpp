@@ -77,6 +77,7 @@ std::vector<bool> classifyEightbytes(const Type *t, const Target &target) {
 static const char *const kArgRegs[] = { "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9" };
 static const char *const kSseRegs[] = { "%xmm0", "%xmm1", "%xmm2", "%xmm3",
                                         "%xmm4", "%xmm5", "%xmm6", "%xmm7" };
+static const char *const kPreserved[] = { "%rbx", "%rbp", "%rsp", "%r12", "%r13", "%r14", "%r15" };
 
 // System V AMD64. Each field is set by name; what is left out keeps the default
 // in Abi.h, which is the answer this ABI gives - positional false, no shadow
@@ -88,6 +89,7 @@ static Abi sysV() {
     a.structReturnLimit = 16;
     a.variadicSseCountInAl = true;
     a.scratch = "%rdi";                 a.scratch32 = "%edi";
+    a.preservedRegs = kPreserved;       a.preservedCount = 7;
     a.elfSymbolAttributes = true;
     return a;
 }
@@ -1398,6 +1400,14 @@ std::string X86_64Linux::userLabel(const std::string &name) const {
     return labelPrefix_ + "user." + name;
 }
 
+// **The GNU and COFF spellings only.** The MASM path has its own spelling and
+// its own funclet cutting, and is written as it was.
+void X86_64Linux::setOptimize(int level) {
+    if (level <= 0 || (a_ != &gnu_ && a_ != &coff_)) return;
+    optimizer_.reset(new Optimizer(*a_, abi_, level));
+    a_ = optimizer_.get();
+}
+
 void X86_64Linux::finishChunk() {
     chunks_.push_back(out_);
     out_.clear();
@@ -1608,6 +1618,7 @@ void X86_64Linux::emit(const Function &fn) {
 // appends its code like any other, so remembering where that began and cutting
 // back to it gives the body exactly - and the code generator knows none of it.
 std::string X86_64Linux::beginFunclet() {
+    settle();
     funcletMark_ = out_.size();
     funcletSymbol_ = "$" + std::string(funcletKind_).substr(1) +
                      std::to_string(funcletIndex_++) + "$" + fnSymbol_;
@@ -1632,6 +1643,7 @@ void X86_64Linux::storeUnwindHelp(int slot) {
 
 // **The funclet's own frame, and the assembler writes its unwind data.**
 void X86_64Linux::closeFunclet(const std::string &tail) {
+    settle();
     std::string body = out_.substr(funcletMark_);
     out_.resize(funcletMark_);
 
