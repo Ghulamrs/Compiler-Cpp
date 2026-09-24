@@ -1884,16 +1884,13 @@ void X86_64Linux::emitCoffClassRtti(const Program &program) {
         const std::string lo = a_->labelText(n.locator);
 
         // **`.rdata$r`, which is where cl puts these**, and not `.data$r`.
-        o += "  .section .rdata$r,\"dr\"\n";
-        o += "  .p2align 3\n";
-        o += d + ":\n";
+        coffRecord(".rdata$r", d, 3);
         o += "  .quad \"??_7type_info@@6B@\"\n";
         o += "  .quad 0\n";
         o += "  .asciz \"" + n.decorated + "\"\n";
 
         // Where this class sits inside itself: at the top, never virtual.
-        o += "  .p2align 2\n";
-        o += bd + ":\n";
+        coffRecord(".rdata$r", bd, 2);
         o += "  .long " + d + "@IMGREL\n";
         o += "  .long " + std::to_string(contained) + "\n";
         o += "  .long 0\n";              // mdisp
@@ -1902,7 +1899,7 @@ void X86_64Linux::emitCoffClassRtti(const Program &program) {
         o += "  .long 0x40\n";           // attributes
         o += "  .long " + hi + "@IMGREL\n";
 
-        o += ar + ":\n";
+        coffRecord(".rdata$r", ar, 2);
         o += "  .long " + bd + "@IMGREL\n";
         for (const Type *k = all[i]->base(); k != nullptr; k = k->base()) {
             MicrosoftRtti b;
@@ -1911,7 +1908,7 @@ void X86_64Linux::emitCoffClassRtti(const Program &program) {
         }
         o += "  .long 0\n";
 
-        o += hi + ":\n";
+        coffRecord(".rdata$r", hi, 2);
         o += "  .long 0\n";
         o += "  .long 0\n";              // attributes - no MI, no virtual bases
         o += "  .long " + std::to_string(contained + 1) + "\n";
@@ -1919,7 +1916,7 @@ void X86_64Linux::emitCoffClassRtti(const Program &program) {
 
         // The locator names itself, which is how the runtime recovers the image
         // base every other field is relative to.
-        o += lo + ":\n";
+        coffRecord(".rdata$r", lo, 2);
         o += "  .long 1\n";
         o += "  .long 0\n";              // the vfptr's offset in the object
         o += "  .long 0\n";              // cdOffset
@@ -2118,16 +2115,12 @@ void X86_64Linux::emitCoffThrowInfo(const Program &program) {
         const std::string ar = a_->labelText(n.array);
         const std::string ti = a_->labelText(n.info);
 
-        o += "  .section .rdata$r,\"dr\"\n";
-        o += "  .p2align 3\n";
-        o += d + ":\n";
+        coffRecord(".rdata$r", d, 3);
         o += "  .quad \"??_7type_info@@6B@\"\n";
         o += "  .quad 0\n";
         o += "  .asciz \"" + n.decorated + "\"\n";
 
-        o += "  .section .xdata$x,\"dr\"\n";
-        o += "  .p2align 2\n";
-        o += c + ":\n";
+        coffRecord(".xdata$x", c, 2);
         o += "  .long 1\n";                                  // properties
         o += "  .long " + d + "@IMGREL\n";                    // the descriptor
         o += "  .long 0\n";                                   // mdisp
@@ -2135,15 +2128,28 @@ void X86_64Linux::emitCoffThrowInfo(const Program &program) {
         o += "  .zero 4\n";                                   // vdisp, MASM's ORG $+4
         o += "  .long " + std::to_string(n.size) + "\n";      // sizeOrOffset
         o += "  .long 0\n";                                   // copyFunction
-        o += ar + ":\n";
+        coffRecord(".xdata$x", ar, 2);
         o += "  .long 1\n";                                   // nCatchableTypes
         o += "  .long " + c + "@IMGREL\n";
-        o += ti + ":\n";
+        coffRecord(".xdata$x", ti, 2);
         o += "  .long 0\n";                                   // attributes
         o += "  .long 0\n";                                   // pmfnUnwind
         o += "  .long 0\n";                                   // pForwardCompat
         o += "  .long " + ar + "@IMGREL\n";
     }
+}
+
+// **Each record is a COMDAT of its own, and public**, as cl writes them: a
+// plain `.rdata$r` is private to its object, so every unit that named a type
+// kept a copy and the linker had nothing to fold on. `discard` is
+// IMAGE_COMDAT_SELECT_ANY, the choice functionBegin makes for an inline
+// function; the `.globl` is what lets one unit's copy stand for another's.
+void X86_64Linux::coffRecord(const char *section, const std::string &label,
+                             int p2align) {
+    out_ += std::string("  .section ") + section + ",\"dr\",discard," + label + "\n";
+    out_ += "  .globl " + label + "\n";
+    out_ += "  .p2align " + std::to_string(p2align) + "\n";
+    out_ += label + ":\n";
 }
 
 void X86_64Linux::run(const Program &program) {
