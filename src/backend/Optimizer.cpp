@@ -83,6 +83,14 @@ void Optimizer::defLabel(const std::string &l) {
     hold(std::move(e));
 }
 
+// **Held as a label with a mark**: whether a call ends on it is known only
+// once the passes are done, and the spelling judges that from what it is given.
+void Optimizer::stateLabel(const std::string &l) {
+    if (!inFunction_) { under_.stateLabel(l); return; }
+    defLabel(l);
+    stream_.back().state = true;
+}
+
 bool Optimizer::copiesByString() const { return levelFor(level_).stringCopies; }
 
 void Optimizer::functionBegin(const std::string &name, bool exported, bool mergeable) {
@@ -154,9 +162,8 @@ void Optimizer::improve(bool whole) {
     const Level level = levelFor(level_);
     opt::Flow flow;
     rounds(flow, level.rounds);
-    // What the frame gains goes below what it had: the saves, then the shadow
-    // space at the floor, where a callee finds it.
-    // First the region inlined callees live in, then the saves, then the shadow.
+    // What the frame gains goes below what it had: first the region inlined
+    // callees live in, then the saves. The outgoing area stays under both.
     int size = std::max(frameSize_, inlineTop_);
     std::vector<SavedReg> saves;
     if (whole && promotable_ && prologueAt_ >= 0) {
@@ -170,12 +177,12 @@ void Optimizer::improve(bool whole) {
         for (int again = 0; again < 3 && opt::removeDeadStores(stream_); ++again) rounds(flow, level.rounds);
         opt::dropUnusedSaves(stream_, saves);
         size += (8 * static_cast<int>(saves.size()) + 15) & ~15;
-        if (opt::reserveShadow(stream_, flow, convention_)) size += (convention_.shadow + 15) & ~15;
     }
     if (size != frameSize_) {
         assert(prologueAt_ >= 0 && "a frame can grow only while its prologue is held");
         const std::string lsda = lsda_;
-        stream_[prologueAt_].event = [=](Spelling &s) { s.calleeSaves(saves); s.prologue(size, lsda); };
+        const int outgoing = outgoing_;
+        stream_[prologueAt_].event = [=](Spelling &s) { s.calleeSaves(saves); s.prologue(size, lsda, outgoing); };
     }
     // A shorter spelling last: narrowed arithmetic leaves extensions to delete.
     for (int again = 0; again < 3; ++again) {
@@ -203,7 +210,10 @@ void Optimizer::flush(bool whole) {
             else under_.ins(i.m, i.a.op(), i.b.op());
             break;
         }
-        case Entry::Label: under_.defLabel(e.label); break;
+        case Entry::Label:
+            if (e.state) under_.stateLabel(e.label);
+            else under_.defLabel(e.label);
+            break;
         case Entry::Event: e.event(under_); break;
         }
     }
@@ -212,11 +222,12 @@ void Optimizer::flush(bool whole) {
 }
 
 // Everything else is an event: held where it stood, with its arguments copied.
-void Optimizer::prologue(int frameSize, const std::string &lsda) {
+void Optimizer::prologue(int frameSize, const std::string &lsda, int outgoing) {
     prologueAt_ = static_cast<int>(stream_.size());
     frameSize_ = frameSize;
     lsda_ = lsda;
-    event([=](Spelling &s) { s.prologue(frameSize, lsda); });
+    outgoing_ = outgoing;
+    event([=](Spelling &s) { s.prologue(frameSize, lsda, outgoing); });
 }
 void Optimizer::fileEntry(int n, const std::string &name) {
     event([=](Spelling &s) { s.fileEntry(n, name); });

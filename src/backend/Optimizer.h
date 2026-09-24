@@ -37,9 +37,10 @@ public:
     void ins(const std::string &m, const Op &a) override;
     void ins(const std::string &m, const Op &a, const Op &b) override;
     void defLabel(const std::string &l) override;
+    void stateLabel(const std::string &l) override;
 
     void functionBegin(const std::string &name, bool exported, bool mergeable) override;
-    void prologue(int frameSize, const std::string &lsda) override;
+    void prologue(int frameSize, const std::string &lsda, int outgoing) override;
     void functionEnd(const std::string &name) override;
 
     void fileEntry(int n, const std::string &name) override;
@@ -82,6 +83,7 @@ private:
     int inlineTop_ = 0;
     int frameSize_ = 0;
     std::string lsda_;
+    int outgoing_ = 0;
 
     void hold(opt::Entry e);
     void instruction(const std::string &m, int operands, const Op *a, const Op *b);

@@ -1030,7 +1030,11 @@ void X86_64Linux::visit(const Call &n) {
     const int sses = plan.ssesUsed;
     const int stackSlots = plan.stackWords;
 
-    int shadowSlots = abi_.shadowBytes / 8;
+    // **At the floor, the call needs nothing of its own**: the prologue's
+    // outgoing area is at rsp and rsp is aligned. Anywhere else - a value
+    // pushed above, an argument on the stack - it allocates as it always has.
+    const bool atFloor = outgoing_ > 0 && stackSlots == 0 && floorDepth_ + depth_ == 0;
+    int shadowSlots = atFloor ? 0 : abi_.shadowBytes / 8;
 
     int padSlots = ((depth_ + stackSlots + shadowSlots) % 2 != 0) ? 1 : 0;
     if (padSlots) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
@@ -1296,6 +1300,7 @@ void X86_64Linux::visit(const VaStart &n) {
 }
 
 void X86_64Linux::defineLabel(const std::string &l) { a_->defLabel(l); }
+void X86_64Linux::defineStateLabel(const std::string &l) { a_->stateLabel(l); }
 void X86_64Linux::jump(const std::string &l) { a_->ins("jmp", lbl(l)); }
 void X86_64Linux::branchIfZero(const std::string &l) {
     a_->ins("cmp", immText("0"), reg("%rax"));
@@ -1443,6 +1448,8 @@ void X86_64Linux::finishChunk() {
     out_.clear();
 }
 
+namespace { bool makesCalls(const Stmt &body); }
+
 void X86_64Linux::emit(const Function &fn) {
     depth_ = 0;
     resetLabels();
@@ -1496,9 +1503,12 @@ void X86_64Linux::emit(const Function &fn) {
     fnMergeable_ = fn.isInline();
     markLine(fn.pos());
     if (optimizer_) optimizer_->frame(scalarsOf(fn), !fn.hasLandingPads());
+    outgoing_ = abi_.shadowBytes > 0 && makesCalls(fn.body()) ? abi_.shadowBytes : 0;
+    floorDepth_ = 0;
     a_->prologue(frameSize_,
                  fn.hasLandingPads() ? ".Lexception." + fn.symbol()
-                                     : std::string());
+                                     : std::string(),
+                 outgoing_);
 
     receiveParameters(fn);
 
@@ -1653,6 +1663,65 @@ std::vector<opt::Local> X86_64Linux::scalarsOf(const Function &fn) const {
 
 namespace {
 
+// **Whether a body calls anything**, the question the outgoing area is sized
+// by. A call this misses keeps its own allocation, so an incomplete answer
+// costs bytes and never correctness; a handler's calls count, since a funclet
+// is walked where its try is.
+class CallScan final : public Visitor {
+public:
+    bool found = false;
+    void visit(const Num &) override {}
+    void visit(const Var &) override {}
+    void visit(const StrLit &) override {}
+    void visit(const Goto &) override {}
+    void visit(const Break &) override {}
+    void visit(const Continue &) override {}
+    void visit(const Call &) override { found = true; }
+    void visit(const VaStart &n) override { n.list().accept(*this); }
+    void visit(const VaArg &n) override { n.list().accept(*this); }
+    void visit(const Assign &n) override { n.target().accept(*this); n.value().accept(*this); }
+    void visit(const Unary &n) override { n.operand().accept(*this); }
+    void visit(const Binary &n) override { n.lhs().accept(*this); n.rhs().accept(*this); }
+    void visit(const Postfix &n) override { n.target().accept(*this); }
+    void visit(const Cast &n) override { n.value().accept(*this); }
+    void visit(const Comma &n) override { n.left().accept(*this); n.right().accept(*this); }
+    void visit(const Conditional &n) override {
+        n.cond().accept(*this); n.thenArm().accept(*this); n.elseArm().accept(*this);
+    }
+    void visit(const MemberAccess &n) override { n.object().accept(*this); }
+    void visit(const ExprStmt &n) override { n.expr().accept(*this); }
+    void visit(const Return &n) override { if (n.hasValue()) n.value().accept(*this); }
+    void visit(const Block &n) override { for (const StmtPtr &s : n.body()) s->accept(*this); }
+    void visit(const If &n) override {
+        n.cond().accept(*this); n.thenArm().accept(*this);
+        if (n.elseArm() != nullptr) n.elseArm()->accept(*this);
+    }
+    void visit(const While &n) override { n.cond().accept(*this); n.body().accept(*this); }
+    void visit(const DoWhile &n) override { n.body().accept(*this); n.cond().accept(*this); }
+    void visit(const For &n) override {
+        if (n.init() != nullptr) n.init()->accept(*this);
+        if (n.cond() != nullptr) n.cond()->accept(*this);
+        if (n.step() != nullptr) n.step()->accept(*this);
+        n.body().accept(*this);
+    }
+    void visit(const Switch &n) override { n.cond().accept(*this); n.body().accept(*this); }
+    void visit(const Case &n) override { n.body().accept(*this); }
+    void visit(const Label &n) override { n.body().accept(*this); }
+    void visit(const Try &n) override {
+        for (const StmtPtr &s : n.body()) s->accept(*this);
+        if (n.hasPad()) n.pad().accept(*this);
+        if (n.cleanup() != nullptr) n.cleanup()->accept(*this);
+        for (const MsHandler &h : n.handlers())
+            if (h.body != nullptr) h.body->accept(*this);
+    }
+};
+
+bool makesCalls(const Stmt &body) {
+    CallScan scan;
+    body.accept(scan);
+    return scan.found;
+}
+
 // **Small enough to walk in place**: straight-line statements and ifs, no
 // loops and no cleanups; anything else counts as too many.
 int statementsIn(const Stmt &s) {
@@ -1694,6 +1763,7 @@ void X86_64Linux::walkInPlace(const Function &fn) {
     const int depth = depth_, sret = sretSlot_, regSave = regSave_;
     const int gp = varGp_, fp = varFp_, overflow = varOverflow_;
     const std::string ret = returnLabel_;
+    floorDepth_ += depth;
     depth_ = 0;
     returnLabel_ = label("inline", nextLabel());
     optimizer_->jumpOnly(returnLabel_);
@@ -1703,6 +1773,7 @@ void X86_64Linux::walkInPlace(const Function &fn) {
     walkBody(fn);
     optimizer_->inlineEnd();
     inPlace_ = false;
+    floorDepth_ -= depth;
     depth_ = depth;
     sretSlot_ = sret;
     regSave_ = regSave;
@@ -2092,7 +2163,7 @@ void X86_64Linux::emitCoffTryTables(const Function &fn) {
             o += "  .long " + a_->labelText(h.funclet) + "@IMGREL\n";
             // The frame size itself: what the runtime adds to the establisher
             // to reach the handler's own frame.
-            o += "  .long " + std::to_string(frameSize_) + "\n";
+            o += "  .long " + std::to_string(frameSize_ + outgoing_) + "\n";
         }
     }
 

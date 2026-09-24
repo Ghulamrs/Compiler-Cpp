@@ -26,15 +26,20 @@ void GnuSpelling::op(const Op &x) {
     }
 }
 
-void GnuSpelling::ins(const std::string &m) { o_ += "  "; o_ += m; o_ += '\n'; }
+void GnuSpelling::ins(const std::string &m) {
+    afterCall_ = false;
+    o_ += "  "; o_ += m; o_ += '\n';
+}
 
 void GnuSpelling::ins(const std::string &m, const Op &a) {
+    afterCall_ = m == "call";
     o_ += "  "; o_ += m; o_ += ' ';
     op(a);
     o_ += '\n';
 }
 
 void GnuSpelling::ins(const std::string &m, const Op &a, const Op &b) {
+    afterCall_ = false;
     o_ += "  "; o_ += m; o_ += ' ';
     op(a);
     o_ += ", ";
@@ -58,7 +63,9 @@ void GnuSpelling::functionBegin(const std::string &name, bool exported,
 // **Unwind data, and it is the same three directives in every function.** A
 // cxx1 frame has one shape, so the CFA is rbp + 16 throughout; without it a
 // backtrace stops here and no exception passes. MASM has always said this.
-void GnuSpelling::prologue(int frameSize, const std::string &lsda) {
+void GnuSpelling::prologue(int frameSize, const std::string &lsda, int outgoing) {
+    frameSize += outgoing;
+    afterCall_ = false;
     o_ += "  .cfi_startproc\n";
     if (!lsda.empty()) {
         o_ += "  .cfi_personality 155, DW.ref.__gxx_personality_v0\n";
@@ -130,6 +137,13 @@ void GnuSpelling::objectType(const std::string &name) {
 
 void GnuSpelling::objectSize(const std::string &name, int size) {
     o_ += "  .size "; o_ += sym(name); o_ += ", "; appendNum(o_, size); o_ += '\n';
+}
+
+// A label between the call and this one has the same address, so only an
+// instruction clears the mark.
+void GnuSpelling::stateLabel(const std::string &l) {
+    if (afterCall_) ins("nop");
+    defLabel(l);
 }
 
 void GnuSpelling::align(int n) { o_ += "  .align "; appendNum(o_, n); o_ += '\n'; }
@@ -255,7 +269,11 @@ void CoffSpelling::objectSize(const std::string &name, int size) {
 // **Hand-written, because `.seh_handlerdata` cannot live in a COMDAT.** The
 // `.seh_*` directives are the tidy way and the assembler builds .pdata and
 // .xdata from them - measured, and it works for every function in plain .text.
-void CoffSpelling::prologue(int frameSize, const std::string &lsda) {
+void CoffSpelling::prologue(int frameSize, const std::string &lsda, int outgoing) {
+    // The area goes under everything, so it is simply more frame: every
+    // offset below is measured up from rsp, which rbp equals.
+    frameSize += outgoing;
+    afterCall_ = false;
     hasEh_ = !lsda.empty();
     frameSize_ = frameSize;
     const std::string b = "\"$LNbeg$" + fnName_ + "\"";

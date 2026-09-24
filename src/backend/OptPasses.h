@@ -42,9 +42,6 @@ bool removeDeadStores(Stream &s);
 // A register saved for a local that no longer names it, and its restores, go.
 void dropUnusedSaves(Stream &s, std::vector<SavedReg> &saves);
 
-// **Shadow space reserved once in the frame**, not per call; true if it grows.
-bool reserveShadow(Stream &s, Flow &f, const Convention &c);
-
 // **What each register holds, followed forward through a block** - see OptValues.cpp.
 bool forwardValues(Stream &s, Flow &f, const Convention &c);
 

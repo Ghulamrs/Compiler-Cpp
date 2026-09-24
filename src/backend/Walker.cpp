@@ -298,9 +298,9 @@ void Walker::msTryStatement(const Try &n) {
     storeUnwindHelp(n.unwindHelpSlot());
     r.isCleanup = n.cleanup() != nullptr;
 
-    defineLabel(r.begin);
+    defineStateLabel(r.begin);
     for (std::size_t i = 0; i < n.body().size(); i++) n.body()[i]->accept(*this);
-    defineLabel(r.end);
+    defineStateLabel(r.end);
     defineLabel(r.resume);
 
     if (r.isCleanup) {

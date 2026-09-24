@@ -51,6 +51,8 @@ struct EntryOf {
     std::string label;
     Payload event;
     bool dead = false;
+    // A label where the exception state changes: see Spelling::stateLabel.
+    bool state = false;
 };
 
 struct Block {

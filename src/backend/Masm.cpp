@@ -116,7 +116,7 @@ const Rule kRules[] = {
     { "cmp", "cmp", 0 }, { "cdq", "cdq", 0 }, { "cqo", "cqo", 0 },
     { "addl", "add", 4 }, { "cmpl", "cmp", 4 }, { "testb", "test", 1 },
 
-    { "call", "call", 0 }, { "ret", "ret", 0 },
+    { "call", "call", 0 }, { "ret", "ret", 0 }, { "nop", "nop", 0 },
     { "jmp", "jmp", 0 }, { "je", "je", 0 }, { "jne", "jne", 0 },
     { "jae", "jae", 0 }, { "jns", "jns", 0 },
 
@@ -210,12 +210,14 @@ MasmSpelling::Rendered MasmSpelling::render(const Op &x) {
 }
 
 void MasmSpelling::ins(const std::string &m) {
+    afterCall_ = false;
     const Rule *r = ruleFor(m);
     if (r == nullptr) give_up(m, "an instruction this spelling does not know");
     o_ += "  "; o_ += r->masm; o_ += '\n';
 }
 
 void MasmSpelling::ins(const std::string &m, const Op &a) {
+    afterCall_ = m == "call";
     const Rule *r = ruleFor(m);
     if (r == nullptr) give_up(m, "an instruction this spelling does not know");
     Rendered x = render(a);
@@ -225,6 +227,7 @@ void MasmSpelling::ins(const std::string &m, const Op &a) {
 }
 
 void MasmSpelling::ins(const std::string &m, const Op &a, const Op &b) {
+    afterCall_ = false;
     const Rule *r = ruleFor(m);
     if (r == nullptr) give_up(m, "an instruction this spelling does not know");
 
@@ -278,12 +281,20 @@ void MasmSpelling::functionBegin(const std::string &name, bool exported,
     o_ += "$LNbeg$"; o_ += mangle(name); o_ += ":\n";
 }
 
+// See Spelling::stateLabel; cl writes `npad 1` here.
+void MasmSpelling::stateLabel(const std::string &l) {
+    if (afterCall_) ins("nop");
+    defLabel(l);
+}
+
 void MasmSpelling::raw(const std::string &text) {
     flushPending();
     o_ += text;
 }
 
-void MasmSpelling::prologue(int frameSize, const std::string &lsda) {
+void MasmSpelling::prologue(int frameSize, const std::string &lsda, int outgoing) {
+    frameSize += outgoing;
+    afterCall_ = false;
     // **The LSDA name says a landing pad exists, which is not the same
     // question.** A Microsoft FuncInfo follows only where one is written, and
     // the code generator says so through `noteHasEh` before `functionEnd`.

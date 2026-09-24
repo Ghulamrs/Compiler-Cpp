@@ -20,7 +20,8 @@ public:
     void defLabel(const std::string &l) override;
     void functionBegin(const std::string &name, bool exported,
                        bool mergeable = false) override;
-    void prologue(int frameSize, const std::string &lsda) override;
+    void prologue(int frameSize, const std::string &lsda, int outgoing) override;
+    void stateLabel(const std::string &l) override;
     // **Whether a FuncInfo follows is the code generator's answer, not this one's.**
     void noteHasEh(bool yes) override { hasEh_ = yes; }
     // The unwind codes the prologue described, written out by functionEnd -
@@ -33,6 +34,8 @@ public:
     // Whether this function has a handler: it decides the flags in the unwind
     // header and whether __CxxFrameHandler3 and a FuncInfo follow the codes.
     bool hasEh_ = false;
+    // Whether the last instruction spelled was a call - see stateLabel.
+    bool afterCall_ = false;
     void raw(const std::string &text);
     // Written by postamble, after every chunk the code generator built. The
     // funclets' .pdata goes here: see funcletPdata_ in MasmCodeGen.

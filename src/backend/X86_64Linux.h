@@ -81,7 +81,7 @@ protected:
     // A Windows local is `frameSize - slot` above the establisher frame, which
     // is the whole translation between how cxx1 addresses a local and how an
     // FH3 table describes one.
-    int establisherOffset(int slot) const { return frameSize_ - slot; }
+    int establisherOffset(int slot) const { return frameSize_ + outgoing_ - slot; }
     void emitCoffCleanupTables(const Function &fn);
     // The same tables for a frame that *catches*.
     void emitCoffTryTables(const Function &fn);
@@ -130,6 +130,13 @@ protected:
     // all of them by one constant, applied once where operands are rendered.
     Op local(long long slot) const { return mem(-slot, "%rbp"); }
     int frameSize_ = 0;
+    // **The shadow space, allocated once at the floor of the frame** rather
+    // than around each call; 0 where the ABI has none or the body calls
+    // nothing. A call finds it at rsp only when nothing is pushed above it.
+    int outgoing_ = 0;
+    // How far below the floor rsp stood when a callee began to be walked in
+    // place; that walk counts depth_ from zero again.
+    int floorDepth_ = 0;
 
     // Whatever this target writes after a function to describe its handlers.
     virtual void emitExceptionTables(const Function &fn) {
@@ -168,6 +175,7 @@ private:
     std::string returnLabel_;
     void emitLoc(int file, int line, int column) override { a_->location(file, line, column); }
     void defineLabel(const std::string &l) override;
+    void defineStateLabel(const std::string &l) override;
     void jump(const std::string &l) override;
     void branchIfZero(const std::string &l) override;
     void branchIfNotZero(const std::string &l) override;
