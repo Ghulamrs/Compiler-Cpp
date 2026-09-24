@@ -14,9 +14,8 @@ public:
     const char *name() const override { return "x86_64-windows"; }
 };
 
-// **Which assembler this target is written for** arrives as `gnuAsm` at the two calls below, from
-// the Driver that read `-masm=` off argv. ml64 cannot mark a section COMDAT, so a mergeable
-// definition collides across translation units where clang, writing the same COFF, can mark it.
+// **Which assembler this target is written for** arrives as a Syntax at the two calls below,
+// from the Driver that read `-masm=` off argv - see Syntax in Backend.h.
 
 class X86_64WindowsBackend final : public Backend {
 public:
@@ -25,8 +24,8 @@ public:
     const Abi &abi() const override;
     bool emits() const override { return true; }
     const char *const *identityMacros() const override;
-    bool emitsLineTable(bool gnuAsm) const override;
-    std::unique_ptr<CodeGen> codegen(std::ostream &sink, bool gnuAsm) const override;
+    bool emitsLineTable(Syntax syntax) const override;
+    std::unique_ptr<CodeGen> codegen(std::ostream &sink, Syntax syntax) const override;
 private:
     WindowsX86_64Target target_;
 };

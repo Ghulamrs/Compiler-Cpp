@@ -57,7 +57,7 @@ static const char *const kDarwinMacros[] = {
 };
 const char *const *Arm64DarwinBackend::identityMacros() const { return kDarwinMacros; }
 
-std::unique_ptr<CodeGen> Arm64DarwinBackend::codegen(std::ostream &sink, bool) const {
+std::unique_ptr<CodeGen> Arm64DarwinBackend::codegen(std::ostream &sink, Syntax) const {
     return std::unique_ptr<CodeGen>(new Arm64Darwin(sink, target_, kAapcs64AppleAbi));
 }
 

@@ -267,11 +267,13 @@ void MasmSpelling::defLabel(const std::string &l) {
 // reaches the COMDAT bit - see CoffSpelling, which exists for that reason.
 void MasmSpelling::functionBegin(const std::string &name, bool exported,
                                  bool mergeable) {
-    (void)mergeable;
     defined_.insert(name);
     if (exported) exported_.insert(name);
     flushPending();
+    closeDataBlock();
     if (seg_ != Code) { o_ += "\n.CODE\n"; seg_ = Code; }
+    mergeable_ = comdat_ && mergeable;
+    if (mergeable_) o_ += ".text$mn SEGMENT ALIGN(16) 'CODE' COMDAT(" + mangle(name) + ")\n";
 
     // **`PROC`, not `PROC FRAME`, and the unwind data written by hand.** No MASM
     // directive reaches the handler *data* inside UNWIND_INFO, and cl writes
@@ -363,17 +365,18 @@ void MasmSpelling::functionEnd(const std::string &name) {
     // without it the runtime finds no unwind record - measured with dumpbin.
     o_ += "$LNend$" + m + ":\n";
     o_ += m + " ENDP\n";
+    if (mergeable_) o_ += ".text$mn ENDS\n";
 
     // READONLY and the alignment, or the linker finds two .pdata
     // sections with different attributes and says so.
-    o_ += "\n.pdata SEGMENT READONLY ALIGN(4) 'DATA'\n";
+    o_ += "\n.pdata SEGMENT READONLY ALIGN(4) 'DATA'" + associative() + "\n";
     o_ += "$pdata$" + m + " DD imagerel $LNbeg$" + m + "\n";
     o_ += "  DD imagerel $LNend$" + m + "\n";
     o_ += "  DD imagerel $unwind$" + m + "\n";
     o_ += ".pdata ENDS\n";
 
     // UNWIND_INFO.
-    o_ += ".xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
+    o_ += ".xdata SEGMENT READONLY ALIGN(8) 'DATA'" + associative() + "\n";
     // Version 1, and the flags in the top five bits. 0x19 is UNW_FLAG_EHANDLER and
     // UNW_FLAG_UHANDLER, which is what cl writes for a function with a `try`.
     // Without them the runtime unwinds past the frame and never reads the FuncInfo.
@@ -400,24 +403,54 @@ void MasmSpelling::functionEnd(const std::string &name) {
 
 void MasmSpelling::globl(const std::string &name) { exported_.insert(name); }
 
+// A function's own name, or a second label in it, is covered by the COMDAT
+// functionBegin opened.
+void MasmSpelling::weakDefinition(const std::string &name) {
+    if (!comdat_ || seg_ == Code) return;
+    flushPending();
+    closeDataBlock();
+    pendingComdat_ = name;
+}
+
+void MasmSpelling::openDataBlock(int align) {
+    const char *name = seg_ == Bss ? ".bss" : seg_ == Data ? ".data" : ".rdata";
+    o_ += std::string("\n") + name + " SEGMENT" + (seg_ == Const ? " READONLY" : "") +
+          " ALIGN(" + std::to_string(align < 16 ? 16 : align) + ")" +
+          (seg_ == Bss ? " 'BSS'" : " 'DATA'") + " COMDAT(" + mangle(pendingComdat_) + ")\n";
+    pendingComdat_.clear();
+    dataBlock_ = name;
+    dataBlockUsed_ = false;
+}
+
+void MasmSpelling::closeDataBlock() {
+    if (!pendingComdat_.empty()) openDataBlock(16);    // an object that never aligned
+    if (!dataBlock_.empty()) o_ += dataBlock_ + " ENDS\n";
+    dataBlock_.clear();
+    dataBlockUsed_ = false;
+}
+
 
 void MasmSpelling::textSection() {
     flushPending();
+    closeDataBlock();
     if (seg_ != Code) { o_ += "\n.CODE\n"; seg_ = Code; }
 }
 
 void MasmSpelling::rodataSection() {
     flushPending();
+    closeDataBlock();
     if (seg_ != Const) { o_ += "\n.CONST\n"; seg_ = Const; }
 }
 
 void MasmSpelling::dataSection() {
     flushPending();
+    closeDataBlock();
     if (seg_ != Data) { o_ += "\n.DATA\n"; seg_ = Data; }
 }
 
 void MasmSpelling::bssSection() {
     flushPending();
+    closeDataBlock();
     if (seg_ != Bss) { o_ += "\n.DATA?\n"; seg_ = Bss; }
 }
 
@@ -426,6 +459,11 @@ void MasmSpelling::objectSize(const std::string &, int) {}
 
 void MasmSpelling::align(int n) {
     flushPending();
+    if (seg_ != Code) {
+        if (!dataBlock_.empty() && dataBlockUsed_) closeDataBlock();
+        if (!pendingComdat_.empty()) openDataBlock(n);
+        dataBlockUsed_ = true;
+    }
     o_ += "  ALIGN "; appendNum(o_, n); o_ += '\n';
 }
 
@@ -488,6 +526,7 @@ void MasmSpelling::items(const char *dir, const std::vector<std::string> &it) {
 // `.text$x` set. Measured on the box: this runs the function before main.
 void MasmSpelling::initialiserEntry(const std::string &fn, bool) {
     flushPending();
+    closeDataBlock();
     o_ += "\n.CRT$XCU SEGMENT READONLY ALIGN(8) 'DATA'\n  DQ ";
     o_ += mangle(fn);
     o_ += "\n.CRT$XCU ENDS\n";
@@ -527,6 +566,11 @@ void MasmSpelling::postamble(std::ostream &sink) {
 
     if (!pending_.empty())
         give_up(pending_, "a data label left dangling at the end of the file");
+    // The chunks are written by now, so a block still open is closed here.
+    const std::size_t mark = o_.size();
+    closeDataBlock();
+    sink << o_.substr(mark);
+    o_.resize(mark);
     sink << trailer_;
     trailer_.clear();
     sink << "\nEND\n";
@@ -579,7 +623,7 @@ void MasmCodeGen::closeFunclet(const std::string &tail) {
     // **`.text$x`, and the dot is the whole of it** - the same trap as `.pdata`. A
     // segment called `text` gets data attributes, so the handler faults at its own
     // first instruction; 'CODE' is what gives it execute permission beside .text.
-    f += "\n.text$x SEGMENT ALIGN(16) 'CODE'\n";
+    f += "\n.text$x SEGMENT ALIGN(16) 'CODE'" + masm_.associative() + "\n";
     f += sym + " PROC\n";
     f += "$LNbeg$" + sym + ":\n";
     f += "  mov QWORD PTR [rsp+16], rdx\n";
@@ -603,12 +647,12 @@ void MasmCodeGen::closeFunclet(const std::string &tail) {
     // A funclet carries unwind data of its own, naming the same handler and *the
     // parent's* FuncInfo - the two share one description of the try. Its .pdata
     // goes to a pile written after every function, for the sorting reason recorded.
-    masm_.trailer_ += "\n.pdata SEGMENT READONLY ALIGN(4) 'DATA'\n";
+    masm_.trailer_ += "\n.pdata SEGMENT READONLY ALIGN(4) 'DATA'" + masm_.associative() + "\n";
     masm_.trailer_ += "$pdata$" + sym + " DD imagerel $LNbeg$" + sym + "\n";
     masm_.trailer_ += "  DD imagerel $LNend$" + sym + "\n";
     masm_.trailer_ += "  DD imagerel $unwind$" + sym + "\n";
     masm_.trailer_ += ".pdata ENDS\n";
-    f += ".xdata SEGMENT READONLY ALIGN(8) 'DATA'\n";
+    f += ".xdata SEGMENT READONLY ALIGN(8) 'DATA'" + masm_.associative() + "\n";
     f += "$unwind$" + sym + " DB 019H\n";
     f += "  DB $LNprolog$" + sym + "-$LNbeg$" + sym + "\n";
     f += "  DB 02H\n";
@@ -768,6 +812,21 @@ void MasmCodeGen::emitExceptionTables(const Function &fn) {
     out_ += o;
 }
 
+// **Where each RTTI or throw record begins.** For the project's assembler it is
+// a COMDAT of its own and public, so the linker keeps one copy where every unit
+// that named the type wrote one - the choice the COFF path makes in coffRecord.
+// For ml64, which cannot say COMDAT, the records share one plain segment:
+// `first` opens it, and the others follow in it.
+std::string MasmCodeGen::record(const char *segment, int align, const std::string &name,
+                                bool first) {
+    const std::string open = std::string(segment) + " SEGMENT READONLY ALIGN(" +
+                             std::to_string(align) + ") 'DATA'";
+    if (!masm_.comdat()) return first ? open + "\n" : std::string();
+    masm_.globl(name);
+    return (first ? std::string() : std::string(segment) + " ENDS\n") +
+           open + " COMDAT(" + name + ")\n";
+}
+
 // **The five objects the Microsoft ABI wants before it will answer a
 // `dynamic_cast`**, measured from clang.
 void MasmCodeGen::emitClassRtti(const Program &program) {
@@ -795,7 +854,7 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
             contained++;
 
         // **`.rdata$r`, which is where cl puts these**, and not `.data$r`.
-        o += ".rdata$r SEGMENT READONLY ALIGN(8) 'DATA'\n";
+        o += record(".rdata$r", 8, n.descriptor, true);
         o += n.descriptor + " DQ ??_7type_info@@6B@\n";
         o += "  DQ 0\n";
         o += "  DB '" + n.decorated + "', 00H\n";
@@ -803,6 +862,7 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
         // Where this class sits inside itself: at the top, never virtual. Those
         // four numbers are constant because a class with a second base is
         // refused - its first base is always at offset zero.
+        o += record(".rdata$r", 4, n.baseDescriptor, false);
         o += n.baseDescriptor + " DD imagerel " + n.descriptor + "\n";
         o += "  DD 0" + std::to_string(contained) + "H\n";
         o += "  DD 00H\n";              // mdisp
@@ -811,6 +871,7 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
         o += "  DD 040H\n";             // attributes
         o += "  DD imagerel " + n.hierarchy + "\n";
 
+        o += record(".rdata$r", 4, n.array, false);
         o += n.array + " DD imagerel " + n.baseDescriptor + "\n";
         for (const Type *k = all[i]->base(); k != nullptr; k = k->base()) {
             MicrosoftRtti b;
@@ -819,6 +880,7 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
         }
         o += "  DD 00H\n";
 
+        o += record(".rdata$r", 4, n.hierarchy, false);
         o += n.hierarchy + " DD 00H\n";
         o += "  DD 00H\n";              // attributes - no MI, no virtual bases
         o += "  DD 0" + std::to_string(contained + 1) + "H\n";
@@ -826,6 +888,7 @@ void MasmCodeGen::emitClassRtti(const Program &program) {
 
         // The locator names itself, which is how the runtime recovers the image
         // base every other field is relative to.
+        o += record(".rdata$r", 4, n.locator, false);
         o += n.locator + " DD 01H\n";
         o += "  DD 00H\n";              // the vfptr's offset in the object
         o += "  DD 00H\n";              // cdOffset
@@ -845,8 +908,9 @@ void MasmCodeGen::emitThrowInfo(const Program &program) {
         std::string why;
         if (!microsoftThrowNames(t, t->size(target_), &n, &why)) continue;
 
-        // **Not PUBLIC**: cl uses a COMDAT here and MASM cannot say COMDAT.
-        o += ".rdata$r SEGMENT READONLY ALIGN(8) 'DATA'\n";
+        // **Public and a COMDAT where the assembler can say so**, as cl writes it;
+        // for ml64, private to the object, the one unit it links.
+        o += record(".rdata$r", 8, n.descriptor, true);
         // **cl's listing writes `FLAT:` here and ml64 rejects it.** That prefix is
         // 32-bit MASM's way of naming a flat-model address; the 64-bit assembler
         // has no such keyword, so the listing records what cl means.
@@ -855,7 +919,7 @@ void MasmCodeGen::emitThrowInfo(const Program &program) {
         o += "  DB '" + n.decorated + "', 00H\n";
         o += ".rdata$r ENDS\n";
 
-        o += ".xdata$x SEGMENT READONLY ALIGN(8) 'DATA'\n";
+        o += record(".xdata$x", 8, n.catchable, true);
         o += n.catchable + " DD 01H\n";
         o += "  DD imagerel " + n.descriptor + "\n";
         o += "  DD 00H\n";
@@ -863,8 +927,10 @@ void MasmCodeGen::emitThrowInfo(const Program &program) {
         o += "  ORG $+4\n";
         o += "  DD 0" + std::to_string(n.size) + "H\n";
         o += "  DD 00H\n";
+        o += record(".xdata$x", 4, n.array, false);
         o += n.array + " DD 01H\n";
         o += "  DD imagerel " + n.catchable + "\n";
+        o += record(".xdata$x", 4, n.info, false);
         o += n.info + " DD 00H\n";
         o += "  DD 00H\n";
         o += "  DD 00H\n";

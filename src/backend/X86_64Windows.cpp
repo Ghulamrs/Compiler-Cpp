@@ -60,11 +60,11 @@ static const char *const kWindowsMacros[] = {
 };
 const char *const *X86_64WindowsBackend::identityMacros() const { return kWindowsMacros; }
 
-bool X86_64WindowsBackend::emitsLineTable(bool gnuAsm) const { return gnuAsm; }
+bool X86_64WindowsBackend::emitsLineTable(Syntax syntax) const { return syntax == Syntax::Gnu; }
 
 std::unique_ptr<CodeGen> X86_64WindowsBackend::codegen(std::ostream &sink,
-                                                      bool gnuAsm) const {
-    if (gnuAsm)
+                                                      Syntax syntax) const {
+    if (syntax == Syntax::Gnu)
         return std::unique_ptr<CodeGen>(new X86_64Linux(sink, target_, kMsAbi));
-    return std::unique_ptr<CodeGen>(new MasmCodeGen(sink, target_, kMsAbi));
+    return std::unique_ptr<CodeGen>(new MasmCodeGen(sink, target_, kMsAbi, syntax == Syntax::Masm));
 }

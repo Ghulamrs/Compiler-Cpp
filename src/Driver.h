@@ -29,7 +29,7 @@ private:
     bool objectOnly_ = false;
     unsigned threads_ = 0;
     // **Which assembler the Windows target is written for.**
-    bool gnuAsm_ = true;
+    Syntax syntax_ = Syntax::Gnu;
     std::string linkTo_;
     std::vector<std::string> temporaries_;
     std::vector<std::string> objects_;
@@ -63,7 +63,7 @@ private:
     static std::string objectNameFor(const std::string &source);
     static std::string temporaryName(int index);
     static const char *hostCompiler();
-    static const char *hostAssembler();
+    static const char *hostAssembler(Syntax syntax);
     // The assembler for the GNU spelling of x86_64-windows, which is a
     // different program from ml64 rather than the same one with a flag.
     static const char *hostGnuAssembler();

@@ -158,11 +158,11 @@ void Driver::usage(char *file) {
         "         and another one only reaches -S, since the assembler here is\n"
         "         this machine's\n"
         "       -masm picks the assembly syntax for x86_64-windows: 'gnu' is\n"
-        "         the default and is assembled by clang - it is the only one\n"
-        "         that can mark a definition COMDAT, which a program of more\n"
-        "         than one file needs, and the only one that carries a line\n"
-        "         table; 'masm' is ml64's, which needs no clang and links one\n"
-        "         translation unit at a time\n"
+        "         the default and is assembled by clang, and the only one\n"
+        "         that carries a line table; 'masm' is for this project's\n"
+        "         assembler (masm.exe, or CXX1_AS), which needs no clang and\n"
+        "         takes COMDAT; 'ml64' is the same syntax without COMDAT,\n"
+        "         for ml64, which links one translation unit at a time\n"
         "       -O1 and -O2 improve the code of each function: frame slots and\n"
         "         constants forwarded, pushes paired with their pops, dead\n"
         "         instructions removed. GNU and COFF spellings; -O0 is the default\n"
@@ -333,9 +333,10 @@ const char *Driver::hostCompiler() {
     return (env != nullptr && env[0] != '\0') ? env : "c++";
 }
 
-const char *Driver::hostAssembler() {
+const char *Driver::hostAssembler(Syntax syntax) {
     const char *env = std::getenv("CXX1_AS");
-    return (env != nullptr && env[0] != '\0') ? env : "ml64.exe";
+    if (env != nullptr && env[0] != '\0') return env;
+    return syntax == Syntax::Ml64 ? "ml64.exe" : "masm.exe";
 }
 
 // **clang, and it is asked for the Microsoft target explicitly.** Its default
@@ -446,7 +447,7 @@ bool Driver::assembleObjects() {
     commands.reserve(temporaries_.size());
     for (std::size_t i = 0; i < temporaries_.size(); i++) {
         std::string command;
-        if (hostIsWindows() && gnuAsm_) {
+        if (hostIsWindows() && syntax_ == Syntax::Gnu) {
             // **The GNU spelling is assembled by clang, not by ml64.** ml64
             // has no COMDAT directive, so every mergeable definition - a
             // vtable, an inline member, a template's.
@@ -455,7 +456,7 @@ bool Driver::assembleObjects() {
             command += shellQuote(temporaries_[i]);
             command += " -o " + shellQuote(objects_[i]);
         } else if (hostIsWindows()) {
-            command = shellQuote(hostAssembler());
+            command = shellQuote(hostAssembler(syntax_));
             command += " /nologo /c /Fo " + shellQuote(objects_[i]);
             command += " " + shellQuote(temporaries_[i]);
         } else {
@@ -486,12 +487,12 @@ bool Driver::link() {
             // The same choice assembleObjects makes, and for the same reason -
             // ml64 cannot mark a mergeable definition COMDAT and clang can.
             std::string step;
-            if (gnuAsm_) {
+            if (syntax_ == Syntax::Gnu) {
                 step = shellQuote(hostGnuAssembler());
                 step += " -target x86_64-pc-windows-msvc -c " + shellQuote(t);
                 step += " -o " + shellQuote(obj);
             } else {
-                step = shellQuote(hostAssembler());
+                step = shellQuote(hostAssembler(syntax_));
                 step += " /nologo /c /Fo " + shellQuote(obj) + " " + shellQuote(t);
             }
             steps.push_back(step);
@@ -589,13 +590,15 @@ bool Driver::parseArguments(int argc, char **argv) {
         } else if (std::strncmp(argv[i], "-masm=", 6) == 0) {
             const char *want = argv[i] + 6;
             if (std::strcmp(want, "gnu") == 0) {
-                gnuAsm_ = true;
+                syntax_ = Syntax::Gnu;
             } else if (std::strcmp(want, "masm") == 0 ||
                        std::strcmp(want, "intel") == 0) {
-                gnuAsm_ = false;
+                syntax_ = Syntax::Masm;
+            } else if (std::strcmp(want, "ml64") == 0) {
+                syntax_ = Syntax::Ml64;
             } else {
                 std::fprintf(stderr,
-                    "%s: -masm= takes 'masm' or 'gnu', not '%s'\n", argv[0], want);
+                    "%s: -masm= takes 'gnu', 'masm' or 'ml64', not '%s'\n", argv[0], want);
                 return false;
             }
         } else if (std::strncmp(argv[i], "-arch", 5) == 0) {
@@ -671,7 +674,7 @@ bool Driver::parseArguments(int argc, char **argv) {
 
     if (inputs.empty()) { usage(argv[0]); return false; }
 
-    if (debug_ && !backend_->emitsLineTable(gnuAsm_)) {
+    if (debug_ && !backend_->emitsLineTable(syntax_)) {
         std::fprintf(stderr,
                      "%s: -g asks where each line of C++ went, and this compiler "
                      "writes no such thing for %s in the MASM spelling: MASM "
@@ -784,7 +787,7 @@ bool Driver::compile(const Job &job) {
     // type system drops the qualifier, so an optimizer would take a volatile
     // read for a plain one and keep it in a register or delete it.
     const int level = program.usesVolatile ? 0 : optimize_;
-    if (optimize_ > 0 && !gnuAsm_ && std::strcmp(backend_->name(), "x86_64-windows") == 0 &&
+    if (optimize_ > 0 && syntax_ != Syntax::Gnu && std::strcmp(backend_->name(), "x86_64-windows") == 0 &&
         &job == &jobs_.front())
         std::fprintf(stderr, "%s: -O%d has no effect with -masm=masm, whose spelling the "
                      "optimizer does not stand in front of\n", program_.c_str(), optimize_);
@@ -795,7 +798,7 @@ bool Driver::compile(const Job &job) {
 
     bool ok = true;
     if (job.output.empty()) {
-        std::unique_ptr<CodeGen> gen = backend_->codegen(std::cout, gnuAsm_);
+        std::unique_ptr<CodeGen> gen = backend_->codegen(std::cout, syntax_);
         if (debug_) gen->setLineSource(&src, workingDirectory());
         gen->setOptimize(level);
         gen->run(program);
@@ -806,7 +809,7 @@ bool Driver::compile(const Job &job) {
                          job.output.c_str());
             return false;
         }
-        std::unique_ptr<CodeGen> gen = backend_->codegen(file, gnuAsm_);
+        std::unique_ptr<CodeGen> gen = backend_->codegen(file, syntax_);
         if (debug_) gen->setLineSource(&src, workingDirectory());
         gen->setOptimize(level);
         gen->run(program);

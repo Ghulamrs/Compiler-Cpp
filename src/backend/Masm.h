@@ -11,7 +11,9 @@
 
 class MasmSpelling final : public Spelling {
 public:
-    explicit MasmSpelling(std::string &o) : o_(o) {}
+    // `comdat` says the assembler reads `SEGMENT ... COMDAT`: the project's
+    // does, ml64 does not - see Syntax in Backend.h.
+    MasmSpelling(std::string &o, bool comdat) : comdat_(comdat), o_(o) {}
 
     void ins(const std::string &m) override;
     void ins(const std::string &m, const Op &a) override;
@@ -20,6 +22,12 @@ public:
     void defLabel(const std::string &l) override;
     void functionBegin(const std::string &name, bool exported,
                        bool mergeable = false) override;
+    void weakDefinition(const std::string &name) override;
+    // The clause a mergeable function's unwind data, funclets and their unwind
+    // data take, so each goes with the copy of the function it belongs to.
+    std::string associative() { return mergeable_ ? " ASSOCIATIVE(" + mangledName() + ")" : std::string(); }
+    // Whether records the linker should fold are written as COMDATs.
+    bool comdat() const { return comdat_; }
     void prologue(int frameSize, const std::string &lsda, int outgoing) override;
     void stateLabel(const std::string &l) override;
     // **Whether a FuncInfo follows is the code generator's answer, not this one's.**
@@ -66,8 +74,20 @@ public:
     void postamble(std::ostream &sink) override;
 
 private:
+    const bool comdat_;
     std::string &o_;
     enum Seg { None, Code, Data, Const, Bss } seg_ = None;
+
+    // **A mergeable definition is a COMDAT of its own.** A function opens one at
+    // functionBegin; a global's is opened at its ALIGN, where its alignment is
+    // known, and closed by the next object's ALIGN, a section change, a
+    // function or the end of the file.
+    bool mergeable_ = false;          // the open function is in a COMDAT
+    std::string pendingComdat_;       // weakDefinition named the next object
+    std::string dataBlock_;           // the segment an ENDS is owed to
+    bool dataBlockUsed_ = false;      // its object has begun: the next ALIGN closes it
+    void openDataBlock(int align);
+    void closeDataBlock();
 
     std::string pending_;
 
@@ -85,8 +105,8 @@ private:
 
 class MasmCodeGen final : public X86_64Linux {
 public:
-    MasmCodeGen(std::ostream &sink, const Target &target, const Abi &abi)
-        : X86_64Linux(sink, target, abi), masm_(out_) { a_ = &masm_; }
+    MasmCodeGen(std::ostream &sink, const Target &target, const Abi &abi, bool comdat)
+        : X86_64Linux(sink, target, abi), masm_(out_, comdat) { a_ = &masm_; }
 
     void run(const Program &program) override;
 
@@ -119,6 +139,7 @@ private:
     void emitThrowInfo(const Program &program);
     // The five objects the Microsoft ABI wants per class with a vftable, for the same reason and in the same place.
     void emitClassRtti(const Program &program);
+    std::string record(const char *segment, int align, const std::string &name, bool first);
 
     MasmSpelling masm_;
 };
