@@ -1009,40 +1009,76 @@ X86_64Linux::Placement X86_64Linux::placeArguments(
     return out;
 }
 
-void X86_64Linux::visit(const Call &n) {
-    bool byRef = abi_.aggregatesByReference;
-    // The Microsoft size test serves free functions only: a class returned from a
-    // member function travels through the hidden pointer whatever its size, so
-    // `hasThis` decides first. The parser chose the same giving the sret slot.
-    bool sret = n.type()->isStructOrUnion() &&
-               (n.type()->nonTrivialCopy() || n.type()->hasDestructor() ||
-                containsX87(n.type(), target_) ||
-                (byRef ? (n.hasThis() ||
-                          !msInRegister(n.type()->size(target_)))
-                       : n.type()->size(target_) > abi_.structReturnLimit));
-    const bool msThisFirst = sret && abi_.positional && n.hasThis();
+// The Microsoft size test serves free functions only: a class returned from a
+// member function travels through the hidden pointer whatever its size, so
+// `hasThis` decides first. The parser chose the same giving the sret slot.
+bool X86_64Linux::returnsThroughPointer(const Call &n) const {
+    const bool byRef = abi_.aggregatesByReference;
+    return n.type()->isStructOrUnion() &&
+           (n.type()->nonTrivialCopy() || n.type()->hasDestructor() ||
+            containsX87(n.type(), target_) ||
+            (byRef ? (n.hasThis() ||
+                      !msInRegister(n.type()->size(target_)))
+                   : n.type()->size(target_) > abi_.structReturnLimit));
+}
 
+X86_64Linux::Placement X86_64Linux::placeCall(const Call &n) const {
     std::vector<const Type *> types;
     types.reserve(n.args().size());
     for (const ExprPtr &arg : n.args()) types.push_back(arg->type());
-    const Placement plan = placeArguments(types, n.hasThis(), sret);
+    return placeArguments(types, n.hasThis(), returnsThroughPointer(n));
+}
+
+void X86_64Linux::visit(const Call &n) {
+    bool byRef = abi_.aggregatesByReference;
+    bool sret = returnsThroughPointer(n);
+    const bool msThisFirst = sret && abi_.positional && n.hasThis();
+
+    const Placement plan = placeCall(n);
     const std::vector<ArgPlace> &place = plan.args;
     const int sses = plan.ssesUsed;
     const int stackSlots = plan.stackWords;
 
     // **At the floor, the call needs nothing of its own**: the prologue's
-    // outgoing area is at rsp and rsp is aligned. Anywhere else - a value
-    // pushed above, an argument on the stack - it allocates as it always has.
-    const bool atFloor = outgoing_ > 0 && stackSlots == 0 && floorDepth_ + depth_ == 0;
+    // outgoing area is at rsp and rsp is aligned, and a stack argument is
+    // stored into it where the callee will read it. That last holds only if
+    // nothing evaluated after the store makes a call there that writes the
+    // same words - the arguments are evaluated from the last stack one down,
+    // then the callee, then the register ones, so only the first of those
+    // may. Anywhere else - a value pushed above, a funclet's 32 bytes, a
+    // later argument that may call - it allocates as it always has.
+    bool atFloor = outgoing_ > 0 && floorDepth_ + depth_ == 0;
+    if (atFloor && stackSlots > 0) {
+        atFloor = !inFunclet_ && outgoing_ >= abi_.shadowBytes + 8 * stackSlots;
+        bool first = true;
+        for (std::size_t i = n.args().size(); atFloor && i-- > 0; ) {
+            if (!place[i].inMemory) continue;
+            if (!first && mayWriteArea(*n.args()[i])) atFloor = false;
+            first = false;
+        }
+        if (atFloor && n.callee() != nullptr && mayWriteArea(*n.callee())) atFloor = false;
+        for (std::size_t i = 0; atFloor && i < n.args().size(); i++)
+            if (!place[i].inMemory && mayWriteArea(*n.args()[i])) atFloor = false;
+    }
     int shadowSlots = atFloor ? 0 : abi_.shadowBytes / 8;
+    const int pushedSlots = atFloor ? 0 : stackSlots;
 
-    int padSlots = ((depth_ + stackSlots + shadowSlots) % 2 != 0) ? 1 : 0;
+    int padSlots = ((depth_ + pushedSlots + shadowSlots) % 2 != 0) ? 1 : 0;
     if (padSlots) { a_->ins("sub", immText("8"), reg("%rsp")); depth_++; }
 
     for (std::size_t i = n.args().size(); i-- > 0; ) {
         if (!place[i].inMemory) continue;
         const Type *t = n.args()[i]->type();
         n.args()[i]->accept(*this);
+        if (atFloor) {
+            // Only a word reaches here: an aggregate travels by reference on
+            // the one ABI with an outgoing area, and there is no x87 value.
+            const Op at = mem(abi_.shadowBytes + place[i].stackOffset, "%rsp");
+            if (byRef && t->isStructOrUnion()) msAggregateToRax(t, n.argSlot(i));
+            if (!t->isStructOrUnion() && t->isFloating()) a_->ins("movsd", reg("%xmm0"), at);
+            else a_->ins("mov", reg("%rax"), at);
+            continue;
+        }
         if (byRef && t->isStructOrUnion()) {
             msAggregateToRax(t, n.argSlot(i));
             push();
@@ -1164,7 +1200,7 @@ void X86_64Linux::visit(const Call &n) {
         if (n.callee() != nullptr) a_->ins("call", ind("%r11"));
         else                       a_->ins("call", lbl(n.symbol()));
 
-        int unwind = stackSlots + padSlots + shadowSlots;
+        int unwind = pushedSlots + padSlots + shadowSlots;
         if (unwind > 0) {
             a_->ins("add", imm(unwind * 8), reg("%rsp"));
             depth_ -= unwind;
@@ -1448,7 +1484,17 @@ void X86_64Linux::finishChunk() {
     out_.clear();
 }
 
-namespace { bool makesCalls(const Stmt &body); }
+namespace { std::vector<const Call *> callsIn(const Node &n, std::vector<const Call *> *outer = nullptr); }
+
+// A call with stack arguments writes them above the shadow space, and a callee
+// walked in place may make any call at all.
+bool X86_64Linux::mayWriteArea(const Expr &e) const {
+    for (const Call *c : callsIn(e)) {
+        const int words = placeCall(*c).stackWords;
+        if (words > 0 || inlineTarget(*c, words) != nullptr) return true;
+    }
+    return false;
+}
 
 void X86_64Linux::emit(const Function &fn) {
     depth_ = 0;
@@ -1503,7 +1549,19 @@ void X86_64Linux::emit(const Function &fn) {
     fnMergeable_ = fn.isInline();
     markLine(fn.pos());
     if (optimizer_) optimizer_->frame(scalarsOf(fn), !fn.hasLandingPads());
-    outgoing_ = abi_.shadowBytes > 0 && makesCalls(fn.body()) ? abi_.shadowBytes : 0;
+    // The shadow space and the widest stack arguments of a call not inside
+    // another's operands, in 16s. A nested call is evaluated with the outer
+    // one's values pushed, so it never finds the area; counting it only made
+    // frames larger, and with them the displacements into the frame - 1.6 KB
+    // of .text at -O2, measured.
+    outgoing_ = 0;
+    if (abi_.shadowBytes > 0) {
+        std::vector<const Call *> outer;
+        const std::vector<const Call *> calls = callsIn(fn.body(), &outer);
+        int words = 0;
+        for (const Call *c : outer) words = std::max(words, placeCall(*c).stackWords);
+        if (!calls.empty()) outgoing_ = (abi_.shadowBytes + 8 * words + 15) & ~15;
+    }
     floorDepth_ = 0;
     a_->prologue(frameSize_,
                  fn.hasLandingPads() ? ".Lexception." + fn.symbol()
@@ -1663,20 +1721,29 @@ std::vector<opt::Local> X86_64Linux::scalarsOf(const Function &fn) const {
 
 namespace {
 
-// **Whether a body calls anything**, the question the outgoing area is sized
-// by. A call this misses keeps its own allocation, so an incomplete answer
-// costs bytes and never correctness; a handler's calls count, since a funclet
-// is walked where its try is.
+// **The calls a body or an expression makes**, which the outgoing area is
+// sized by. A call this misses keeps its own allocation, so an incomplete
+// answer costs bytes and never correctness; a handler's calls count, since a
+// funclet is walked where its try is.
 class CallScan final : public Visitor {
 public:
-    bool found = false;
+    std::vector<const Call *> calls;
+    std::vector<const Call *> outer;     // not inside another call's operands
+    int inCall = 0;
     void visit(const Num &) override {}
     void visit(const Var &) override {}
     void visit(const StrLit &) override {}
     void visit(const Goto &) override {}
     void visit(const Break &) override {}
     void visit(const Continue &) override {}
-    void visit(const Call &) override { found = true; }
+    void visit(const Call &n) override {
+        calls.push_back(&n);
+        if (inCall == 0) outer.push_back(&n);
+        ++inCall;
+        if (n.callee() != nullptr) n.callee()->accept(*this);
+        for (const ExprPtr &a : n.args()) a->accept(*this);
+        --inCall;
+    }
     void visit(const VaStart &n) override { n.list().accept(*this); }
     void visit(const VaArg &n) override { n.list().accept(*this); }
     void visit(const Assign &n) override { n.target().accept(*this); n.value().accept(*this); }
@@ -1716,10 +1783,11 @@ public:
     }
 };
 
-bool makesCalls(const Stmt &body) {
+std::vector<const Call *> callsIn(const Node &n, std::vector<const Call *> *outer) {
     CallScan scan;
-    body.accept(scan);
-    return scan.found;
+    n.accept(scan);
+    if (outer != nullptr) *outer = scan.outer;
+    return scan.calls;
 }
 
 // **Small enough to walk in place**: straight-line statements and ifs, no
@@ -1809,6 +1877,7 @@ void X86_64Linux::walkBody(const Function &fn) {
 // back to it gives the body exactly - and the code generator knows none of it.
 std::string X86_64Linux::beginFunclet() {
     settle();
+    inFunclet_ = true;
     funcletMark_ = out_.size();
     funcletSymbol_ = "$" + std::string(funcletKind_).substr(1) +
                      std::to_string(funcletIndex_++) + "$" + fnSymbol_;
@@ -1834,6 +1903,7 @@ void X86_64Linux::storeUnwindHelp(int slot) {
 // **The funclet's own frame, and the assembler writes its unwind data.**
 void X86_64Linux::closeFunclet(const std::string &tail) {
     settle();
+    inFunclet_ = false;
     std::string body = out_.substr(funcletMark_);
     out_.resize(funcletMark_);
 

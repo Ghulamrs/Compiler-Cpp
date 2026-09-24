@@ -137,6 +137,8 @@ protected:
     // How far below the floor rsp stood when a callee began to be walked in
     // place; that walk counts depth_ from zero again.
     int floorDepth_ = 0;
+    // Inside a funclet, whose own frame holds 32 bytes and no more.
+    bool inFunclet_ = false;
 
     // Whatever this target writes after a function to describe its handlers.
     virtual void emitExceptionTables(const Function &fn) {
@@ -275,6 +277,13 @@ private:
     };
     Placement placeArguments(const std::vector<const Type *> &types,
                              bool hasThis, bool sret) const;
+    // Whether a call's result comes back through a hidden pointer, and the
+    // whole call placed - what visit(Call) and the outgoing area both ask.
+    bool returnsThroughPointer(const Call &n) const;
+    Placement placeCall(const Call &n) const;
+    // Whether evaluating `e` may make a call at the floor that writes the
+    // outgoing area above its shadow space - see visit(Call).
+    bool mayWriteArea(const Expr &e) const;
 };
 
 std::vector<bool> classifyEightbytes(const Type *t, const Target &target);
