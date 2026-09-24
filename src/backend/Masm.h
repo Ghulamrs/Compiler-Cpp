@@ -30,6 +30,9 @@ public:
     bool comdat() const { return comdat_; }
     void prologue(int frameSize, const std::string &lsda, int outgoing) override;
     void stateLabel(const std::string &l) override;
+    // The registers an optimizer keeps locals in, saved after the frame pointer
+    // is set - see prologue.
+    void calleeSaves(const std::vector<SavedReg> &saves) override { saves_ = saves; }
     // **Whether a FuncInfo follows is the code generator's answer, not this one's.**
     void noteHasEh(bool yes) override { hasEh_ = yes; }
     // The unwind codes the prologue described, written out by functionEnd -
@@ -76,6 +79,7 @@ public:
 private:
     const bool comdat_;
     std::string &o_;
+    std::vector<SavedReg> saves_;
     enum Seg { None, Code, Data, Const, Bss } seg_ = None;
 
     // **A mergeable definition is a COMDAT of its own.** A function opens one at

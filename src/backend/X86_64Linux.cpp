@@ -1474,7 +1474,7 @@ std::string X86_64Linux::userLabel(const std::string &name) const {
 // **The GNU and COFF spellings only.** The MASM path has its own spelling and
 // its own funclet cutting, and is written as it was.
 void X86_64Linux::setOptimize(int level) {
-    if (level <= 0 || (a_ != &gnu_ && a_ != &coff_)) return;
+    if (level <= 0 || optimizer_) return;
     optimizer_.reset(new Optimizer(*a_, abi_, level));
     a_ = optimizer_.get();
 }

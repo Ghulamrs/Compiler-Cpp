@@ -165,7 +165,7 @@ void Driver::usage(char *file) {
         "         for ml64, which links one translation unit at a time\n"
         "       -O1 and -O2 improve the code of each function: frame slots and\n"
         "         constants forwarded, pushes paired with their pops, dead\n"
-        "         instructions removed. GNU and COFF spellings; -O0 is the default\n"
+        "         instructions removed. Every spelling; -O0 is the default\n"
         "       -g writes a line table, so a debugger can stop on a line of C++\n"
         "         and step through it; x86_64-linux and arm64-darwin only\n"
         "       -nologo leaves out the line this compiler prints before it\n"
@@ -787,10 +787,6 @@ bool Driver::compile(const Job &job) {
     // type system drops the qualifier, so an optimizer would take a volatile
     // read for a plain one and keep it in a register or delete it.
     const int level = program.usesVolatile ? 0 : optimize_;
-    if (optimize_ > 0 && syntax_ != Syntax::Gnu && std::strcmp(backend_->name(), "x86_64-windows") == 0 &&
-        &job == &jobs_.front())
-        std::fprintf(stderr, "%s: -O%d has no effect with -masm=masm, whose spelling the "
-                     "optimizer does not stand in front of\n", program_.c_str(), optimize_);
     if (optimize_ > 0 && program.usesVolatile)
         std::fprintf(stderr, "%s: %s uses 'volatile', which this compiler cannot keep apart "
                      "from plain memory; compiled without -O%d\n", program_.c_str(),

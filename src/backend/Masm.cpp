@@ -1,6 +1,7 @@
 #include "Masm.h"
 
 #include "../Mangle.h"
+#include "OptIr.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -139,6 +140,35 @@ const Rule kRules[] = {
     { "cvtsi2sdq", "cvtsi2sd", 8 }, { "cvtsi2ssq", "cvtsi2ss", 8 },
     { "cvttsd2si", "cvttsd2si", 0 }, { "cvttss2si", "cvttss2si", 0 },
     { "cvtss2sd", "cvtss2sd", 0 }, { "cvtsd2ss", "cvtsd2ss", 0 },
+
+    // **What the optimizer writes as well as the walker**: every condition its
+    // inversion can reach, and the widths its shortening pass narrows to.
+    { "jz", "jz", 0 }, { "setz", "setz", 0 }, { "jnz", "jnz", 0 },
+    { "setnz", "setnz", 0 }, { "jl", "jl", 0 }, { "jge", "jge", 0 },
+    { "jle", "jle", 0 }, { "jg", "jg", 0 }, { "jb", "jb", 0 },
+    { "jbe", "jbe", 0 }, { "ja", "ja", 0 }, { "js", "js", 0 },
+    { "sets", "sets", 0 }, { "setns", "setns", 0 }, { "jp", "jp", 0 },
+    { "jnp", "jnp", 0 }, { "jo", "jo", 0 }, { "seto", "seto", 0 },
+    { "jno", "jno", 0 }, { "setno", "setno", 0 }, { "addb", "add", 1 },
+    { "addw", "add", 2 }, { "addq", "add", 8 }, { "subb", "sub", 1 },
+    { "subw", "sub", 2 }, { "subl", "sub", 4 }, { "subq", "sub", 8 },
+    { "andb", "and", 1 }, { "andw", "and", 2 }, { "andl", "and", 4 },
+    { "andq", "and", 8 }, { "orb", "or", 1 }, { "orw", "or", 2 },
+    { "orl", "or", 4 }, { "orq", "or", 8 }, { "xorb", "xor", 1 },
+    { "xorw", "xor", 2 }, { "xorl", "xor", 4 }, { "xorq", "xor", 8 },
+    { "cmpb", "cmp", 1 }, { "cmpw", "cmp", 2 }, { "cmpq", "cmp", 8 },
+    { "test", "test", 0 }, { "testw", "test", 2 }, { "testl", "test", 4 },
+    { "testq", "test", 8 }, { "shlb", "shl", 1 }, { "shlw", "shl", 2 },
+    { "shll", "shl", 4 }, { "shlq", "shl", 8 }, { "shrb", "shr", 1 },
+    { "shrw", "shr", 2 }, { "shrl", "shr", 4 }, { "shrq", "shr", 8 },
+    { "sarb", "sar", 1 }, { "sarw", "sar", 2 }, { "sarl", "sar", 4 },
+    { "sarq", "sar", 8 }, { "negb", "neg", 1 }, { "negw", "neg", 2 },
+    { "negl", "neg", 4 }, { "negq", "neg", 8 }, { "not", "not", 0 },
+    { "notb", "not", 1 }, { "notw", "not", 2 }, { "notl", "not", 4 },
+    { "notq", "not", 8 }, { "inc", "inc", 0 }, { "incb", "inc", 1 },
+    { "incw", "inc", 2 }, { "incl", "inc", 4 }, { "incq", "inc", 8 },
+    { "dec", "dec", 0 }, { "decb", "dec", 1 }, { "decw", "dec", 2 },
+    { "decl", "dec", 4 }, { "decq", "dec", 8 }, { "rep movsq", "rep movsq", 0 },
 };
 
 const Rule *ruleFor(const std::string &m) {
@@ -321,15 +351,34 @@ void MasmSpelling::prologue(int frameSize, const std::string &lsda, int outgoing
     }
     o_ += "$LNalloc$" + m + ":\n";
     o_ += "  mov rbp, rsp\n";
+    o_ += "$LNfp$" + m + ":\n";
+    // **The callee-saved registers an optimizer took, stored up from rbp**, as
+    // the COFF prologue does: each slot is `disp` below the frame's top.
+    for (std::size_t i = 0; i < saves_.size(); ++i) {
+        o_ += "  mov QWORD PTR [rbp+" + std::to_string(frameSize + saves_[i].disp) + "], " +
+              saves_[i].reg.substr(1) + "\n";
+        o_ += "$LNsave" + std::to_string(i) + "$" + m + ":\n";
+    }
     o_ += "$LNprolog$" + m + ":\n";
 
-    // Last instruction first, which is the order an unwinder undoes them in.
-    // That is now SET_FPREG, then the allocation, then the push.
+    // Last instruction first, which is the order an unwinder undoes them in:
+    // the saves, SET_FPREG, the allocation, the push.
     unwindCodes_ = 0;
     unwindData_.clear();
+    // UWOP_SAVE_NONVOL is 4 with the register in the high nibble, and the
+    // slot's offset up from rsp - which rbp equals - in eights.
+    for (std::size_t i = saves_.size(); i-- > 0;) {
+        const int id = opt::parseReg(saves_[i].reg).id;
+        char op[8];
+        std::snprintf(op, sizeof op, "0%02XH", (id << 4) | 4);
+        unwindData_ += "  DB $LNsave" + std::to_string(i) + "$" + m + "-$LNbeg$" + m + "\n";
+        unwindData_ += std::string("  DB ") + op + "\n";
+        unwindData_ += "  DW " + std::to_string((frameSize + saves_[i].disp) / 8) + "\n";
+        unwindCodes_ += 2;
+    }
     // UWOP_SET_FPREG is 3; the frame offset lives in the header, and it is
     // zero because rbp is set to rsp exactly.
-    unwindData_ += "  DB $LNprolog$" + m + "-$LNbeg$" + m + "\n";
+    unwindData_ += "  DB $LNfp$" + m + "-$LNbeg$" + m + "\n";
     unwindData_ += "  DB 03H\n";
     unwindCodes_ += 1;
     // UWOP_ALLOC_SMALL is 2, with (size/8 - 1) in the high nibble, and
@@ -399,6 +448,7 @@ void MasmSpelling::functionEnd(const std::string &name) {
     unwindData_.clear();
     unwindCodes_ = 0;
     hasEh_ = false;
+    saves_.clear();
 }
 
 void MasmSpelling::globl(const std::string &name) { exported_.insert(name); }
@@ -594,6 +644,7 @@ void MasmCodeGen::storeUnwindHelp(int slot) {
 // appends its code like any other, so remembering where that began and cutting
 // back to it gives the body exactly - and the code generator knows none of it.
 std::string MasmCodeGen::beginFunclet() {
+    settle();                            // an optimizer's held code, out first
     masm_.raw("");                       // nothing pending inside the slice
     funcletMark_ = out_.size();
     funcletSymbol_ = masm_.mangledName() + funcletKind_ +
@@ -614,6 +665,7 @@ void MasmCodeGen::endFunclet(const std::string &resume) {
 }
 
 void MasmCodeGen::closeFunclet(const std::string &tail) {
+    settle();
     masm_.raw("");
     std::string body = out_.substr(funcletMark_);
     out_.resize(funcletMark_);
