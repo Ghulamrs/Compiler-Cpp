@@ -30,6 +30,8 @@ public:
     // A label the walker names only in jumps, which may go once nothing jumps to it.
     void jumpOnly(const std::string &label);
     int level() const { return level_; }
+    // Whether this level copies a block with `rep movsq` rather than unrolled.
+    bool copiesByString() const;
 
     void ins(const std::string &m) override;
     void ins(const std::string &m, const Op &a) override;

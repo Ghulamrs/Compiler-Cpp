@@ -406,29 +406,51 @@ void X86_64Linux::visit(const MemberAccess &n) {
     load(n.type());
 }
 
+// From (%rax) to (scratch), which is left as it was; %rax and %rcx are not.
+// **Where the levels part, as cl's /Os and /Ot do over a block move**: unrolled
+// is nine bytes of code a word, `rep movsq` about fifteen for the whole block
+// and slower to start, so the level that favours space takes it from three
+// words up. rsi and rdi are the caller's on Windows, and pushed round it.
 void X86_64Linux::copyBlock(int size) {
-    const char *to = abi_.scratch;
+    const char *from = "%rax", *to = abi_.scratch;
+    const int words = size / 8;
+    const bool string = words >= 3 && optimizer_ && optimizer_->copiesByString();
+    bool save = false;
     int off = 0;
+    if (string) {
+        for (int i = 0; i < abi_.preservedCount; ++i)
+            if (std::strcmp(abi_.preservedRegs[i], "%rsi") == 0) save = true;
+        if (save) { a_->ins("push", reg("%rsi")); a_->ins("push", reg("%rdi")); }
+        a_->ins("mov", reg(from), reg("%rsi"));
+        if (std::strcmp(to, "%rdi") != 0) a_->ins("mov", reg(to), reg("%rdi"));
+        a_->ins("movl", imm(words), reg("%ecx"));
+        a_->ins("rep movsq");
+        // The tail goes from where the string instruction stopped.
+        from = "%rsi"; to = "%rdi";
+        size -= 8 * words;
+    }
     while (size - off >= 8) {
-        a_->ins("mov", mem(off, "%rax"), reg("%rcx"));
+        a_->ins("mov", mem(off, from), reg("%rcx"));
         a_->ins("mov", reg("%rcx"), mem(off, to));
         off += 8;
     }
     while (size - off >= 4) {
-        a_->ins("movl", mem(off, "%rax"), reg("%ecx"));
+        a_->ins("movl", mem(off, from), reg("%ecx"));
         a_->ins("movl", reg("%ecx"), mem(off, to));
         off += 4;
     }
     while (size - off >= 2) {
-        a_->ins("movw", mem(off, "%rax"), reg("%cx"));
+        a_->ins("movw", mem(off, from), reg("%cx"));
         a_->ins("movw", reg("%cx"), mem(off, to));
         off += 2;
     }
     while (size - off >= 1) {
-        a_->ins("movb", mem(off, "%rax"), reg("%cl"));
+        a_->ins("movb", mem(off, from), reg("%cl"));
         a_->ins("movb", reg("%cl"), mem(off, to));
         off += 1;
     }
+    if (save) { a_->ins("pop", reg("%rdi")); a_->ins("pop", reg("%rsi")); }
+    else if (string && std::strcmp(abi_.scratch, "%rdi") == 0) a_->ins("sub", imm(8 * words), reg("%rdi"));
 }
 
 void X86_64Linux::bitFieldUnitAddr(const MemberAccess &m) {

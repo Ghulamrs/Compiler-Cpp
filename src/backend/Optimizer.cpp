@@ -14,15 +14,21 @@ namespace {
 
 // **What each level does, in one place.** A round is every pass once; each
 // pass leaves work for the others, so rounds run until one finds nothing, or
-// the level's limit.
+// the level's limit. Where the code has two spellings, -O1 takes the smaller
+// and -O2 the faster, which is how cl's /O1 and /O2 part (/Os against /Ot).
 struct Level {
     int rounds;
     int registers;        // callee-saved registers locals may be kept in
     long minWeight;       // the accesses, loop-weighted, that earn one
+    bool stringCopies;    // a block of three words or more copied by `rep movsq`
 };
 
+// **No loop-head alignment at -O2**, although cl pads with npad: measured on
+// the box with and without `.balign 16` before every loop head - Compiler++'s
+// bench 843 against 844 ms over 15 interleaved rounds, loops.cpp's five
+// kernels equal to the millisecond - for 3,904 bytes. Nothing to buy.
 Level levelFor(int n) {
-    return n <= 1 ? Level{8, 2, 6} : Level{16, 5, 2};
+    return n <= 1 ? Level{8, 2, 6, true} : Level{16, 5, 2, false};
 }
 
 }
@@ -76,6 +82,8 @@ void Optimizer::defLabel(const std::string &l) {
     e.label = l;
     hold(std::move(e));
 }
+
+bool Optimizer::copiesByString() const { return levelFor(level_).stringCopies; }
 
 void Optimizer::functionBegin(const std::string &name, bool exported, bool mergeable) {
     flush(false);

@@ -171,6 +171,10 @@ Roles classify(const Instr &i, const Convention &conv, Effects &e) {
     } else if (oneOf(m, {"cqo", "cqto", "cdq", "cltd"})) {
         e.reads = bit(RAX);
         e.writes = bit(RDX);
+    } else if (m == "rep movsq") {
+        // rcx words from (rsi) to (rdi): all three read, and left changed.
+        e.reads = e.writes = bit(RSI) | bit(RDI) | bit(RCX);
+        e.memoryRead = e.memoryWritten = true;
     } else if (oneOf(m, {"cltq", "cdqe"})) {
         e.reads = e.writes = bit(RAX);
     } else if (oneOf(m, {"idiv", "div", "idivl", "divl", "idivq", "divq"})) {
