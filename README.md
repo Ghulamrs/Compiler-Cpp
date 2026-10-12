@@ -1,3 +1,8 @@
+> **Retired 2026-10-12.** This repository is the original `cxx1`, up to 1.4 (2026-09-18). The C++ compiler lives on in
+> **[Ghulamrs/Compiler-Cpp-Optimize](https://github.com/Ghulamrs/Compiler-Cpp-Optimize)**, which RIDE builds as `cpp11`.
+> Everything here is in Compiler-Cpp-Optimize's `main`: its history continues from this repository's last commit.
+> This repository's branches are kept there under `archive/compiler-cpp/`, and its last `main` is the tag `compiler-cpp-final`.
+
 # cxx1 — a C++11 compiler
 
 `cxx1` compiles C++11 to native assembly for **x86_64-linux**,
